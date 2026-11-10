@@ -174,8 +174,12 @@ const MAX_CERT_CHARS = 40;
 const MAX_SERIAL_CHARS = 20;
 const MAX_LOCATION_CHARS = 120;
 const MAX_NOTES_CHARS = 2000;
-/** $100,000,000.00 in cents: far above any card, below float trouble. */
-const MAX_COST_CENTS = 10_000_000_000;
+/**
+ * $100,000,000.00 in cents: far above any card, below float trouble. The
+ * client keeps its own copy (`lib/collection/price-cap.ts`); a unit test
+ * holds the two equal.
+ */
+export const MAX_COST_CENTS = 10_000_000_000;
 
 /** NEO-378 — a price (a copy's floor, a common price) in whole cents, zero to the cost cap. */
 export function isPriceCents(raw: number): boolean {
@@ -288,7 +292,8 @@ export const copyValidator = v.object({
  * NEO-359 — what a move (or a place) did. `copyId` is the line the moved
  * cards are now: the same row, a row split off, or the twin it folded into.
  * `from` is where they were, so the undo is `moveCopy({copyId, toHomeId:
- * from.homeId, quantity: from.quantity, slot: from.slot})`.
+ * from.homeId, quantity: from.quantity, slot: from.slot, minPriceCents:
+ * from.minPriceCents})`.
  */
 export const moveResultValidator = v.object({
   copyId: v.id("collectionCopies"),
@@ -298,6 +303,14 @@ export const moveResultValidator = v.object({
     homeId: v.id("collectionContainers"),
     slot: v.optional(v.number()),
     quantity: v.number(),
+    /**
+     * NEO-479 — the moving cards' own price before the move (null: they
+     * had none). Present when the move changed it, and on a move into a box
+     * from a home that is not one when the cards had a price (the reverse
+     * move, a Take off sale, would clear it). The undo sends it back as the
+     * move's `minPriceCents`, so it puts back exactly what was there.
+     */
+    minPriceCents: v.optional(v.union(v.number(), v.null())),
   }),
 });
 
@@ -1550,7 +1563,11 @@ export async function addOne(
  * Want List, Up for Trade, a smart binder, and a binder pocket another line
  * holds. Returns the result and applies the numbers itself
  * (`applyCopyChanges`): NEO-364, a binder-to-box move (Sell) leaves the tally,
- * a box-to-binder one (Take off sale) joins it.
+ * a box-to-binder one (Take off sale) joins it. NEO-479: `price` is the
+ * moving cards' own price (`moveCopy`'s `minPriceCents`); Take off sale
+ * clears it when none is given, and `from.minPriceCents` carries the old one
+ * whenever it changed or the undo would otherwise clear it (into a box from
+ * a non-box with a price). Never the common price.
  */
 /**
  * NEO-370 — what the listing gate reads of a copy headed for a home: its
@@ -1576,6 +1593,7 @@ export async function moveCopyCore(
   toHomeId: Id<"collectionContainers">,
   quantityArg: number | undefined,
   slot: number | undefined,
+  price?: number | null,
 ): Promise<typeof moveResultValidator.type> {
   const quantity = quantityArg ?? row.quantity;
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > row.quantity) {
@@ -1589,6 +1607,15 @@ export async function moveCopyCore(
   if (slot !== undefined && (!Number.isInteger(slot) || slot < 0)) {
     refuse(COLLECTION_ERRORS.invalid, "That pocket or row doesn't exist. Pick one from the page.");
   }
+  // NEO-479: a price rides only on a move to another home (Sell sets it, an
+  // Undo clears or restores it). Never the common price: that is
+  // `commonPrices.ts`'s alone, and a move never writes it.
+  if (price !== undefined && toHomeId === row.homeId) {
+    refuse(COLLECTION_ERRORS.invalid, "A card's price changes on a move to another home, not inside one.");
+  }
+  if (typeof price === "number" && !isPriceCents(price)) {
+    refuse(COLLECTION_ERRORS.invalid, "Price needs to be a dollar amount of zero or more.");
+  }
   const from = {
     homeId: row.homeId,
     ...(row.slot !== undefined ? { slot: row.slot } : {}),
@@ -1599,16 +1626,41 @@ export async function moveCopyCore(
     refuse(COLLECTION_ERRORS.notFound, "That binder or box isn't in your collection.");
   }
   checkSlot(home, slot);
+  const source = toHomeId !== row.homeId ? await ctx.db.get(row.homeId) : null;
+  // NEO-479: the moving cards' own price after the move. A price argument
+  // sets it (null clears it). Without one the cards keep theirs, except on
+  // the way out of a box into a binder (Take off sale), which clears it:
+  // a card off sale has no price, and selling it again asks afresh. The old
+  // price goes back in `from`, so Undo restores it.
+  const ownPrice =
+    price !== undefined
+      ? (price ?? undefined)
+      : source?.kind === "box" && home.kind !== "box"
+        ? undefined
+        : row.minPriceCents;
+  // `from` carries the old price when the move changed it, and when the
+  // undo (box → non-box, no price) would otherwise clear a price the cards
+  // came in with: Sell leaves a binder card's own price alone, Undo would not.
+  const undoNeedsPrice =
+    ownPrice !== row.minPriceCents ||
+    (toHomeId !== row.homeId &&
+      source?.kind !== "box" &&
+      home.kind === "box" &&
+      row.minPriceCents !== undefined);
   // NEO-370: cards moving INTO a listed box from a home that does not list
   // (a binder, an in-person box) are an add there, held by the listing gate
-  // as `addOne` is. A move between listed homes changes nothing it reads.
+  // as `addOne` is, with the price the move gives them. A move between
+  // listed homes changes nothing it reads.
   if (toHomeId !== row.homeId) {
-    const source = await ctx.db.get(row.homeId);
     if (!source || !listsOnMarketplaces(source)) {
       const own = ctx.db.normalizeId("privateCards", row.cardId) !== null;
       await new ListingGate(ctx, ownerId).require(
         home,
-        gatedCopy(own ? {} : { variantId: row.variantId }, row),
+        gatedCopy(own ? {} : { variantId: row.variantId }, {
+          grading: row.grading,
+          condition: row.condition,
+          ...(ownPrice !== undefined ? { minPriceCents: ownPrice } : {}),
+        }),
       );
     }
   }
@@ -1618,6 +1670,11 @@ export async function moveCopyCore(
     .take(MAX_LINES_PER_CARD + 1);
   const rest: StoredDetails = { ...detailsOf(row), quantity, homeId: home._id };
   delete rest.slot;
+  // The price is set before the fold test, so the cards fold only into a
+  // twin at the same price, and a part split off carries it; the rest of
+  // the stack keeps its own.
+  if (ownPrice === undefined) delete rest.minPriceCents;
+  else rest.minPriceCents = ownPrice;
   // NEO-377: a line's photos travel only with the whole line; a part split
   // off is a plain stack that may fold.
   const whole = quantity === row.quantity;
@@ -1666,7 +1723,7 @@ export async function moveCopyCore(
     }
     copyId = into._id;
   } else if (whole) {
-    await ctx.db.patch(row._id, { homeId: home._id, slot, lastUpdated: now, ...filed });
+    await ctx.db.patch(row._id, { homeId: home._id, slot, minPriceCents: ownPrice, lastUpdated: now, ...filed });
     changes.push(changeOf(row, counted(row), counted({ ...row, homeId: home._id })));
     copyId = row._id;
   } else {
@@ -1688,7 +1745,12 @@ export async function moveCopyCore(
   // The whole line left its pocket (a part leaves the rest behind in it).
   if (whole) await pocketEmptied(ctx, row.homeId, row.slot);
   await applyCopyChanges(ctx, ownerId, changes);
-  return { copyId, folded: into !== undefined, split: !whole, from };
+  return {
+    copyId,
+    folded: into !== undefined,
+    split: !whole,
+    from: undoNeedsPrice ? { ...from, minPriceCents: row.minPriceCents ?? null } : from,
+  };
 }
 
 /** A fresh copy of a card: one raw card (in the default condition), in `homeId` when given, else Main. */
@@ -2601,9 +2663,20 @@ export const restoreCopy = mutation({
  * home, at `slot` (absent: a binder's first open pocket, else not placed). Folds into an identical
  * line at the destination; part of a stack splits off. The result's `from`
  * is the undo: move `from.quantity` of `copyId` back to `from.homeId` at
- * `from.slot`, which splits the cards back out of a fold. Refuses the Want
- * List, Up for Trade, and a binder pocket another line item holds. The trade
- * flag travels with the cards.
+ * `from.slot` with `from.minPriceCents`, which splits the cards back out of
+ * a fold. Refuses the Want List, Up for Trade, and a binder pocket another
+ * line item holds. The trade flag travels with the cards.
+ *
+ * NEO-479 — `minPriceCents` is the moving cards' own price (whole cents):
+ * Sell into a box sets it, and the listing gate reads it, so a priced sale
+ * passes where an unpriced one is held. `null` clears it (an Undo). Absent:
+ * the cards keep theirs, except a move out of a box into a binder (Take off
+ * sale), which clears it and puts the old one in `from`. A number may land
+ * in any home: Sell sends one into a box, and the Undo of a Sell sends a
+ * binder card's old price back into its binder. Any price on a move within
+ * one home is refused. Only the moving cards change: a stack's remainder
+ * keeps its price, and the owner's common price for the variant is never
+ * written.
  */
 export const moveCopy = mutation({
   args: {
@@ -2611,12 +2684,13 @@ export const moveCopy = mutation({
     toHomeId: v.id("collectionContainers"),
     quantity: v.optional(v.number()),
     slot: v.optional(v.number()),
+    minPriceCents: v.optional(v.union(v.number(), v.null())),
   },
   returns: moveResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const row = await ownCopy(ctx, ownerId, args.copyId);
-    return await moveCopyCore(ctx, ownerId, row, args.toHomeId, args.quantity, args.slot);
+    return await moveCopyCore(ctx, ownerId, row, args.toHomeId, args.quantity, args.slot, args.minPriceCents);
   },
 });
 

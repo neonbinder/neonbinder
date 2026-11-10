@@ -1061,6 +1061,40 @@ describe("writes: moves, trade, wants and containers", () => {
     expect(r).toMatchObject({ copyId: "twin", folded: true, split: true });
   });
 
+  it("NEO-479: moveCopy sends the own price in whole cents, never dollars", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    await actions().moveCopy(COPY, "box1", { minPrice: 0.29 });
+    expect(writes()[0].args).toEqual({ copyId: "copy1", toHomeId: "box1", minPriceCents: 29 });
+    await actions().moveCopy(COPY, "box1", { minPrice: 1.1 });
+    expect(writes()[1].args).toMatchObject({ minPriceCents: 110 });
+  });
+
+  it("NEO-479: a move with no price sends no price key", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    await actions().moveCopy(COPY, "box1", { quantity: 1 });
+    expect(writes()[0].args).not.toHaveProperty("minPriceCents");
+  });
+
+  it.each([
+    ["a number", 150],
+    ["null (there was none)", null],
+  ])("NEO-479: the undo sends back the price the server recorded: %s", async (_n, before) => {
+    calls.answers.set("collection:moveCopy", { ...MOVE_BACK, from: { homeId: "home1", quantity: 2, minPriceCents: before } });
+    const r = await actions().moveCopy(COPY, "box1", { minPrice: 0.4 });
+    await act(r.undo);
+    expect(writes()[1]).toEqual({
+      name: "collection:moveCopy",
+      args: { copyId: "copy1", toHomeId: "home1", quantity: 2, minPriceCents: before },
+    });
+  });
+
+  it("NEO-479: an undo of a move that changed no price sends no price key", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    const r = await actions().moveCopy(COPY, "box1");
+    await act(r.undo);
+    expect(writes()[1].args).not.toHaveProperty("minPriceCents");
+  });
+
   it("placeCopy sends the row, null to take it out, and its undo goes back to the previous row", async () => {
     calls.answers.set("collection:placeCopy", { ...MOVE_BACK, from: { homeId: "home1", slot: 1, quantity: 2 } });
     const r = await actions().placeCopy(COPY, null);
@@ -1315,6 +1349,83 @@ describe("optimistic updates: a copy is never shown in two places", () => {
     answer();
     await actions().moveCopy(move, BOX, { slot: 3 });
     expect(copiesOf()[0]).toMatchObject({ homeId: BOX, slot: 3 });
+  });
+
+  describe("the move's own price (NEO-479)", () => {
+    const rawIn = (homeId: string) => rowsIn("collection:copiesInContainer", homeId) as { _id: string; quantity: number; minPriceCents?: number }[];
+
+    it("lands the cards in the box at the price typed, in cents", async () => {
+      seed();
+      answer();
+      await actions().moveCopy(move, BOX, { minPrice: 0.4 });
+      expect(rawIn(BOX)[0]).toMatchObject({ _id: "copy1", minPriceCents: 40 });
+    });
+
+    it("a priced split prices only the part in the box; the remainder stays unpriced", async () => {
+      seed();
+      answer({ copyId: "new", split: true, from: { homeId: MAIN, quantity: 2 } });
+      await actions().moveCopy(move, BOX, { quantity: 2, minPrice: 1.5 });
+      expect(rawIn(BOX)[0]).toMatchObject({ quantity: 2, minPriceCents: 150 });
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1", quantity: 1 });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
+
+    it("folds only into a box twin at the same price", async () => {
+      const same = base({ _id: "twin", homeId: BOX, quantity: 1, minPriceCents: 150 });
+      seed([base()], [same]);
+      answer({ copyId: "twin", folded: true });
+      await actions().moveCopy(move, BOX, { minPrice: 1.5 });
+      expect(copiesOf().map((r) => [r._id, r.quantity])).toEqual([["twin", 4]]);
+    });
+
+    it("does not fold into a box twin at another price, or with none", async () => {
+      for (const twinPrice of [{ minPriceCents: 99 }, {}]) {
+        local.clear();
+        seed([base()], [base({ _id: "twin", homeId: BOX, quantity: 1, ...twinPrice })]);
+        answer();
+        await actions().moveCopy(move, BOX, { minPrice: 1.5 });
+        expect(copiesOf().map((r) => r._id).sort()).toEqual(["copy1", "twin"]);
+      }
+    });
+
+    it("a card with its own price keeps it into a box when none is typed", async () => {
+      seed([base({ minPriceCents: 200 })]);
+      answer();
+      await actions().moveCopy({ ...move, minPrice: 2 }, BOX);
+      expect(rawIn(BOX)[0]).toMatchObject({ minPriceCents: 200 });
+    });
+
+    it("taking a priced box line off sale lands it in the binder with no price (Branch B)", async () => {
+      seed([], [base({ homeId: BOX, minPriceCents: 150 })]);
+      answer({ from: { homeId: BOX, quantity: 3, minPriceCents: 150 } });
+      await actions().moveCopy({ ...COPY_AT(BOX), homeKind: "box", minPrice: 1.5 }, MAIN);
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1" });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
+
+    it("the undo of taking off sale puts the price back on the row it sends", async () => {
+      seed([], [base({ homeId: BOX, minPriceCents: 150 })]);
+      answer({ from: { homeId: BOX, quantity: 3, minPriceCents: 150 } });
+      const r = await actions().moveCopy({ ...COPY_AT(BOX), homeKind: "box", minPrice: 1.5 }, MAIN);
+      answer({ from: { homeId: MAIN, quantity: 3 } });
+      await act(r.undo);
+      expect(calls.list.at(-1)).toEqual({
+        name: "collection:moveCopy",
+        args: { copyId: "copy1", toHomeId: BOX, quantity: 3, minPriceCents: 150 },
+      });
+      expect(rawIn(BOX)[0]).toMatchObject({ _id: "copy1", minPriceCents: 150 });
+    });
+
+    it("an undo that restores 'no price' lands the row without one", async () => {
+      seed();
+      answer({ from: { homeId: MAIN, quantity: 3, minPriceCents: null } });
+      const r = await actions().moveCopy(move, BOX, { minPrice: 0.4 });
+      answer({ from: { homeId: BOX, quantity: 3 } });
+      await act(r.undo);
+      expect(calls.list.at(-1)?.args).toMatchObject({ toHomeId: MAIN, minPriceCents: null });
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1" });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
   });
 
   it("placeCopy re-rows the line in its own home and clears the row with null", async () => {

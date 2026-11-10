@@ -1,0 +1,21 @@
+# NEO-399: a tight auto-cropped scan with no usable resolution (72 dpi, JFIF
+# density 1:1). The classical check calls it `weak` and the quad finds no
+# outline, so before NEO-399 it escalated to HEAVY only for BiRefNet to hand
+# it back untouched. FAST must now settle it as an identity on its pixels.
+# 2014 Score football, the intake E2E's 02-mcfadden-back.
+orient:
+  rotation_degrees: 0
+
+classify:
+  side: back
+  player:
+    contains: McFadden
+  team:
+    contains: Raiders
+  card_number:
+    equals: '160'
+
+crop:
+  category: tight-scan-no-dpi / white border, back
+  source: frame_content
+  identity: true

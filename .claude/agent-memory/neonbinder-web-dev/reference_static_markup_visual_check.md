@@ -57,6 +57,11 @@ Vite, an iframe, a fake Convex client) is overkill. This takes about a minute:
    16px where a `-my-2` text link grew it by nothing; `-my-2` on the button
    restored the old heights in every case.
 
+**Wrapping the probe in Radix `<Theme>`** renders `data-is-root-theme="true"`,
+which carries `min-height: 100vh`: every case after the first falls below the
+iframe and the screenshot looks like one case. `sed` it to `"false"` in the
+scratch HTML (NEO-479).
+
 Limits: no React state, no live data, and the page's own container padding is
 whatever you write. A layout problem the mock shows in markup you did NOT
 change is a lead to check in the real app, not proof.

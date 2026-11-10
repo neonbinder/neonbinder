@@ -1,0 +1,20 @@
+# NEO-399: tight scan, no usable resolution; settles on FAST by frame content.
+# 2014 Score football, the intake E2E's 06-bell-back. The card itself prints
+# "No. 174"; the E2E's set gives #174 to another player on purpose to drive
+# its misread path, but preprocess reads what the card shows.
+orient:
+  rotation_degrees: 0
+
+classify:
+  side: back
+  player:
+    contains: Bell
+  team:
+    contains: Steelers
+  card_number:
+    equals: '174'
+
+crop:
+  category: tight-scan-no-dpi / white border, back
+  source: frame_content
+  identity: true

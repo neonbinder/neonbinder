@@ -1350,8 +1350,10 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Sell #1 Shohei Ohtani, Raw" }));
     const form = within(drawer).getByRole("form", { name: "Sell Raw" });
     fireEvent.change(within(form).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
+    // NEO-479: no common price for the card, so Sell needs one of its own.
+    fireEvent.change(within(form).getByRole("textbox", { name: "Price" }), { target: { value: "1.50" } });
     fireEvent.submit(form);
-    await waitFor(() => expect(store.actions.moveCopy).toHaveBeenCalledWith(COPY_OHTANI, "box-show", undefined));
+    await waitFor(() => expect(store.actions.moveCopy).toHaveBeenCalledWith(COPY_OHTANI, "box-show", { minPrice: 1.5 }));
     await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent === GATE_WORDS)).toBe(true));
     expect(within(drawer).queryByRole("button", { name: "Undo" })).toBeNull();
     expect(within(drawer).queryByText(/up for sale in/)).toBeNull();
