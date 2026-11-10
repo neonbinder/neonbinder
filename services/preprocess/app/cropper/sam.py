@@ -24,6 +24,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from app.cropper import boxes
+
 logger = logging.getLogger(__name__)
 
 # ── Constants (mirror card_cropper_sam.py) ─────────────────────────────────
@@ -192,6 +194,30 @@ def _rotate_and_crop(
     y1 = int(max(0, ys.min() - padding))
     x2 = int(min(rotated.shape[1], xs.max() + padding))
     y2 = int(min(rotated.shape[0], ys.max() + padding))
+
+    # NEO-481: the box this crop cut, for `crop_box`. The crop is upright in
+    # the rotated canvas, so in the source it is the same rectangle turned
+    # back: its centre mapped through the inverse rotation, its top edge
+    # running `rotation_angle` degrees clockwise (OpenCV's positive angle turns
+    # the canvas counter-clockwise to bring that edge level).
+    centre = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0])
+    if rotated is image:
+        source_centre = centre
+        box_angle = 0.0
+    else:
+        source_centre = np.linalg.solve(rot_m[:, :2], centre - rot_m[:, 2])
+        box_angle = rotation_angle
+    boxes.record(
+        boxes.from_rotated_rect(
+            float(source_centre[0]),
+            float(source_centre[1]),
+            float(x2 - x1),
+            float(y2 - y1),
+            box_angle,
+            img_w,
+            img_h,
+        )
+    )
     return rotated[y1:y2, x1:x2], rotated_pts
 
 

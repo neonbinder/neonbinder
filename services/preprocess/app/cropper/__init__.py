@@ -46,13 +46,15 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app import timing
 from app.classify import ClassifyResult, classify_card
-from app.cropper import haiku_bbox, pil_trim, quad, sam, scan_meta, tiered
+from app.cropper import boxes, haiku_bbox, pil_trim, quad, sam, scan_meta, tiered
 from app.cropper._utils import rotate_image_bytes
+from app.cropper.boxes import CropBox
 from app.cropper.validator import is_plausible_crop
+from app.imaging import read_raster_size
 from app.orient import OrientationResult, detect_orientation
 from app.timing import Timings
 
@@ -234,6 +236,12 @@ class CropResult:
     writes it as the output so the winner is not rotated (decoded and
     re-encoded) a second time. None only for a result built outside the
     cascade (test doubles); consumers fall back to rotating `image_bytes`.
+
+    `crop_box` (NEO-481) is the box the winning stage cut, in the pixels of
+    the image the cascade was given and before the orientation turn, already
+    fitted inside that image (`boxes.fit_inside`). The whole frame for an
+    identity win and the passthrough; None for a client's own crop, a stage
+    that reported no box, or a box that would not fit.
     """
 
     image_bytes: bytes
@@ -242,6 +250,7 @@ class CropResult:
     orientation: OrientationResult
     classification: ClassifyResult
     rotated_bytes: bytes | None = None
+    crop_box: CropBox | None = None
 
 
 @dataclass(frozen=True)
@@ -549,6 +558,18 @@ def _crop(
     # throughout — including by any identity stage, whose candidate is these
     # same bytes (see `_try_stage`).
     baseline_orient = baseline if baseline is not None else _orient(image_bytes, timings)
+
+    # NEO-481: every win below carries the box it cut (`CropResult.crop_box`).
+    # An identity win's box is the whole frame; a cropping stage reports its
+    # own through `boxes.record`.
+    frame = read_raster_size(image_bytes)
+
+    def _boxed(result: CropResult, box: CropBox | None) -> CropResult:
+        return replace(result, crop_box=boxes.fit_inside(box))
+
+    def _whole_frame() -> CropBox | None:
+        return boxes.full_frame(*frame) if frame is not None else None
+
     text_threshold = max(1, int(baseline_orient.text_count * MIN_CASCADE_TEXT_RATIO))
     logger.info(
         "cascade: baseline text_count=%d, threshold=%d",
@@ -637,7 +658,7 @@ def _crop(
                 timings=timings,
             )
             if result is not None:
-                return result
+                return _boxed(result, _whole_frame())
 
         # ── Classical identity (NEO-173) ────────────────────────────────
         # The fallback for sources whose metadata says nothing: a phone
@@ -664,7 +685,9 @@ def _crop(
                 timings=timings,
             )
             if result is not None:
-                return result
+                # It only ever returns the input untouched; anything else
+                # would be a crop with no reported box.
+                return _boxed(result, _whole_frame() if fast_bytes is image_bytes else None)
 
         # ── Quad crop (NEO-320) ─────────────────────────────────────────
         # Every frame the identity checks above did not accept: find one
@@ -678,7 +701,7 @@ def _crop(
         # declines, with a named reason, whenever its content checks are not
         # all satisfied. A crop it does return still has to clear the same
         # `_try_stage` validator and Vision text gate as every other stage.
-        with timings.measure("quad_ms"):
+        with timings.measure("quad_ms"), boxes.recording() as quad_box:
             quad_result = quad.quad_crop(image_bytes)
         if quad_result.crop_bytes is None:
             logger.info("fast: quad declined reason=%s", quad_result.reason)
@@ -706,7 +729,7 @@ def _crop(
                     logger.info("fast: quad declined reason=gates")
             if result is not None:
                 logger.info("fast: quad accepted")
-                return result
+                return _boxed(result, quad_box.box)
 
     # ── FAST-role escalation seam (NEO-175) ─────────────────────────────
     # The FAST preprocess service (`PREPROCESS_ROLE=fast`) sets escalate_only
@@ -724,7 +747,8 @@ def _crop(
 
     # ── Stages 2..N — server-side croppers through the same uniform gate.
     for source in STRATEGY_NAMES:
-        produced = _timed_strategy(source, image_bytes, timings)
+        with boxes.recording() as stage_box:
+            produced = _timed_strategy(source, image_bytes, timings)
         if produced is None:
             continue
 
@@ -743,7 +767,8 @@ def _crop(
         if result is not None:
             if source == "haiku_bbox":
                 timings.haiku_bbox_won = True
-            return result
+            identity = produced is image_bytes or produced == image_bytes
+            return _boxed(result, _whole_frame() if identity else stage_box.box)
 
     # ── Passthrough ─────────────────────────────────────────────────────
     # Unconditional fallback. Carries whatever orient+classify produced on
@@ -759,4 +784,5 @@ def _crop(
         orientation=baseline_orient,
         classification=passthrough_classification,
         rotated_bytes=rotated,
+        crop_box=boxes.fit_inside(_whole_frame()),
     )

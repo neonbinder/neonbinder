@@ -69,6 +69,22 @@ clients that can't send the raw photo and let the service crop.
   files beside each output, and Convex reads those, so this route is the fallback
   for an entry that has none. A scan the bucket has already expired answers
   `404 OUTPUT_NOT_FOUND`, which Convex tells the collector.
+- `POST /render-edit` — a collector's hand edit (quarter turns clockwise, and a
+  crop box that can turn through 360°; the `PhotoEdit` geometry in
+  `app/edit.py`, pinned against the web editor by
+  `apps/web/lib/photo-edit/golden.json`) rendered into a new saved image
+  (NEO-481). The **scan form** (JSON: `user_id`, `job_id`, `entry_index`,
+  `edit`, `version`, `classify`) reads the scan's EXIF-uprighted original and
+  writes the version's write-once objects, `output/edits/{n:04d}/{v}.jpg` (the
+  crop at full resolution, written last) and `output/edits/{n:04d}/{v}/{image,thumb}.jpg`;
+  a version already rendered answers `409 VERSION_EXISTS`, and an original the
+  bucket has expired `404 ENTRY_NOT_FOUND`. With `classify` it re-reads the new
+  crop (Vision orient, Anthropic classify) as the collector turned it, and a
+  failed read never fails the render. The **bytes form** (multipart: `image`,
+  `edit`) takes a stored photo and returns the two sizes base64-encoded,
+  writing nothing. Both make the sizes with `app/copy_photos.py` and carry the
+  source's colour profile and pixel density. `/process-entry` reports the auto
+  crop's box as `crop_box` in the same geometry, so the editor can open on it.
 
 Auth: all non-health endpoints require the `x-internal-key` header matching
 the `INTERNAL_API_KEY` env var (sourced from Secret Manager in Cloud Run).

@@ -55,6 +55,8 @@ from typing import Literal
 
 from PIL import Image, ImageFilter, ImageStat
 
+from app.cropper import boxes
+
 # Detect on a copy no larger than this on the longest edge — PIL's blur +
 # threshold + getbbox pass is slow on 50MP+ inputs and 3000px is more than
 # enough to find card edges reliably. This bounds DETECTION only; the crop
@@ -274,6 +276,7 @@ def _trim_with_threshold(
     # If what it wants to discard is not background-coloured, it is card —
     # keep the whole frame rather than shaving the border off.
     if not _discarded_strip_is_background(gray, bbox, direction=direction):
+        boxes.record(boxes.full_frame(*img.size))
         return _add_border(img)
 
     # Detection happened on the downscaled copy; the crop happens on the
@@ -283,6 +286,9 @@ def _trim_with_threshold(
     if mapped is None:
         return None
 
+    # NEO-481: the box this crop cut, for `crop_box`. The black border added
+    # around it is padding, not picture, so the box leaves it out.
+    boxes.record(boxes.from_axis_rect(*mapped, *img.size))
     return _add_border(img.crop(mapped))
 
 

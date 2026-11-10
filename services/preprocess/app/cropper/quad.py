@@ -73,7 +73,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from app.cropper import tiered
+from app.cropper import boxes, tiered
 
 logger = logging.getLogger(__name__)
 
@@ -604,8 +604,12 @@ def _run(full: np.ndarray, work: np.ndarray, scale: float) -> QuadResult:
         return decline("shaved")
 
     crop, aspect, snapped = tiered.warp_rect_card(full, full_quad, 0.0)
+    box = boxes.from_quad(tiered.order_quad(full_quad), full.shape[1], full.shape[0])
     if crop.shape[0] < crop.shape[1]:
         crop = cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        box = boxes.turned_ccw(box) if box is not None else None
+    # NEO-481: the box this crop cut, for `crop_box`.
+    boxes.record(box)
     diag.update(snapped=snapped, crop_wh=[int(crop.shape[1]), int(crop.shape[0])])
     return QuadResult(_encode(crop), "ok", quad=full_quad, diagnostics=diag)
 
