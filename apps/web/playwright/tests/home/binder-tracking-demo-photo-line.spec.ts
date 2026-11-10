@@ -16,7 +16,7 @@ test(
   "Binder Tracking demo: a copy added with a photo is its own line beside a plain one, + and 0 count both, Undo brings the photo back",
   { tag: ["@home"] },
   async ({ page }) => {
-    await page.goto("/binder-tracking?demo=on&side=inventory&tab=checklists");
+    await page.goto("/demo/inventory?tab=checklists");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
     await page.getByRole("searchbox", { name: "Search every card" }).fill("ohtani");
     const field = page.getByRole("textbox", { name: /^Quantity of 2024 Topps Chrome #1 Shohei Ohtani, Dodgers in Unsorted$/ });

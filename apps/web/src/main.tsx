@@ -46,6 +46,7 @@ import { APP_BOUNDARY_OPTIONS } from "@/src/routes/chunk-reload";
 import Home from "@/app/page";
 const About = lazy(() => import("@/app/about/page"));
 const Privacy = lazy(() => import("@/app/privacy/page"));
+const CollectionTracking = lazy(() => import("@/app/collection-tracking/page"));
 const AiCardIdentification = lazy(() => import("@/app/ai-card-identification/page"));
 const ManagingInventory = lazy(() => import("@/app/managing-inventory/page"));
 const ShippingLabelsMarketing = lazy(() => import("@/app/shipping-labels/page"));
@@ -172,6 +173,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             <Route path="collection" element={<Deferred><DashboardDemoCollection side="collection" /></Deferred>} />
             <Route path="inventory" element={<Deferred><DashboardDemoCollection side="inventory" /></Deferred>} />
           </Route>
+          <Route path="/collection-tracking" element={<Deferred><CollectionTracking /></Deferred>} />
           {/* NEO-464 — the old demo URL: bookmarks and links still land on /demo. */}
           <Route path="/binder-tracking" element={<Navigate to="/demo" replace />} />
           <Route path="/easypost-setup" element={<Deferred><EasypostSetup /></Deferred>} />

@@ -15,7 +15,7 @@ export default function LandingPage() {
   const navigate = useNavigate();
 
   const handleBindersClick = () => {
-    navigate("/demo");
+    navigate("/collection-tracking");
   };
 
   const handleAiIdentificationClick = () => {
