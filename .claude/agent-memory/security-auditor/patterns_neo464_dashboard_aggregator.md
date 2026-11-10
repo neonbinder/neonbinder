@@ -37,3 +37,20 @@ only guard.
 `apps/web/.claude/agent-memory/` (untracked, not gitignored). Flag it so it
 is moved to the root store or dropped, never `git add`ed in place.
 Related: [[patterns-neo350-public-demo-and-prefill]], [[patterns-public-function-auth-registry]].
+
+**Carried timestamps read through a side filter (round 2, `addedAt`).**
+A per-row stamp that only one door SETS but every move CARRIES (split keeps,
+fold keeps the newer) is safe from forgery when no public args validator
+(`copyDetailsValidator`, undo payloads) names it: grep the field against
+every `v.object` used as args, and every `insert`/`replace` site, before
+calling it server-authored. The read side is owner-indexed and bounded, but
+a carried stamp lands rows on the OTHER side (Sell moves a binder line into
+a box with its stamp), and a post-read side filter (`HomeSides.keep`) on a
+`take(N + 1)` window lets those rows crowd out the wanted ones and makes
+`truncated` count rows that are never shown. Self-only, so a correctness
+note, never an exposure finding.
+
+**Early-exit change on a catalog walk:** replacing "stop at N found" with a
+"settled" rule that must step a window past the Nth entry usually runs the
+walk to its hop cap. Re-cost it per load (hops x (index reads + uncached
+ancestor chain)); bounded is fine, but say the new typical, not the old.

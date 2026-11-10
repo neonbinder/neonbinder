@@ -15,6 +15,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   COULD_FIT_CARDS,
+  FRESH_PULL_LINES,
   INTAKE_RECENT_MS,
   NEW_SETS_SHOWN,
   SALE_LINES,
@@ -760,6 +761,39 @@ describe("freshPulls", () => {
     // A part split back off carries the line's.
     const back = await s.me.mutation(api.collection.moveCopy, { copyId: old.copyId, toHomeId: mets, quantity: 1 });
     expect(await addedAtOf(s, back.copyId)).toBe(freshStamp);
+  });
+
+  test("more fresh lines than the cap returns exactly the cap, newest first, and reports truncation; at the cap it does not", async () => {
+    const s = await setup();
+    const base = 1_000_000;
+    const lineAt = (addedAt: number, slot: number) =>
+      s.t.run((ctx) =>
+        ctx.db.insert("collectionCopies", {
+          ownerId: ME.subject,
+          cardId: s.fx.gooden1,
+          variantId: s.fx.baseId,
+          setId: s.fx.setId,
+          homeId: s.homes.main,
+          slot,
+          quantity: 1,
+          lastUpdated: 0,
+          addedAt,
+        }),
+      );
+    // Exactly the cap: everything is returned and nothing is cut.
+    for (let i = 0; i < FRESH_PULL_LINES; i++) await lineAt(base + i, i);
+    const atCap = await s.me.query(api.dashboard.freshPulls, { sinceMs: 0 });
+    expect(atCap.lines).toHaveLength(FRESH_PULL_LINES);
+    expect(atCap.truncated).toBe(false);
+    // One more, and the oldest falls off.
+    await lineAt(base + FRESH_PULL_LINES, FRESH_PULL_LINES);
+    const over = await s.me.query(api.dashboard.freshPulls, { sinceMs: 0 });
+    expect(over.truncated).toBe(true);
+    expect(over.lines).toHaveLength(FRESH_PULL_LINES);
+    const stamps = over.lines.map((l) => l.addedAt);
+    expect(stamps[0]).toBe(base + FRESH_PULL_LINES);
+    expect(stamps).toEqual([...stamps].sort((a, b) => b - a));
+    expect(stamps[stamps.length - 1]).toBe(base + 1);
   });
 
   test("an undo's put-back is not a pull", async () => {
