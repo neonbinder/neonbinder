@@ -7275,7 +7275,7 @@ describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () =>
     ).toBeTruthy();
     expect(
       screen.getByRole("button", {
-        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+        name: "Link to Bob Allen, born 1867, Phillies 1890 to 1894",
       }),
     ).toBeTruthy();
     // The pick step's primary slot is "Create new"; creating is not on it.
@@ -7315,7 +7315,7 @@ describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () =>
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Link to Bob Allen, b. 1937 · Padres 1961–present",
+        name: "Link to Bob Allen, born 1937, Padres 1961 to present",
       }),
     );
 
@@ -8547,7 +8547,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     expect(pickHeading()).toBeNull();
     expect(
       screen.queryByRole("button", {
-        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+        name: "Link to Bob Allen, born 1867, Phillies 1890 to 1894",
       }),
     ).toBeNull();
     expect(screen.queryByText(/on file under that name/)).toBeNull();
@@ -8737,7 +8737,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     expect(screen.queryByRole("button", { name: "Create new" })).toBeNull();
     expect(
       screen.queryByRole("button", {
-        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+        name: "Link to Bob Allen, born 1867, Phillies 1890 to 1894",
       }),
     ).toBeNull();
   });
@@ -8756,7 +8756,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       ];
       renderWizard();
 
-      expect(screen.getByRole("button", { name: "Link to Bob Allen, b. 1867" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Link to Bob Allen, born 1867" })).toBeTruthy();
       expect(
         screen.getByRole("button", {
           name: "Link to Bob Allen, also known as Robert Allen",
@@ -8772,7 +8772,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       ];
       renderWizard();
 
-      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, b. 1937" }));
+      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, born 1937" }));
 
       await waitFor(() =>
         expect(mockRecordDecision).toHaveBeenCalledWith(
@@ -8844,7 +8844,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       renderWizard();
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+        screen.getByRole("button", { name: "Link to Bob Allen, born 1937, Padres 1961 to present" }),
       );
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
       fireEvent.click(screen.getByRole("button", { name: "Skip Bob Allen — not a person" }));
@@ -8982,7 +8982,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       renderWizard();
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+        screen.getByRole("button", { name: "Link to Bob Allen, born 1937, Padres 1961 to present" }),
       );
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
 
@@ -9083,7 +9083,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       currentRows = [rowA, rowB];
       const { rerender } = renderWizard();
       const pick = screen.getByRole("button", {
-        name: "Link to Bob Allen, b. 1937 · Padres 1961–present",
+        name: "Link to Bob Allen, born 1937, Padres 1961 to present",
       });
       act(() => pick.focus());
       fireEvent.click(pick);
@@ -9322,7 +9322,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       currentRows = [rowA, rowB];
       const { rerender } = renderWizard();
       fireEvent.click(
-        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+        screen.getByRole("button", { name: "Link to Bob Allen, born 1937, Padres 1961 to present" }),
       );
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
       currentRows = [{ ...rowA, decision: youngLink }, rowB];
@@ -9352,7 +9352,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       currentRows = [rowA, rowB];
       const { rerender } = renderWizard();
       fireEvent.click(
-        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+        screen.getByRole("button", { name: "Link to Bob Allen, born 1937, Padres 1961 to present" }),
       );
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
       currentRows = [{ ...rowA, decision: youngLink }, rowB];
@@ -9401,7 +9401,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
         { _id: "player-young", name: "Bob Allen", confidence: "exact", birthYear: 1937 },
       ];
       const { rerender } = renderWizard();
-      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, b. 1937" }));
+      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, born 1937" }));
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
 
       currentLinkedPlayers = [{ _id: "player-young", name: "Bob Allen" }];
@@ -10141,7 +10141,7 @@ describe("NEO-424: the suggested player is the New Player step's primary", () =>
 
     expect(screen.getByRole("heading", { name: "Which Mike Shinoda is this?" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Link to Mike Shinoda, Non Sport" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Link to Mike Shinoda, b. 1990" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link to Mike Shinoda, born 1990" })).toBeTruthy();
     expect(
       screen.queryByRole("button", { name: "Link to Mike Shinoda (Non Sport)" }),
     ).toBeNull();

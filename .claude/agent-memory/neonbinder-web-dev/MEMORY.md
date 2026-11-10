@@ -41,6 +41,7 @@
 - [Client imports from convex only pure modules](reference_client_imports_from_convex_only_pure_modules.md) — a component cannot import a bound from convex/teams.ts (server graph in the bundle); hand-copy with a keep-in-step comment or let the server refuse
 - [Shared-alias-only match is a question, not an adopt](reference_shared_alias_only_match_is_a_question_not_an_adopt.md) — loader adopts only when a PRIMARY name vouches; nearMatches search loop must not overwrite exact-leg candidates (drops matchedAlias)
 - [Component tests hand-build the api mock](reference_component_tests_hand_build_the_api_mock.md) — `api.<newModule>` in a tested component fails every test at render; sibling-component mocks export only `default`; route reads through slot props, sentinels in pure modules
+- [Shared-component pre-check survives sibling mocks](reference_shared_component_precheck_survives_sibling_mocks.md) — skip-gated useQuery, undefined = proceed, never useConvex(); refusal code as fallback
 - [Confirmdialog owns the word cancel](reference_confirmdialog_owns_the_word_cancel.md) — the shared ConfirmDialog always renders a button named "Cancel"; an inline picker that raises it must be a disclosure toggle, not a second Cancel
 - [Inert the opener behind ConfirmDialog](reference_inert_the_opener_behind_confirmdialog.md) — not portalled, Tab-only trap: use `inert`; portalled modals use lib/dom/inertBackground (stacks); restore focus after release
 - [A re-parent drops a row out of its open column](reference_a_reparent_drops_a_row_out_of_its_open_column.md) — SetSelector columns are scoped to the parent id; re-point the parent column, never clear the selection
@@ -183,3 +184,7 @@
 - [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
 - [backdrop-filter makes a containing block](reference_backdrop_filter_makes_a_containing_block.md) — a "fixed" button in a blurred scroller scrolls away; blur a sibling. Also h-0 min-h-full
 - [Happy-dom XHR bypasses the fetch guard](reference_happy_dom_xhr_bypasses_fetch_guard.md) — photo uploads use XHR since NEO-466; stubbing fetch no longer covers them, inject `transport`; attach xhr.upload listeners before send()
+- [Live region text via ref, not state](reference_live_region_text_via_ref_not_state.md) — mount empty, write textContent in the effect; set-state-in-effect lint refuses setState
+- [dnd-kit droppables in their own scroll pane](reference_dndkit_droppables_in_their_own_scroll_pane.md) — two-pane drags need no measuring config (Rect tracks its pane's scroll); what autoscroll scrolls; grid-rows-1 + min-h-0
+- [react-hooks/refs flags helper arguments](reference_react_hooks_refs_flags_helper_arguments.md) — a ref-reading closure passed INTO renderRow() trips the lint; build it in the JSX prop instead
+- [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread

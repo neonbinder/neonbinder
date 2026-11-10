@@ -17,16 +17,27 @@ import { CopyButton } from "@/components/primitives/CopyButton";
 import NeonButton from "@/components/modules/NeonButton";
 import TeamPicker from "@/components/SetSelector/TeamPicker";
 import { SportTag } from "@/components/SetSelector/PlayerPicker";
+import NameFragmentPanel, {
+  fragmentCheckChoices,
+  fragmentRefusalMatches,
+  isNameFragmentRefusal,
+  type NameFragmentMatch,
+} from "@/components/SetSelector/NameFragmentPanel";
 import {
   NearMatchPanel,
   type NearMatch,
 } from "@/components/entities/NearMatchPanel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
-// NEO-235: `tenureYears` owns the open-ended-stint rule ("still there" counts
-// through the current year). `primaryTeamId` below sums it per team rather than
-// re-deriving it — see that function for why it is not `pickDefaultTeamYear`.
-import { isDatedTeamYear, tenureYears } from "@/lib/players/team-tenure";
+// NEO-462: the master row's team nod is the team a player spent longest with,
+// ranked by the same helper `players.nearMatches` uses for the Possible matches
+// career line, so the list row and the match row can never name different
+// teams for one man.
+import {
+  NOTHING_ON_FILE,
+  rankCareerTeams,
+  speakPlayerDescription,
+} from "@/lib/players/player-description";
 // NEO-254: the birth-year bounds, shared with `players.assertBirthYear` so
 // the field cannot offer a year the round-trip then refuses.
 import { MIN_BIRTH_YEAR, maxBirthYear } from "@/lib/players/career-years";
@@ -193,58 +204,6 @@ function stintRange(stint: Stint): string {
 }
 
 /**
- * NEO-235 — the franchise a player is most associated with, for the master row.
- *
- * Deliberately NOT `pickDefaultTeamYear` from lib/players/team-tenure.ts, and
- * the difference is the reason there are two. That one names a single STINT,
- * because the spine label it feeds has to print that stint's years ("Angels
- * 2011–2019"), so a summed total would leave it with nothing to print. This
- * one names a TEAM and prints no years at all, so the honest reading of "played
- * with the longest" is the SUM of the stints there: a player with two four-year
- * runs in Seattle and one six-year run in Cincinnati is a Mariner to anyone who
- * collects him, and per-stint ranking would file him under the Reds. That
- * module anticipated this exact split ("a separate function over the same rows,
- * not a change to these two"), so only `tenureYears` is borrowed.
- *
- * Ties go to the earliest `fromYear` — with nothing to separate two franchises
- * by time served, the one he came up with is the one the hobby names him after.
- *
- * Returns null for a player with no stints; the row then shows the sport alone.
- */
-function primaryTeamId(
-  stints: Stint[] | undefined,
-  currentYear: number,
-): Id<"teams"> | null {
-  if (!stints || stints.length === 0) return null;
-
-  const totals = new Map<string, { years: number; firstYear: number }>();
-  // NEO-285 — an undated stint has no tenure to count, and a college is not
-  // the franchise a collector files a pro under.
-  for (const stint of stints.filter(isDatedTeamYear)) {
-    const key = stint.teamId as string;
-    const running = totals.get(key);
-    totals.set(key, {
-      years: (running?.years ?? 0) + tenureYears(stint, currentYear),
-      firstYear: Math.min(running?.firstYear ?? stint.fromYear, stint.fromYear),
-    });
-  }
-
-  let bestId: string | null = null;
-  let best: { years: number; firstYear: number } | null = null;
-  for (const [id, totalled] of totals) {
-    if (
-      best === null ||
-      totalled.years > best.years ||
-      (totalled.years === best.years && totalled.firstYear < best.firstYear)
-    ) {
-      bestId = id;
-      best = totalled;
-    }
-  }
-  return bestId as Id<"teams"> | null;
-}
-
-/**
  * NEO-235 — the master row paints the team nod in the team's OWN livery rather
  * than in a NeonBinder accent, because a franchise's colours are how a
  * collector recognises it before they have finished reading the word.
@@ -359,7 +318,8 @@ function rowSignature(row: Player): string {
  * `players.nearMatches` stopped reading the exact key with `.first()`, so a
  * forked name — the very thing the birth-year field on this form now produces
  * — comes back as TWO rows both `confidence: "exact"`. The add form renders
- * one control per row (one promoted to the primary, the rest in the panel),
+ * one control per row in the panel, plus the primary for the first exact row
+ * (NEO-462: that row stays in the panel too, described like the others),
  * and a label built from the name alone made both of them `Open Bob Allen`:
  * two controls with one accessible name, on the screen whose entire purpose is
  * telling those two people apart. A screen-reader user hears the same option
@@ -380,7 +340,16 @@ function rowSignature(row: Player): string {
  * and "no birth year" twice is the same collision in different words — so the
  * position stands in, exactly as `candidateLinkLabel` does in the review
  * wizard. Weak information, but unique, and the operator can act on "the
- * second one" after reading the list.
+ * second one" after reading the list. The position is the server's order
+ * within the name, which is also the panel's: rows sharing a display name
+ * always land in the same tier of the panel's sort, which is stable.
+ *
+ * ## Where these labels are used (NEO-462)
+ *
+ * The primary button says this label as its visible text. A panel row says
+ * it only when it has no facts to speak (see `panelPickLabel`), and the panel
+ * then adds `— same name` to a same-name row, so a row never reads exactly
+ * like the primary even though the primary's row is now in the list too.
  */
 function openLabelsFor(matches: ReadonlyArray<NearMatch>): Map<string, string> {
   const byName = new Map<string, NearMatch[]>();
@@ -495,7 +464,7 @@ function AddPlayerForm({
    * anyway`, or a near-match row in the panel. Cleared by a refusal.
    */
   const [pressed, setPressed] = useState<
-    "primary" | "anyway" | "panel" | null
+    "primary" | "anyway" | "panel" | "oneName" | null
   >(null);
   /**
    * NEO-319 — the near matches as they stood when Create was pressed.
@@ -533,8 +502,8 @@ function AddPlayerForm({
    * name we already have.
    *
    * This form is where plan decision 3's identity rule — a distinct birth year
-   * means a distinct person — becomes reachable by a human. The near-match
-   * panel promotes "Open {name}" the moment an exact match appears, so
+   * means a distinct person — becomes reachable by a human. The form promotes
+   * "Open {name}" to the primary the moment an exact match appears, so
    * creation is already behind a deliberate "Create anyway"; the year is what
    * makes that button able to do what it says. `createByAdmin` reads it as the
    * operator asserting a different man: one existing row whose year differs
@@ -567,6 +536,31 @@ function AddPlayerForm({
       ? { name: probe, sportId: sportId as Id<"selectorOptions"> }
       : "skip",
   );
+  /**
+   * NEO-463 — is the name only a piece of a fuller one on file ("Walker" when
+   * "Devin Walker" exists)? Read on the debounced name, like `nearMatches`, and
+   * trusted at the press only when it describes the name in the box. Missing
+   * or stale, Create goes through and the server's own `PLAYER_NAME_FRAGMENT`
+   * refusal opens the same panel.
+   */
+  const fragmentCheck = useQuery(
+    api.players.nameFragmentCheck,
+    probe.length > 0 && sportId
+      ? { name: probe, sportId: sportId as Id<"selectorOptions"> }
+      : "skip",
+  );
+  /** The name the fragment panel is about; null when it is shut. */
+  const [fragmentFor, setFragmentFor] = useState<string | null>(null);
+  /** Matches a refusal carried, for when the check had not answered. */
+  const [refusalMatches, setRefusalMatches] = useState<NameFragmentMatch[]>([]);
+  /** Where Escape in the panel hands focus back: the button that opened it. */
+  const createButtonRef = useRef<HTMLButtonElement>(null);
+  /** The fragment panel, for a repeat Create press to return focus to. */
+  const fragmentPanelRef = useRef<HTMLDivElement | null>(null);
+  const closeFragment = () => {
+    setFragmentFor(null);
+    setRefusalMatches([]);
+  };
   const matches = frozen ? frozen.matches : liveMatches;
   /** A create was pressed and has not been refused. */
   const creating = frozen !== null;
@@ -581,36 +575,96 @@ function AddPlayerForm({
   const busyOn = formBusy ? pressed : null;
 
   const trimmed = name.trim();
-  // The panel exports `hasExact` for callers that only need the boolean; this
-  // one needs the ROW as well, to name the button, and the find narrows the
-  // type where the predicate could not.
-  const exact = (matches ?? []).find((m) => m.confidence === "exact");
   /**
-   * What the panel still has to show once the primary action has been promoted.
+   * The row the primary "Open {name}" button opens.
    *
-   * Mirrors EntityReviewWizard's `panelMatches` deliberately: when an exact
-   * match exists the primary button IS that row — same id, same `Open {name}`
-   * accessible name — so listing it again below puts two controls with one
-   * accessible name on screen, which is ambiguous to a screen reader reading
-   * the list and to a Maestro `tapOn` matching by it. Filtered by `_id`, not by
-   * confidence: any OTHER row is a genuinely different player and still belongs
-   * in the list. If nothing else remains this is `[]`, which the panel already
-   * renders as no panel at all.
+   * The panel exports `hasExact` for callers that only need the boolean; this
+   * one needs the ROW as well, to name the button, and the find narrows the
+   * type where the predicate could not.
+   *
+   * NEO-462 — a SAME-NAME row first, an alias hit only when there is none.
+   * Both arrive `confidence: "exact"`, and the server already ranks same-name
+   * rows ahead of alias rows (first-created first), so in practice this is the
+   * first exact row in server order. Saying it here keeps the primary on the
+   * same man the panel lists first, whatever the server's order becomes: the
+   * panel sorts same-name rows above alias rows.
    */
-  const panelMatches = exact
-    ? (matches ?? []).filter((m) => m._id !== exact._id)
-    : matches;
-  /**
-   * NEO-254 — computed over EVERY match, not just the panel's share.
+  const exact =
+    (matches ?? []).find((m) => m.confidence === "exact" && !m.matchedAlias) ??
+    (matches ?? []).find((m) => m.confidence === "exact");
+  const fragmentShown = fragmentFor !== null && fragmentFor === trimmed;
+  // A truncated check withholds its list (`[]`), and the panel falls back to
+  // "Type the whole name"; a stale or missing check, a refusal's own list.
+  const checkChoices = probe === trimmed ? fragmentCheckChoices(fragmentCheck) : null;
+  const fragmentMatches: ReadonlyArray<NameFragmentMatch> =
+    checkChoices !== null && (fragmentCheck?.truncated || checkChoices.length > 0)
+      ? checkChoices
+      : refusalMatches;
+  /** NEO-463 — the fuller names the fragment panel lists, so no row repeats. */
+  const fragmentOwnedIds = new Set<string>(
+    fragmentShown ? fragmentMatches.map((m) => m._id as string) : [],
+  );
+  // NEO-462 — every match stays in the panel, the primary's own row included;
+  // only the fuller names the fragment panel already lists are left out.
+  const panelMatches =
+    fragmentOwnedIds.size > 0 && matches
+      ? matches.filter((m) => !fragmentOwnedIds.has(m._id))
+      : matches;
+  /*
+   * NEO-462 (Jason, 2026-11-08) — the panel lists EVERY match, the exact one
+   * included.
    *
-   * The promoted primary is one of these rows and the panel holds the rest, so
-   * a label set built from the panel alone would leave the primary saying
-   * `Open Bob Allen` while the row beside it said `Open Bob Allen, b. 1975` —
-   * unique, but the primary would not say which man it opens. One computation
-   * over the whole list gives both halves the same treatment.
+   * Until then the exact row was taken out of the panel and shown only as the
+   * green primary, mirroring EntityReviewWizard's `panelMatches`. On the
+   * preview, typing "Tony Gwynn" listed only "Tony Gwynn Jr." (alias "Tony
+   * Gwynn"): the real Tony Gwynn was on the primary, which carries no birth
+   * year or teams, so it did not read as an option at all. Now he is the first
+   * row, tagged "same name" and described like the others (b. 1960 · Padres
+   * 1982–2001), and the primary stays as the keyboard shortcut (Enter) to the
+   * same row. The two controls keep distinct accessible names: the row adds
+   * its facts and `— same name`, the primary does not. The wizard still filters
+   * its promoted row out; this screen no longer mirrors it.
+   */
+  /**
+   * NEO-254 — computed over EVERY match.
+   *
+   * The primary opens one of these rows, so a label set that skipped it would
+   * leave the primary saying `Open Bob Allen` while a second Bob Allen's row
+   * said `Open Bob Allen, b. 1975`: unique, but the primary would not say
+   * which man it opens. One computation over the whole list gives both
+   * controls the same treatment.
+   *
+   * NEO-462 — a panel row WITH facts (a birth year or a team) gets the bare
+   * `Open {name}` instead, because `NearMatchPanel` speaks those facts itself
+   * and a label from here would say the birth year twice. A row with none
+   * keeps this map's label, so two fact-less Bob Allens read
+   * `…, no birth year (1 of 2)` on the primary and
+   * `…, no birth year (1 of 2) — same name` / `(2 of 2) — same name` in the
+   * list. See `panelPickLabel`.
    */
   const openLabels = openLabelsFor(matches ?? []);
   const openLabel = (m: NearMatch) => openLabels.get(m._id) ?? `Open ${m.name}`;
+  /**
+   * The panel's pick label: bare when the panel has facts to append (the same
+   * test it applies, `speakPlayerDescription` being non-empty), else the
+   * disambiguated label above.
+   *
+   * NEO-462 — one row could still read exactly like the primary: the
+   * primary's own row when the panel adds nothing to it, which is an alias
+   * hit (no "same name" tag) with nothing on file. That row says the words its
+   * second line shows, "nothing on file yet", so the two controls never share
+   * a name. A same-name row needs no such help: the panel always ends its name
+   * with `— same name`, and the primary never does.
+   */
+  const panelPickLabel = (name: string, m: NearMatch) => {
+    if (speakPlayerDescription({ birthYear: m.birthYear, career: m.career })) {
+      return `Open ${name}`;
+    }
+    const label = openLabel(m);
+    return exact && m._id === exact._id && m.matchedAlias
+      ? `${label}, ${NOTHING_ON_FILE.toLowerCase()}`
+      : label;
+  };
   // Client-side mirror of `assertBirthYear`, so a typo is caught while the
   // field is still in front of the operator. The server re-validates; this is
   // the fast half of defense in depth, not the guarantee.
@@ -636,8 +690,19 @@ function AddPlayerForm({
     onCreated(id);
   };
 
-  const create = async (via: "primary" | "anyway") => {
+  const create = async (via: "primary" | "anyway" | "oneName") => {
     if (!canCreate) return;
+    const oneNamePlayer = via === "oneName";
+    // NEO-463 — a fragment stops here and asks, before any write.
+    if (!oneNamePlayer && probe === trimmed && fragmentCheck?.isFragment) {
+      setError(null);
+      // A repeat press with the panel already up mounts nothing, so its
+      // autoFocus cannot fire: move focus there by hand, as the picker's
+      // Enter does, so the press is answered rather than swallowed.
+      if (fragmentShown) fragmentPanelRef.current?.focus({ preventScroll: true });
+      else setFragmentFor(trimmed);
+      return;
+    }
     setBusy(true);
     setPressed(via);
     setFrozen({ matches: liveMatches });
@@ -652,6 +717,7 @@ function AddPlayerForm({
         sportId: sportId as Id<"selectorOptions">,
         ...(birthYearNum !== undefined ? { birthYear: birthYearNum } : {}),
         ...(parsedNewAliases.length ? { aliases: parsedNewAliases } : {}),
+        ...(oneNamePlayer ? { oneNamePlayer: true as const } : {}),
       });
       // Both strings are unchanged; only where they land moved (NEO-260).
       onCreated(
@@ -676,6 +742,14 @@ function AddPlayerForm({
       // NEO-319 — a refusal hands the form back: live matches, live fields.
       setFrozen(null);
       setPressed(null);
+      // NEO-463 — the server's fragment refusal (the check had not answered)
+      // opens the panel, which says more than an error line could.
+      if (isNameFragmentRefusal(e)) {
+        setRefusalMatches(fragmentRefusalMatches(e));
+        if (fragmentShown) fragmentPanelRef.current?.focus({ preventScroll: true });
+        else setFragmentFor(trimmed);
+        return;
+      }
       setError(userFacingMessage(e, "Could not add that player."));
     } finally {
       setBusy(false);
@@ -694,7 +768,11 @@ function AddPlayerForm({
         value={name}
         placeholder="Ken Griffey Jr."
         disabled={formBusy}
-        onChange={(e) => setName(e.target.value)}
+        onChange={(e) => {
+          // NEO-463: the fragment question was about the old name.
+          closeFragment();
+          setName(e.target.value);
+        }}
       />
 
       <div>
@@ -708,7 +786,10 @@ function AddPlayerForm({
           id="new-player-sport"
           value={sportId}
           disabled={formBusy}
-          onChange={(e) => setSportId(e.target.value)}
+          onChange={(e) => {
+            closeFragment();
+            setSportId(e.target.value);
+          }}
           className="w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="">— pick a sport —</option>
@@ -756,10 +837,15 @@ function AddPlayerForm({
 
       <NearMatchPanel
         kind="player"
+        // NEO-462 — every match, the primary's own row included (first, as
+        // the panel sorts same-name rows to the top), less the fuller names
+        // the NEO-463 fragment panel lists. See above.
         matches={panelMatches}
         // Not "Link to": this button opens the row for editing, it does not
-        // link anything to anything.
-        pickLabel={(_n, match) => openLabel(match)}
+        // link anything to anything. NEO-462 — the bare verb and name when
+        // the panel has a birth year or teams to add itself; the ordinal
+        // label otherwise. See `panelPickLabel`.
+        pickLabel={panelPickLabel}
         onPick={(id) => open(id as Id<"players">, "panel")}
         // NEO-319 — `busy` marks every row `aria-disabled` and swallows the
         // press; the class dims them and turns the pointer away. Not `inert`:
@@ -769,6 +855,27 @@ function AddPlayerForm({
         busy={formBusy}
         className={formBusy ? "pointer-events-none opacity-50" : ""}
       />
+
+      {/* NEO-463 — "Just Walker? We've got Devin Walker." Shown by a Create
+          press that stopped, so it takes focus and is heard. A pick opens
+          that player, as a near-match row does. */}
+      {fragmentShown && (
+        <NameFragmentPanel
+          autoFocus
+          panelRef={fragmentPanelRef}
+          name={trimmed}
+          matches={fragmentMatches}
+          pickLabel={(n) => `Open ${n}`}
+          disabled={formBusy}
+          confirmBusy={busyOn === "oneName"}
+          onPick={(id) => open(id as Id<"players">, "panel")}
+          onConfirm={() => void create("oneName")}
+          onDismiss={() => {
+            closeFragment();
+            createButtonRef.current?.focus();
+          }}
+        />
+      )}
 
       {/* The primary action swaps rather than the create button merely warning.
           An operator who has just been shown the row they were about to
@@ -802,6 +909,7 @@ function AddPlayerForm({
           is busy.
         */}
         <NeonButton
+          ref={createButtonRef}
           type="button"
           onClick={(e) => {
             if (formBusy) return;
@@ -2394,7 +2502,10 @@ export default function PlayerManagement() {
   const rowTeamIdByPlayer = useMemo(() => {
     const map = new Map<string, Id<"teams">>();
     for (const player of visible) {
-      const teamId = primaryTeamId(player.teamYears, currentYear);
+      // NEO-462 — longest summed tenure first. A college-only player now
+      // shows his college: it is the only team on file, and showing nothing
+      // would hide the one fact we have.
+      const teamId = rankCareerTeams(player.teamYears, currentYear)[0]?.teamId;
       if (teamId) map.set(player._id as string, teamId);
     }
     return map;
