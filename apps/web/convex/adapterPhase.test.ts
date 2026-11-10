@@ -105,6 +105,7 @@ beforeEach(() => {
   captureCalls.length = 0;
   consoleLines = [];
   process.env.POSTHOG_API_KEY = "test-posthog-key";
+  delete process.env.TESTING_RESET_SECRET; // NEO-475: testing deployments send no adapter_* events
   // Loopback → getIdTokenClient short-circuits, so no GCP creds are needed.
   process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
   __resetContractCache();

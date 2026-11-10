@@ -161,22 +161,26 @@ export async function walkToAutographStep(page: Page): Promise<void> {
 
 /**
  * util-fetch-real-set-checklist-to-wizard.yaml: drill to a real set's Base
- * checklist (Topps Big League by default), fetch it from the marketplaces,
- * confirm the card pairing when both marketplaces answered, and land in the
- * entity-review wizard.
+ * checklist (2024 Topps Stars of MLB Network by default, a 10-card set the
+ * seed maps and leaves empty; NEO-475, it was Topps Big League's 310 cards),
+ * fetch it from the marketplaces, confirm the card pairing when both
+ * marketplaces answered, and land in the entity-review wizard.
  *
  * Contract: EXIT the "Tidy up this set" dialog is open and axe-clean, every
  * row undecided ("Step 1 of N"; callers assert that themselves). Live, the
  * pairing session is PARKED behind it ("Back to Match Cards" is offered);
  * with SportLots paused it is the one-marketplace solo path and there is no
- * parked session.
+ * parked session. NEO-475: on the default set the live branch is UNMEASURED
+ * (retargeted while SportLots was paused, so neither the seed's SportLots base
+ * mapping nor this Match Cards pairing has run on it); the first live run must
+ * check both.
  */
 export async function fetchChecklistToWizard(
   page: Page,
   env: FlowEnv,
   target: DrillTarget = {},
 ): Promise<void> {
-  await drillToBaseVariant(page, env, { set: "Topps Big League", ...target });
+  await drillToBaseVariant(page, env, { set: "Topps Stars of MLB Network", ...target });
   await syncChecklistButton(page).click();
 
   const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
@@ -500,7 +504,8 @@ export async function awaitLookupsSettled(page: Page): Promise<void> {
  * `Add as New Player` is aria-disabled); the batch-order walk can reach such
  * a player at any time. This walks past each held player as a SKIP (creates
  * nothing; never by unticking the chip) until it stands on a player whose
- * create is live. Link/skip callers leave it off.
+ * create is live. A caller that needs a plain UNKNOWN name to act on (a link
+ * to an existing player) takes it too; skip callers leave it off.
  *
  * It passes a preselected player the same way (NEO-424): a name with one
  * namesake on file, even in another sport, is inserted READY with no lookup,
@@ -509,9 +514,15 @@ export async function awaitLookupsSettled(page: Page): Promise<void> {
  * from seeded data at any time. A skip can land on a team step or a pool wait,
  * so each one re-runs the pass over the team/league steps.
  *
+ * And it passes a same-name PICK step (NEO-332, NEO-475): that row is inserted
+ * READY, so it is usually the first settled player and the wizard PINS it
+ * ahead of lower-numbered rows whose lookups land a moment later; it offers no
+ * career editor and its create is "Create new", not "Add as New Player".
+ *
  * Contract: ENTRY the wizard is open on a name step. EXIT a player row is
  * presented (its "Skip ... - not a person" is up), lookups drained, and with
- * `readyToCreate` its create is not held and it is not a preselect.
+ * `readyToCreate` its create is not held and it is neither a preselect nor a
+ * pick step.
  */
 export async function walkToPlayerRow(
   page: Page,
@@ -557,11 +568,16 @@ export async function walkToPlayerRow(
     // Anchored on the trailing "(<sport>)": a plain exact match reads "Link to
     // <name>" and a pick-step row "Link to <name>, ...".
     const preselected = wizard.getByRole("button", { name: /^Link to .+ \([^)]+\)$/ });
-    // `times` is a runaway guard: a batch whose every remaining player is held
-    // or preselected runs out of players and fails the visibility assert below.
+    // A same-name PICK step (NEO-332) is inserted READY, so it is often the
+    // first settled player the wizard pins; it offers no career editor and its
+    // create is "Create new", not "Add as New Player": walk past it too.
+    const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .+ is this\?$/ });
+    // `times` is a runaway guard: a batch whose every remaining player is held,
+    // preselected or a pick step runs out of players and fails the visibility
+    // assert below.
     for (let i = 0; i < 20; i++) {
       await expect(person).toBeVisible();
-      if (!(await held.isVisible()) && !(await preselected.isVisible())) break;
+      if (!(await held.isVisible()) && !(await preselected.isVisible()) && !(await pickStep.isVisible())) break;
       // Wait for THIS skip to land before looking again: until the decision
       // round-trips the row is still up, and a second pass would skip the
       // player after it too. On a name step x moving is the decision landing.
@@ -573,6 +589,7 @@ export async function walkToPlayerRow(
     await expect(person).toBeVisible();
     await expect(held, "the player the walk stopped on still holds its create").toBeHidden();
     await expect(preselected, "the player the walk stopped on is a preselect, with nothing to create").toBeHidden();
+    await expect(pickStep, "the player the walk stopped on is a same-name pick step, with no career editor").toBeHidden();
   }
 }
 

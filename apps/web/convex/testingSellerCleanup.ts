@@ -21,13 +21,16 @@
  *   contract before. An item whose offer could not be read or ended is NOT
  *   deleted: the item is the only way a later run can find that listing.
  *   Policies stay: the listing spec needs the seller's own shipping policies.
- * - BSC: sets quantity to 0 on ALL of the seller's rows for each set the specs
- *   list (`SELLER_SPEC_SETS`) that this deployment has, the rest of the account
- *   untouched. A set its spec builds, not built here yet, is skipped and counted
+ * - BSC: sets quantity to 0 on ALL of the seller's rows, in the conditions the
+ *   specs list in (`SellerSpecSet.conditions`), for each set the specs list
+ *   (`SELLER_SPEC_SETS`) that this deployment has, the rest of the account
+ *   untouched (NEO-475: the drain reads only the conditions NB uses, so a
+ *   spec lists only in those, and a sheet read costs a cold BSC up to 30 s). A set its spec builds, not built here yet, is skipped and counted
  *   (`skippedSets`): its rows on BSC are left as they are, even when the report
  *   says "clean". A chain with two rows of one name fails. Reads those sheets
  *   one at a time (`listingDrain.readSheets`, the drain's own scope and
- *   rule), PUTs every row above 0 to 0, then reads back. A direct write, so the
+ *   rule; a 503 is retried after each of `BSC_CLEANUP_SHEET_RETRY_PAUSES_MS`),
+ *   PUTs every row above 0 to 0, then reads back. A direct write, so the
  *   planner's `duplicate_sheet_row` never blocks it: both copies of a twin go to
  *   0 like any other row. Rows are never removed. If BSC goes on showing both
  *   copies at 0, `planBscSheet` still refuses a card listed in that condition
@@ -65,9 +68,15 @@ import {
   type EbayResult,
   type EbaySellerSession,
 } from "./adapters/ebaySeller";
-import { fetchBscSellerId, openBscSellerSession, putBscListings, type BscSellerSession } from "./adapters/bscSeller";
+import {
+  closeBscSellerSession,
+  fetchBscSellerId,
+  openBscSellerSession,
+  putBscListings,
+  type BscSellerSession,
+} from "./adapters/bscSeller";
 import { ebayConfig } from "./lib/ebayEnv";
-import { bscConditionsForEra } from "./lib/bscConditions";
+import { isBscConditionOfEra, type BscRawCondition } from "./lib/bscConditions";
 import { chunkRows, photoKeyFor, type BscSheetRow } from "./lib/bscSheetPlan";
 import { isPlatformPaused } from "./marketplacePause";
 import { readSheets, type VariantInput } from "./listingDrain";
@@ -75,7 +84,8 @@ import { variantTypeKindFromTitle } from "./variantRole";
 
 /**
  * A real set a seller spec lists on. Its cards are in the set's Base, or, with
- * `parallel`, in that parallel of the set's Parallel type.
+ * `parallel`, in that parallel of the set's Parallel type, or, with `insert`, in
+ * that insert of the set's Insert type. Never both a parallel and an insert.
  */
 export type SellerSpecSet = {
   sport: string;
@@ -84,6 +94,15 @@ export type SellerSpecSet = {
   setName: string;
   /** The parallel (a row of the set's Parallel type) that holds the cards, instead of Base. */
   parallel?: string;
+  /** The insert (a row of the set's Insert type) that holds the cards, instead of Base. */
+  insert?: string;
+  /**
+   * The BSC raw conditions the specs list this set in: the only sheets cleared.
+   * A spec's copy has NB's default condition (Excellent), so this is that
+   * condition in the set's era (`bscConditionFor`); a spec that lists in another
+   * condition adds it here, or its rows are never cleared.
+   */
+  conditions: readonly BscRawCondition[];
   /**
    * The spec builds this set itself, in-flow, so a deployment the seed just reset
    * does not have it yet: absent is skipped, never a failure. (A set the seed
@@ -93,11 +112,30 @@ export type SellerSpecSet = {
   builtBySpec?: boolean;
 };
 
-/** Every real set the seller specs list on (`playwright/SET-REGISTRY.md`). Both 1988 Topps specs share the first. */
+/**
+ * Every real set the seller specs list on (`playwright/SET-REGISTRY.md`). The
+ * BuySportsCards and eBay sandbox specs share the first (NEO-475): the seed
+ * builds it, and they list at a common price no buyer pays, so nothing sells.
+ */
 export const SELLER_SPEC_SETS: readonly SellerSpecSet[] = [
-  { sport: "Baseball", year: "1988", manufacturer: "Topps", setName: "Topps" },
+  {
+    sport: "Baseball",
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Topps Chrome",
+    insert: "Future Stars",
+    conditions: ["excellent"],
+  },
   // NEO-458: 2026 Bowman Chrome, whose BSC numbers carry a `BCV-` prefix NB's do not.
-  { sport: "Football", year: "2026", manufacturer: "Bowman", setName: "Bowman", parallel: "Chrome", builtBySpec: true },
+  {
+    sport: "Football",
+    year: "2026",
+    manufacturer: "Bowman",
+    setName: "Bowman",
+    parallel: "Chrome",
+    builtBySpec: true,
+    conditions: ["excellent"],
+  },
 ];
 
 /** Whose sign-ins this holds while it works. Clerk's id shape; no Clerk user has it. */
@@ -113,8 +151,13 @@ const EBAY_CONCURRENCY = 8;
  * less for the re-run its failure asks for.
  */
 const EBAY_BUDGET_MS = 5 * 60 * 1000;
-/** Before the one retry of a 503'd first sheet read: a guess at long enough that the retry won't overlap anything that 503 left running at BSC. */
-export const BSC_FIRST_READ_RETRY_PAUSE_MS = 10_000;
+/**
+ * The waits before a 503'd sheet read is tried again (`readSheets`, shared by
+ * one call). Longer than the drain's: CI's seller job meets BSC cold, and BSC
+ * was seen to take one to three minutes to warm. Each retry starts only after
+ * the 503 answered, so nothing overlaps.
+ */
+export const BSC_CLEANUP_SHEET_RETRY_PAUSES_MS: readonly number[] = [10_000, 30_000, 60_000];
 /** Rows read under one parent when walking a chain. A full read can't say a name is absent or single. */
 export const MAX_CHAIN_SIBLINGS = 1000;
 
@@ -136,9 +179,10 @@ type VariantLookup = typeof variantLookupValidator.type;
 type ChainLevel = typeof chainLevelValidator.type;
 
 /**
- * The row of one set the specs list that holds its cards: the set's Base, or
- * with `parallel` that parallel of its Parallel type. "absent" when a row of the
- * chain isn't there, "ambiguous" when one can't be told apart: never picks one.
+ * The row of one set the specs list that holds its cards: the set's Base, with
+ * `parallel` that parallel of its Parallel type, or with `insert` that insert of
+ * its Insert type. "absent" when a row of the chain isn't there, "ambiguous" when
+ * one can't be told apart: never picks one. Both a parallel and an insert throws.
  */
 export const variantOf = internalQuery({
   args: {
@@ -147,6 +191,7 @@ export const variantOf = internalQuery({
     manufacturer: v.string(),
     setName: v.string(),
     parallel: v.optional(v.string()),
+    insert: v.optional(v.string()),
   },
   returns: variantLookupValidator,
   handler: async (ctx, args): Promise<VariantLookup> => {
@@ -171,13 +216,18 @@ export const variantOf = internalQuery({
     if (brand.kind !== "found") return brand;
     const set = await childNamed("setName", brand.id, (value) => value === args.setName);
     if (set.kind !== "found") return set;
-    const { parallel } = args;
-    if (parallel === undefined) {
+    const { parallel, insert } = args;
+    if (parallel !== undefined && insert !== undefined) {
+      throw new Error(`${args.year} ${args.manufacturer} ${args.setName} names a parallel and an insert: a spec's cards are in one row`);
+    }
+    const child = parallel ?? insert;
+    if (child === undefined) {
       return await childNamed("variantType", set.id, (value) => variantTypeKindFromTitle(value) === "base");
     }
-    const type = await childNamed("variantType", set.id, (value) => variantTypeKindFromTitle(value) === "parallel");
+    const kind = parallel !== undefined ? "parallel" : "insert";
+    const type = await childNamed("variantType", set.id, (value) => variantTypeKindFromTitle(value) === kind);
     if (type.kind !== "found") return type;
-    return await childNamed("insert", type.id, (value) => value === parallel);
+    return await childNamed("insert", type.id, (value) => value === child);
   },
 });
 
@@ -358,21 +408,20 @@ async function clearEbay(ctx: ActionCtx): Promise<EbayReport> {
   return { outcome: "clean", items: skus.length, withdrawn, deleted };
 }
 
-/** Sets every row of one set's sheets to 0 and proves it by reading back. */
+/** A set's scope, and the spec conditions to clear in it. */
+type SetToClear = { input: Extract<VariantInput, { kind: "ok" }>; conditions: readonly string[] };
+
+const SHEET_RETRY = { pausesMs: BSC_CLEANUP_SHEET_RETRY_PAUSES_MS };
+
+/** Sets every row of one set's spec-condition sheets to 0 and proves it by reading back. */
 async function zeroSet(
   ctx: ActionCtx,
   session: BscSellerSession,
   sellerIdOf: () => Promise<string>,
-  input: Extract<VariantInput, { kind: "ok" }>,
+  { input, conditions }: SetToClear,
 ): Promise<Omit<BscReport, "outcome" | "skippedSets">> {
   // Serial, never side by side: overlapping sheet reads are what mint twin rows.
-  const conditions: string[] = [...bscConditionsForEra(input.era)];
-  let first = await readSheets(ctx, session, input.requests, conditions);
-  // Only a 503 and only this read, and still one read at a time: the first has answered before the pause starts.
-  if (!first.ok && first.failure.httpStatus === 503) {
-    await new Promise<void>((resolve) => setTimeout(resolve, BSC_FIRST_READ_RETRY_PAUSE_MS));
-    first = await readSheets(ctx, session, input.requests, conditions);
-  }
+  const first = await readSheets(ctx, session, input.requests, conditions, undefined, SHEET_RETRY);
   if (!first.ok) throw new Error(`could not read the sheets: ${first.failure.message}`);
   const rows = first.sheet.rows.filter(isOurRow);
   const twinKeys = countTwinKeys(rows);
@@ -390,7 +439,14 @@ async function zeroSet(
 
   // BSC's PUT answer is not proof: read back every sheet the PUTs touched.
   const touched = new Set(listed.map((row) => row.condition));
-  const back = await readSheets(ctx, session, input.requests, conditions.filter((c) => touched.has(c)));
+  const back = await readSheets(
+    ctx,
+    session,
+    input.requests,
+    conditions.filter((c) => touched.has(c)),
+    undefined,
+    SHEET_RETRY,
+  );
   if (!back.ok) throw new Error(`could not read the sheets back: ${back.failure.message}`);
   const backRows = back.sheet.rows.filter(isOurRow);
   const stillListed = backRows.filter((row) => row.quantity > 0).length;
@@ -407,10 +463,10 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
   if (!username || !password) throw new Error("DEV_BSC_USERNAME or DEV_BSC_PASSWORD is not set on this deployment");
 
   // Every set's scope first: a set that can't be found signs in to nothing.
-  const inputs: Array<Extract<VariantInput, { kind: "ok" }>> = [];
+  const inputs: SetToClear[] = [];
   let skippedSets = 0;
-  for (const { builtBySpec, ...scope } of SELLER_SPEC_SETS) {
-    const where = scope.parallel === undefined ? "Base" : scope.parallel;
+  for (const { builtBySpec, conditions, ...scope } of SELLER_SPEC_SETS) {
+    const where = scope.parallel ?? scope.insert ?? "Base";
     const name = `${scope.year} ${scope.manufacturer} ${scope.setName}`;
     const found: VariantLookup = await ctx.runQuery(internal.testingSellerCleanup.variantOf, scope);
     if (found.kind === "ambiguous") {
@@ -437,7 +493,12 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
       variantId: found.id,
     });
     if (input.kind !== "ok") throw new Error(`${name} ${where} has no BuySportsCards scope (${input.kind})`);
-    inputs.push(input);
+    // A condition of the other era would stamp a sheet BSC never shows this set's rows under.
+    const wrongEra = conditions.filter((c) => !isBscConditionOfEra(c, input.era));
+    if (wrongEra.length > 0) {
+      throw new Error(`${name} ${where} is ${input.era} on BuySportsCards, but its spec conditions include ${wrongEra.join(", ")}`);
+    }
+    inputs.push({ input, conditions });
   }
 
   const stored = await ctx.runAction(internal.credentials.storeTestCredentials, {
@@ -449,32 +510,36 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
   });
   if (!stored.success) throw new Error(`could not sign in: ${stored.message}`);
 
-  const opened = await openBscSellerSession(ctx, CLEANUP_OWNER);
+  const opened = await openBscSellerSession(ctx, CLEANUP_OWNER, { op: "clearSellerAccounts" });
   if (!opened.ok) throw new Error(`could not open a session: ${opened.failure.message}`);
   const session = opened.value;
+  try {
+    // The seller this session is signed in as: the only one a PUT here names.
+    let known: string | null = null;
+    const sellerIdOf = async (): Promise<string> => {
+      if (known !== null) return known;
+      const sellerId = await fetchBscSellerId(ctx, session);
+      if (!sellerId.ok) throw new Error(`could not read the seller id: ${sellerId.failure.message}`);
+      if (sellerId.value === null) throw new Error("BuySportsCards didn't say which seller account this is");
+      known = sellerId.value;
+      return known;
+    };
 
-  // The seller this session is signed in as: the only one a PUT here names.
-  let known: string | null = null;
-  const sellerIdOf = async (): Promise<string> => {
-    if (known !== null) return known;
-    const sellerId = await fetchBscSellerId(ctx, session);
-    if (!sellerId.ok) throw new Error(`could not read the seller id: ${sellerId.failure.message}`);
-    if (sellerId.value === null) throw new Error("BuySportsCards didn't say which seller account this is");
-    known = sellerId.value;
-    return known;
-  };
-
-  const total: BscReport = { outcome: "clean", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets };
-  for (const input of inputs) {
-    const one = await zeroSet(ctx, session, sellerIdOf, input);
-    total.rows += one.rows;
-    total.unreadableRows += one.unreadableRows;
-    total.listed += one.listed;
-    total.zeroed += one.zeroed;
-    total.twinKeys += one.twinKeys;
-    total.twinKeysRemaining += one.twinKeysRemaining;
+    const total: BscReport = { outcome: "clean", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets };
+    for (const set of inputs) {
+      const one = await zeroSet(ctx, session, sellerIdOf, set);
+      total.rows += one.rows;
+      total.unreadableRows += one.unreadableRows;
+      total.listed += one.listed;
+      total.zeroed += one.zeroed;
+      total.twinKeys += one.twinKeys;
+      total.twinKeysRemaining += one.twinKeysRemaining;
+    }
+    return total;
+  } finally {
+    // NEO-475: the session's BSC call summary, once per cleanup. Never throws.
+    await closeBscSellerSession(ctx, session);
   }
-  return total;
 }
 
 /** One side's work, its sign-in removed whatever happened. Null report: failed, with `error`. */

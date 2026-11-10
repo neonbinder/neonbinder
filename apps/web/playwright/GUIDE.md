@@ -246,7 +246,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `syncChecklistButton`, and the drills `drillToSet` (2024 Topps Chrome),
   `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
   `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
-  options object: `drillToSet(page, env, { set: "Topps Big League" })`.
+  options object: `drillToSet(page, env, { set: "Topps Stars of MLB Network" })`.
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
@@ -684,8 +684,8 @@ with Cancel then Close.
 **eBay is a pausable site too (NEO-415), but it is a listing destination, not
 a checklist side.** Pausing it never changes a set-builder sync, so the
 Set Builder's pause strip never names it. Only `collection/inventory-ebay-
-sandbox-listing-1988-topps-base` branches on `env.EBAY_PAUSED`: paused, the seed
-hop skips eBay and Profile -> Credentials -> eBay and Sync status say it is on a break (copy in
+sandbox-listing-2024-topps-chrome-future-stars` branches on `env.EBAY_PAUSED`:
+paused, the seed hop skips eBay and Profile -> Credentials -> eBay and Sync status say it is on a break (copy in
 `lib/marketplace/listing-copy.ts`); live, it runs the whole sandbox listing. The
 repository variable's key check in `e2e.yml` accepts `ebay`.
 
@@ -892,8 +892,9 @@ desktop-only file still plans both passes).
 
 **Marketplace-seller specs (NEO-415).** Every PR's CI uses one shared
 BuySportsCards test seller and one shared eBay sandbox seller. Two PRs
-running `inventory-bsc-listing-1988-topps-base` or
-`inventory-ebay-sandbox-listing-1988-topps-base` at once clobber each other (one
+running `inventory-bsc-listing-2024-topps-chrome-future-stars` or
+`inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars` (or the other
+seller specs in `SELLER_SPECS`) at once clobber each other (one
 preview's sync zeroes the other's listings; overlapping BSC sheet reads make
 BSC create twin rows), and sharding cannot help. So these specs are in
 `SELLER_SPECS` (`playwright/project-scope.mjs`), carry the tag
@@ -937,7 +938,7 @@ sessions at once.
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
 2. Download the artifacts BEFORE any rerun: `pw-report-desktop-<n>` or
    `pw-report-mobile-<n>` (the shard's screenshots and report),
-   `pw-report-seller-desktop` / `pw-report-seller-mobile` (the two listing specs), `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
+   `pw-report-seller-desktop` / `pw-report-seller-mobile` (the seller listing specs), `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
    (both passes' merged report and results).
    `gh run download <run-id> -n pw-merged` (and the shard).
 3. Open the failure screenshot and the spec's `error-context.md` (the ARIA
