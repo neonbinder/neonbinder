@@ -163,6 +163,12 @@ def test_isa_lists_relevant_flags_in_a_fixed_order():
 @pytest.mark.parametrize(
     ("proc_version", "environ", "expected"),
     [
+        (
+            "Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016",
+            {"K_SERVICE": "s"},
+            "gen1",
+        ),
+        ("Linux version 4.19.0-gVisor #1 SMP", {"CLOUD_RUN_JOB": "j"}, "gen1"),
         ("Linux version 4.4.0 #1 SMP Sun Jan 10 15:06:54 PST 2016", {"K_SERVICE": "s"}, "gen1"),
         ("Linux version 6.1.112+ (builder@host) #1 SMP", {"K_SERVICE": "s"}, "gen2"),
         ("Linux version 6.1.112+ (builder@host) #1 SMP", {"CLOUD_RUN_JOB": "j"}, "gen2"),
@@ -176,10 +182,10 @@ def test_exec_env(proc_version, environ, expected):
 
 
 def test_fingerprint_key_ignores_key_order():
-    a = {"isa": "x", "nproc": 4, "versions": {"numpy": "2", "Pillow": "12"}}
-    b = {"versions": {"Pillow": "12", "numpy": "2"}, "nproc": 4, "isa": "x"}
+    a = {"isa": "x", "cpu_flags": "f", "versions": {"numpy": "2", "Pillow": "12"}}
+    b = {"versions": {"Pillow": "12", "numpy": "2"}, "cpu_flags": "f", "isa": "x"}
     assert gm.fingerprint_key(a) == gm.fingerprint_key(b)
-    assert gm.fingerprint_key(a) != gm.fingerprint_key({**a, "nproc": 5})
+    assert gm.fingerprint_key(a) != gm.fingerprint_key({**a, "cpu_flags": "g"})
     assert len(gm.fingerprint_key(a)) == 16
 
 
@@ -190,13 +196,76 @@ def test_host_fingerprint_keys_on_the_source_model():
         "isa",
         "exec_env",
         "cpu_model",
-        "nproc",
+        "cpu_flags",
         "omp_num_threads",
         "versions",
         "model",
     }
     assert fp["model"] == {"name": "birefnet-general", "sha256": "s" * 64, "md5": "m" * 32}
     assert set(fp["versions"]) == {"onnxruntime", "Pillow", "numpy", "opencv-python-headless"}
+
+
+GEN1_CPUINFO = """\
+processor\t: 0
+vendor_id\t: GenuineIntel
+cpu family\t: 6
+flags\t\t: fpu sse4_1 avx fma avx2 avx512f
+"""
+
+
+def _fake_host(monkeypatch, cpuinfo: str, proc_version: str, nproc: int, **env: str) -> None:
+    files = {"/proc/cpuinfo": cpuinfo, "/proc/version": proc_version}
+    monkeypatch.setattr(gm, "_read", lambda path: files.get(path, ""))
+    monkeypatch.setattr(gm, "_nproc", lambda: nproc)
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.delenv("CLOUD_RUN_JOB", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+
+MODEL = {"name": "birefnet-general", "source": {"sha256": "s" * 64, "md5": "m" * 32}}
+
+
+def test_gen1_host_without_a_model_name(monkeypatch):
+    _fake_host(monkeypatch, GEN1_CPUINFO, "Linux version 4.19.0-gvisor #1", 8, K_SERVICE="s")
+    fp = gm.host_fingerprint(MODEL)
+    assert fp["exec_env"] == "gen1"
+    assert fp["cpu_model"] == "unknown"
+    assert fp["cpu_flags"] == gm.cpu_flags_digest(
+        ["fpu", "sse4_1", "avx", "fma", "avx2", "avx512f"]
+    )
+    assert fp["isa"].endswith("+sse4_1+avx+fma+avx2+avx512f")
+
+
+def test_flags_tell_unnamed_cpus_apart(monkeypatch):
+    _fake_host(monkeypatch, GEN1_CPUINFO, "Linux version 4.19.0-gvisor #1", 8, K_SERVICE="s")
+    a = gm.fingerprint_key(gm.host_fingerprint(MODEL))
+    _fake_host(
+        monkeypatch,
+        GEN1_CPUINFO.replace("avx512f", "avx512f avx512_vnni"),
+        "Linux version 4.19.0-gvisor #1",
+        8,
+        K_SERVICE="s",
+    )
+    assert gm.fingerprint_key(gm.host_fingerprint(MODEL)) != a
+
+
+def test_nproc_is_recorded_but_not_keyed(monkeypatch):
+    keys = set()
+    for nproc in (5, 8, 9):
+        _fake_host(monkeypatch, CPUINFO, "Linux version 6.1.112+ #1", nproc, CLOUD_RUN_JOB="j")
+        fp = gm.host_fingerprint(MODEL)
+        assert "nproc" not in fp
+        keys.add(gm.fingerprint_key(fp))
+        assert gm.host_facts()["nproc"] == nproc
+    assert len(keys) == 1
+
+
+def test_cpu_flags_digest():
+    assert gm.cpu_flags_digest(["b", "a", "a"]) == gm.cpu_flags_digest(["a", "b"])
+    assert gm.cpu_flags_digest(["a"]) != gm.cpu_flags_digest(["a", "b"])
+    assert len(gm.cpu_flags_digest(["a"])) == 12
+    assert gm.cpu_flags_digest([]) == ""
 
 
 def test_alpha_sha256_includes_the_shape():
@@ -258,6 +327,8 @@ def test_generate_writes_pngs_and_a_format_1_manifest(fixtures_dir, tmp_path, di
     assert run["impl"] == "direct"
     assert run["inference_impl"].startswith("birefnet-direct-ort/")
     assert "numpy" in run["packages"]
+    assert isinstance(run["host"]["nproc"], int)
+    assert "nproc" not in on_disk["fingerprints"][key]
     assert on_disk["padding"] == {"birefnet_pad": 0.12, "ring_frac": 0.03, "work_long": 1200}
 
     from app.cropper import tiered

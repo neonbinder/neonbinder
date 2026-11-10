@@ -179,11 +179,13 @@ def isa_from(machine: str, flags: Iterable[str]) -> str:
     return "+".join([machine, *[f for f in RELEVANT_CPU_FLAGS if f in present]])
 
 
-_GVISOR_KERNEL = re.compile(r"Linux version 4\.4\.0\b")
+# gVisor (Cloud Run gen1) names itself in /proc/version, e.g. "4.19.0-gvisor";
+# older gVisor releases reported a bare 4.4.0 kernel instead.
+_GVISOR_KERNEL = re.compile(r"gvisor|Linux version 4\.4\.0\b", re.IGNORECASE)
 
 
 def exec_env_from(proc_version: str, environ: Mapping[str, str]) -> str:
-    """`gen1` (gVisor reports kernel 4.4.0), `gen2` (other Cloud Run), or `local`."""
+    """`gen1` (a gVisor kernel), `gen2` (any other Cloud Run kernel), or `local`."""
     if _GVISOR_KERNEL.search(proc_version or ""):
         return "gen1"
     if environ.get("K_SERVICE") or environ.get("CLOUD_RUN_JOB"):
@@ -239,6 +241,18 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
+def cpu_flags_digest(flags: Iterable[str]) -> str:
+    """A short digest of the whole /proc/cpuinfo flag set.
+
+    Tells CPU generations apart where `model name` is missing (gen1's gVisor
+    cpuinfo has none). Empty when there are no flags (not Linux).
+    """
+    present = sorted(set(flags))
+    if not present:
+        return ""
+    return hashlib.sha256(" ".join(present).encode()).hexdigest()[:12]
+
+
 def fingerprint_key(fp: Mapping[str, Any]) -> str:
     """A short, order-independent id for a host fingerprint."""
     return hashlib.sha256(canonical_json(fp).encode()).hexdigest()[:16]
@@ -285,21 +299,43 @@ def model_info(impl: str) -> dict[str, Any]:
     }
 
 
+def _cpuinfo() -> dict[str, Any]:
+    text = _read("/proc/cpuinfo")
+    cpu = parse_cpuinfo(text)
+    if not text:  # no /proc (a Mac): the only model name on offer
+        cpu["cpu_model"] = platform.processor() or "unknown"
+    return cpu
+
+
 def host_fingerprint(model: Mapping[str, Any]) -> dict[str, Any]:
-    """{isa, exec_env, cpu_model, nproc} + package versions + source model hashes."""
-    cpu = parse_cpuinfo(_read("/proc/cpuinfo"))
+    """The fingerprint whose `fingerprint_key` must match for an exact comparison.
+
+    {isa, exec_env, cpu_model, cpu_flags} + package versions + source model
+    hashes. Only what can change the bits belongs here. `nproc` does not: on
+    Cloud Run it follows the host (5, 8, 9 seen at 4 vCPU), not the vCPU limit,
+    so it would stop keys recurring; it is recorded per run (`host_facts`).
+    `cpu_model` stays "unknown" on gen1, where cpuinfo has no `model name`;
+    `cpu_flags` tells hosts apart there.
+    """
+    cpu = _cpuinfo()
     machine = platform.machine() or "unknown"
-    cpu_model = cpu["cpu_model"]
-    if cpu_model == "unknown":
-        cpu_model = platform.processor() or "unknown"
     return {
         "isa": isa_from(machine, cpu["flags"]),
         "exec_env": exec_env_from(_read("/proc/version"), os.environ),
-        "cpu_model": cpu_model,
-        "nproc": _nproc(),
+        "cpu_model": cpu["cpu_model"],
+        "cpu_flags": cpu_flags_digest(cpu["flags"]),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
         "versions": {pkg: _version(pkg) for pkg in FINGERPRINT_PACKAGES},
         "model": {"name": model["name"], **model["source"]},
+    }
+
+
+def host_facts() -> dict[str, Any]:
+    """Recorded with each run but never part of the key."""
+    return {
+        "nproc": _nproc(),
+        "cpu_flag_list": sorted(_cpuinfo()["flags"]),
+        "proc_version": _read("/proc/version").strip(),
     }
 
 
@@ -440,7 +476,14 @@ def generate(
     fp = host_fingerprint(model)
     key = fingerprint_key(fp)
     alpha_fn, impl_info = _rembg_alpha_fn() if impl == "rembg" else _direct_alpha_fn()
-    _emit("GOLDEN_HOST", key=key, fingerprint=fp, model_file=model["file"])
+    facts = host_facts()
+    _emit(
+        "GOLDEN_HOST",
+        key=key,
+        fingerprint=fp,
+        nproc=facts["nproc"],
+        model_file=model["file"],
+    )
 
     with tempfile.TemporaryDirectory(prefix="golden-") as tmp:
         tmpdir = Path(tmp)
@@ -494,6 +537,7 @@ def generate(
                     "impl": impl,
                     **impl_info,
                     "fingerprint": key,
+                    "host": facts,
                     "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
                     "elapsed_s": round(time.time() - started, 1),
                     "model_file": model["file"],
@@ -707,6 +751,7 @@ def fingerprint_report(impl: str) -> dict[str, Any]:
     return {
         "key": fingerprint_key(fp),
         "fingerprint": fp,
+        "host": host_facts(),
         "model_file": model["file"],
         "md5_matches_rembg": model["md5_matches_rembg"],
         "packages": installed_packages(),
