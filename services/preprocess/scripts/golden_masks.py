@@ -35,8 +35,13 @@ Modes:
     fingerprint [--impl rembg|direct]
         Print this host's fingerprint and installed packages. No inference.
 
-Tolerance: T is the largest absolute alpha difference at any pixel, F the
-largest fraction of pixels that differ in one fixture, N the largest count.
+Tolerance (T, F, N), each the worst over every fixture:
+  T  the largest absolute alpha difference at any pixel;
+  F  the fraction of alpha pixels that differ (any amount);
+  N  the pixels that differ in the BINARY mask tiered builds from the alpha
+     (crop back to the work frame, alpha > 25, 5x5 elliptical close), which
+     is what reaches the geometry. The alpha pixel count is reported beside
+     it but is not N: a 1-level alpha change rarely flips a mask pixel.
 """
 
 from __future__ import annotations
@@ -105,7 +110,12 @@ RELEVANT_CPU_FLAGS = (
 FINGERPRINT_PACKAGES = ("onnxruntime", "Pillow", "numpy", "opencv-python-headless")
 
 # The plan's stop line for the derived tolerance: above any of these, ask Jason.
-STOP_LINE = {"max_alpha_diff": 8, "max_pixel_frac": 0.002, "max_pixels": 100}
+STOP_LINE = {"max_alpha_diff": 8, "max_alpha_pixel_frac": 0.002, "max_mask_pixels": 100}
+
+# The binary mask `tiered.birefnet_mask` makes from the alpha, for N. A unit
+# test pins these to tiered's own.
+MASK_THRESHOLD = 25
+MASK_CLOSE_KERNEL = 5
 
 
 class InputMismatchError(Exception):
@@ -634,11 +644,13 @@ def merge_manifests(manifests: list[Mapping[str, Any]], goldens_index: int = 0) 
 def parse_tolerance(text: str) -> dict[str, Any]:
     parts = [p.strip() for p in text.split(",")]
     if len(parts) != 3:
-        raise argparse.ArgumentTypeError("tolerance is T,F,N (alpha, pixel fraction, pixels)")
+        raise argparse.ArgumentTypeError(
+            "tolerance is T,F,N (alpha levels, alpha pixel fraction, mask pixels)"
+        )
     return {
         "max_alpha_diff": int(parts[0]),
-        "max_pixel_frac": float(parts[1]),
-        "max_pixels": int(parts[2]),
+        "max_alpha_pixel_frac": float(parts[1]),
+        "max_mask_pixels": int(parts[2]),
     }
 
 
@@ -665,24 +677,60 @@ def hash_runs(
 # ── compare ─────────────────────────────────────────────────────────────────
 
 
-def diff_alpha(a: np.ndarray, b: np.ndarray) -> dict[str, Any]:
+def binary_mask(
+    alpha_full: np.ndarray, pad: int = 0, work_shape: Iterable[int] | None = None
+) -> np.ndarray:
+    """The mask `tiered.birefnet_mask` builds from a padded alpha plane.
+
+    Crop back to the work frame, threshold, then the 5x5 elliptical close.
+    """
+    import cv2
+
+    h, w = (list(work_shape) if work_shape is not None else alpha_full.shape[:2])[:2]
+    alpha = alpha_full[pad : pad + h, pad : pad + w]
+    mask = (alpha > MASK_THRESHOLD).astype(np.uint8) * 255
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (MASK_CLOSE_KERNEL, MASK_CLOSE_KERNEL))
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+
+
+IDENTICAL_STATS: dict[str, Any] = {
+    "identical": True,
+    "max_alpha_diff": 0,
+    "alpha_pixels": 0,
+    "alpha_pixel_frac": 0.0,
+    "mask_pixels": 0,
+}
+
+
+def diff_alpha(
+    a: np.ndarray, b: np.ndarray, pad: int = 0, work_shape: Iterable[int] | None = None
+) -> dict[str, Any]:
+    """How far apart two padded alpha planes are: in alpha, and in tiered's mask.
+
+    `pad` and `work_shape` are the fixture's (the manifest records both); the
+    defaults treat the whole plane as the work frame.
+    """
     if a.shape != b.shape:
         raise InputMismatchError(f"alpha shapes differ: {a.shape} vs {b.shape}")
     d = np.abs(a.astype(np.int16) - b.astype(np.int16))
     n = int(np.count_nonzero(d))
+    if n == 0:
+        return dict(IDENTICAL_STATS)
+    masks = binary_mask(a, pad, work_shape), binary_mask(b, pad, work_shape)
     return {
-        "identical": n == 0,
-        "max_alpha_diff": int(d.max()) if d.size else 0,
-        "pixels": n,
-        "pixel_frac": n / d.size if d.size else 0.0,
+        "identical": False,
+        "max_alpha_diff": int(d.max()),
+        "alpha_pixels": n,
+        "alpha_pixel_frac": n / d.size,
+        "mask_pixels": int(np.count_nonzero(masks[0] != masks[1])),
     }
 
 
 def within(stats: Mapping[str, Any], tol: Mapping[str, Any]) -> bool:
     return (
         stats["max_alpha_diff"] <= tol["max_alpha_diff"]
-        and stats["pixel_frac"] <= tol["max_pixel_frac"]
-        and stats["pixels"] <= tol["max_pixels"]
+        and stats["alpha_pixel_frac"] <= tol["max_alpha_pixel_frac"]
+        and stats["mask_pixels"] <= tol["max_mask_pixels"]
     )
 
 
@@ -693,7 +741,7 @@ def compare_dirs(
     ma = load_manifest(a)
     tol = tolerance if tolerance is not None else ma.get("tolerance")
     pairs: list[dict[str, Any]] = []
-    worst = {"max_alpha_diff": 0, "pixels": 0, "pixel_frac": 0.0}
+    worst = {k: v for k, v in IDENTICAL_STATS.items() if k != "identical"}
     for b in others:
         mb = load_manifest(b)
         missing = sorted(set(ma["fixtures"]) - set(mb["fixtures"]))
@@ -708,9 +756,14 @@ def compare_dirs(
             ha = fa["alpha"][ma["golden_fingerprint"]]
             hb = fb["alpha"][mb["golden_fingerprint"]]
             if ha == hb:
-                stats = {"identical": True, "max_alpha_diff": 0, "pixels": 0, "pixel_frac": 0.0}
+                stats = dict(IDENTICAL_STATS)
             else:
-                stats = diff_alpha(read_png(a / fa["alpha_png"]), read_png(b / fb["alpha_png"]))
+                stats = diff_alpha(
+                    read_png(a / fa["alpha_png"]),
+                    read_png(b / fb["alpha_png"]),
+                    fa["pad"],
+                    fa["work_shape"],
+                )
             per[name] = stats
             for k in worst:
                 worst[k] = max(worst[k], stats[k])
@@ -724,11 +777,11 @@ def compare_dirs(
                 "fixtures": per,
             }
         )
-    exact = worst["pixels"] == 0
+    exact = worst["alpha_pixels"] == 0
     derived = {
         "max_alpha_diff": 2 * worst["max_alpha_diff"],
-        "max_pixel_frac": 2 * worst["pixel_frac"],
-        "max_pixels": 2 * worst["pixels"],
+        "max_alpha_pixel_frac": 2 * worst["alpha_pixel_frac"],
+        "max_mask_pixels": 2 * worst["mask_pixels"],
     }
     over_stop = {k: derived[k] > STOP_LINE[k] for k in STOP_LINE}
     verdict = (

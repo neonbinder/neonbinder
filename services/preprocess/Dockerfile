@@ -1,16 +1,20 @@
 FROM python:3.12-slim
 
-# BiRefNet model for the tiered crop strategy (via rembg). ONE-LINE FLIP:
-# "birefnet-general" (full, ~930MB) vs "birefnet-general-lite" (~224MB).
-# Runtime reads the same name from the REMBG_MODEL env var (set below), so
-# the baked weights and the loaded model always agree.
+# BiRefNet model for the tiered crop strategy, run directly through
+# onnxruntime (NEO-484; `app/cropper/birefnet.py` transcribes rembg 2.0.78's
+# pre/post-processing, and the parity job proves the masks are rembg's).
+# ONE-LINE FLIP: "birefnet-general" (full, ~930MB) vs "birefnet-general-lite"
+# (~224MB). Runtime reads the same name from the BIREFNET_MODEL env var (set
+# below), so the baked model and the loaded model always agree; both sides
+# allowlist the name.
 # FULL model, non-negotiable: lite cannot find foil cards on the scanner
 # belt — the live-corpus replay returned "identity" (no crop) for 81/82 of
 # the c2 batch that full cropped 82/82, reproduced locally with the
-# benchmark harness. Memory (measured OOM-kill points: full 4601MiB@4Gi,
-# 8326MiB@8Gi with the ORT arena; arena now disabled) requires the
-# 16Gi + concurrency-1 service shape, terraform-managed.
-ARG REMBG_MODEL=birefnet-general
+# benchmark harness. The lite model also has no parity goldens. Memory
+# (measured OOM-kill points: full 4601MiB@4Gi, 8326MiB@8Gi with the ORT
+# arena; arena now disabled) requires the heavy service shape,
+# terraform-managed.
+ARG BIREFNET_MODEL=birefnet-general
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -19,16 +23,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/opt/hf-cache \
     TRANSFORMERS_CACHE=/opt/hf-cache \
     HF_HUB_DISABLE_PROGRESS_BARS=1 \
-    U2NET_HOME=/opt/u2net-cache \
-    REMBG_MODEL=${REMBG_MODEL} \
+    BIREFNET_HOME=/opt/birefnet \
+    BIREFNET_MODEL=${BIREFNET_MODEL} \
     REQUIRE_BAKED_WEIGHTS=1
-# REQUIRE_BAKED_WEIGHTS: startup fails loudly if the baked weights are gone,
-# instead of rembg silently re-downloading ~930MB into Cloud Run's in-memory
-# filesystem. ORT threading is left at its default (all 4 vCPU per
-# inference): capping it to 1 thread pushed a single BiRefNet pass past the
-# smoke timeout, and under concurrency 3 the per-request latency converges
-# to the same ~3x either way — oversubscription only costs scheduler
-# overhead, while the cap costs 4x on every lightly-loaded request.
+# REQUIRE_BAKED_WEIGHTS: the heavy role's startup fails loudly if the baked
+# model is gone. Nothing at runtime can download one (there is no rembg or
+# pooch in the image), so a missing model is a broken image. ORT threading is
+# left at its default (all vCPUs per inference): capping it to 1 thread pushed
+# a single BiRefNet pass past the smoke timeout, and under concurrency the
+# per-request latency converges to the same either way — oversubscription only
+# costs scheduler overhead, while the cap costs 4x on every lightly-loaded
+# request.
 
 WORKDIR /app
 
@@ -40,41 +45,43 @@ RUN apt-get update \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# The runtime user exists before anything is copied, so the app is copied
+# owned by it (COPY --chown below) instead of a trailing `chown -R` that
+# would duplicate every file into another layer.
+RUN useradd --create-home --shell /bin/bash appuser
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the SAM model (~375MB weights + processor config) into the
 # image at build time. Baking it in trades image size for deterministic
 # cold starts — first request doesn't wait on HuggingFace network I/O.
+# The cache is made read-only in the same RUN, so no writable copy of the
+# weights is ever a layer: if they go missing, a runtime re-download fails.
 RUN python -c "\
 from transformers import SamModel, SamProcessor; \
 SamProcessor.from_pretrained('facebook/sam-vit-base'); \
 SamModel.from_pretrained('facebook/sam-vit-base'); \
-print('SAM model cached to', '$HF_HOME')"
+print('SAM model cached to', '$HF_HOME')" \
+    && chmod -R a+rX-w /opt/hf-cache
 
-# Pre-download the BiRefNet weights the same way — rembg downloads into
-# U2NET_HOME when the session is first created, so creating one here bakes
-# the weights and the first request never touches the network. NOTE: this is
-# NOT a rarely-hit fallback — tiered runs BiRefNet on virtually every image
-# (as fallback when classical fails, as verification when it passes).
-# ~930MB for the full model; see the ARG above for the lite flip.
-# The model name is read from the environment inside python — never shell-
-# interpolated into the source (a crafted --build-arg would otherwise be
-# build-time code injection).
-RUN python -c "\
-import os; \
-from rembg import new_session; \
-new_session(os.environ['REMBG_MODEL']); \
-print('BiRefNet model', os.environ['REMBG_MODEL'], 'cached to', os.environ['U2NET_HOME'])"
+# Bake the BiRefNet model: download rembg 2.0.78's original, verify its md5
+# and our pinned sha256, save it pre-optimised at ORT_ENABLE_EXTENDED (never
+# ALL: that bakes this build host's CPU kernels in), and fail the build unless
+# the optimised model's raw output is byte-equal to the original's. Writes
+# `<model>.onnx`, `<model>.onnx.sha256` (the B mask-cache key) and
+# `<model>.onnx.provenance.json` (`birefnet.get_session` refuses a model baked
+# by another onnxruntime). NOTE: this is NOT a rarely-hit fallback — tiered
+# runs BiRefNet on virtually every image that reaches the heavy service.
+# The model name reaches the script through the environment, never shell-
+# interpolated into source, and the script allowlists it.
+COPY scripts/bake_birefnet.py /tmp/bake_birefnet.py
+RUN python /tmp/bake_birefnet.py \
+    && rm /tmp/bake_birefnet.py \
+    && chmod -R a+rX-w "$BIREFNET_HOME"
 
-COPY app ./app
+COPY --chown=appuser:appuser app ./app
 
-# appuser owns only /app. The model caches stay root-owned and read-only:
-# if the weights ever go missing/corrupt, a runtime re-download must FAIL
-# (see REQUIRE_BAKED_WEIGHTS above), not silently succeed.
-RUN useradd --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /app \
-    && chmod -R a+rX-w /opt/hf-cache /opt/u2net-cache
 USER appuser
 
 EXPOSE 8080

@@ -91,3 +91,15 @@ updates:
       - dependency-name: "scikit-image"
       - dependency-name: "pooch"
       - dependency-name: "jsonschema"
+      # The rest of the oracle's own dependencies, checked against the deployed
+      # image's freeze: each was installed only for rembg's stack (pooch,
+      # jsonschema, scikit-image). networkx, tqdm, requests and packaging stay
+      # unignored: torch and transformers need them at runtime.
+      - dependency-name: "imageio"
+      - dependency-name: "tifffile"
+      - dependency-name: "lazy-loader"
+      - dependency-name: "platformdirs"
+      - dependency-name: "jsonschema-specifications"
+      - dependency-name: "referencing"
+      - dependency-name: "rpds-py"
+      - dependency-name: "attrs"

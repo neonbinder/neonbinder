@@ -421,12 +421,73 @@ RUN_INTEGRATION_TESTS=1 DEVCACHE_ITEST_BUCKET=<dev cache bucket> \
 BiRefNet runs a deterministic stand-in there unless `BIREFNET_HOME` holds a
 baked model and `DEVCACHE_ITEST_REAL_BIREFNET=1` is set.
 
-<!--
-  NEO-484 C (P3): PLACEHOLDER for the BiRefNet direct-ORT sections (the
-  rembg 2.0.78 transcription, the bake and its provenance, the session
-  options, the golden-mask parity job). P3 hands this text to P1, who
-  replaces this comment with it. Do not merge with this comment in place.
--->
+## BiRefNet: direct onnxruntime (NEO-484)
+
+`app/cropper/birefnet.py` runs the BiRefNet model through onnxruntime directly.
+It is a literal transcription of rembg 2.0.78's pre/post-processing
+(`BaseSession.normalize`, `BiRefNetSessionGeneral.predict`, and
+`naive_cutout`'s alpha), kept under rembg's MIT notice. rembg and its
+pymatting/numba/scipy/scikit-image stack are no longer installed: their numba
+compile cost ~100 s of every heavy cold start, for an alpha-matting step this
+service never used.
+
+**Bake.** `scripts/bake_birefnet.py` runs at image build:
+
+1. Download rembg's original model and verify rembg's md5 plus our pinned
+   sha256.
+2. Save it pre-optimised at `ORT_ENABLE_EXTENDED`. Never at ALL: that bakes
+   the build host's CPU kernels in.
+3. Fail the build unless the optimised model's raw output equals the
+   original's byte for byte on a fixed synthetic input.
+4. Delete the original and write `/opt/birefnet/<model>.onnx`,
+   `<model>.onnx.sha256` (the B mask-cache key) and
+   `<model>.onnx.provenance.json`.
+
+Runtime loads the file at `ORT_ENABLE_ALL` with the CPU arena off.
+`get_session` refuses a model whose provenance names another onnxruntime
+version or model, so an onnxruntime bump means rebuilding the image. The model
+directory is root-owned and read-only.
+
+**Env.** `REMBG_MODEL` became `BIREFNET_MODEL` (allowlist: `birefnet-general`,
+`birefnet-general-lite`), and `U2NET_HOME` became `BIREFNET_HOME` (default
+`/opt/birefnet`). The Dockerfile ARG is now `BIREFNET_MODEL`. The lite model
+has no parity goldens; regenerate them before ever using it.
+
+**Mask parity (`preprocess-mask-parity`, blocking).** On every PR that touches
+the service, CI builds two images on this PR's pinned preprocess image
+(`tests/parity/Dockerfile`) and runs `tests/parity/` offline, read-only and as
+the non-root app user:
+
+- **Step A** checks the image as shipped: rembg's stack is absent, the bake's
+  provenance and permissions hold, the session loads, and SAM runs end to end.
+- **Step B** installs rembg 2.0.78 as a hash-pinned oracle
+  (`tests/parity/requirements-oracle.txt`). Per fixture it proves the direct
+  path equals rembg bit for bit on the same host (L1). It then compares with
+  the committed goldens (L2): exact on a recorded host fingerprint, otherwise
+  within the manifest's T, F, N, and the derived quad must sit within 1 px per
+  corner.
+- **Canaries** (BILINEAR, mean +1e-7, no sigmoid, x254, alpha +1) must each be
+  caught by the check that guards that step.
+
+BiRefNet is deterministic per host. AVX2 hosts (AMD Milan) differ from AVX-512
+hosts by up to 2 alpha levels and a few mask pixels, so the goldens record each
+host's own hashes. In the tolerance, T is the largest alpha difference, F the
+fraction of alpha pixels that differ, and N the pixels of tiered's binary mask
+(alpha > 25, then the 5x5 close) that differ, not alpha pixels. The current
+goldens use T=4, F=0.0015, N=10.
+
+**Regenerating the goldens.** Do this only for a deliberate change to the
+model, the transcription or the fixtures:
+
+1. In the current image, on gen1 and on gen2 hosts of each CPU type, run
+   `scripts/golden_masks.py generate --impl rembg --fixtures gs://<fixtures bucket> --out <dir>/{exec_env}-{task}-{run}`.
+2. Run `golden_masks.py compare` and set T, F, N to 2x the worst. Stop and ask
+   if that exceeds 8, 0.002 or 100.
+3. Run `golden_masks.py hash <runs…> --goldens-from <a gen1 run> --out tests/parity/goldens --tolerance T,F,N`
+   and commit the result.
+
+Dependabot ignores the oracle-only packages; bump them by hand, together with
+the goldens.
 
 ## Local dev
 

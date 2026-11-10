@@ -1413,10 +1413,11 @@ jobs:
       PREVIEW_IMAGE: gcr.io/neonbinder-dev/neonbinder-preprocess-preview
       PARITY_SHARD_COUNT: "2"
       # rembg 2.0.78's download for birefnet-general and its pinned md5
-      # (rembg/sessions/birefnet_general.py). The sha256 is captured in S0a.
+      # (rembg/sessions/birefnet_general.py). The sha256 was captured in S0a
+      # and is the same pin scripts/bake_birefnet.py verifies at image build.
       BIREFNET_SOURCE_URL: https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-epoch_244.onnx
       BIREFNET_SOURCE_MD5: 7a35a0141cbbc80de11d9c9a28f52697
-      BIREFNET_SOURCE_SHA256: S0A_SHA256_PLACEHOLDER_SET_BEFORE_MERGE
+      BIREFNET_SOURCE_SHA256: 58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

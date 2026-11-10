@@ -408,6 +408,27 @@ def _bump_pixels(run: Path, fixture: str, n: int, by: int) -> None:
     (run / "manifest.json").write_text(json.dumps(m))
 
 
+def _paint_work_frame(run: Path, fixture: str, spots: int) -> None:
+    """Clear the fixture's work frame to alpha 0, then turn on `spots` isolated pixels.
+
+    The spots sit 7 px apart, so the mask's 5x5 close keeps each one as a
+    single pixel: `spots` mask pixels and `spots` alpha pixels, exactly.
+    """
+    m = json.loads((run / "manifest.json").read_text())
+    fx = m["fixtures"][fixture]
+    alpha = gm.read_png(run / fx["alpha_png"]).copy()
+    p = fx["pad"]
+    h, w = fx["work_shape"]
+    alpha[p : p + h, p : p + w] = 0
+    grid = [(y, x) for y in range(3, h - 3, 7) for x in range(3, w - 3, 7)]
+    assert len(grid) >= spots, f"{fixture} has room for {len(grid)} spots"
+    for y, x in grid[:spots]:
+        alpha[p + y, p + x] = 255
+    gm.write_png(alpha, run / fx["alpha_png"])
+    fx["alpha"][m["golden_fingerprint"]] = gm.alpha_sha256(alpha)
+    (run / "manifest.json").write_text(json.dumps(m))
+
+
 @pytest.fixture
 def two_hosts(fixtures_dir, tmp_path, direct_env):
     a, b = tmp_path / "gen1", tmp_path / "gen2"
@@ -422,7 +443,7 @@ def test_hash_merges_runs_per_fingerprint(two_hosts, tmp_path):
     a, b = two_hosts
     _bump_pixels(b, "card-2.png", 3, 2)
     out = tmp_path / "goldens"
-    tol = {"max_alpha_diff": 4, "max_pixel_frac": 0.001, "max_pixels": 6}
+    tol = {"max_alpha_diff": 4, "max_alpha_pixel_frac": 0.001, "max_mask_pixels": 6}
     merged = gm.hash_runs([a, b], out, tolerance=tol)
     on_disk = json.loads((out / "manifest.json").read_text())
     assert on_disk["kind"] == "goldens"
@@ -477,39 +498,93 @@ def test_compare_identical_runs_is_exact(two_hosts):
     a, b = two_hosts
     report = gm.compare_dirs(a, [b])
     assert report["verdict"] == "exact"
-    assert report["worst"] == {"max_alpha_diff": 0, "pixels": 0, "pixel_frac": 0.0}
+    assert report["worst"] == {
+        "max_alpha_diff": 0,
+        "alpha_pixels": 0,
+        "alpha_pixel_frac": 0.0,
+        "mask_pixels": 0,
+    }
     assert report["pairs"][0]["same_fingerprint"] is False
     assert gm.main(["compare", str(a), str(b)]) == 0
 
 
 def test_compare_measures_and_derives_the_tolerance(two_hosts, capsys):
     a, b = two_hosts
-    _bump_pixels(b, "card-0.png", 5, 3)
+    _bump_pixels(b, "card-0.png", 5, 3)  # in the padding: alpha only, no mask pixel
     report = gm.compare_dirs(a, [b])
     stats = report["pairs"][0]["fixtures"]["card-0.png"]
-    assert stats["pixels"] == 5
+    assert stats["alpha_pixels"] == 5
     assert stats["max_alpha_diff"] == 3
+    assert stats["mask_pixels"] == 0
     padded = json.loads((a / "manifest.json").read_text())["fixtures"]["card-0.png"]
     total = padded["padded_shape"][0] * padded["padded_shape"][1]
-    assert stats["pixel_frac"] == pytest.approx(5 / total)
+    assert stats["alpha_pixel_frac"] == pytest.approx(5 / total)
     assert report["pairs"][0]["fixtures"]["card-1.png"]["identical"] is True
-    assert report["derived_tolerance"]["max_pixels"] == 10
+    assert report["derived_tolerance"]["max_mask_pixels"] == 0
+    assert report["derived_tolerance"]["max_alpha_pixel_frac"] == pytest.approx(10 / total)
     assert report["derived_tolerance"]["max_alpha_diff"] == 2 * stats["max_alpha_diff"]
     # No tolerance anywhere: a difference is "outside" (exit 1) unless --report-only.
     assert report["verdict"] == "outside"
     assert gm.main(["compare", str(a), str(b)]) == 1
     assert gm.main(["compare", str(a), str(b), "--report-only"]) == 0
     assert gm.main(["compare", str(a), str(b), "--tolerance", "8,0.5,100"]) == 0
-    assert gm.main(["compare", str(a), str(b), "--tolerance", "8,0.5,4"]) == 1
+    assert gm.main(["compare", str(a), str(b), "--tolerance", "2,0.5,100"]) == 1
+    assert gm.main(["compare", str(a), str(b), "--tolerance", "8,0.0001,100"]) == 1
+    capsys.readouterr()
+
+
+def test_compare_counts_n_in_tiereds_binary_mask_not_in_alpha(two_hosts, capsys):
+    """The S0a bug: 1220 alpha pixels moved by <= 2 levels flip only ~9 mask pixels.
+
+    N is the mask count; the alpha count is reported beside it and never
+    stands in for N.
+    """
+    a, b = two_hosts
+    _paint_work_frame(a, "card-0.png", 0)
+    _paint_work_frame(b, "card-0.png", 7)
+    _bump_pixels(b, "card-0.png", 40, 2)  # padding: 40 more alpha pixels, no mask pixel
+    report = gm.compare_dirs(a, [b])
+    stats = report["pairs"][0]["fixtures"]["card-0.png"]
+    assert stats["mask_pixels"] == 7
+    assert stats["alpha_pixels"] == 47
+    assert report["derived_tolerance"]["max_mask_pixels"] == 14
+    assert gm.main(["compare", str(a), str(b), "--tolerance", "255,0.5,7"]) == 0
+    assert gm.main(["compare", str(a), str(b), "--tolerance", "255,0.5,6"]) == 1
     capsys.readouterr()
 
 
 def test_compare_flags_a_tolerance_over_the_stop_line(two_hosts):
     a, b = two_hosts
-    _bump_pixels(b, "card-0.png", 60, 3)
+    _paint_work_frame(a, "card-0.png", 0)
+    _paint_work_frame(b, "card-0.png", 51)  # 2 x 51 mask px > 100
     report = gm.compare_dirs(a, [b])
-    assert report["derived_over_stop_line"]["max_pixels"] is True
+    assert report["derived_over_stop_line"]["max_mask_pixels"] is True
     assert report["ask_jason"] is True
+
+
+def test_many_alpha_pixels_inside_the_mask_threshold_are_not_over_the_stop_line(two_hosts):
+    a, b = two_hosts
+    _bump_pixels(b, "card-0.png", 300, 1)  # all in the padding
+    report = gm.compare_dirs(a, [b])
+    assert report["worst"]["alpha_pixels"] == 300
+    assert report["derived_over_stop_line"]["max_mask_pixels"] is False
+
+
+def test_binary_mask_is_tiereds_mask(monkeypatch):
+    """`binary_mask` must be exactly what `tiered.birefnet_mask` derives from an alpha."""
+    from app.cropper import birefnet, tiered
+
+    assert gm.MASK_THRESHOLD == tiered.BIREFNET_ALPHA_THRESHOLD
+    work = _work(120, 90, seed=11)
+    padded, p = tiered.pad_for_birefnet(work)
+    alpha = np.random.default_rng(12).integers(0, 60, padded.shape[:2], dtype=np.uint8)
+    alpha[p + 20 : p + 100, p + 15 : p + 75] = 255
+    monkeypatch.setattr(birefnet, "predict_alpha", lambda _rgb: alpha)
+    want = tiered.birefnet_mask(work)
+    got = gm.binary_mask(alpha, p, work.shape[:2])
+    assert got.dtype == want.dtype and np.array_equal(got, want)
+    # Defaults: the whole plane is the work frame.
+    assert gm.binary_mask(alpha).shape == alpha.shape
 
 
 def test_compare_uses_the_goldens_tolerance(two_hosts, tmp_path):
@@ -541,8 +616,8 @@ def test_compare_missing_fixture_exits_2(two_hosts, capsys):
 def test_parse_tolerance():
     assert gm.parse_tolerance("8, 0.002, 100") == {
         "max_alpha_diff": 8,
-        "max_pixel_frac": 0.002,
-        "max_pixels": 100,
+        "max_alpha_pixel_frac": 0.002,
+        "max_mask_pixels": 100,
     }
     with pytest.raises(Exception):  # noqa: B017 - argparse's type error
         gm.parse_tolerance("8,0.002")
