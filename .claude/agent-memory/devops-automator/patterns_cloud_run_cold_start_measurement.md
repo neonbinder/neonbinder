@@ -21,3 +21,12 @@ Patterns from the NEO-484 cold-start spike (2026-11-10). Verify versions before 
 - **Five samples is too few.** Starts ranged from 16 s to 151 s in both environments, and one outlier per batch moves the median by about 15%. A second batch of five reversed the first batch's verdict. Take at least 10 per side, interleaved in time.
 - **In-container timing without a job:** deploy a revision with `--command sh --args '^@^-c@echo "$BENCH_B64" | base64 -d > /tmp/b.py && exec python /tmp/b.py'` and pass the script base64-encoded in an env var set with a custom delimiter (`^@^`). It serves a POST endpoint that times only the stages you want. To restore the image CMD afterwards, pass `--command "" --args ""`.
 - When start → ready is almost entirely before uvicorn's "Started server process" and the import's wall time is about 5× its CPU time, the cost is lazy image loading of the shared heavy image, not app code.
+
+**Measuring a PR preview revision end to end (NEO-484 push 1):**
+- **Break cold-start stats down by `cpu_model`.** One newer Intel part imported the same modules 4-5x slower than other hosts on identical gen2 config (about 130 s against 20-35 s), so a pooled p50 hides it and the p95 is that class alone.
+- **Start-to-first-timing-line only means something if the request arrives at the start.** In an E2E the autoscaler starts instances and the request lands minutes later. Use start to first response of a controlled burst of N concurrent calls (with concurrency 1, N calls start N instances).
+- **A Cloud Run job lands one image on several hosts.** Use `--tasks N --parallelism N`, the script as gzip+base64 in an env var, output to a throwaway bucket, and an EXIT trap that cancels executions, deletes the job and removes the bucket.
+- **Service-level `container/memory/utilizations` is one distribution series with no per-instance label.** A p99 aligner understates the peak; read the raw points and take the highest non-empty bucket per minute (the count is the number of instances sampled).
+- **Minting credentials:** do it inside the measuring script and never echo them; a user identity token works for a tagged `pr-N---` URL.
+- **Playwright blob reports** (`report/blob/*.zip` -> `report.jsonl`) carry `onStepBegin`/`onStepEnd` with epoch ms, so each `expect`'s wall time can be read from a CI artifact when `results.json` has only step durations.
+- **`/process` writes no timing line**, so `maxrss_mb` is not available from it; only the entry routes log it.
