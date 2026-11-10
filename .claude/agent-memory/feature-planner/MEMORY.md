@@ -42,4 +42,4 @@
 - [Review gate cost is the sequential name loop](review-gate-cost-is-the-sequential-name-loop.md) — ~5 s at 200 names before any feature adds to it; 7 s after "Kept all" has under 2 s headroom
 - [Open-if-visible races the selection change](open-if-visible-races-the-selection-change.md) — panel returns null mid-selection, click skipped; gate on the new heading; blob steps prove it
 - [Teamless-rows checklist red = BSC lookup stall](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — every row teamless after Saved N = `bsc_card_team_lookup_failures` failed==requested; rerun, not the PR
-- [BSC cold sheet read is per job](bsc-cold-sheet-read-is-per-job-not-per-condition.md) — first read 503s at 30 s whatever the condition; fewer sheets needs a 503-only serial retry beside it
+- [Photo changes reach eBay, not BSC](photo-changes-reach-ebay-not-bsc.md) — eBay re-uploads on a new photoToken; BSC never replaces a set seller photo; scan outputs write-once; no originals kept, 1600 max
