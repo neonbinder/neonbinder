@@ -16,10 +16,21 @@
  * - `newSince` (subscribed, at most `NEW_SINCE_LINES` + 1 lines): the
  *   collection lines filed since the last visit (an add or a move into a
  *   binder; never an edit).
- * - `freshPulls` (subscribed, at most `FRESH_PULL_LINES` + 1 lines): the
- *   collection lines whose cards were added new since a moment (Fresh Pulls;
- *   an add into a binder, never a move).
- * - `markVisit` (mutation): reads the last visit, then stamps this one.
+ * - `freshPulls` (subscribed, at most `FRESH_PULL_LINES` + 1 stamped lines
+ *   and `LEGACY_SCAN` + 1 unstamped ones): the collection lines whose cards
+ *   were added new since a moment (Fresh Pulls; an add into a binder, never
+ *   a move). A line from before the stamps counts by its creation time.
+ * - `newListings` (subscribed, the same bounds with `NEW_LISTING_LINES`):
+ *   the box lines that landed in Inventory since a moment (an add into a
+ *   box, a raise, a Sell from a binder; never a box-to-box move), with NB's
+ *   price. Inventory only: nothing about a marketplace or a sync.
+ * - `syncAlerts` (read once, `SYNC_PENDING_SCAN` queued rows and
+ *   `SYNC_RECORD_SCAN` sync records per platform): the cards waiting for the
+ *   next sync, and each set whose latest sync failed or held cards back,
+ *   from NB's own records of its syncs (`listingOutbox`,
+ *   `marketplaceListingSyncs`).
+ * - `markVisit` (mutation): reads the last visit, then stamps this one (and,
+ *   once, `dashboardStampsFrom`: the line between unstamped and stamped rows).
  * - `couldFit` (read once, one smart binder per call): the cards the
  *   collector holds in another binder that the binder's rule takes in, at
  *   most `COULD_FIT_CARDS`, from its stored fits' `held` mark.
@@ -31,7 +42,8 @@
  * - `sales` (read once): whether the account sells (the sales section shows), and
  *   its newest orders still to ship, at most `SALES_SHOWN`.
  *
- * NB data only, except `sales`: an order's status is the platform's own word
+ * NB data only, except `sales` (and `syncAlerts`, which reads NB's records of
+ * its own syncs, never a marketplace): an order's status is the platform's own word
  * (NB keeps no shipped state), read through `listingSales.awaitingShipment`.
  * The sales gate never names a platform, and never reads a login: it shows
  * for an account with at least one order stored.
@@ -47,7 +59,9 @@ import { HomeSides, MAX_VARIANT_COPIES, copyCardIdValidator, sideOfContainer, si
 import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS, hiddenAsEmpty } from "./collectionCatalog";
 import { CatalogReader, setRefValidator, variantRefValidator, type SetRef, type VariantRef } from "./lib/catalogView";
 import { awaitingShipment } from "./listingSales";
-import { listingPlatformValidator, saleItemProblemValidator } from "./schema";
+import { LISTING_PLATFORMS } from "./listingOutbox";
+import { ListingLabels } from "./lib/listingLabels";
+import { listingPlatformValidator, listingProblemReasonValidator, saleItemProblemValidator } from "./schema";
 import { variantTypeKind } from "./variantRole";
 import { MAX_SORTED_LINES, type StoredRule } from "../lib/collection/binder-rule";
 
@@ -103,6 +117,41 @@ export const SALES_SHOWN = 10;
 export const SALE_LINES = 12;
 /** Lines `freshPulls` returns, newest first. */
 export const FRESH_PULL_LINES = 100;
+/**
+ * Lines with no stamp the legacy read looks through (`freshPulls`,
+ * `newListings`): the lines written before the collector's first dashboard
+ * open under the stamps (`userProfiles.dashboardStampsFrom`), newest first.
+ * Bounded twice: by this, and by the window, which passes that moment two
+ * weeks after it, so the read then finds nothing at all.
+ */
+export const LEGACY_SCAN = 200;
+/**
+ * A line with no stamp counts by its `_creationTime` only when it was filed
+ * where it is in the write that made it. Production never stamped `filedAt`
+ * before `addedAt` and `listedAt` (they ship together), so there a legacy line
+ * has no `filedAt` at all. A development deployment ran `filedAt` alone for a
+ * while, until `FILED_ONLY_ERA_END`: a line written then counts when its
+ * `filedAt` is within this of `_creationTime` (the same add). A line filed
+ * later was moved in: never a pull, never a listing.
+ */
+export const STAMP_SLACK_MS = 5000;
+/**
+ * The end of the stretch when a development deployment stamped `filedAt` but
+ * not `addedAt` (NEO-464 review rounds 1 and 2, 2026-11-10). Lines written
+ * since never take the slack above: one of them with a `filedAt` and no
+ * stamp was moved in (a Sell or a Take off sale drops the other side's stamp).
+ */
+export const FILED_ONLY_ERA_END = Date.UTC(2026, 10, 10, 22, 30);
+/** Lines `newListings` returns, newest first. */
+export const NEW_LISTING_LINES = 60;
+/** Cards waiting to sync `syncAlerts` counts on one platform (more reads "more"). */
+export const SYNC_PENDING_SCAN = 100;
+/** Sets' last results `syncAlerts` looks through on one platform, most recent run first. */
+export const SYNC_RECORD_SCAN = 50;
+/** Sets with an unresolved problem `syncAlerts` returns across platforms. */
+export const SYNC_ALERTS_SHOWN = 6;
+/** Held-back cards named for one set (the rest are counted). */
+export const SYNC_CARDS_NAMED = 3;
 /** New on NeonBinder: how many entries (a set, or one variant of it) it shows. */
 export const NEW_SETS_SHOWN = 6;
 /** How many variants' worth of newest cards it steps back through to find them. */
@@ -209,6 +258,60 @@ export function nextVisit(
     return { visit: { seenAt: now, ...(since !== null ? { sinceAt: since } : {}) }, since, write: true };
   }
   return { visit: { seenAt: now, sinceAt: stored.seenAt }, since: stored.seenAt, write: true };
+}
+
+/**
+ * NEO-464 — a line with no dashboard stamp, written before the stamps
+ * (`legacyBefore`, the collector's first dashboard open under them): when its
+ * cards landed where they are, or null when that is not known. Known only
+ * when the line was filed in the write that made it (`filedAt` absent, or
+ * within `STAMP_SLACK_MS` of `_creationTime` before `FILED_ONLY_ERA_END`):
+ * then its `_creationTime`. A
+ * line moved in later (Take off sale, Sell, a move between binders) is never
+ * a pull or a listing by this rule. Null with no `legacyBefore` (nothing is
+ * read as legacy until the dashboard has opened), and for a line written at
+ * or after it (the stamps were live: a missing one means it was no add).
+ */
+export function legacyStampOf(
+  row: { _creationTime: number; filedAt?: number },
+  legacyBefore: number | undefined,
+): number | null {
+  if (legacyBefore === undefined || row._creationTime >= legacyBefore) return null;
+  if (row.filedAt === undefined) return row._creationTime;
+  const sameWrite = Math.abs(row.filedAt - row._creationTime) <= STAMP_SLACK_MS;
+  return row._creationTime < FILED_ONLY_ERA_END && sameWrite ? row._creationTime : null;
+}
+
+/**
+ * Stamped lines and legacy ones, merged newest first, at most `cap`.
+ * `truncated`: either read held more than it gave, or the merge dropped some.
+ */
+export function mergeStamped<T extends { at: number }>(
+  stamped: readonly T[],
+  legacy: readonly T[],
+  cap: number,
+  readTruncated: boolean,
+): { lines: T[]; truncated: boolean } {
+  const all = [...stamped, ...legacy].sort((a, b) => b.at - a.at);
+  return { lines: all.slice(0, cap), truncated: readTruncated || all.length > cap };
+}
+
+/**
+ * NEO-464 — a set's last listing result as the dashboard's sync status reads
+ * it: still failing (`failed`) when its latest run ended in an error, so a
+ * later clean run hides an earlier failure (it self-corrected) and a later
+ * failure shows whatever came before. A `running` record whose lease ran out
+ * is a run that died: its last result stands (an error when it holds one). A
+ * run going now is not a failure. `heldBack`: the cards the last run held
+ * back (each one's latest outcome, since every run rewrites them).
+ */
+export function syncOutcome(
+  record: Pick<Doc<"marketplaceListingSyncs">, "status" | "leaseExpiresAt" | "lastError" | "problems" | "problemsTotal">,
+  now: number,
+): { failed: boolean; heldBack: number } {
+  const died = record.status === "running" && (record.leaseExpiresAt ?? 0) <= now;
+  const failed = record.status === "error" || (died && record.lastError !== undefined);
+  return { failed, heldBack: record.problemsTotal ?? record.problems.length };
 }
 
 /**
@@ -672,14 +775,31 @@ export const newSince = query({
   },
 });
 
+/** NEO-464 — the caller's first dashboard open under the stamps, or undefined (`userProfiles.dashboardStampsFrom`). */
+async function stampsFromOf(ctx: Ctx, userId: string): Promise<number | undefined> {
+  const profile = await ctx.db
+    .query("userProfiles")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .unique();
+  return profile?.dashboardStampsFrom;
+}
+
 /**
  * Fresh Pulls: the caller's collection lines (never a box's) whose cards were
  * added new after `sinceMs`, newest first, at most `FRESH_PULL_LINES`. Reads
  * `addedAt`, which only an add into a binder stamps (Jason, 2026-11-10: "only
  * cards new to the collection, never moves"): a move, a split, a container
- * emptied or an undo's put-back never makes a card fresh. Subscribed, so it
- * stays small: one indexed range of at most `FRESH_PULL_LINES` + 1 lines and
- * their homes. `truncated`: more lines than are listed.
+ * emptied or an undo's put-back never makes a card fresh, and a move into a
+ * box drops it.
+ *
+ * Lines written before the stamps (no `addedAt`) count too, by
+ * `_creationTime` (`legacyStampOf`), so cards added before this shipped are
+ * not lost, in production as well, with no backfill: one more bounded range
+ * of the lines with no `addedAt` written inside the window and before the
+ * caller's first dashboard open under the stamps, at most `LEGACY_SCAN`.
+ *
+ * Subscribed, so it stays small: two indexed ranges, the profile and the
+ * lines' homes. `truncated`: more lines than are listed.
  */
 export const freshPulls = query({
   args: { sinceMs: v.number() },
@@ -691,17 +811,115 @@ export const freshPulls = query({
   }),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
+    const sides = new HomeSides(ctx, ownerId);
     const rows = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_and_addedAt", (q) => q.eq("ownerId", ownerId).gt("addedAt", args.sinceMs))
       .order("desc")
       .take(FRESH_PULL_LINES + 1);
-    const truncated = rows.length > FRESH_PULL_LINES;
-    const kept = await new HomeSides(ctx, ownerId).keep(rows.slice(0, FRESH_PULL_LINES), "collection");
+    const kept = await sides.keep(rows.slice(0, FRESH_PULL_LINES), "collection");
+    const stamped = kept.flatMap((r) => (r.addedAt === undefined ? [] : [{ row: r, at: r.addedAt }]));
+    const legacy = await legacyLines(ctx, ownerId, "by_owner_and_addedAt", "addedAt", args.sinceMs, sides, "collection");
+    const merged = mergeStamped(stamped, legacy.lines, FRESH_PULL_LINES, rows.length > FRESH_PULL_LINES || legacy.truncated);
     return {
-      lines: kept.flatMap((r) => (r.addedAt === undefined ? [] : [{ homeId: r.homeId, cardId: r.cardId, addedAt: r.addedAt }])),
-      truncated,
+      lines: merged.lines.map(({ row, at }) => ({ homeId: row.homeId, cardId: row.cardId, addedAt: at })),
+      truncated: merged.truncated,
     };
+  },
+});
+
+/**
+ * The legacy half of `freshPulls` and `newListings`: the caller's lines with
+ * no `field` stamp, written after `sinceMs` and before their first dashboard
+ * open under the stamps, newest first, that `legacyStampOf` dates, on
+ * `side`. At most `LEGACY_SCAN` read. Nothing before that first open.
+ */
+async function legacyLines(
+  ctx: Ctx,
+  ownerId: string,
+  index: "by_owner_and_addedAt" | "by_owner_and_listedAt",
+  field: "addedAt" | "listedAt",
+  sinceMs: number,
+  sides: HomeSides,
+  side: Side,
+): Promise<{ lines: Array<{ row: CopyRow; at: number }>; truncated: boolean }> {
+  const before = await stampsFromOf(ctx, ownerId);
+  if (before === undefined || before <= sinceMs) return { lines: [], truncated: false };
+  const rows = await ctx.db
+    .query("collectionCopies")
+    .withIndex(index, (q) =>
+      q.eq("ownerId", ownerId).eq(field, undefined).gt("_creationTime", sinceMs).lt("_creationTime", before),
+    )
+    .order("desc")
+    .take(LEGACY_SCAN + 1);
+  const lines: Array<{ row: CopyRow; at: number }> = [];
+  for (const row of rows.slice(0, LEGACY_SCAN)) {
+    const at = legacyStampOf(row, before);
+    if (at !== null && (await sides.is(row.homeId, side))) lines.push({ row, at });
+  }
+  return { lines, truncated: rows.length > LEGACY_SCAN };
+}
+
+/**
+ * New Listings: the caller's box lines (Unsorted included) whose cards landed
+ * in Inventory after `sinceMs`, newest first, at most `NEW_LISTING_LINES`
+ * (Jason, 2026-11-10: "Listings come from our Inventory ... don't worry
+ * about if it has sync'd yet or not"). Reads `listedAt` (an add into a box, a
+ * box raise, a Sell from a binder; a move between boxes carries it), and,
+ * like `freshPulls`, a line written before the stamps by `_creationTime`.
+ * NB data only: no marketplace's listing state is read.
+ *
+ * Each line with its quantity and NB's price for one copy: the line's own
+ * floor (`minPriceCents`), else the owner's common price for its variant
+ * (`variantCommonPrices`, read once per variant), else null (none set).
+ * Subscribed: two indexed ranges, the profile, the lines' homes and at most
+ * one common price per variant. `truncated`: more lines than are listed.
+ */
+export const newListings = query({
+  args: { sinceMs: v.number() },
+  returns: v.object({
+    lines: v.array(
+      v.object({
+        id: v.id("collectionCopies"),
+        homeId: v.id("collectionContainers"),
+        cardId: copyCardIdValidator,
+        listedAt: v.number(),
+        quantity: v.number(),
+        priceCents: v.union(v.number(), v.null()),
+      }),
+    ),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const sides = new HomeSides(ctx, ownerId);
+    const rows = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_and_listedAt", (q) => q.eq("ownerId", ownerId).gt("listedAt", args.sinceMs))
+      .order("desc")
+      .take(NEW_LISTING_LINES + 1);
+    const kept = await sides.keep(rows.slice(0, NEW_LISTING_LINES), "inventory");
+    const stamped = kept.flatMap((r) => (r.listedAt === undefined ? [] : [{ row: r, at: r.listedAt }]));
+    const legacy = await legacyLines(ctx, ownerId, "by_owner_and_listedAt", "listedAt", args.sinceMs, sides, "inventory");
+    const merged = mergeStamped(stamped, legacy.lines, NEW_LISTING_LINES, rows.length > NEW_LISTING_LINES || legacy.truncated);
+    const common = new Map<string, number | null>();
+    const lines = [];
+    for (const { row, at } of merged.lines) {
+      let priceCents: number | null = row.minPriceCents ?? null;
+      if (priceCents === null && row.variantId !== undefined) {
+        const key = row.variantId as string;
+        if (!common.has(key)) {
+          const price = await ctx.db
+            .query("variantCommonPrices")
+            .withIndex("by_owner_and_variant", (q) => q.eq("ownerId", ownerId).eq("variantId", row.variantId!))
+            .unique();
+          common.set(key, price?.priceCents ?? null);
+        }
+        priceCents = common.get(key) ?? null;
+      }
+      lines.push({ id: row._id, homeId: row.homeId, cardId: row.cardId, listedAt: at, quantity: row.quantity, priceCents });
+    }
+    return { lines, truncated: merged.truncated };
   },
 });
 
@@ -919,6 +1137,102 @@ export const sales = query({
 });
 
 /**
+ * NEO-464 — the dashboard's sync status, at the top (Jason, 2026-11-10: "any
+ * sync errors that have not self corrected, ie only show errors that have not
+ * had a successful sync of that card/set later. Also show pending syncs there
+ * if there are any pending."). Read once on mount. From NB's own records
+ * only: the cards queued for the next sync (`listingOutbox`) and each set's
+ * last result (`marketplaceListingSyncs`, a summary every run rewrites, so it
+ * IS the latest outcome; `syncOutcome` is the rule). A platform is named
+ * only as where the cards go; nothing here keys on which one it is.
+ *
+ * - `pending`: per platform with any, the cards waiting (at most
+ *   `SYNC_PENDING_SCAN` counted; `more` past that).
+ * - `sets`: the sets whose last run failed or held cards back, most recent
+ *   run first, at most `SYNC_ALERTS_SHOWN`, each naming up to
+ *   `SYNC_CARDS_NAMED` held-back cards (the rest counted). `more`: another
+ *   set has one too, or the scan stopped short.
+ *
+ * Bounded: per platform one range of at most `SYNC_PENDING_SCAN` + 1 queued
+ * rows and one of `SYNC_RECORD_SCAN` records, then one label per set shown.
+ */
+export const syncAlerts = query({
+  args: {},
+  returns: v.object({
+    pending: v.array(v.object({ platform: listingPlatformValidator, cards: v.number(), more: v.boolean() })),
+    sets: v.array(
+      v.object({
+        platform: listingPlatformValidator,
+        variantId: v.id("selectorOptions"),
+        setLabel: v.string(),
+        failed: v.boolean(),
+        /** NB's own sentence for the failure (the record's `lastError`), when the run failed. */
+        message: v.optional(v.string()),
+        lastRunAt: v.optional(v.number()),
+        heldBack: v.number(),
+        cards: v.array(
+          v.object({
+            cardId: v.id("cardChecklist"),
+            reason: listingProblemReasonValidator,
+            detail: v.optional(v.string()),
+          }),
+        ),
+      }),
+    ),
+    more: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    const ownerId = await requireSignedIn(ctx);
+    const now = Date.now();
+    const pending = [];
+    const found: Array<{ record: Doc<"marketplaceListingSyncs">; failed: boolean; heldBack: number }> = [];
+    let more = false;
+    for (const platform of LISTING_PLATFORMS) {
+      const queued = await ctx.db
+        .query("listingOutbox")
+        .withIndex("by_owner_platform_changed", (q) => q.eq("ownerId", ownerId).eq("platform", platform))
+        .take(SYNC_PENDING_SCAN + 1);
+      if (queued.length > 0) {
+        pending.push({ platform, cards: Math.min(queued.length, SYNC_PENDING_SCAN), more: queued.length > SYNC_PENDING_SCAN });
+      }
+      const records = await ctx.db
+        .query("marketplaceListingSyncs")
+        .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", ownerId).eq("platform", platform))
+        .order("desc")
+        .take(SYNC_RECORD_SCAN + 1);
+      if (records.length > SYNC_RECORD_SCAN) more = true;
+      for (const record of records.slice(0, SYNC_RECORD_SCAN)) {
+        const outcome = syncOutcome(record, now);
+        if (outcome.failed || outcome.heldBack > 0) found.push({ record, ...outcome });
+      }
+    }
+    found.sort((a, b) => (b.record.lastRunAt ?? 0) - (a.record.lastRunAt ?? 0));
+    if (found.length > SYNC_ALERTS_SHOWN) more = true;
+    const labels = new ListingLabels(ctx);
+    const sets = [];
+    for (const { record, failed, heldBack } of found.slice(0, SYNC_ALERTS_SHOWN)) {
+      sets.push({
+        platform: record.platform,
+        variantId: record.variantId,
+        setLabel: await labels.setLabel(record.variantId),
+        failed,
+        ...(failed && record.lastError !== undefined ? { message: record.lastError } : {}),
+        ...(record.lastRunAt !== undefined ? { lastRunAt: record.lastRunAt } : {}),
+        heldBack,
+        cards: record.problems
+          .flatMap((p) =>
+            p.cardId === undefined
+              ? []
+              : [{ cardId: p.cardId, reason: p.reason, ...(p.detail !== undefined ? { detail: p.detail } : {}) }],
+          )
+          .slice(0, SYNC_CARDS_NAMED),
+      });
+    }
+    return { pending, sets, more };
+  },
+});
+
+/**
  * New on NeonBinder: the checklists uploaded to the catalog most recently,
  * grouped by set (`checklistLoads`), newest first, at most `NEW_SETS_SHOWN`
  * entries. Catalog news, the same for every collector (Jason, 2026-11-10:
@@ -1035,10 +1349,13 @@ export const markVisit = mutation({
       .query("userProfiles")
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .unique();
-    const next = nextVisit(profile?.dashboardVisit, Date.now());
-    if (next.write) {
-      if (profile) await ctx.db.patch(profile._id, { dashboardVisit: next.visit });
-      else await ctx.db.insert("userProfiles", { userId, dashboardVisit: next.visit });
+    const now = Date.now();
+    const next = nextVisit(profile?.dashboardVisit, now);
+    // NEO-464: the first open under the stamps dates the lines written before them (`legacyStampOf`).
+    const stampsFrom = profile?.dashboardStampsFrom === undefined ? { dashboardStampsFrom: now } : {};
+    if (next.write || profile?.dashboardStampsFrom === undefined) {
+      if (profile) await ctx.db.patch(profile._id, { dashboardVisit: next.visit, ...stampsFrom });
+      else await ctx.db.insert("userProfiles", { userId, dashboardVisit: next.visit, ...stampsFrom });
     }
     return { sinceMs: next.since };
   },

@@ -17,8 +17,10 @@
  * is "new" here) and the intake guesses.
  *
  * Rules the fixture keeps, so a prototype never has to:
- * - No values, prices or worth anywhere. No dates either: time is "days ago"
- *   (a whole number) or a relative label ("Today", "Tuesday").
+ * - No values or worth anywhere: the only money is the price the collector
+ *   set on a card for sale (New Listings, which Jason asked to carry it). No
+ *   dates either: time is "days ago" (a whole number) or a relative label
+ *   ("Today", "Tuesday").
  * - Sales are one row per order, oldest first. No buyer, no ship-by.
  *   `statusText` is the marketplace's own word, shown as it is.
  * - Sets on the board rank by FEWEST cards needed (base checklist).
@@ -649,11 +651,138 @@ function newSet(setId: SetId): NewSet {
 /** Newest first. */
 const NEW_SETS: NewSet[] = [SET.chrome, SET.score, SET.udHockey, SET.finest, SET.topps, SET.contenders].map(newSet);
 
+// ---------------------------------------------------------------------------
+// New Listings: cards that landed in Inventory lately
+// ---------------------------------------------------------------------------
+
+/**
+ * One line of cards that landed in a box (Inventory) lately: an add into a
+ * box, a box raise, a Sell from a binder. Synced or not, it is listed in NB
+ * (Jason, 2026-11-10: "Listings come from our Inventory").
+ */
+export interface NewListing extends DashCard {
+  /** The line's own key. */
+  lineId: string;
+  /** Copies on the line. */
+  quantity: number;
+  /** NB's price for one copy, in cents: the card's own, else the set's common price; null when neither is set. */
+  priceCents: number | null;
+  /** The box it landed in, and its id (the tile opens the card there). */
+  boxId: string;
+  boxName: string;
+  /** Whole days ago, 0 = today. */
+  daysAgo: number;
+}
+
+/** Newest first. Demo cards from the seed's own boxes' sets. */
+const NEW_LISTINGS: NewListing[] = [
+  { card: pick(SET.chrome, "Orange Refractor", 25), quantity: 1, priceCents: 4500, box: ["box-show", "Show box"], daysAgo: 0 },
+  { card: pick(SET.score, null, 301), quantity: 3, priceCents: 75, box: ["box-unsorted", "Unsorted"], daysAgo: 0 },
+  { card: pick(SET.score, null, 302), quantity: 2, priceCents: 75, box: ["box-unsorted", "Unsorted"], daysAgo: 0 },
+  { card: pick(SET.finest, null, 9), quantity: 1, priceCents: 1200, box: ["box-show", "Show box"], daysAgo: 1 },
+  { card: pick(SET.udHockey, null, 2), quantity: 4, priceCents: null, box: ["box-unsorted", "Unsorted"], daysAgo: 3 },
+  { card: pick(SET.topps, null, 340), quantity: 1, priceCents: 250, box: ["box-show", "Show box"], daysAgo: 5 },
+].map(({ card, quantity, priceCents, box, daysAgo }, i) => ({
+  ...card,
+  lineId: `listing-${i}`,
+  quantity,
+  priceCents,
+  boxId: box[0],
+  boxName: box[1],
+  daysAgo,
+}));
+
+// ---------------------------------------------------------------------------
+// Sync status: what has not synced yet, and what keeps failing
+// ---------------------------------------------------------------------------
+
+/** One card the last sync held back, and why, in NB's words. */
+export interface HeldBackCard {
+  card: DashCard;
+  reason: string;
+}
+
+/** A set whose last sync to a marketplace failed, or held cards back. */
+export interface SyncProblemSet {
+  id: string;
+  marketplace: Marketplace;
+  /** "2024 Topps Chrome Base". */
+  setLabel: string;
+  /** NB's sentence for the failure, when the last sync failed; null when it ran and only held cards back. */
+  failure: string | null;
+  /** Cards it held back (every one, counted); `cards` names the first few. */
+  heldBack: number;
+  cards: HeldBackCard[];
+}
+
+/**
+ * The dashboard's sync status. Only what has not put itself right: a set
+ * whose LATEST sync failed or held cards back, never one a later clean sync
+ * fixed. `null` when nothing is waiting and nothing is wrong (no section).
+ */
+export interface SyncStatusData {
+  /** Cards waiting for the next sync, per marketplace with any. `more`: at least `cards`. */
+  pending: { marketplace: Marketplace; cards: number; more: boolean }[];
+  problems: SyncProblemSet[];
+  /** More sets need a look than are named. */
+  more: boolean;
+}
+
+const SYNC_STATUS: SyncStatusData = {
+  pending: [{ marketplace: "bsc", cards: 4, more: false }],
+  problems: [
+    {
+      id: "sync-ebay-chrome",
+      marketplace: "ebay",
+      setLabel: "2024 Topps Chrome Base",
+      failure: null,
+      heldBack: 2,
+      cards: [
+        { card: pick(SET.chrome, null, 13), reason: "No price yet. Set one on the card, or a common price for the set." },
+        { card: pick(SET.chrome, null, 25), reason: "eBay listings need a photo. Add one to a copy of this card and it goes up." },
+      ],
+    },
+  ],
+  more: false,
+};
+
+// ---------------------------------------------------------------------------
+// Boxes on the shelf
+// ---------------------------------------------------------------------------
+
+/** A box the collector is using, stood on the third shelf. */
+export interface ShelfBox {
+  id: string;
+  name: string;
+  /** Physical cards in it (copies). */
+  cardCount: number;
+  /** Unsorted, NB's own catch-all box. */
+  unsorted: boolean;
+  /** The label it wears on My Boxes (`labelOf`), so it looks the same on both shelves. */
+  label: ContainerLabel;
+}
+
+const SHELF_BOXES: ShelfBox[] = [
+  { id: "box-unsorted", name: "Unsorted", cardCount: 12, unsorted: true, label: labelOf({ kind: "box", system: "unsorted" }) },
+  { id: "box-show", name: "Show box", cardCount: 48, unsorted: false, label: labelOf({ kind: "box" }) },
+  { id: "box-monster", name: "Monster box", cardCount: 312, unsorted: false, label: labelOf({ kind: "box" }) },
+];
+
 export interface DashboardData {
   /** null when the account has no order stored: no sales section at all. */
   sales: SalesData | null;
   /** Newest batch first. Empty: no Fresh Pulls section. */
   additions: AdditionBatch[];
+  /** New Listings, newest first. Empty: no New Listings section. */
+  newListings: NewListing[];
+  /** The sync status at the top; null: nothing waiting and nothing wrong, no section. */
+  syncStatus: SyncStatusData | null;
+  /**
+   * The boxes the collector is using (a box they made, or Unsorted holding a
+   * card), for the third shelf. Empty or absent: the third shelf holds
+   * binders, then the way into Inventory's Add cards.
+   */
+  shelfBoxes?: ShelfBox[];
   /** New on NeonBinder, newest first: the catalog's news, shown to every collector. */
   newSets: NewSet[];
   /** Ranked by fewest cards needed. */
@@ -693,6 +822,9 @@ const SMART = smartBinders();
 const DASHBOARD: DashboardData = {
   sales: SALES,
   additions: ADDITIONS,
+  newListings: NEW_LISTINGS,
+  syncStatus: SYNC_STATUS,
+  shelfBoxes: SHELF_BOXES,
   newSets: NEW_SETS,
   building: BUILDING,
   justCompleted: JUST_COMPLETED,
@@ -701,7 +833,7 @@ const DASHBOARD: DashboardData = {
   intake: INTAKE,
   unlistedBoxes: UNLISTED_BOXES,
   tradePile: TRADE_PILE,
-  totals: { cards: CARD_COUNT, binders: BINDER_COUNT, boxes: UNLISTED_BOXES.length },
+  totals: { cards: CARD_COUNT, binders: BINDER_COUNT, boxes: SHELF_BOXES.length },
 };
 
 /** The fake collector's dashboard, every section filled. Built once at load: the same object every call. */

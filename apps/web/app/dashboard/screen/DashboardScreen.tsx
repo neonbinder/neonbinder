@@ -6,12 +6,14 @@ import Hopper from "./Hopper";
 import Boards, { boardItems } from "./Boards";
 import CouldFit from "./CouldFit";
 import { ClosedCover, EmptyCover } from "./Cover";
+import NewListings from "./NewListings";
 import NewOnNeonBinder from "./NewOnNeonBinder";
 import PocketPage, { PocketTitle, WaitingTitle } from "./PocketPage";
 import { Chase, FreshPulls } from "./Pulls";
 import { FillingUp, OddsAndEnds } from "./Rail";
 import Shelf from "./Shelf";
 import { CollectionStarter, InventoryStarter } from "./Starters";
+import SyncStatus from "./SyncStatus";
 import { pageCount, shelfOrder, type ShelfBinder } from "./shelf-model";
 import { NeedsALook, needsALook, OutTheDoor } from "./ToDo";
 import "./combined.css";
@@ -22,7 +24,9 @@ import "./combined.css";
  * piece that is relevant to that user's data."). Every section draws only
  * when the account's data has something for it; nothing at all draws nothing.
  *
- *   1. Greeting and one summary line (the page's one <h1>).
+ *   1. Greeting and one summary line (the page's one <h1>), then the sync
+ *      status: cards waiting for the next sync, and sets whose latest sync
+ *      failed or held cards back (none of either: not drawn).
  *   2. The top band: a lead section with a side column beside it.
  *      - Side: In the Hopper (any scans in intake), then Needs a Look (a
  *        problem order, or a box with cards not listed).
@@ -31,14 +35,17 @@ import "./combined.css";
  *        boards, leads (Out the Door's "all shipped" line follows it).
  *        Out the Door shows only for an account that sells; the boards only
  *        when a set is being built.
- *   3. Your binders: three shelves of eight (24, "Show all N binders" past
- *      that) on the left, the open pocket page on the right, one height. An
- *      empty second shelf carries the way into Collection's Add cards, an
- *      empty third one Inventory's until there is a box (`Starters`). With
- *      no binder open, the first stands shut beside them (`Cover`); an open
- *      one with nothing in it stays shut.
+ *   3. Your binders (and boxes): three shelves of eight on the left, the
+ *      open pocket page on the right, one height. With a box in use, the
+ *      third shelf holds the boxes and the binders two (16; "Show all N
+ *      binders" past the cap). An empty second shelf carries the way into
+ *      Collection's Add cards; the third, until there is a box, carries
+ *      Inventory's, after any binders on it while there is room
+ *      (`Starters`). With no binder open, the first stands shut beside them
+ *      (`Cover`); an open one with nothing in it stays shut.
  *   4. Could fit your smart binders.
- *   5. The Chase and Fresh Pulls; a rail of Binders Filling Up and Odds and Ends.
+ *   5. The Chase, Fresh Pulls and New Listings; a rail of Binders Filling Up
+ *      and Odds and Ends.
  *   6. New on NeonBinder, the catalog's newest sets. Shown to everyone: it
  *      leads instead (right under the greeting) when nothing else is up top.
  *
@@ -198,13 +205,15 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
         {look}
       </div>
     ) : null;
+  const sync = data.syncStatus ? <SyncStatus status={data.syncStatus} /> : null;
   // The catalog's news shows for everyone; with nothing else up top, it leads.
   const news = <NewOnNeonBinder sets={data.newSets} />;
-  const newsLeads = !lead && !side;
+  const newsLeads = !lead && !side && !sync;
 
-  // An empty shelf carries a way in: shelf 2 to Collection's Add cards while it holds no binder,
-  // shelf 3 to Inventory's until the collector has a box.
-  const hasBoxes = (data.totals.boxes ?? 0) > 0;
+  // The third shelf is the boxes' once one is in use. An empty shelf carries a way in: shelf 2 to
+  // Collection's Add cards while it holds no binder, shelf 3 to Inventory's until there is a box.
+  const boxes = data.shelfBoxes ?? [];
+  const hasBoxes = boxes.length > 0 || (data.shelfBoxes === undefined && (data.totals.boxes ?? 0) > 0);
   const starter = (row: number) => {
     if (row === 1) return <CollectionStarter />;
     if (row === 2 && !hasBoxes) return <InventoryStarter />;
@@ -222,6 +231,7 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
         <p className="mt-2 max-w-prose text-base text-ink-2">{summary(data, binders, closest)}</p>
       </header>
 
+      {sync}
       {newsLeads && news}
 
       {(lead || side) && (
@@ -239,7 +249,9 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
               Stacked, the source order reads top to bottom: heading, shelves, title, page. */}
           <div className="grid gap-x-8 gap-y-4 xl:grid-cols-[minmax(0,1fr)_29rem] xl:items-stretch">
             <div className="min-w-0 xl:col-start-1 xl:row-start-1">
-              <BlockHeading id="cb-binders-heading">Your binders</BlockHeading>
+              <BlockHeading id="cb-binders-heading">
+                {boxes.length > 0 ? "Your binders and boxes" : "Your binders"}
+              </BlockHeading>
             </div>
             <div className="dash-shelves min-w-0 xl:col-start-1 xl:row-start-2">
               <Shelf
@@ -249,6 +261,7 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
                 onOpen={openBinder}
                 onClose={closeBinder}
                 starter={starter}
+                boxes={boxes}
               />
             </div>
             <div className="min-w-0 xl:col-start-2 xl:row-start-1">
@@ -273,6 +286,7 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
         <div className="min-w-0 space-y-10">
           <Chase wants={data.wantList} />
           <FreshPulls batches={data.additions} wanted={wanted} />
+          <NewListings listings={data.newListings} />
         </div>
         <div className="min-w-0 space-y-5">
           <FillingUp binders={binders} wanted={wanted} onOpen={openBinder} />

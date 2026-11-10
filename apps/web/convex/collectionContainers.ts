@@ -67,6 +67,7 @@ import {
   getOrCreateMain,
   lineAwaitingScans,
   newerAdded,
+  newerListed,
   refuse,
   slotLimit,
   type CountChange,
@@ -529,8 +530,15 @@ export const empty = mutation({
       const before = counted(line);
       if (into) {
         const quantity = into.quantity + line.quantity;
-        // NEO-464: a move, never an add; the line keeps the newer `addedAt`.
-        await ctx.db.patch(into._id, { quantity, lastUpdated: now, filedAt: now, ...newerAdded(into, line) });
+        // NEO-464: a move, never an add; the line keeps the newer `addedAt`
+        // (Main) or `listedAt` (Unsorted): emptying stays on one side.
+        await ctx.db.patch(into._id, {
+          quantity,
+          lastUpdated: now,
+          filedAt: now,
+          ...newerAdded(into, line),
+          ...newerListed(into, line),
+        });
         await ctx.db.delete(line._id);
         changes.push(
           changeOf(into, counted(into), counted({ ...into, quantity })),

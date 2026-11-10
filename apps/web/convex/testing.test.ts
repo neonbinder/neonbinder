@@ -12,6 +12,7 @@ import { __resetContractCache } from "./credentials";
 import { insertTestCard } from "../lib/testing/card-row";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { VISIT_GAP_MS } from "./dashboard";
+import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1252,5 +1253,122 @@ describe("backdateMyDashboardVisit (NEO-464)", () => {
     expect(await me.mutation(api.dashboard.markVisit, {})).toEqual({ sinceMs: moved!.seenAt });
     // Another account's visit is untouched.
     expect(await visitOf(USER_B)).toEqual(otherBefore);
+  });
+});
+
+describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
+  async function withBoxedCard() {
+    const t = convexTest(schema, modules);
+    const fx = await seedCollectionCatalog(t);
+    const me = t.withIdentity({ subject: USER_A });
+    const box = await t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: USER_A, kind: "box", name: "Show box", lastUpdated: 0 }),
+    );
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1, homeId: box });
+    return { t, fx, me, other: t.withIdentity({ subject: USER_B }) };
+  }
+  const listing = (t: ReturnType<typeof convexTest>, platform: "bsc" | "ebay") =>
+    t.run((ctx) =>
+      ctx.db.insert("marketplaceListingStates", { ownerId: USER_A, platform, listingStartedAt: 1, lastUpdated: 1 }),
+    );
+
+  test("fail closed when TESTING_RESET_SECRET is unset (production), and refuse an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.seedMyTestSale, {})).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.testing.clearMyTestDashboardSeeds, {})).rejects.toThrow(/Not authenticated/);
+    delete process.env.TESTING_RESET_SECRET;
+    const me = t.withIdentity({ subject: USER_A });
+    await expect(me.mutation(api.testing.seedMyTestSale, {})).rejects.toThrow(/not enabled/i);
+    await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: false })).rejects.toThrow(/not enabled/i);
+    await expect(me.mutation(api.testing.clearMyTestDashboardSeeds, {})).rejects.toThrow(/not enabled/i);
+  });
+
+  test("a sale of the caller's boxed card waiting to ship: the sales section and Out the Door read it; the clear takes only it away", async () => {
+    const { t, fx, me, other } = await withBoxedCard();
+    // A real order stays.
+    await t.run((ctx) =>
+      ctx.db.insert("marketplaceSales", {
+        ownerId: USER_A,
+        platform: "ebay",
+        orderId: "real-1",
+        orderNo: "R-1",
+        orderDate: 1,
+        status: "FULFILLED",
+        totals: {},
+        items: [],
+        firstSeenAt: 1,
+        lastUpdated: 1,
+      }),
+    );
+    const seeded = await me.mutation(api.testing.seedMyTestSale, {});
+    expect(seeded).toMatchObject({ platform: "bsc", matched: true });
+    const sales = await me.query(api.dashboard.sales, {});
+    expect(sales.dealer).toBe(true);
+    expect(sales.orders).toHaveLength(1);
+    expect(sales.orders[0]).toMatchObject({ orderNo: seeded.orderNo, lines: [{ cardId: fx.gooden1, quantity: 1 }] });
+    // Another collector sees nothing of it.
+    expect((await other.query(api.dashboard.sales, {})).dealer).toBe(false);
+
+    expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 1, queued: 0, records: 0 });
+    const after = await me.query(api.dashboard.sales, {});
+    expect(after.orders).toEqual([]);
+    expect(after.dealer).toBe(true);
+  });
+
+  test("never on a platform NB polls for the caller; refused when NB polls them all", async () => {
+    const { t, me } = await withBoxedCard();
+    await listing(t, "bsc");
+    expect((await me.mutation(api.testing.seedMyTestSale, {})).platform).toBe("ebay");
+    await listing(t, "ebay");
+    await expect(me.mutation(api.testing.seedMyTestSale, {})).rejects.toThrow(/every marketplace/);
+    await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).rejects.toThrow(/every marketplace/);
+  });
+
+  test("with no card at all, the sale is a line NB could not tie to a card; the sync seed is refused", async () => {
+    const t = convexTest(schema, modules);
+    const me = t.withIdentity({ subject: USER_A });
+    expect((await me.mutation(api.testing.seedMyTestSale, {})).matched).toBe(false);
+    const sales = await me.query(api.dashboard.sales, {});
+    expect(sales.orders[0].lines).toEqual([{ quantity: 1, problem: "unmatched" }]);
+    await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: false })).rejects.toThrow(/Add a card to a box/);
+  });
+
+  test("a pending card and a failed set show in the dashboard's sync status; the clear removes only them", async () => {
+    const { t, fx, me, other } = await withBoxedCard();
+    // A real queued card stays.
+    await t.run((ctx) =>
+      ctx.db.insert("listingOutbox", { ownerId: USER_A, platform: "bsc", cardId: fx.gold1, variantId: fx.goldId, seq: 3, changedAt: 1 }),
+    );
+    await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true });
+    const alerts = await me.query(api.dashboard.syncAlerts, {});
+    expect(alerts.pending).toEqual([{ platform: "bsc", cards: 2, more: false }]);
+    expect(alerts.sets).toHaveLength(1);
+    expect(alerts.sets[0]).toMatchObject({ platform: "bsc", variantId: fx.baseId, failed: true, heldBack: 1 });
+    expect(alerts.sets[0].cards).toEqual([{ cardId: fx.gooden1, reason: "noPrice", detail: "(Test) No price set." }]);
+    expect(await other.query(api.dashboard.syncAlerts, {})).toEqual({ pending: [], sets: [], more: false });
+
+    expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 1, records: 1 });
+    expect(await me.query(api.dashboard.syncAlerts, {})).toEqual({
+      pending: [{ platform: "bsc", cards: 1, more: false }],
+      sets: [],
+      more: false,
+    });
+  });
+
+  test("a set with a real sync record is left alone", async () => {
+    const { t, fx, me } = await withBoxedCard();
+    await t.run((ctx) =>
+      ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: USER_A,
+        variantId: fx.baseId,
+        platform: "bsc",
+        status: "idle",
+        problems: [],
+        conditionsPushed: [],
+        lastUpdated: 1,
+      }),
+    );
+    await expect(me.mutation(api.testing.seedMyTestSync, { pending: false, error: true })).rejects.toThrow(/real sync record/);
   });
 });

@@ -2233,6 +2233,8 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["dashboard.intake", (t) => t.query(api.dashboard.intake, {})],
     ["dashboard.sales", (t) => t.query(api.dashboard.sales, {})],
     ["dashboard.newSets", (t) => t.query(api.dashboard.newSets, {})],
+    ["dashboard.newListings", (t) => t.query(api.dashboard.newListings, { sinceMs: 0 })],
+    ["dashboard.syncAlerts", (t) => t.query(api.dashboard.syncAlerts, {})],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
@@ -3084,6 +3086,36 @@ describe("NEO-464 testing.backdateMyDashboardVisit — testing deployments only,
       process.env.TESTING_RESET_SECRET = "x";
       const dev = convexTest(schema, modules);
       await expect(dev.mutation(api.testing.backdateMyDashboardVisit, {})).rejects.toThrow(/Not authenticated/);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
+  });
+});
+
+/**
+ * NEO-464 — the dashboard's test seeds (`testing.seedMyTestSale`,
+ * `seedMyTestSync`, `clearMyTestDashboardSeeds`): public so the E2E test page
+ * can call them, and closed everywhere else. Pinned like
+ * `backdateMyDashboardVisit`: refused in production even for a signed-in
+ * caller, and refused to an anonymous caller where they are enabled. Their
+ * caller scoping is testing.test.ts's.
+ */
+describe("NEO-464 testing dashboard seeds — testing deployments only, signed in", () => {
+  const CALLS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["testing.seedMyTestSale", (t) => t.mutation(api.testing.seedMyTestSale, {})],
+    ["testing.seedMyTestSync", (t) => t.mutation(api.testing.seedMyTestSync, { pending: true, error: true })],
+    ["testing.clearMyTestDashboardSeeds", (t) => t.mutation(api.testing.clearMyTestDashboardSeeds, {})],
+  ];
+  test.each(CALLS)("%s is refused in production and to an anonymous caller", async (_name, call) => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      delete process.env.TESTING_RESET_SECRET;
+      const prod = convexTest(schema, modules);
+      await expect(call(prod.withIdentity(SIGNED_IN) as unknown as ReturnType<typeof convexTest>)).rejects.toThrow(/not enabled/);
+      process.env.TESTING_RESET_SECRET = "x";
+      const dev = convexTest(schema, modules);
+      await expect(call(dev)).rejects.toThrow(/Not authenticated/);
     } finally {
       if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
       else process.env.TESTING_RESET_SECRET = saved;

@@ -279,7 +279,7 @@ function photoLineToRaise(rows: ReadonlyArray<CopyRow>): CopyRow | undefined {
 
 /**
  * Put `quantity` more copies on an existing line. NEO-464: a raise files cards
- * into the box, so it passes `filed` (the line takes `filedAt`); an undo's
+ * into the box, so it passes `filed` (the line takes `filedAt` and `listedAt`); an undo's
  * put-back passes nothing and leaves the stamp as it was.
  */
 async function raiseLine(
@@ -287,7 +287,7 @@ async function raiseLine(
   row: CopyRow,
   adding: number,
   now: number,
-  filed: { filedAt?: number } = {},
+  filed: { filedAt?: number; listedAt?: number } = {},
 ): Promise<{ undo: Step; change: CountChange; row: CopyRow }> {
   const quantity = row.quantity + adding;
   await ctx.db.patch(row._id, { quantity, lastUpdated: now, ...filed });
@@ -343,7 +343,7 @@ async function putPlain(
   defaultCondition: Condition,
   now: number,
   place: () => Promise<Place> = () => placeOf(ctx, cardId),
-  { ownLine = false, filed = {} }: { ownLine?: boolean; filed?: { filedAt?: number } } = {},
+  { ownLine = false, filed = {} }: { ownLine?: boolean; filed?: { filedAt?: number; listedAt?: number } } = {},
 ): Promise<{ undo: Step; change: CountChange; row: CopyRow }> {
   const next: StoredDetails = {
     quantity: details.quantity,
@@ -435,8 +435,8 @@ export const setBoxQuantity = mutation({
         });
       }
       const adding = args.quantity - before;
-      // NEO-464: a raise files cards into the box.
-      const filed = { filedAt: now };
+      // NEO-464: a raise files cards into the box, and lists them (New Listings).
+      const filed = { filedAt: now, listedAt: now };
       const put = photoLine
         ? await raiseLine(ctx, photoLine, adding, now, filed)
         : await putPlain(

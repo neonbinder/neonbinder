@@ -96,11 +96,12 @@ function RunLink({ upload: u }: { upload: IntakeUpload }) {
     >
       <span className="flex items-baseline justify-between gap-2">
         <span className="min-w-0 truncate font-semibold text-neon-blue-text group-hover:underline">{u.name}</span>
-        <span className="shrink-0 tabular-nums text-ink-3">
+        <span className="shrink-0 tabular-nums text-ink-3 group-hover:text-ink-2">
           {u.done} of {count(u.scans, "scan")} done
         </span>
       </span>
-      <span className="mt-0.5 flex flex-wrap items-baseline justify-between gap-x-2 text-ink-3">
+      {/* On the hover fill, the quiet ink steps up a shade: ink-3 is under 4.5:1 on it in dark. */}
+      <span className="mt-0.5 flex flex-wrap items-baseline justify-between gap-x-2 text-ink-3 group-hover:text-ink-2">
         <span>{finished ? `All sorted. Open on ${screen}` : `Finish on ${screen}`}</span>
         <span className="tabular-nums">{u.lastScan}</span>
       </span>

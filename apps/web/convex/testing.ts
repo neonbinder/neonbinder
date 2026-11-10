@@ -37,7 +37,7 @@ import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from ".
 import { ListingGate } from "./listingGate";
 import { intakePhotoFailureValidator, listingPlatformValidator } from "./schema";
 import { DRAIN_LEASE_MS } from "./listingDrain";
-import { newToken } from "./listingOutbox";
+import { LISTING_PLATFORMS, listingStateOf, newToken, pushesCounts } from "./listingOutbox";
 import { VISIT_GAP_MS } from "./dashboard";
 
 /**
@@ -1391,5 +1391,246 @@ export const backdateMyDashboardVisit = mutation({
       dashboardVisit: { seenAt: Date.now() - VISIT_GAP_MS - 1000 },
     });
     return { backdated: true };
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-464 — what a sale and a sync problem look like on the dashboard
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Every order the seed writes carries this `orderId` prefix; the clear deletes only those. */
+export const TEST_SALE_ORDER_PREFIX = "nb-test-sale-";
+/** Every sync record the seed writes leads its NB sentences with this; the clear deletes only those. */
+export const TEST_SYNC_MARK = "(Test) ";
+/** Queued cards the seed writes carry this `seq` (real rows count up from 0); the clear deletes only those. */
+export const TEST_OUTBOX_SEQ = -1;
+
+/**
+ * The caller's copy the dashboard seeds name: the most recently touched line
+ * of a catalog card in a box, else in any home, else null. A private card is
+ * never one (it has no listing and no variant). Bounded: 200 lines.
+ */
+async function seedCopyOf(
+  ctx: MutationCtx,
+  userId: string,
+): Promise<{ cardId: Id<"cardChecklist">; variantId: Id<"selectorOptions">; boxed: boolean } | null> {
+  const rows = await ctx.db
+    .query("collectionCopies")
+    .withIndex("by_owner_and_lastUpdated", (q) => q.eq("ownerId", userId))
+    .order("desc")
+    .take(200);
+  let fallback: { cardId: Id<"cardChecklist">; variantId: Id<"selectorOptions">; boxed: boolean } | null = null;
+  for (const row of rows) {
+    const cardId = ctx.db.normalizeId("cardChecklist", row.cardId);
+    if (!cardId || row.variantId === undefined) continue;
+    const home = await ctx.db.get(row.homeId);
+    if (home?.kind === "box") return { cardId, variantId: row.variantId, boxed: true };
+    fallback ??= { cardId, variantId: row.variantId, boxed: false };
+  }
+  return fallback;
+}
+
+/**
+ * The first platform where NB neither pushes the caller's counts nor polls
+ * their orders (`listingOutbox.pushesCounts`, the one rule for both), so a
+ * seeded order or sync record is never read by a poll or a drain, and no
+ * marketplace is ever called for it. Null when the caller lists on all of them.
+ */
+async function quietPlatformOf(ctx: MutationCtx, userId: string): Promise<"bsc" | "ebay" | null> {
+  for (const platform of LISTING_PLATFORMS) {
+    const state = await listingStateOf(ctx, userId, platform);
+    if (!state || !pushesCounts(state)) return platform;
+  }
+  return null;
+}
+
+/**
+ * NEO-464: what a sale looks like on the dashboard, for the CALLER only.
+ * Writes one paid order waiting to ship (`marketplaceSales`, status
+ * READY_TO_SHIP on BuySportsCards, or eBay's PAID) for the caller's most
+ * recently touched boxed copy (else any catalog copy of theirs, else a line
+ * NB could not tie to a card), so the sales section and Out the Door draw.
+ * The copy is not lowered (`applied` is set so nothing ever applies it).
+ *
+ * It never calls a marketplace: the order goes on a platform NB does not
+ * poll for the caller (`quietPlatformOf`); with both being polled it is
+ * refused. Its `orderId` carries `TEST_SALE_ORDER_PREFIX`, so
+ * `clearMyTestDashboardSeeds` removes exactly what this wrote.
+ *
+ * Safety, in the same shape as the other helpers in this file: fails closed
+ * in production (`TESTING_RESET_SECRET` is unset there); acts on the caller
+ * only (no userId argument).
+ */
+export const seedMyTestSale = mutation({
+  args: {},
+  returns: v.object({ platform: listingPlatformValidator, orderNo: v.string(), matched: v.boolean() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test sale seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    const platform = await quietPlatformOf(ctx, userId);
+    if (!platform) {
+      throw new Error("This account's orders are polled on every marketplace, so a test sale would be read as a real one.");
+    }
+    const copy = await seedCopyOf(ctx, userId);
+    const now = Date.now();
+    const token = newToken().slice(0, 8);
+    const orderNo = `TEST-${token.toUpperCase()}`;
+    await ctx.db.insert("marketplaceSales", {
+      ownerId: userId,
+      platform,
+      orderId: `${TEST_SALE_ORDER_PREFIX}${token}`,
+      orderNo,
+      // Sold yesterday, so the row reads "1 day".
+      orderDate: now - 86_400_000,
+      status: platform === "ebay" ? "PAID" : "READY_TO_SHIP",
+      totals: { subtotalCents: 500, shippingCents: 100, totalCents: 600 },
+      items: [
+        {
+          platformCardId: `${TEST_SALE_ORDER_PREFIX}${token}-1`,
+          ...(copy ? { cardId: copy.cardId } : {}),
+          condition: "Near Mint",
+          quantity: 1,
+          priceCents: 500,
+          applied: true,
+          appliedAt: now,
+          ...(copy ? {} : { problem: "unmatched" as const }),
+        },
+      ],
+      firstSeenAt: now,
+      lastUpdated: now,
+    });
+    return { platform, orderNo, matched: copy !== null };
+  },
+});
+
+/**
+ * NEO-464: what the dashboard's sync status looks like, for the CALLER only.
+ * `pending`: one card queued for the next sync (`listingOutbox`, seq
+ * `TEST_OUTBOX_SEQ`). `error`: one set whose last run failed and held a card
+ * back (`marketplaceListingSyncs`, its sentences led by `TEST_SYNC_MARK`).
+ * Both name the caller's most recently touched catalog copy (a boxed one
+ * first); with none it is refused.
+ *
+ * It never calls a marketplace: the records go on a platform NB does not
+ * list on for the caller (`quietPlatformOf`), so no drain ever reads them; a
+ * set that already has a real record there is left alone (refused). Safety
+ * as `seedMyTestSale`: production refuses it; caller only.
+ */
+export const seedMyTestSync = mutation({
+  args: { pending: v.boolean(), error: v.boolean() },
+  returns: v.object({ platform: listingPlatformValidator }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test sync seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    const platform = await quietPlatformOf(ctx, userId);
+    if (!platform) {
+      throw new Error("This account lists on every marketplace, so a test sync record would be read by a real sync.");
+    }
+    const copy = await seedCopyOf(ctx, userId);
+    if (!copy) {
+      throw new Error("Add a card to a box first: the test sync names one of your cards.");
+    }
+    const now = Date.now();
+    if (args.pending) {
+      await ctx.db.insert("listingOutbox", {
+        ownerId: userId,
+        platform,
+        cardId: copy.cardId,
+        variantId: copy.variantId,
+        seq: TEST_OUTBOX_SEQ,
+        changedAt: now,
+      });
+    }
+    if (args.error) {
+      const existing = await ctx.db
+        .query("marketplaceListingSyncs")
+        .withIndex("by_owner_variant_platform", (q) =>
+          q.eq("ownerId", userId).eq("variantId", copy.variantId).eq("platform", platform),
+        )
+        .first();
+      if (existing && !(existing.lastError ?? "").startsWith(TEST_SYNC_MARK)) {
+        throw new Error("That set already has a real sync record, so the test one was not written.");
+      }
+      const record = {
+        ownerId: userId,
+        variantId: copy.variantId,
+        platform,
+        status: "error" as const,
+        lastRunAt: now - 10 * 60_000,
+        lastSuccessAt: now - 86_400_000,
+        lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
+        problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
+        problemsTotal: 1,
+        conditionsPushed: [],
+        lastUpdated: now,
+      };
+      if (existing) await ctx.db.replace(existing._id, record);
+      else await ctx.db.insert("marketplaceListingSyncs", record);
+    }
+    return { platform };
+  },
+});
+
+/**
+ * NEO-464: removes what `seedMyTestSale` and `seedMyTestSync` wrote for the
+ * CALLER, and nothing else: orders whose `orderId` carries
+ * `TEST_SALE_ORDER_PREFIX`, queued cards at `TEST_OUTBOX_SEQ`, and sync
+ * records whose sentence carries `TEST_SYNC_MARK`. Bounded reads (the
+ * caller's newest 200 orders, 200 queued cards and 200 records per platform).
+ * Safety as `seedMyTestSale`.
+ */
+export const clearMyTestDashboardSeeds = mutation({
+  args: {},
+  returns: v.object({ sales: v.number(), queued: v.number(), records: v.number() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test dashboard seeds are not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    const out = { sales: 0, queued: 0, records: 0 };
+    const orders = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_date", (q) => q.eq("ownerId", userId))
+      .order("desc")
+      .take(200);
+    for (const order of orders) {
+      if (!order.orderId.startsWith(TEST_SALE_ORDER_PREFIX)) continue;
+      await ctx.db.delete(order._id);
+      out.sales += 1;
+    }
+    for (const platform of LISTING_PLATFORMS) {
+      const queued = await ctx.db
+        .query("listingOutbox")
+        .withIndex("by_owner_platform_changed", (q) => q.eq("ownerId", userId).eq("platform", platform))
+        .take(200);
+      for (const row of queued) {
+        if (row.seq !== TEST_OUTBOX_SEQ) continue;
+        await ctx.db.delete(row._id);
+        out.queued += 1;
+      }
+      const records = await ctx.db
+        .query("marketplaceListingSyncs")
+        .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", userId).eq("platform", platform))
+        .take(200);
+      for (const record of records) {
+        if (!(record.lastError ?? "").startsWith(TEST_SYNC_MARK)) continue;
+        await ctx.db.delete(record._id);
+        out.records += 1;
+      }
+    }
+    return out;
   },
 });

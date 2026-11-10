@@ -13,8 +13,11 @@
  *   history or the catalog's newest cards, so none is ever subscribed. They refresh
  *   when the dashboard is opened again, or when the sets or binders asked
  *   for change.
- * - subscribed: "new since your last visit" (lines filed or moved in) and
- *   Fresh Pulls' last two weeks (lines added new), at most 100 lines each.
+ * - subscribed: "new since your last visit" (lines filed or moved in),
+ *   Fresh Pulls' last two weeks (lines added new), at most 100 lines each,
+ *   and New Listings' (lines that landed in a box), at most 60.
+ * - read once on mount, too: the sync status (the cards waiting to sync and
+ *   the sets whose last sync failed or held cards back).
  * - the visit stamp: one mutation on mount, which answers the previous visit
  *   before it stamps this one.
  */
@@ -33,6 +36,8 @@ export type CouldFitRaw = NonNullable<FunctionReturnType<typeof api.dashboard.co
 export type IntakeRaw = FunctionReturnType<typeof api.dashboard.intake>;
 export type SalesRaw = FunctionReturnType<typeof api.dashboard.sales>;
 export type NewSetRaw = FunctionReturnType<typeof api.dashboard.newSets>[number];
+export type NewListingsRaw = FunctionReturnType<typeof api.dashboard.newListings>;
+export type SyncAlertsRaw = FunctionReturnType<typeof api.dashboard.syncAlerts>;
 
 /**
  * Run `read` once per `key` (null: not yet), keep its answer, and drop an
@@ -95,6 +100,22 @@ export function useNewSince(sinceMs: number | null | undefined): NewSinceRaw | u
  */
 export function useFreshPullLines(sinceMs: number): FreshPullsRaw | undefined {
   return useQuery(api.dashboard.freshPulls, { sinceMs });
+}
+
+/**
+ * New Listings: the box lines whose cards landed in Inventory since `sinceMs`
+ * (the start of its window), subscribed, so a card put up for sale shows at once.
+ */
+export function useNewListingLines(sinceMs: number): NewListingsRaw | undefined {
+  return useQuery(api.dashboard.newListings, { sinceMs });
+}
+
+const NO_SYNC_ALERTS: SyncAlertsRaw = { pending: [], sets: [], more: false };
+
+/** The sync status, read once on mount. A failed read shows no sync status. */
+export function useSyncAlertsRaw(): SyncAlertsRaw | undefined {
+  const convex = useConvex();
+  return useReadOnce("sync-alerts", () => convex.query(api.dashboard.syncAlerts, {}), NO_SYNC_ALERTS);
 }
 
 /**

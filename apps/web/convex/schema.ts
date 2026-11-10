@@ -1320,6 +1320,17 @@ export default defineSchema({
         sinceAt: v.optional(v.number()),
       }),
     ),
+    /**
+     * NEO-464 — the collector's first dashboard open since NB stamps when
+     * cards were added (`collectionCopies.addedAt`) and listed (`listedAt`).
+     * A line with no stamp written before this moment predates the stamps,
+     * so Fresh Pulls and New Listings read its `_creationTime` instead; one
+     * written after it was never an add (a move, a split, an undo's
+     * put-back). Set once, by `dashboard.markVisit`; no backfill. Absent: the
+     * dashboard has not opened since, and nothing reads a line without a
+     * stamp.
+     */
+    dashboardStampsFrom: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     // NEO-415: eBay's Marketplace Account Deletion notice names the seller by
@@ -4341,10 +4352,29 @@ export default defineSchema({
      * container emptied and a merge carry it (a split part keeps its
      * source's; a merge keeps the newer of the two), never set it; a box
      * add or raise, an edit and an undo's put-back never stamp it. Unlike
-     * `filedAt`, which every arrival in a home stamps. Optional, no
-     * backfill: absent is "not added since this shipped", never fresh.
+     * `filedAt`, which every arrival in a home stamps. A move INTO a box
+     * drops it (cards for sale are not pulls), so a later Take off sale back
+     * into a binder is a move, never a pull. Optional, no backfill: a line
+     * with none that was written before the collector's first dashboard
+     * open under this rule (`userProfiles.dashboardStampsFrom`) reads its
+     * `_creationTime` instead (`dashboard.freshPulls`).
      */
     addedAt: v.optional(v.number()),
+    /**
+     * NEO-464 — when this line's cards landed in Inventory (a box, Unsorted
+     * included): what the dashboard's New Listings reads
+     * (`dashboard.newListings`; Jason, 2026-11-10: "Listings come from our
+     * Inventory ... don't worry about if it has sync'd yet or not"). Stamped
+     * by an add into a box (`collection.addOne`), a box raise
+     * (`collectionInventory.setBoxQuantity`) and a move from a binder into a
+     * box (Sell). A move between boxes, a split, a box emptied into Unsorted
+     * and a merge carry it (a merge keeps the newer); a move out to a binder
+     * drops it; an edit and an undo's put-back never stamp it. NB data only:
+     * never a marketplace's listing state. Optional, no backfill: a line with
+     * none written before `userProfiles.dashboardStampsFrom` reads its
+     * `_creationTime` instead.
+     */
+    listedAt: v.optional(v.number()),
   })
     // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
     .index("by_owner_and_card", ["ownerId", "cardId"])
@@ -4359,6 +4389,10 @@ export default defineSchema({
     // stamp, newest first (`dashboard.freshPulls`, a bounded range). A line
     // never stamped has no `addedAt` and sorts below every stamp.
     .index("by_owner_and_addedAt", ["ownerId", "addedAt"])
+    // NEO-464 — New Listings: the lines that landed in a box after a stamp,
+    // newest first (`dashboard.newListings`, a bounded range). The lines with
+    // no stamp sit first, in `_creationTime` order, for the legacy read.
+    .index("by_owner_and_listedAt", ["ownerId", "listedAt"])
     // copiesInVariant and variantCompletion (all three), set completion
     // (prefix: ownerId + setId).
     .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])

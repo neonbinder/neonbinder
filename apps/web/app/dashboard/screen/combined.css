@@ -540,6 +540,77 @@
   }
 }
 
+/* The third shelf with a few binders on it still carries its starter, after
+   them, sharing out what the row has left. Smaller than on an empty shelf. */
+.cb-starter-beside {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  margin-left: 8px;
+}
+.cb-starter-beside .cb-starter {
+  height: 64px;
+  gap: 8px;
+}
+.cb-starter-beside .cb-starter-headline {
+  font-size: 13px;
+}
+.cb-starter-beside .cb-starter-action {
+  font-size: 12px;
+}
+@media (min-width: 640px) {
+  .cb-starter-beside {
+    margin-left: 14px;
+  }
+  .cb-starter-beside .cb-starter {
+    height: 130px;
+    gap: 14px;
+  }
+  .cb-starter-beside .cb-starter-headline {
+    font-size: 17px;
+  }
+  .cb-starter-beside .cb-starter-action {
+    font-size: 14px;
+  }
+}
+
+/* ------------------------------------------------------------ the boxes */
+
+/* Box ends as My Boxes draws them (box.css), standing on the third shelf.
+   A phone's are a little shorter; the widths share out the shelf (Shelf.tsx). */
+.cb-shelf--boxes {
+  gap: 6px;
+}
+/* A phone's shorter box end: its count tag sits above the hand-hole, not on it. */
+.cb-shelf--boxes .nb-boxspine-tag {
+  bottom: 34px;
+}
+.cb-shelf--boxes .cb-box {
+  flex: none;
+  height: 132px;
+  color: inherit;
+  text-decoration: none;
+  animation: cb-spines-in 340ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 30ms);
+}
+@media (min-width: 640px) {
+  .cb-shelf--boxes {
+    gap: 12px;
+  }
+  .cb-shelf--boxes .cb-box {
+    height: 160px;
+  }
+}
+/* "N more": the outline box, its words in the page's ink (it is not kraft). */
+.cb-box-more {
+  color: var(--ink-2);
+}
+.cb-box-more:hover,
+.cb-box-more:focus-visible {
+  color: var(--ink);
+}
+
 /* New on NeonBinder: a set with no Base card yet, as a blank neon card. */
 .cb-newset-blank {
   display: block;
@@ -626,6 +697,7 @@
 @media (prefers-reduced-motion: reduce) {
   .cb-spine,
   .cb-shelf .cb-spine,
+  .cb-shelf--boxes .cb-box,
   .cb-page-in {
     animation: none;
     transition: none;
@@ -655,5 +727,14 @@
   }
   .dash-shelves .cb-starter {
     height: calc(150px * var(--spine-scale));
+  }
+  .dash-shelves .cb-starter-beside .cb-starter {
+    height: calc(110px * var(--spine-scale));
+  }
+  .dash-shelves {
+    --box-w: calc(116px * var(--spine-scale));
+  }
+  .dash-shelves .cb-shelf--boxes .cb-box {
+    height: calc(160px * var(--spine-scale));
   }
 }

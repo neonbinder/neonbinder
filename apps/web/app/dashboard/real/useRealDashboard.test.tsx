@@ -14,7 +14,18 @@ import { pageCount, POCKETS_PER_PAGE, shelfOrder } from "../screen/shelf-model";
 import { labelOf, PLAIN_LABEL } from "@/app/collection/final/binders/label";
 import { SHELF_CAP } from "../screen/Shelf";
 import { NEED_NAMED } from "../screen/Boards";
-import type { CompletionRaw, CouldFitRaw, FreshPullsRaw, IntakeRaw, NewSetRaw, NewSinceRaw, SalesRaw, SetBoardRaw } from "./useDashboardServer";
+import type {
+  CompletionRaw,
+  CouldFitRaw,
+  FreshPullsRaw,
+  IntakeRaw,
+  NewListingsRaw,
+  NewSetRaw,
+  NewSinceRaw,
+  SalesRaw,
+  SetBoardRaw,
+  SyncAlertsRaw,
+} from "./useDashboardServer";
 import {
   ADD_CARDS_RUN_PARAM,
   boxesInUseOf,
@@ -31,6 +42,13 @@ import {
   freshPullIds,
   freshPullsOf,
   freshPullsWindowStart,
+  heldBackReason,
+  NEW_LISTINGS_CARDS,
+  newListingIds,
+  newListingsOf,
+  shelfBoxesOf,
+  syncCardIdsOf,
+  syncStatusOf,
   intakeOf,
   lastScanLabel,
   JUST_COMPLETED_DAYS,
@@ -87,6 +105,9 @@ const server = vi.hoisted(() => ({
   pulls: undefined as FreshPullsRaw | undefined,
   pullsAsked: [] as number[],
   newSets: undefined as NewSetRaw[] | undefined,
+  listings: undefined as NewListingsRaw | undefined,
+  listingsAsked: [] as number[],
+  sync: undefined as SyncAlertsRaw | undefined,
 }));
 
 vi.mock("./useDashboardServer", () => ({
@@ -112,6 +133,11 @@ vi.mock("./useDashboardServer", () => ({
     return server.pulls;
   },
   useNewSets: () => server.newSets,
+  useNewListingLines: (sinceMs: number) => {
+    server.listingsAsked.push(sinceMs);
+    return server.listings;
+  },
+  useSyncAlertsRaw: () => server.sync,
 }));
 
 vi.mock("@/app/collection/final/data/store", async (importOriginal) => {
@@ -177,6 +203,8 @@ const SUMMARY: CollectionSummary = { copies: 3, cards: 2, exact: true, offBuild:
 
 const NOT_A_DEALER: SalesRaw = { dealer: false, orders: [], more: false };
 
+const NOTHING_TO_SYNC: SyncAlertsRaw = { pending: [], sets: [], more: false };
+
 function wrapper(url: string) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return <MemoryRouter initialEntries={[url]}>{children}</MemoryRouter>;
@@ -206,6 +234,9 @@ beforeEach(() => {
   server.pulls = undefined;
   server.pullsAsked = [];
   server.newSets = undefined;
+  server.listings = undefined;
+  server.listingsAsked = [];
+  server.sync = NOTHING_TO_SYNC;
 });
 
 afterEach(() => {
@@ -539,11 +570,23 @@ describe("the empty shelf", () => {
     expect(screen.queryByText("Every dealer starts with a dollar box.")).toBeNull();
   });
 
-  it("once there is a box, shelf 3 carries nothing", () => {
-    render(<DashboardScreen data={realDashboardData({ binders: [main], summary: SUMMARY, boxes: 1 })} />, {
+  it("once there is a box, shelf 3 carries the boxes instead", () => {
+    const boxes = shelfBoxesOf([container({ id: "box-1", kind: "box", name: "Show box", count: { copies: 48, lines: 30 } })]);
+    render(<DashboardScreen data={realDashboardData({ binders: [main], summary: SUMMARY, boxes: 1, shelfBoxes: boxes })} />, {
       wrapper: wrapper("/dashboard"),
     });
     expect(screen.getByRole("link", { name: COLLECTION_STARTER })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Your binders and boxes" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Show box, box, 48 cards for sale" }).getAttribute("href")).toBe(
+      "/inventory?tab=boxes&b=box-1",
+    );
+  });
+
+  it("a box counted but not passed to the shelf still puts the starter away", () => {
+    render(<DashboardScreen data={{ ...realDashboardData({ binders: [main], summary: SUMMARY, boxes: 1 }), shelfBoxes: undefined }} />, {
+      wrapper: wrapper("/dashboard"),
+    });
     expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
   });
 
@@ -1273,5 +1316,140 @@ describe("useRealDashboard: sales to ship, the hopper and what could fit", () =>
     expect(screen.queryByRole("heading", { name: "In the Hopper" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Could fit your smart binders" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Out the Door" })).toBeNull();
+  });
+});
+
+describe("the third shelf's boxes: shelfBoxesOf", () => {
+  it("stands the boxes in use, Unsorted first and only with a card in it (or not counted yet), each in its label", () => {
+    const unsorted = (count: Container["count"]) => container({ id: "u", kind: "box", system: "unsorted", name: "Unsorted", count });
+    const show = container({ id: "show", kind: "box", name: "Show box", count: { copies: 48, lines: 30 } });
+    const main = container({ id: "main", system: "main", name: "Main" });
+    expect(shelfBoxesOf([main, show, unsorted({ copies: 0, lines: 0 })]).map((b) => b.id)).toEqual(["show"]);
+    const boxes = shelfBoxesOf([show, unsorted({ copies: 2, lines: 1 })]);
+    expect(boxes.map((b) => [b.id, b.cardCount, b.unsorted])).toEqual([
+      ["u", 2, true],
+      ["show", 48, false],
+    ]);
+    expect(boxes[1].label).toEqual(labelOf(show));
+    expect(shelfBoxesOf([unsorted(null)]).map((b) => b.cardCount)).toEqual([0]);
+  });
+});
+
+describe("New Listings: newListingsOf", () => {
+  const NOW = new Date(2026, 10, 11, 15).getTime();
+  const at = (daysBack: number) => new Date(2026, 10, 11 - daysBack, 10).getTime();
+  const cards = new Map([
+    [cardA.id, cardA],
+    [cardB.id, cardB],
+  ]) as never;
+  const boxNames = new Map([["box-1", "Show box"]]);
+  const line = (id: string, cardId: string, listedAt: number, priceCents: number | null, homeId = "box-1", quantity = 1) =>
+    ({ id, homeId, cardId, listedAt, quantity, priceCents }) as NewListingsRaw["lines"][number];
+
+  it("each line once, in its box, with the quantity, the price and how long ago; a box not on the list is left out", () => {
+    const listings = newListingsOf(
+      [line("l1", cardA.id, at(0), 4500), line("l2", cardB.id, at(3), null, "box-1", 3), line("l3", cardA.id, at(1), 75, "gone")],
+      cards,
+      boxNames,
+      NOW,
+    );
+    expect(listings.map((l) => [l.lineId, l.id, l.boxId, l.boxName, l.quantity, l.priceCents, l.daysAgo])).toEqual([
+      ["l1", cardA.id, "box-1", "Show box", 1, 4500, 0],
+      ["l2", cardB.id, "box-1", "Show box", 3, null, 3],
+    ]);
+    expect(listings[0].title).toBe(toDash(cardA).title);
+  });
+
+  it("nothing new, or cards not hydrated yet: nothing, so no section; at most NEW_LISTINGS_CARDS asked for", () => {
+    expect(newListingsOf([], cards, boxNames, NOW)).toEqual([]);
+    expect(newListingsOf([line("l1", cardA.id, at(0), 1)], undefined, boxNames, NOW)).toEqual([]);
+    expect(newListingIds([])).toBeNull();
+    expect(newListingIds(undefined)).toBeNull();
+    const lots = Array.from({ length: NEW_LISTINGS_CARDS + 4 }, (_, i) => line(`l${i}`, cardA.id, at(0), 1));
+    expect(newListingIds(lots)).toHaveLength(NEW_LISTINGS_CARDS);
+  });
+});
+
+describe("the sync status: syncStatusOf", () => {
+  const cards = new Map([[cardA.id, cardA]]) as never;
+  const raw = {
+    pending: [{ platform: "bsc", cards: 4, more: false }],
+    sets: [
+      {
+        platform: "ebay",
+        variantId: "v1",
+        setLabel: "1996 Playoff Contenders Base",
+        failed: true,
+        message: "The marketplace didn't answer.",
+        lastRunAt: 1,
+        heldBack: 3,
+        cards: [
+          { cardId: cardA.id, reason: "noPrice" },
+          { cardId: cardB.id, reason: "noPrice" },
+        ],
+      },
+      { platform: "bsc", variantId: "v2", setLabel: "Other set", failed: false, heldBack: 0, cards: [] },
+    ],
+    more: false,
+  } as unknown as SyncAlertsRaw;
+
+  it("nothing waiting and nothing wrong (or not read yet): null, so no section", () => {
+    expect(syncStatusOf(undefined, undefined)).toBeNull();
+    expect(syncStatusOf(NOTHING_TO_SYNC, undefined)).toBeNull();
+    expect(syncCardIdsOf(NOTHING_TO_SYNC)).toBeNull();
+  });
+
+  it("maps the read: the marketplaces, the failure sentence, the held-back cards in NB's words; a card not hydrated is counted, not named", () => {
+    const status = syncStatusOf(raw, cards)!;
+    expect(status.pending).toEqual([{ marketplace: "bsc", cards: 4, more: false }]);
+    expect(status.problems.map((p) => [p.id, p.marketplace, p.setLabel, p.failure, p.heldBack])).toEqual([
+      ["sync-ebay-v1", "ebay", "1996 Playoff Contenders Base", "The marketplace didn't answer.", 3],
+      ["sync-bsc-v2", "bsc", "Other set", null, 0],
+    ]);
+    expect(status.problems[0].cards.map((c) => [c.card.id, c.reason])).toEqual([
+      [cardA.id, "No price yet. Set one on the card, or a common price for the set."],
+    ]);
+    expect(syncCardIdsOf(raw)).toEqual([cardA.id, cardB.id]);
+  });
+
+  it("a failed run with no message still says so", () => {
+    const quiet = { ...raw, sets: [{ ...raw.sets[0], message: undefined }] };
+    expect(syncStatusOf(quiet, cards)!.problems[0].failure).toBe("The last sync didn't go through.");
+  });
+
+  it("a held-back reason other than a price reads as the Sync status tab says it", () => {
+    expect(heldBackReason({ reason: "noPrice" }, "bsc")).toMatch(/^No price yet/);
+    expect(heldBackReason({ reason: "noLink" }, "bsc").length).toBeGreaterThan(0);
+  });
+});
+
+describe("useRealDashboard: the sync status and New Listings", () => {
+  const boxes = [
+    container({ id: "main", system: "main", name: "Main" }),
+    container({ id: "box-1", kind: "box", name: "Show box", count: { copies: 2, lines: 1 } }),
+  ];
+
+  it("waits for the sync read, so the status never pops in above everything", () => {
+    store.containers = boxes;
+    store.summary = SUMMARY;
+    server.sync = undefined;
+    const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
+    expect(result.current).toBeUndefined();
+  });
+
+  it("asks New Listings for Fresh Pulls' two weeks, and fills it, the sync status and the boxes' shelf", () => {
+    store.containers = boxes;
+    store.summary = SUMMARY;
+    server.listings = {
+      lines: [{ id: "l1", homeId: "box-1", cardId: cardA.id, listedAt: Date.now(), quantity: 2, priceCents: 150 }],
+      truncated: false,
+    } as unknown as NewListingsRaw;
+    server.sync = { pending: [{ platform: "ebay", cards: 1, more: false }], sets: [], more: false };
+    const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
+    const data = result.current!;
+    expect(server.listingsAsked.at(-1)).toBe(freshPullsWindowStart(Date.now()));
+    expect(data.newListings.map((l) => [l.id, l.boxName, l.quantity, l.priceCents])).toEqual([[cardA.id, "Show box", 2, 150]]);
+    expect(data.syncStatus?.pending).toEqual([{ marketplace: "ebay", cards: 1, more: false }]);
+    expect(data.shelfBoxes?.map((b) => b.id)).toEqual(["box-1"]);
   });
 });

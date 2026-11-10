@@ -15,7 +15,11 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   COULD_FIT_CARDS,
+  FILED_ONLY_ERA_END,
   FRESH_PULL_LINES,
+  STAMP_SLACK_MS,
+  SYNC_ALERTS_SHOWN,
+  SYNC_CARDS_NAMED,
   INTAKE_RECENT_MS,
   NEW_SETS_SHOWN,
   SALE_LINES,
@@ -28,11 +32,14 @@ import {
   checklistLoads,
   intakeRunShows,
   intakeRunTally,
+  legacyStampOf,
+  mergeStamped,
   newSetsSettled,
   nextVisit,
   ruleNamesChecklist,
   saleLinesOf,
   smartChecklistCount,
+  syncOutcome,
 } from "./dashboard";
 import { awaitingShipment } from "./listingSales";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
@@ -1279,6 +1286,383 @@ describe("sales", () => {
     }
     const out = await s.me.query(api.dashboard.sales, {});
     expect(out.orders.map((o) => o.orderNo)).toEqual(Array.from({ length: SALES_SHOWN }, (_, i) => `B-${i}`));
+    expect(out.more).toBe(true);
+  });
+});
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// Review round 4: lines written before the stamps, New Listings, sync status
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("legacyStampOf", () => {
+  const MARK = FILED_ONLY_ERA_END + 30 * DAY;
+
+  test("nothing reads as legacy before the dashboard has opened under the stamps, nor a line written since", () => {
+    expect(legacyStampOf({ _creationTime: 100 }, undefined)).toBeNull();
+    expect(legacyStampOf({ _creationTime: MARK }, MARK)).toBeNull();
+    expect(legacyStampOf({ _creationTime: MARK + 1 }, MARK)).toBeNull();
+  });
+
+  test("a line never filed (production's legacy lines) counts by when it was written", () => {
+    expect(legacyStampOf({ _creationTime: MARK - DAY }, MARK)).toBe(MARK - DAY);
+  });
+
+  test("filed-only era: filed in the same write counts; filed later (moved in) never", () => {
+    const at = FILED_ONLY_ERA_END - DAY;
+    expect(legacyStampOf({ _creationTime: at, filedAt: at + 3 }, MARK)).toBe(at);
+    expect(legacyStampOf({ _creationTime: at, filedAt: at + STAMP_SLACK_MS + 1 }, MARK)).toBeNull();
+  });
+
+  test("written after that era, a filed line with no stamp was moved in, however soon: never legacy", () => {
+    const at = FILED_ONLY_ERA_END + DAY;
+    expect(legacyStampOf({ _creationTime: at, filedAt: at }, MARK)).toBeNull();
+    expect(legacyStampOf({ _creationTime: at, filedAt: at + 1 }, MARK)).toBeNull();
+  });
+});
+
+describe("mergeStamped", () => {
+  test("newest first across both reads, cut at the cap, and the cut is said", () => {
+    const out = mergeStamped([{ at: 5 }, { at: 1 }], [{ at: 3 }], 2, false);
+    expect(out).toEqual({ lines: [{ at: 5 }, { at: 3 }], truncated: true });
+    expect(mergeStamped([{ at: 1 }], [], 2, false).truncated).toBe(false);
+    expect(mergeStamped([{ at: 1 }], [], 2, true).truncated).toBe(true);
+  });
+});
+
+describe("syncOutcome", () => {
+  const NOW = 1_800_000_000_000;
+  const record = (over: Partial<Parameters<typeof syncOutcome>[0]> = {}) => ({
+    status: "idle" as const,
+    problems: [],
+    ...over,
+  });
+
+  test("an error, then a later clean run: self-corrected, nothing to show", () => {
+    // The record is the last run's summary: a clean run after a failure leaves it idle.
+    expect(syncOutcome(record({ status: "idle", lastError: "old failure" }), NOW)).toEqual({ failed: false, heldBack: 0 });
+  });
+
+  test("a clean run, then a later error: shown", () => {
+    expect(syncOutcome(record({ status: "error", lastError: "BuySportsCards didn't answer." }), NOW)).toEqual({
+      failed: true,
+      heldBack: 0,
+    });
+  });
+
+  test("a run going now is not a failure; one that died holding an error is", () => {
+    expect(syncOutcome(record({ status: "running", leaseExpiresAt: NOW + 1000, lastError: "x" }), NOW).failed).toBe(false);
+    expect(syncOutcome(record({ status: "running", leaseExpiresAt: NOW - 1, lastError: "x" }), NOW).failed).toBe(true);
+    expect(syncOutcome(record({ status: "running", leaseExpiresAt: NOW - 1 }), NOW).failed).toBe(false);
+  });
+
+  test("cards the last run held back are counted, the stored total when it was capped", () => {
+    const problems = [{ cardId: undefined, reason: "noPrice" as const }];
+    expect(syncOutcome(record({ problems }), NOW).heldBack).toBe(1);
+    expect(syncOutcome(record({ problems, problemsTotal: 250 }), NOW).heldBack).toBe(250);
+  });
+});
+
+describe("stamps before the dashboard opened, and moves into and out of a box", () => {
+  // Driven on Date (convex-test stamps `_creationTime` from it), past the filed-only era.
+  const BASE = Math.max(Date.now(), FILED_ONLY_ERA_END) + 365 * DAY;
+  afterEach(() => vi.useRealTimers());
+  async function at(ms: number) {
+    vi.setSystemTime(ms);
+  }
+  async function fakeSetup() {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(BASE);
+    return setup();
+  }
+  const pulls = async (s: S, sinceMs: number) =>
+    (await s.me.query(api.dashboard.freshPulls, { sinceMs })).lines.map((l) => ({ home: l.homeId, card: l.cardId, at: l.addedAt }));
+  const listings = async (s: S, sinceMs: number) => (await s.me.query(api.dashboard.newListings, { sinceMs })).lines;
+  const rowOf = (s: S, id: Id<"collectionCopies">) => s.t.run((ctx) => ctx.db.get(id));
+  const legacyLine = (
+    s: S,
+    o: { homeId: Id<"collectionContainers">; cardId?: Id<"cardChecklist">; ownerId?: string; filedAt?: number; quantity?: number },
+  ) =>
+    s.t.run((ctx) =>
+      ctx.db.insert("collectionCopies", {
+        ownerId: o.ownerId ?? ME.subject,
+        cardId: o.cardId ?? s.fx.gooden1,
+        variantId: s.fx.baseId,
+        setId: s.fx.setId,
+        homeId: o.homeId,
+        quantity: o.quantity ?? 1,
+        lastUpdated: 0,
+        ...(o.filedAt !== undefined ? { filedAt: o.filedAt } : {}),
+      }),
+    );
+
+  test("cards added before the stamps are Fresh Pulls by when they were written, once the dashboard has opened; never a box's, a moved-in line, another collector's, or a line written since", async () => {
+    const s = await fakeSetup();
+    const windowStart = BASE + 500;
+    const variations = await s.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Variations", lastUpdated: 0 }),
+    );
+    // Written before the window: too old to be fresh. (The window starts after it: convex-test keeps `_creationTime` rising.)
+    await at(BASE + 100);
+    await legacyLine(s, { homeId: variations, cardId: s.fx.gold1 });
+    await at(BASE + 1000);
+    const pull = await legacyLine(s, { homeId: variations });
+    await at(BASE + 2000);
+    await legacyLine(s, { homeId: s.homes.box, cardId: s.fx.strawberry2 });
+    // Moved in after it was written (filed later): a move, never a pull.
+    await at(BASE + 3000);
+    await legacyLine(s, { homeId: s.homes.main, cardId: s.fx.futureStar, filedAt: BASE + 3000 + 10 * 60_000 });
+    await legacyLine(s, { homeId: s.homes.theirMain, ownerId: THEM.subject });
+
+    // Not until the dashboard opens under the stamps: until then nothing is read as legacy.
+    await at(BASE + 4000);
+    expect(await pulls(s, windowStart)).toEqual([]);
+    await s.me.mutation(api.dashboard.markVisit, {});
+    const written = (await rowOf(s, pull))!._creationTime;
+    expect(await pulls(s, windowStart)).toEqual([{ home: variations, card: s.fx.gooden1, at: written }]);
+    // A window starting after it leaves it out.
+    expect(await pulls(s, written)).toEqual([]);
+
+    // A later open does not move the moment the stamps started.
+    await at(BASE + 2 * VISIT_GAP_MS);
+    await s.me.mutation(api.dashboard.markVisit, {});
+    // A line with no stamp written since (an undo's put-back) is never a pull.
+    const added = await s.me.mutation(api.collection.addHave, { cardId: s.fx.strawberry2 });
+    const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId: added.copyId });
+    await s.me.mutation(api.collection.restoreCopy, { cardId: removed.cardId, details: removed.details });
+    expect(await pulls(s, windowStart)).toEqual([{ home: variations, card: s.fx.gooden1, at: written }]);
+  });
+
+  test("Sell drops `addedAt` and stamps `listedAt`; Take off sale drops `listedAt` and is no pull, even with the legacy read on", async () => {
+    const s = await fakeSetup();
+    await s.me.mutation(api.dashboard.markVisit, {});
+    await at(BASE + 1000);
+    const added = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    expect((await rowOf(s, added.copyId))!.addedAt).toBe(BASE + 1000);
+    await at(BASE + 2000);
+    await s.me.mutation(api.collection.moveCopy, { copyId: added.copyId, toHomeId: s.homes.box });
+    const boxed = (await rowOf(s, added.copyId))!;
+    expect(boxed.addedAt).toBeUndefined();
+    expect(boxed.listedAt).toBe(BASE + 2000);
+    expect(await pulls(s, 0)).toEqual([]);
+    expect((await listings(s, 0)).map((l) => l.id)).toEqual([added.copyId]);
+
+    await at(BASE + 3000);
+    await s.me.mutation(api.collection.moveCopy, { copyId: added.copyId, toHomeId: s.homes.main });
+    const back = (await rowOf(s, added.copyId))!;
+    expect(back.addedAt).toBeUndefined();
+    expect(back.listedAt).toBeUndefined();
+    expect(await pulls(s, 0)).toEqual([]);
+    expect(await listings(s, 0)).toEqual([]);
+  });
+
+  test("the same with the dashboard opened after the moves: a line written then moved in still never reads as legacy", async () => {
+    const s = await fakeSetup();
+    const added = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    await at(BASE + 1);
+    await s.me.mutation(api.collection.moveCopy, { copyId: added.copyId, toHomeId: s.homes.box });
+    await at(BASE + 2);
+    await s.me.mutation(api.collection.moveCopy, { copyId: added.copyId, toHomeId: s.homes.main });
+    await at(BASE + 3);
+    await s.me.mutation(api.dashboard.markVisit, {});
+    expect(await pulls(s, 0)).toEqual([]);
+    expect(await listings(s, 0)).toEqual([]);
+  });
+
+  test("New Listings: an add into a box, a box raise and a Sell, newest first, each with its quantity and NB price", async () => {
+    const s = await fakeSetup();
+    const show = await s.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Show box", lastUpdated: 0 }),
+    );
+    // No price at all: null. The common price for the variant fills a line with none of its own.
+    await at(BASE + 1000);
+    const plain = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details: { quantity: 3, homeId: s.homes.box },
+    });
+    await at(BASE + 2000);
+    await s.me.mutation(api.collectionInventory.setBoxQuantity, { cardId: s.fx.gold1, boxId: show, quantity: 2 });
+    await at(BASE + 3000);
+    const binderCopy = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.strawberry2,
+      details: { quantity: 1, minPriceCents: 450 },
+    });
+    await at(BASE + 4000);
+    await s.me.mutation(api.collection.moveCopy, { copyId: binderCopy.copyId, toHomeId: show });
+    // Another collector's box lines are theirs.
+    const theirBox = await s.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: THEM.subject, kind: "box", name: "Theirs", lastUpdated: 0 }),
+    );
+    await s.them.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: theirBox });
+
+    const before = await listings(s, BASE);
+    expect(before.map((l) => [l.cardId, l.quantity, l.priceCents, l.listedAt])).toEqual([
+      [s.fx.strawberry2, 1, 450, BASE + 4000],
+      [s.fx.gold1, 2, null, BASE + 2000],
+      [s.fx.gooden1, 3, null, BASE + 1000],
+    ]);
+    expect(before[2].id).toBe(plain.copyId);
+
+    await s.t.run((ctx) =>
+      ctx.db.insert("variantCommonPrices", { ownerId: ME.subject, variantId: s.fx.baseId, priceCents: 125, lastUpdated: 0 }),
+    );
+    const priced = await listings(s, BASE);
+    expect(priced.find((l) => l.cardId === s.fx.gooden1)?.priceCents).toBe(125);
+    // The Gold Refractor is another variant: no common price for it.
+    expect(priced.find((l) => l.cardId === s.fx.gold1)?.priceCents).toBeNull();
+    // The window: only what landed after `sinceMs`.
+    expect((await listings(s, BASE + 2500)).map((l) => l.cardId)).toEqual([s.fx.strawberry2]);
+  });
+
+  test("a move between boxes carries `listedAt` (a split part too); emptying a box into Unsorted keeps it", async () => {
+    const s = await fakeSetup();
+    const show = await s.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "box", name: "Show box", lastUpdated: 0 }),
+    );
+    await at(BASE + 1000);
+    const line = await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 3, homeId: show } });
+    await at(BASE + 5000);
+    const part = await s.me.mutation(api.collection.moveCopy, { copyId: line.copyId, toHomeId: s.homes.box, quantity: 1 });
+    expect(part.split).toBe(true);
+    expect((await rowOf(s, part.copyId))!.listedAt).toBe(BASE + 1000);
+    await at(BASE + 6000);
+    await s.me.mutation(api.collectionContainers.empty, { containerId: show });
+    const rows = await s.t.run((ctx) =>
+      ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ME.subject).eq("cardId", s.fx.gooden1))
+        .collect(),
+    );
+    expect(rows.map((r) => [r.homeId, r.listedAt])).toEqual(rows.map(() => [s.homes.box, BASE + 1000]));
+  });
+
+  test("New Listings reads box lines written before the stamps by `_creationTime`, never a binder's", async () => {
+    const s = await fakeSetup();
+    await at(BASE + 1000);
+    const boxed = await legacyLine(s, { homeId: s.homes.box, quantity: 4 });
+    await legacyLine(s, { homeId: s.homes.main, cardId: s.fx.strawberry2 });
+    await at(BASE + 2000);
+    expect(await listings(s, BASE)).toEqual([]);
+    await s.me.mutation(api.dashboard.markVisit, {});
+    const out = await listings(s, BASE);
+    expect(out.map((l) => [l.id, l.quantity, l.listedAt])).toEqual([[boxed, 4, (await rowOf(s, boxed))!._creationTime]]);
+  });
+
+  test("refuses a signed-out caller", async () => {
+    const s = await fakeSetup();
+    await expect(s.t.query(api.dashboard.newListings, { sinceMs: 0 })).rejects.toThrow(/Not authenticated/);
+  });
+});
+
+describe("syncAlerts", () => {
+  const NOW = Date.now();
+  function outbox(s: S, platform: "bsc" | "ebay", n: number, ownerId = ME.subject) {
+    return s.t.run(async (ctx) => {
+      for (let i = 0; i < n; i++) {
+        await ctx.db.insert("listingOutbox", { ownerId, platform, cardId: s.fx.gooden1, variantId: s.fx.baseId, seq: i, changedAt: NOW - i });
+      }
+    });
+  }
+  function record(
+    s: S,
+    o: {
+      platform?: "bsc" | "ebay";
+      variantId?: Id<"selectorOptions">;
+      status: "idle" | "running" | "error";
+      lastRunAt: number;
+      lastSuccessAt?: number;
+      lastError?: string;
+      problems?: Array<{ cardId?: Id<"cardChecklist">; reason: "noPrice" | "noLink" | "rejected"; detail?: string }>;
+      problemsTotal?: number;
+      ownerId?: string;
+    },
+  ) {
+    return s.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: o.ownerId ?? ME.subject,
+        variantId: o.variantId ?? s.fx.baseId,
+        platform: o.platform ?? "bsc",
+        status: o.status,
+        lastRunAt: o.lastRunAt,
+        ...(o.lastSuccessAt !== undefined ? { lastSuccessAt: o.lastSuccessAt } : {}),
+        ...(o.lastError !== undefined ? { lastError: o.lastError } : {}),
+        problems: o.problems ?? [],
+        ...(o.problemsTotal !== undefined ? { problemsTotal: o.problemsTotal } : {}),
+        conditionsPushed: [],
+        lastUpdated: o.lastRunAt,
+      }),
+    );
+  }
+
+  test("refuses a signed-out caller", async () => {
+    const s = await setup();
+    await expect(s.t.query(api.dashboard.syncAlerts, {})).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("nothing pending and nothing failing: empty (the widget stays hidden)", async () => {
+    const s = await setup();
+    // A set whose last run was clean, after an earlier failure: it self-corrected.
+    await record(s, { status: "idle", lastRunAt: NOW, lastSuccessAt: NOW, lastError: "an earlier failure" });
+    expect(await s.me.query(api.dashboard.syncAlerts, {})).toEqual({ pending: [], sets: [], more: false });
+  });
+
+  test("pending: the cards waiting per platform; another collector's are theirs", async () => {
+    const s = await setup();
+    await outbox(s, "bsc", 3);
+    await outbox(s, "ebay", 1);
+    await outbox(s, "bsc", 5, THEM.subject);
+    const out = await s.me.query(api.dashboard.syncAlerts, {});
+    expect(out.pending).toEqual([
+      { platform: "bsc", cards: 3, more: false },
+      { platform: "ebay", cards: 1, more: false },
+    ]);
+    expect(out.sets).toEqual([]);
+  });
+
+  test("a later failure shows with NB's sentence; held-back cards show by name (first few) and count; newest run first", async () => {
+    const s = await setup();
+    await record(s, {
+      platform: "bsc",
+      status: "error",
+      lastRunAt: NOW - 1000,
+      lastSuccessAt: NOW - DAY,
+      lastError: "BuySportsCards didn't answer. NB tries again on the next sync.",
+    });
+    await record(s, {
+      platform: "ebay",
+      variantId: s.fx.goldId,
+      status: "idle",
+      lastRunAt: NOW,
+      lastSuccessAt: NOW,
+      problems: [
+        { cardId: s.fx.gold1, reason: "noPrice" },
+        { reason: "noLink" },
+        { cardId: s.fx.gold1, reason: "rejected", detail: "Too blurry" },
+        { cardId: s.fx.gold1, reason: "noPrice" },
+        { cardId: s.fx.gold1, reason: "noPrice" },
+      ],
+      problemsTotal: 9,
+    });
+    await record(s, { status: "error", lastRunAt: NOW, lastError: "theirs", ownerId: THEM.subject });
+    const out = await s.me.query(api.dashboard.syncAlerts, {});
+    expect(out.sets.map((x) => [x.platform, x.failed, x.heldBack])).toEqual([
+      ["ebay", false, 9],
+      ["bsc", true, 0],
+    ]);
+    expect(out.sets[1].message).toBe("BuySportsCards didn't answer. NB tries again on the next sync.");
+    expect(out.sets[0].message).toBeUndefined();
+    expect(out.sets[0].cards).toHaveLength(SYNC_CARDS_NAMED);
+    expect(out.sets[0].cards[1]).toEqual({ cardId: s.fx.gold1, reason: "rejected", detail: "Too blurry" });
+    expect(typeof out.sets[0].setLabel).toBe("string");
+  });
+
+  test(`at most SYNC_ALERTS_SHOWN (${SYNC_ALERTS_SHOWN}) sets, with more said`, async () => {
+    const s = await setup();
+    for (let i = 0; i < SYNC_ALERTS_SHOWN + 1; i++) {
+      await record(s, { status: "error", lastRunAt: NOW - i, lastError: `fail ${i}`, variantId: i % 2 ? s.fx.goldId : s.fx.baseId, platform: i % 2 ? "ebay" : "bsc" });
+    }
+    const out = await s.me.query(api.dashboard.syncAlerts, {});
+    expect(out.sets).toHaveLength(SYNC_ALERTS_SHOWN);
     expect(out.more).toBe(true);
   });
 });

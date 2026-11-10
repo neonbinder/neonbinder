@@ -35,6 +35,12 @@
  *   weeks (`dashboard.freshPulls`; never a move; subscribed);
  * - New on NeonBinder: the latest checklist uploads, grouped by set, each
  *   opening its checklist (read once).
+ * Review round 4:
+ * - New Listings: the cards that landed in a box in the last two weeks, with
+ *   quantity and NB's price (`dashboard.newListings`; subscribed);
+ * - the sync status at the top: cards waiting to sync, and the sets whose
+ *   latest sync failed or held cards back (`dashboard.syncAlerts`; read once);
+ * - the third shelf: the boxes in use, when there are any (`shelfBoxesOf`).
  *
  * Shelf rows are the collector's binders: Main and their own, never a box,
  * the Want List or the trade pile (`bindersOf` in the store). Spines wear
@@ -70,6 +76,7 @@ import type {
   SetRef,
   Want,
 } from "@/app/collection/final/data/types";
+import { problemSentence } from "@/app/collection/final/inventory/listing/copy";
 import { toDash, type DashCard } from "../dash-card";
 import {
   daysAgoLabel,
@@ -81,10 +88,14 @@ import {
   type IntakeInProgress,
   type IntakeScan,
   type IntakeUpload,
+  type Marketplace,
+  type NewListing,
   type NewSet,
   type SaleLine,
   type SalesData,
+  type ShelfBox,
   type SmartBinderSummary,
+  type SyncStatusData,
   type TradePile,
   type UnlistedBox,
   type UnshippedSale,
@@ -98,9 +109,11 @@ import {
   useFreshPullLines,
   useIntakeRaw,
   useJustCompletedRaw,
+  useNewListingLines,
   useNewSets,
   useNewSince,
   useSalesRaw,
+  useSyncAlertsRaw,
   useSetBoards,
   useSmartChecklists,
   useVisitSince,
@@ -108,8 +121,10 @@ import {
   type CouldFitRaw,
   type IntakeRaw,
   type NewSetRaw,
+  type NewListingsRaw,
   type NewSinceRaw,
   type FreshPullsRaw,
+  type SyncAlertsRaw,
   type SalesRaw,
   type SetBoardRaw,
 } from "./useDashboardServer";
@@ -240,8 +255,7 @@ export function tradePileOf(trade: Container | undefined, listed: ContainerCopie
  * one is not a box they have; a count not yet known reads as in use.
  */
 export function boxesInUseOf(containers: readonly Container[]): number {
-  return boxesOf(containers).filter((box) => box.system !== "unsorted" || box.count === null || box.count.copies > 0)
-    .length;
+  return shelfBoxesOf(containers).length;
 }
 
 /**
@@ -255,6 +269,19 @@ export function unlistedBoxesOf(containers: readonly Container[]): UnlistedBox[]
     .filter((box) => box.listedOnMarketplaces === false)
     .map((box) => ({ id: box.id, name: box.name, unlisted: box.count?.copies ?? 0 }))
     .filter((box) => box.unlisted > 0);
+}
+
+/** The boxes in use (see `boxesInUseOf`), Unsorted first, as the third shelf draws them. */
+export function shelfBoxesOf(containers: readonly Container[]): ShelfBox[] {
+  return boxesOf(containers)
+    .filter((box) => box.system !== "unsorted" || box.count === null || box.count.copies > 0)
+    .map((box) => ({
+      id: box.id,
+      name: box.name,
+      cardCount: box.count?.copies ?? 0,
+      unsorted: box.system === "unsorted",
+      label: labelOf(box),
+    }));
 }
 
 /** The newest wants, at most `cap`. A want with no stamp was just set: it is the newest. */
@@ -412,6 +439,94 @@ export function freshPullsOf(
 export function freshPullIds(lines: FreshPullsRaw["lines"] | undefined): CardId[] | null {
   if (!lines || lines.length === 0) return null;
   return lines.slice(0, FRESH_PULLS_CARDS).map((l) => l.cardId as CardId);
+}
+
+// ---------------------------------------------------------------------------
+// New Listings: the cards that landed in a box lately
+// ---------------------------------------------------------------------------
+
+/** New Listings looks back as far as Fresh Pulls. */
+export const NEW_LISTINGS_DAYS = FRESH_PULLS_DAYS;
+/** At most this many of the newest lines are drawn (and hydrated). */
+export const NEW_LISTINGS_CARDS = 24;
+
+/**
+ * New Listings from the box lines (newest first): each line once, in a box
+ * the collector has (a line whose box is not on the list is left out), its
+ * card hydrated (one not hydrated yet waits).
+ */
+export function newListingsOf(
+  lines: NewListingsRaw["lines"],
+  cards: CardsById | undefined,
+  boxNames: ReadonlyMap<string, string>,
+  now: number,
+): NewListing[] {
+  if (!cards) return [];
+  return lines.slice(0, NEW_LISTINGS_CARDS).flatMap((line) => {
+    const boxName = boxNames.get(line.homeId);
+    const card = cards.get(line.cardId as CardId);
+    if (!boxName || !card) return [];
+    return [
+      {
+        ...toDash(card),
+        lineId: line.id,
+        quantity: line.quantity,
+        priceCents: line.priceCents,
+        boxId: line.homeId,
+        boxName,
+        daysAgo: Math.max(0, daysBetween(localDay(line.listedAt), localDay(now))),
+      },
+    ];
+  });
+}
+
+/** The ids New Listings draws, or null when there are none. */
+export function newListingIds(lines: NewListingsRaw["lines"] | undefined): CardId[] | null {
+  if (!lines || lines.length === 0) return null;
+  return lines.slice(0, NEW_LISTINGS_CARDS).map((l) => l.cardId as CardId);
+}
+
+// ---------------------------------------------------------------------------
+// Sync status
+// ---------------------------------------------------------------------------
+
+/** Why a card was held back, as the dashboard says it (the Sync status tab's words, minus its "above"). */
+export function heldBackReason(
+  problem: { reason: SyncAlertsRaw["sets"][number]["cards"][number]["reason"]; detail?: string },
+  platform: SyncAlertsRaw["sets"][number]["platform"],
+): string {
+  if (problem.reason === "noPrice") return "No price yet. Set one on the card, or a common price for the set.";
+  return problemSentence(problem, false, platform);
+}
+
+/**
+ * The sync status from its read: null when nothing is waiting and nothing is
+ * wrong, so no section shows (the widget rule). A held-back card not
+ * hydrated yet (or gone from the catalog) is still counted, just not named.
+ */
+export function syncStatusOf(raw: SyncAlertsRaw | undefined, cards: CardsById | undefined): SyncStatusData | null {
+  if (!raw || (raw.pending.length === 0 && raw.sets.length === 0)) return null;
+  return {
+    pending: raw.pending.map((p) => ({ marketplace: p.platform as Marketplace, cards: p.cards, more: p.more })),
+    problems: raw.sets.map((set) => ({
+      id: `sync-${set.platform}-${set.variantId}`,
+      marketplace: set.platform as Marketplace,
+      setLabel: set.setLabel,
+      failure: set.failed ? (set.message ?? "The last sync didn't go through.") : null,
+      heldBack: set.heldBack,
+      cards: set.cards.flatMap((c) => {
+        const card = cards?.get(c.cardId as CardId);
+        return card ? [{ card: toDash(card), reason: heldBackReason(c, set.platform) }] : [];
+      }),
+    })),
+    more: raw.more,
+  };
+}
+
+/** The card ids the sync status names, or null when there are none. */
+export function syncCardIdsOf(raw: SyncAlertsRaw | undefined): CardId[] | null {
+  const ids = raw ? raw.sets.flatMap((s) => s.cards.map((c) => c.cardId as CardId)) : [];
+  return ids.length > 0 ? ids : null;
 }
 
 /**
@@ -721,6 +836,12 @@ export interface DashboardExtras {
   intake?: IntakeInProgress;
   /** Fresh Pulls, newest day first; absent or empty, no Fresh Pulls section. */
   additions?: AdditionBatch[];
+  /** New Listings, newest first; absent or empty, no New Listings section. */
+  newListings?: NewListing[];
+  /** The sync status; null or absent, no sync status section. */
+  syncStatus?: SyncStatusData | null;
+  /** The boxes in use, for the third shelf; absent or empty, it holds binders. */
+  shelfBoxes?: ShelfBox[];
   newSets?: NewSet[];
   /** How many boxes the collector has (Unsorted counts once it exists); absent reads as none. */
   boxes?: number;
@@ -732,6 +853,9 @@ export function realDashboardData(input: { binders: ShelfBinder[]; summary: Coll
   return {
     sales: input.sales ?? null,
     additions: input.additions ?? [],
+    newListings: input.newListings ?? [],
+    syncStatus: input.syncStatus ?? null,
+    shelfBoxes: input.shelfBoxes ?? [],
     newSets: input.newSets ?? [],
     building: input.building ?? [],
     justCompleted: input.justCompleted ?? null,
@@ -807,6 +931,13 @@ export function useRealDashboard(): DashboardData | undefined {
   // Fresh Pulls: the last two weeks' filings, subscribed, so an add shows at once.
   const pulls = useFreshPullLines(useMemo(() => freshPullsWindowStart(now), [now]));
   const pullCards = useCardMap(useMemo(() => freshPullIds(pulls?.lines), [pulls]));
+  // New Listings: the last two weeks' cards into a box, subscribed, so a card put up for sale shows at once.
+  const listingLines = useNewListingLines(useMemo(() => freshPullsWindowStart(now), [now]));
+  const listingCards = useCardMap(useMemo(() => newListingIds(listingLines?.lines), [listingLines]));
+  // The sync status at the top, and the cards it names (their own hydration, so it settles once).
+  const syncRaw = useSyncAlertsRaw();
+  const syncIds = useMemo(() => syncCardIdsOf(syncRaw), [syncRaw]);
+  const syncCards = useCardMap(syncIds);
   // New on NeonBinder: the catalog's newest sets, each with its cover card.
   const newSetsRaw = useNewSets();
   const coverIds = useMemo(() => {
@@ -856,6 +987,9 @@ export function useRealDashboard(): DashboardData | undefined {
   return useMemo(() => {
     if (!containers || !shelf || !summary || !chase || !chaseCards) return undefined;
     if (!salesRaw || (saleIds && !saleCards)) return undefined;
+    // The sync status leads the page: wait for it, so it never pops in above everything.
+    if (!syncRaw || (syncIds && !syncCards)) return undefined;
+    const boxes = boxesOf(containers);
     const binders = shelf.map((c) =>
       shelfBinderOf(c, c.id === openId && openPockets ? openPockets : [], {
         newCards: newByHome.get(c.id),
@@ -887,8 +1021,16 @@ export function useRealDashboard(): DashboardData | undefined {
       intake: intakeOf(intakeRaw, extraCards, now),
       additions: freshPullsOf(pulls?.lines ?? [], pullCards, new Map(shelf.map((c) => [c.id, c.name])), since, now),
       newSets: newSetsOf(newSetsRaw, coverCards),
+      newListings: newListingsOf(listingLines?.lines ?? [], listingCards, new Map(boxes.map((b) => [b.id, b.name])), now),
+      syncStatus: syncStatusOf(syncRaw, syncCards),
+      shelfBoxes: shelfBoxesOf(containers),
     });
   }, [
+    listingLines,
+    listingCards,
+    syncRaw,
+    syncIds,
+    syncCards,
     pulls,
     pullCards,
     since,

@@ -12,6 +12,8 @@ import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import { bindersOf, getDashboard, type DashboardData } from "../fake-data";
 import DashboardScreen, { summary } from "./DashboardScreen";
+import { priceWords } from "./NewListings";
+import type { ShelfBinder } from "./shelf-model";
 
 function wrapper({ children }: { children: ReactNode }) {
   return <MemoryRouter initialEntries={["/demo"]}>{children}</MemoryRouter>;
@@ -38,10 +40,12 @@ describe("DashboardScreen: one screen, sections by data", () => {
       "In the Hopper",
       "Needs a Look",
       "On the Bubble",
-      "Your binders",
+      "Sync status",
+      "Your binders and boxes",
       "Could fit your smart binders",
       "The Chase",
       "Fresh Pulls",
+      "New Listings",
       "Binders Filling Up",
       "Odds and Ends",
       "New on NeonBinder",
@@ -75,7 +79,7 @@ describe("DashboardScreen: one screen, sections by data", () => {
     for (const name of ["Out the Door", "In the Hopper", "Needs a Look"]) {
       expect(heading(name), name).toBeNull();
     }
-    expect(heading("Your binders")).not.toBeNull();
+    expect(heading("Your binders and boxes")).not.toBeNull();
     // The trade pile still fills Odds and Ends.
     expect(heading("Odds and Ends")).not.toBeNull();
   });
@@ -99,9 +103,9 @@ describe("New on NeonBinder", () => {
     const data = getDashboard();
     // Plain binders only (no checklist to put on a board), nothing being built, nothing to ship or look at.
     const plain = bindersOf(data).filter((b) => !b.checklist);
-    draw({ ...data, binders: plain, sales: null, intake: NO_INTAKE, unlistedBoxes: [], building: [] });
+    draw({ ...data, binders: plain, sales: null, intake: NO_INTAKE, unlistedBoxes: [], building: [], syncStatus: null });
     expect(heading("On the Bubble")).toBeNull();
-    expect(before(heading("New on NeonBinder")!, heading("Your binders")!)).toBe(true);
+    expect(before(heading("New on NeonBinder")!, heading("Your binders and boxes")!)).toBe(true);
   });
 
   it("a lone variant reads as the set, then the variant, and opens on that variant's checklist", () => {
@@ -263,5 +267,132 @@ describe("summary: since your last visit counts the cards filed into a binder", 
     const filed = bindersOf(data).reduce((n, b) => n + b.newCards.length, 0);
     draw(data);
     expect(screen.getByText(new RegExp(`${filed} cards? filed since your last visit\\.`))).toBeTruthy();
+  });
+});
+
+describe("the sync status (review round 4)", () => {
+  it("stands at the top, under the greeting, with what is waiting and the sets that still need a look", () => {
+    const data = getDashboard();
+    draw(data);
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    expect(before(sync, heading("Out the Door")!)).toBe(true);
+    expect(within(sync).getByText("4 cards waiting for the next sync.")).toBeTruthy();
+    expect(within(sync).getByRole("link", { name: "Open Sync status" }).getAttribute("href")).toBe("/demo/inventory?tab=sync");
+    // Each set names its marketplace for a reader, and each held-back card opens on Inventory, where the fix is.
+    const set = data.syncStatus!.problems[0];
+    expect(within(sync).getByRole("heading", { level: 3, name: `${set.setLabel} on eBay` })).toBeTruthy();
+    const first = set.cards[0];
+    const link = within(sync).getByRole("link", { name: new RegExp(`^${first.card.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) });
+    expect(link.getAttribute("href")).toBe(`/demo/inventory?tab=cards&detail=${encodeURIComponent(first.card.id)}`);
+    expect(link.textContent).toContain(first.reason);
+  });
+
+  it("a set whose last sync failed says so, and counts the cards it does not name", () => {
+    const data = getDashboard();
+    const set = { ...data.syncStatus!.problems[0], failure: "The marketplace didn't answer.", heldBack: 5 };
+    draw({ ...data, syncStatus: { pending: [], problems: [set], more: true } });
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    expect(within(sync).getByText("The marketplace didn't answer.")).toBeTruthy();
+    expect(within(sync).getByText("and 3 more cards")).toBeTruthy();
+    expect(within(sync).getByText("More sets need a look on Sync status.")).toBeTruthy();
+    expect(within(sync).queryByText(/waiting for the next sync/)).toBeNull();
+  });
+
+  it("only cards waiting: no set, and a count that may be a floor", () => {
+    draw({ ...getDashboard(), syncStatus: { pending: [{ marketplace: "bsc", cards: 100, more: true }], problems: [], more: false } });
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    expect(within(sync).getByText("100+ cards waiting for the next sync.")).toBeTruthy();
+    expect(within(sync).queryAllByRole("heading", { level: 3 })).toHaveLength(0);
+  });
+
+  it("nothing waiting and nothing wrong: no section", () => {
+    draw({ ...getDashboard(), syncStatus: null });
+    expect(heading("Sync status")).toBeNull();
+  });
+});
+
+describe("New Listings (review round 4)", () => {
+  it("follows Fresh Pulls, each tile with its price and box, opening the card in its box on Inventory", () => {
+    const data = getDashboard();
+    draw(data);
+    const listings = screen.getByRole("region", { name: "New Listings" });
+    expect(before(heading("Fresh Pulls")!, heading("New Listings")!)).toBe(true);
+    const links = within(listings).getAllByRole("link");
+    expect(links).toHaveLength(data.newListings.length);
+    const first = data.newListings[0];
+    expect(links[0].getAttribute("href")).toBe(
+      `/demo/inventory?tab=boxes&b=${first.boxId}&detail=${encodeURIComponent(first.id)}`,
+    );
+    expect(links[0].textContent).toContain("$45.00");
+    expect(links[0].textContent).toContain("1 in Show box");
+    expect(within(listings).getAllByText("$0.75 each")).toHaveLength(2);
+    expect(within(listings).getByText("No price yet")).toBeTruthy();
+  });
+
+  it("more than six: the rest behind Show all", () => {
+    const data = getDashboard();
+    const more = [...data.newListings, { ...data.newListings[0], lineId: "listing-x" }];
+    draw({ ...data, newListings: more });
+    const listings = screen.getByRole("region", { name: "New Listings" });
+    expect(within(listings).getAllByRole("link")).toHaveLength(6);
+    expect(within(listings).getByRole("button", { name: /^Show all 7 new listings/ })).toBeTruthy();
+  });
+
+  it("nothing new in a box: no section", () => {
+    draw({ ...getDashboard(), newListings: [] });
+    expect(heading("New Listings")).toBeNull();
+  });
+
+  it("words a price: one copy, several, none", () => {
+    expect(priceWords(4500, 1)).toBe("$45.00");
+    expect(priceWords(75, 3)).toBe("$0.75 each");
+    expect(priceWords(null, 2)).toBe("No price yet");
+  });
+});
+
+describe("the third shelf (review round 4)", () => {
+  const INVENTORY_STARTER = "That to-list pile won't list itself. Add cards to sell";
+  const base = bindersOf(getDashboard()).find((b) => !b.checklist)!;
+  const many = (n: number): ShelfBinder[] =>
+    Array.from({ length: n }, (_, i) => ({ ...base, id: `b${i}`, name: `Binder ${i}`, newCards: [], cardCount: 1 }));
+  const spines = () => screen.getAllByRole("button", { name: /^Binder \d+, 1 card, / });
+
+  it("with a box in use, the boxes stand on it, each opening its box on Inventory, and the binders keep two shelves", () => {
+    const data = getDashboard();
+    draw({ ...data, binders: many(20) });
+    expect(heading("Your binders and boxes")).not.toBeNull();
+    expect(spines()).toHaveLength(16);
+    expect(screen.getByRole("button", { name: "Show all 20 binders" })).toBeTruthy();
+    const boxes = screen.getByRole("list", { name: "Shelf 3, boxes" });
+    const unsorted = within(boxes).getByRole("link", { name: "Unsorted, box, 12 cards for sale" });
+    expect(unsorted.getAttribute("href")).toBe("/demo/inventory?tab=boxes&b=box-unsorted");
+    expect(within(boxes).getAllByRole("link")).toHaveLength(data.shelfBoxes!.length);
+    expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
+  });
+
+  it("more boxes than a shelf holds: the last place says how many more, into My Boxes", () => {
+    const data = getDashboard();
+    const eight = Array.from({ length: 8 }, (_, i) => ({ ...data.shelfBoxes![1], id: `box-${i}`, name: `Box ${i}` }));
+    draw({ ...data, shelfBoxes: eight });
+    const boxes = screen.getByRole("list", { name: "Shelf 3, boxes" });
+    expect(within(boxes).getAllByRole("link", { name: /, box, / })).toHaveLength(5);
+    expect(within(boxes).getByRole("link", { name: "3 more boxes on My Boxes" }).getAttribute("href")).toBe(
+      "/demo/inventory?tab=boxes",
+    );
+  });
+
+  it("with no box, binders past two shelves stand on the third, and the to-list pile after them while there is room", () => {
+    draw({ ...getDashboard(), shelfBoxes: [], binders: many(20) });
+    expect(heading("Your binders")).not.toBeNull();
+    expect(spines()).toHaveLength(20);
+    const third = screen.getByRole("list", { name: "Shelf 3" });
+    expect(within(third).getAllByRole("button")).toHaveLength(4);
+    expect(within(third).getByRole("link", { name: INVENTORY_STARTER }).getAttribute("href")).toBe("/demo/inventory?tab=add");
+  });
+
+  it("a fuller third shelf has no room left for it", () => {
+    draw({ ...getDashboard(), shelfBoxes: [], binders: many(21) });
+    expect(within(screen.getByRole("list", { name: "Shelf 3" })).getAllByRole("button")).toHaveLength(5);
+    expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
   });
 });

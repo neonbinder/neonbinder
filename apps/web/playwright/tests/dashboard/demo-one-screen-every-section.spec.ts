@@ -26,7 +26,18 @@ test(
 
     // Every section the fake collector's data fills.
     const section = (name: string) => page.getByRole("heading", { level: 2, name, exact: true });
-    for (const name of ["Out the Door", "In the Hopper", "Needs a Look", "On the Bubble", "Your binders", "Odds and Ends", "New on NeonBinder"]) {
+    // The fake collector has boxes in use, so the shelf is "Your binders and boxes" (review round 4).
+    for (const name of [
+      "Sync status",
+      "Out the Door",
+      "In the Hopper",
+      "Needs a Look",
+      "On the Bubble",
+      "Your binders and boxes",
+      "New Listings",
+      "Odds and Ends",
+      "New on NeonBinder",
+    ]) {
       await expect(section(name), name).toBeVisible();
     }
 
