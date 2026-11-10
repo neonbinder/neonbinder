@@ -3,7 +3,7 @@
 - [Autosave per field drawer patterns](autosave-per-field-drawer-patterns.md) — Patterns from auditing CardDetailPanel's conversion from a Save-button draft editor to a per-field autosave-on-blur editor (NEO-216/217) — Escape-bypasses-blur data lo…
 - [Collapsed radiogroup posinset](collapsed-radiogroup-posinset.md) — A radiogroup that collapses to only its checked option lies about set size ("1 of 1"). aria-posinset/aria-setsize counted against the full option list is the name-pres…
 - [Contrast patterns](contrast-patterns.md) — Known-bad and known-good Tailwind color pairings against this app's dark surfaces, with computed contrast ratios
-- [Contrast reference](contrast-reference.md) — Measured WCAG contrast ratios for NeonBinder's neon palette and slate grays against the app's actual dark backgrounds — use before re-deriving these by hand
+- [Contrast reference](contrast-reference.md) — Measured WCAG ratios: neon palette, slate grays, and role tokens (ink-3, neon-blue-text) on the NearMatchPanel ground in light+dark
 - [Discard confirm dialog family neo220](discard-confirm-dialog-family-neo220.md) — NEO-220/221's "one confirm for every discard" pass added ConfirmDialog + Tab-trap/role=dialog to four Set Builder session modals — what was done right everywhere, and…
 - [Dialog initial focus no fallback](dialog-initial-focus-no-fallback.md) — a dialog whose initial-focus effect chains refs across sections needs a fallback to the dialog container when every section can be empty at once
 - [Focus park pattern](focus-park-pattern.md) — NeonBinder's established pattern for parking keyboard focus when the control that had it is about to disappear or be disabled — where it's used right, and where it was…
@@ -47,3 +47,4 @@
 - [Toggle chip Enter and streaming status NEO-330](toggle-chip-enter-and-streaming-status-neo330.md) — Enter stays a toggle (Ctrl+Enter saves); showToast is a persistent banner; ConfirmDialog children = one named group; streaming status chatter
 - [Required pill group, no words NEO-331](required-pill-group-no-words-neo331.md) — radiogroup+aria-required and focus-the-field on a held primary, zero new copy
 - [Collection store UI NEO-358](collection-store-ui-neo358.md) — collector page: focus loss on unmount, state-in-name toggles, label-in-name, stacked loading statuses
+- [Tab trap offList swallows script focus targets](tab-trap-offlist-swallows-script-focus-targets.md) — Shift+Tab from any tabIndex=-1 target wraps to the last control; name parked targets explicitly (NEO-472)

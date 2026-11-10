@@ -239,6 +239,8 @@ import {
   normalizePlayerName,
   playerBelongsToSport,
   sameNamePlayers,
+  // NEO-463 — the commit's backstop for a one-word name.
+  nameFragmentMatches,
 } from "./players";
 import {
   loadPlayerAnswers,
@@ -17845,7 +17847,7 @@ export const commitCardChecklistPrelude = internalMutation({
       normalized: string,
       // See `createTeamFromChecklistDecision` — same contract.
       decision: CreateDecision,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       // decision.action === "create" — seed directly from the wizard's own
       // Wikidata preview lookup (already fetched during review); no more
       // post-commit processEnrichmentQueue scheduling needed for this row.
@@ -17859,6 +17861,24 @@ export const commitCardChecklistPrelude = internalMutation({
        * switched row were raised in that sport.
        */
       const playerSportId = playerReviewRow?.sportId ?? args.sportId;
+      /*
+       * NEO-463 — the backstop. A one-word name that is a fuller-named
+       * player's first or last name ("Walker" beside "Larry Walker") is
+       * written only when the operator confirmed a one-name player.
+       * `recordDecision` and the bulk walk already refuse such a create; a
+       * decision recorded before that rule, or a fuller name committed since,
+       * still reaches here. Nothing is written — no player, and no career team
+       * (checked before any is resolved) — and `false` tells the caller to
+       * report the name unreviewed, so the card commits without that player
+       * and the attention walker shows it. Never a throw: one name must not
+       * cost the operator the whole commit.
+       */
+      if (
+        decision.oneNamePlayer !== true &&
+        (await nameFragmentMatches(ctx, name, playerSportId)).length > 0
+      ) {
+        return false;
+      }
       // Merge the wizard's Wikidata preview career-teams with any the admin
       // added by hand in the review wizard (decision.manualCareerTeams). Both
       // are {name, fromYear, toYear?} — resolve every name to a real team id
@@ -18062,6 +18082,7 @@ export const commitCardChecklistPrelude = internalMutation({
         const created = await ctx.db.get(id);
         if (created) await addPlayerSport(ctx, created, setSportId);
       }
+      return true;
     };
 
     /*
@@ -18150,6 +18171,8 @@ export const commitCardChecklistPrelude = internalMutation({
         ) {
           continue;
         }
+        // NEO-463 — a held fragment writes nothing here; the resolve phase
+        // meets the same decision, holds it again and reports it unreviewed.
         await createPlayerFromDecision(name, norm(name), createDecision);
         continue;
       }
@@ -18415,7 +18438,13 @@ export const commitCardChecklistPrelude = internalMutation({
         playerNameById.set(priorPlayer.id, priorPlayer.storedName);
         continue;
       }
-      await createPlayerFromDecision(name, normalized, decision);
+      if (!(await createPlayerFromDecision(name, normalized, decision))) {
+        // NEO-463 — held back as a one-word fragment of a fuller-named
+        // player: the card commits without it and the name is reported for
+        // the attention walker, exactly like an unanswered name.
+        unreviewedPlayerNames.push(name);
+        continue;
+      }
       // NEO-402 — this key now has a row the prefetch did not see; a later
       // spelling of it must read again, or it would mint a second one.
       sameNamePrefetch.delete(normalized);

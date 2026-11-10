@@ -366,7 +366,9 @@ export interface CollectionActions {
    * `slot` there when given (else unslotted). Folds into an identical line
    * item there; part of a stack splits off. Refuses the Want List, the Up
    * for Trade pile, a smart binder, and a binder pocket another line item
-   * holds. A copy keeps its Up for Trade flag.
+   * holds. A copy keeps its Up for Trade flag. NEO-479: `options.minPrice`
+   * prices the cards going into a box; out of a box into a binder, they
+   * lose their own price (the undo restores it).
    */
   moveCopy(copy: Copy, toHomeId: ContainerId, options?: MoveOptions): Promise<MoveResult>;
   /**
@@ -441,6 +443,14 @@ export interface MoveOptions {
   quantity?: number;
   /** The pocket or row at the destination. */
   slot?: number;
+  /**
+   * NEO-479 — the moving cards' own price (dollars, whole cents), set as they
+   * go into a box. Leave it out to keep the price they have (or, with none,
+   * the variant's common price, read live). Never writes the common price.
+   * Refused on a move that stays home. A move out of a box into a binder
+   * clears the cards' own price; its undo puts it back.
+   */
+  minPrice?: number;
 }
 
 /** What only the demo has (see the module comment). */

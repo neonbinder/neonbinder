@@ -22,6 +22,9 @@ import {
   buildExistingPlayerCandidatesForIds,
   isAmbiguousPlayerName,
   MAX_CANDIDATES_FOR_IDS,
+  // NEO-463 — a one-word name clashing with a fuller-named player.
+  assertNotNameFragment,
+  nameFragmentMatches,
   normalizePlayerName,
   playerBelongsToSport,
 } from "./players";
@@ -71,7 +74,7 @@ import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 // if either grows, the arithmetic in ENTITY_REVIEW_START_OPS grows with it
 // instead of quietly under-charging.
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
-import { CAREER_SUMMARY_MAX_TEAMS } from "../lib/players/career-summary";
+import { PLAYER_DESCRIPTION_MAX_TEAMS } from "../lib/players/player-description";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -338,6 +341,9 @@ const decisionValidator = v.union(
     // NEO-313: player-kind only — at COMMIT, also add the set's sport to the
     // created player's `playerSports`. Absent is a guest link. See schema.ts.
     addSetSport: v.optional(v.boolean()),
+    // NEO-463: player-kind only — the operator confirmed a one-word name that
+    // clashes with a fuller-named player is a one-name player. See schema.ts.
+    oneNamePlayer: v.optional(v.literal(true)),
   }),
   v.object({
     action: v.literal("link"),
@@ -1023,7 +1029,7 @@ type ExistingCandidate = NonNullable<
  *
  * The charge is the builder's ceiling rather than a count, because it does
  * not report one: per distinct id (capped at `MAX_CANDIDATES_FOR_IDS`) one
- * player read, one sport-label read and `CAREER_SUMMARY_MAX_TEAMS` team reads.
+ * player read, one sport-label read and `PLAYER_DESCRIPTION_MAX_TEAMS` team reads.
  * Over-charging only pages a batch sooner; under-charging is the NEO-294
  * failure.
  */
@@ -1041,7 +1047,7 @@ async function buildCandidatesForPlayerIds(
     name,
     cardYear: opts.cardYear,
   });
-  return { candidates, ops: distinct * (2 + CAREER_SUMMARY_MAX_TEAMS) };
+  return { candidates, ops: distinct * (2 + PLAYER_DESCRIPTION_MAX_TEAMS) };
 }
 
 /**
@@ -1155,7 +1161,7 @@ function awaitsOperatorBeforeLookup(
  *         index. Paid for EVERY name, ambiguous or not.
  *     … — and when two or more rows already answer to that name, up to
  *         PLAYER_AMBIGUITY_SCAN_LIMIT alias `db.get`s plus
- *         CAREER_SUMMARY_MAX_TEAMS team reads per candidate for the career
+ *         PLAYER_DESCRIPTION_MAX_TEAMS team reads per candidate for the career
  *         summary (the narrowing itself reads no teams here — this caller
  *         passes no `cardTeamNames`).
  *     1 — the insert.
@@ -1225,7 +1231,7 @@ export const ENTITY_REVIEW_START_OPS = 800;
  *
  * `BASE` is the pair of index reads `sameNamePlayers` always performs. `EXTRA`
  * is the ceiling on everything an AMBIGUOUS name adds on top: one `db.get` per
- * alias hit, and `CAREER_SUMMARY_MAX_TEAMS` team reads per candidate for the
+ * alias hit, and `PLAYER_DESCRIPTION_MAX_TEAMS` team reads per candidate for the
  * career summary (deduped by id across candidates, so this over-charges rather
  * than under-charges). Charged after the call, from whether candidates came
  * back — the cheap answer is by far the common one, and charging every name
@@ -1235,7 +1241,7 @@ export const ENTITY_REVIEW_START_OPS = 800;
 const REVIEW_NAME_LOOKUP_OPS = {
   // NEO-313: three index reads now — `players`, `playerSports`, `playerAliases`.
   BASE: 3,
-  EXTRA: PLAYER_AMBIGUITY_SCAN_LIMIT * (CAREER_SUMMARY_MAX_TEAMS + 1),
+  EXTRA: PLAYER_AMBIGUITY_SCAN_LIMIT * (PLAYER_DESCRIPTION_MAX_TEAMS + 1),
 } as const;
 
 export const startBatch = internalMutation({
@@ -3225,6 +3231,10 @@ export const recordDecision = mutation({
     // SET's sport to the player's `playerSports` ("he plays baseball too").
     // Meaningful only on a row switched to another sport; see schema.ts.
     addSetSport: v.optional(v.boolean()),
+    // NEO-463, "create"-only and player-kind-only: the operator confirmed a
+    // one-word name that clashes with a fuller-named player is a one-name
+    // player. Without it such a create is refused with PLAYER_NAME_FRAGMENT.
+    oneNamePlayer: v.optional(v.literal(true)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -3280,6 +3290,20 @@ export const recordDecision = mutation({
     }
 
     if (args.action === "create") {
+      /*
+       * NEO-463 — a one-word player name that is a fuller-named player's first
+       * or last name ("Walker" beside "Larry Walker") is refused unless the
+       * operator confirmed a one-name player. Structured (`data.code ===
+       * "PLAYER_NAME_FRAGMENT"`, with the matches) so the wizard offers the
+       * match or the confirmation. Player rows only; the flag on another kind
+       * is refused like `addSetSport`, as a client bug.
+       */
+      if (args.oneNamePlayer === true && row.kind !== "player") {
+        throw new ConvexError("Only a player can be a one-name player.");
+      }
+      if (row.kind === "player") {
+        await assertNotNameFragment(ctx, row.name, row.sportId, args.oneNamePlayer);
+      }
       // Defense in depth: this is admin-gated, but still validate the shape
       // so a malformed year can never reach the players.teamYears write in
       // commitCardChecklist. Loose bounds — reject nonsense, not history.
@@ -3452,6 +3476,8 @@ export const recordDecision = mutation({
           ...(createLeague ? { createLeague } : {}),
           // NEO-313: stored only when true, like `saveAsAlias`.
           ...(keepAddSetSport ? { addSetSport: true } : {}),
+          // NEO-463: stored only when true; the commit reads it.
+          ...(args.oneNamePlayer === true ? { oneNamePlayer: true as const } : {}),
         },
         lastTouchedAt: Date.now(),
       });
@@ -4570,21 +4596,38 @@ export type BulkCandidatePage = {
  * path costs nothing beyond the row itself — the same result the old walk
  * reached, since its ambiguity check only ever applied to players.
  */
+async function bulkCandidateVerdict(
+  ctx: QueryCtx | MutationCtx,
+  row: Doc<"entityReviewQueue">,
+  action: BulkAction,
+): Promise<"candidate" | "fragment" | "no"> {
+  if (row.decision) return "no";
+  if (action === "skip") return "candidate";
+  if (row.status === "pending") return "no";
+  if (row.kind !== "player") return "no";
+  // NEO-424 — two or more players this SET already linked the name to is the
+  // NEO-254 choice by other means, and the live index cannot see it when they
+  // sit in other sports. Read off the row: set history is a fact about this
+  // set's committed cards, not a snapshot of the name index going stale.
+  if (historyCandidatesOf(row.enrichment).length > 0) return "no";
+  if (await isAmbiguousPlayerName(ctx, row.name, row.sportId)) return "no";
+  // NEO-463 — a one-word name that is a fuller-named player's first or last
+  // name ("Walker" beside "Larry Walker") is a question, not a new player:
+  // "Add All Remaining as New" leaves it for the operator. A one-word name
+  // with no clash returns no matches without a read beyond the search.
+  // Reported apart from "no" because the search behind it is the expensive
+  // read: the page walk charges a held fragment against its budget.
+  return (await nameFragmentMatches(ctx, row.name, row.sportId)).length === 0
+    ? "candidate"
+    : "fragment";
+}
+
 async function isBulkCandidate(
   ctx: QueryCtx | MutationCtx,
   row: Doc<"entityReviewQueue">,
   action: BulkAction,
 ): Promise<boolean> {
-  if (row.decision) return false;
-  if (action === "skip") return true;
-  if (row.status === "pending") return false;
-  if (row.kind !== "player") return false;
-  // NEO-424 — two or more players this SET already linked the name to is the
-  // NEO-254 choice by other means, and the live index cannot see it when they
-  // sit in other sports. Read off the row: set history is a fact about this
-  // set's committed cards, not a snapshot of the name index going stale.
-  if (historyCandidatesOf(row.enrichment).length > 0) return false;
-  return !(await isAmbiguousPlayerName(ctx, row.name, row.sportId));
+  return (await bulkCandidateVerdict(ctx, row, action)) === "candidate";
 }
 
 /**
@@ -4640,13 +4683,24 @@ async function listBulkCandidatesImpl(
    */
   let lastExamined: Doc<"entityReviewQueue"> | undefined;
   let budgetSpent = false;
+  /**
+   * NEO-463 — rows held back as name fragments. Each one cost a bounded
+   * search read (up to `NAME_FRAGMENT_SCAN_LIMIT` rows per term) and decided
+   * nothing, so without a charge a page of fragments would run that search on
+   * every one of its `scan` rows. A held fragment spends the decide budget
+   * like a decided row, so the walk stops after `decide` searches whatever the
+   * holds, and the cursor hands the rest to the next call.
+   */
+  let heldFragments = 0;
   for (const row of rows) {
-    if (ids.length >= page.decide) {
+    if (ids.length + heldFragments >= page.decide) {
       budgetSpent = true;
       break;
     }
     lastExamined = row;
-    if (await isBulkCandidate(ctx, row, args.action)) ids.push(row._id);
+    const verdict = await bulkCandidateVerdict(ctx, row, args.action);
+    if (verdict === "candidate") ids.push(row._id);
+    else if (verdict === "fragment") heldFragments += 1;
   }
   return {
     ids,

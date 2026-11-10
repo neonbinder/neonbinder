@@ -97,5 +97,8 @@
 - [Pick a wizard name from BSC facets + the gate resolver](patterns_pick_a_wizard_name_from_bsc_facets_and_the_gate_resolver.md) — no-login card lists, players:resolveNameForReview verdicts, selection recipe, what to record
 - [Local re-seed keeps the catalogue](patterns_local_reseed_keeps_the_reference_catalogue.md) — plain baseline reset wipes it; use e2e-seed-reset.sh + bundle; who needs a re-seed between projects; --output keeps artifacts
 - [Binder page names and async radio](patterns_binder_page_names_and_async_radio.md) — `Page 2, A fresh page`; gate a key on Next enabled; check() vs a save-moved radio; image load without evaluate; bootstrap after a red
+- [Custom sport hosts minted players](patterns_custom_sport_player_specs_skip_lookups.md) — minted player names in customSport(env): no lookup, no clashes; count rows by exact name; goBack restores the drill
 - [Finally cleanup without an isVisible branch](patterns_finally_cleanup_without_an_isvisible_branch.md) — flag after the Done click, tidy() collects errors, body failure not masked; lane overflow axe signature
+- [Custom-sport player fixture makes no lookup](patterns_custom_sport_player_fixture_makes_no_lookup.md) — NEO-462: minted players in the custom sport, no_match log is a refusal, birth-year forks, Back is an exit
+- [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20

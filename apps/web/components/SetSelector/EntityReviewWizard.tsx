@@ -10,6 +10,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 // NEO-254: the server's scan cap, so the panel can say when it was hit.
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../lib/players/name-limits";
+import { formatCareerLine } from "../../lib/players/player-description";
 // NEO-212 security review: an enrichment `wikidataId` arrives from
 // query.wikidata.org, so it is external input on its way into an `href`.
 // `wikidataUrl` returns null unless it is really a `Q<digits>` id — see
@@ -52,6 +53,13 @@ import SameNamePlayerPanel, {
   candidateDetail,
   type SameNameCandidate,
 } from "./SameNamePlayerPanel";
+// NEO-463: a one-word name that is a piece of a fuller one on file.
+import NameFragmentPanel, {
+  NameFragmentLiveRegion,
+  ONE_NAME_PLAYER_LABEL,
+  nameFragmentMessage,
+  type NameFragmentMatch,
+} from "./NameFragmentPanel";
 import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
 // NEO-335: the cards that would save with no team, on their own step.
@@ -285,6 +293,8 @@ export function teamCreatePrefill(row: {
 /** NEO-307 — the "no team holds this name as an alias" answer, one stable
  *  reference; see `nameAliasHolders`. */
 const NO_ALIAS_HOLDERS: ReadonlyArray<never> = [];
+/** NEO-463 — "not a fragment", one stable identity across renders. */
+const NO_FRAGMENT_MATCHES: NameFragmentMatch[] = [];
 
 /** Past this many decided rows the history list collapses behind a disclosure. */
 const DECIDED_LIST_INLINE_MAX = 5;
@@ -1204,6 +1214,47 @@ export default function EntityReviewWizard({
       ? { name: current.name, sportId: current.sportId }
       : "skip",
   );
+  /**
+   * NEO-463 — is this player's name only a piece of a fuller one on file
+   * ("Walker" when "Devin Walker" exists)? The server owns the rule. A step
+   * it says yes to offers the fuller names as links and turns "Add as New
+   * Player" into "Add as a one-name player"; until it answers, the step is the
+   * ordinary New Player step, and `recordDecision` refuses a plain create of a
+   * fragment on its own.
+   */
+  const fragmentCheck = useQuery(
+    api.players.nameFragmentCheck,
+    current && !reviewingDecided && current.kind === "player"
+      ? { name: current.name, sportId: current.sportId }
+      : "skip",
+  );
+  /*
+   * A truncated read (a common surname filled the search bound) keeps the
+   * step but withholds the list: the panel asks for the whole name and offers
+   * no choices, and the footer's primary is still the one-name create.
+   */
+  const fragmentWithheld =
+    fragmentCheck?.isFragment === true && fragmentCheck.truncated;
+  const fragmentLiveMatches: NameFragmentMatch[] =
+    fragmentCheck?.isFragment && !fragmentCheck.truncated
+      ? fragmentCheck.matches
+      : NO_FRAGMENT_MATCHES;
+  /** The fragment panel, for the focus move below. */
+  const fragmentPanelRef = useRef<HTMLDivElement | null>(null);
+  const fragmentAnswered = fragmentLiveMatches.length > 0 || fragmentWithheld;
+  /*
+   * NEO-463 (SC 2.4.3 / 3.2.2) — the answer can land while a keyboard
+   * operator already sits on the footer's primary, which it relabels from
+   * "Add as New Player" to "Add as a one-name player". A second Enter there
+   * would then mint the one-name player without the operator having heard the
+   * question, so focus moves to the panel that asks it. Only from the primary:
+   * anywhere else, the operator is doing something else and keeps their place.
+   */
+  useEffect(() => {
+    if (!fragmentAnswered) return;
+    if (document.activeElement !== primaryDecisionRef.current) return;
+    fragmentPanelRef.current?.focus({ preventScroll: true });
+  }, [fragmentAnswered, current?._id]);
   const teamNearMatches = useQuery(
     api.teams.nearMatches,
     current && !reviewingDecided && current.kind === "team"
@@ -1305,12 +1356,13 @@ export default function EntityReviewWizard({
             name: m.name,
             // NEO-332 — `nearMatches` returns the birth year and the alias
             // that answered, so both ride through: on the pick step they are
-            // what tells the rows apart. No career line: that is only on the
-            // stored list. With nothing at all the panel says "Nothing on
-            // file yet", which is honest about what we can see from here.
+            // what tells the rows apart. NEO-462 — and now the career line
+            // too, formatted exactly as the stored list's is. With nothing at
+            // all the panel says "Nothing on file yet", which is honest about
+            // what we can see from here.
             ...(m.birthYear !== undefined ? { birthYear: m.birthYear } : {}),
             ...(m.matchedAlias !== undefined ? { matchedAlias: m.matchedAlias } : {}),
-            careerSummary: "",
+            careerSummary: formatCareerLine(m.career),
           }))
         : [];
   /**
@@ -2449,6 +2501,9 @@ export default function EntityReviewWizard({
       };
       // NEO-313 — player rows only. See `addSetSportByRow`.
       addSetSport?: boolean;
+      // NEO-463 — player rows only: the operator confirmed this one-word name
+      // is the player's whole name, not a piece of a fuller one on file.
+      oneNamePlayer?: boolean;
     } = {},
   ) =>
     decide(reviewRowId, () =>
@@ -2468,6 +2523,7 @@ export default function EntityReviewWizard({
         create: payload.create,
         createLeague: payload.createLeague,
         ...(payload.addSetSport ? { addSetSport: true } : {}),
+        ...(payload.oneNamePlayer ? { oneNamePlayer: true as const } : {}),
       }),
     );
   const handleLink = async (
@@ -3684,13 +3740,29 @@ export default function EntityReviewWizard({
    */
   const showExactHierarchy = sameNameCandidates.length === 0 && exactRows.length === 1;
   /**
+   * NEO-463 — the fragment step: a one-word player name the server says is a
+   * piece of a fuller one on file. Never on a pick step (a same-name row is
+   * its own question), and never under a promoted link (a lone exact match or
+   * a suggested player already answers it).
+   */
+  const fragmentStep =
+    current?.kind === "player" &&
+    fragmentAnswered &&
+    !pickStep &&
+    !showExactHierarchy &&
+    !preselectShown;
+  /** The fuller names the fragment panel owns, so no other list repeats them. */
+  const fragmentOwnedIds = new Set<string>(
+    fragmentStep ? fragmentLiveMatches.map((m) => m._id as string) : [],
+  );
+  /**
    * What the panel is left to show once the primary action has been promoted.
    * The promoted row is filtered out by `_id`, so no two controls ever share
    * the accessible name `Link to {name}` — ambiguous to a screen reader and to
    * a Maestro `tapOn` alike. Any OTHER row is a genuinely different entity and
    * still belongs in the list, whatever its confidence.
    */
-  const panelMatches = (() => {
+  const panelMatchesBase = (() => {
     const base =
       showExactHierarchy && nearMatches
         ? nearMatches.filter((m) => m._id !== exactMatch._id)
@@ -3710,6 +3782,14 @@ export default function EntityReviewWizard({
     const owned = new Set(sameNameCandidates.map((c) => c.playerId as string));
     return base.filter((m) => !owned.has(m._id));
   })();
+  /*
+   * NEO-463 — and the fragment panel's fuller names belong to IT: each would
+   * otherwise render a second `Link to Devin Walker` in Possible matches.
+   */
+  const panelMatches =
+    fragmentOwnedIds.size > 0 && panelMatchesBase
+      ? panelMatchesBase.filter((m) => !fragmentOwnedIds.has(m._id))
+      : panelMatchesBase;
   /*
    * Creating is demoted to the secondary style while a CLOSE match is on
    * screen. Read off `panelMatches`, not the raw `nearMatches`: on the New
@@ -4003,7 +4083,10 @@ export default function EntityReviewWizard({
               : undefined
           }
           variant={
-            pickStep || (!showExactHierarchy && !preselectShown && hasCloseOnly)
+            pickStep ||
+            // NEO-463 — the fuller names are the answer; one-name is the exception.
+            fragmentStep ||
+            (!showExactHierarchy && !preselectShown && hasCloseOnly)
               ? "secondary"
               : "primary"
           }
@@ -4030,7 +4113,9 @@ export default function EntityReviewWizard({
                 ? exactMatchLinkLabel
                 : preselectShown
                   ? preselectLinkLabel
-                  : `Add as New ${kindLabel(current.kind)}`
+                  : fragmentStep
+                    ? ONE_NAME_PLAYER_LABEL
+                    : `Add as New ${kindLabel(current.kind)}`
           }
           onClick={(e) => {
             if (busy) return;
@@ -4079,7 +4164,12 @@ export default function EntityReviewWizard({
               pressHeldCreate();
               return;
             }
-            void handleCreate(current._id, buildCreatePayload());
+            void handleCreate(
+              current._id,
+              fragmentStep
+                ? { ...buildCreatePayload(), oneNamePlayer: true }
+                : buildCreatePayload(),
+            );
           }}
         >
           {pickStep
@@ -4088,7 +4178,9 @@ export default function EntityReviewWizard({
               ? exactMatchLinkLabel
               : preselectShown
                 ? preselectLinkLabel
-                : `Add as New ${kindLabel(current.kind)}`}
+                : fragmentStep
+                  ? ONE_NAME_PLAYER_LABEL
+                  : `Add as New ${kindLabel(current.kind)}`}
         </NeonButton>
 
         {/*
@@ -4366,6 +4458,23 @@ export default function EntityReviewWizard({
               </div>
             ) : current ? (
               <>
+                {/*
+                  NEO-463 — the fragment question can land after the step is
+                  on screen (the check answers late), relabelling the footer's
+                  primary with nothing pressed. Announced here, politely, from
+                  a region that is mounted for every step so it exists before
+                  its text does. When focus sat on that primary, focus moves
+                  to the panel instead and the panel's name says it, so this
+                  stays quiet.
+                */}
+                <NameFragmentLiveRegion
+                  message={
+                    fragmentStep
+                      ? nameFragmentMessage(current.name, fragmentLiveMatches)
+                      : null
+                  }
+                  skipWhileFocusedOn={primaryDecisionRef}
+                />
                 <div>
                   {/* NEO-212 (a11y): the CopyButton and the kind/sport tag sit
                       BESIDE the heading, not inside it. Inside, they became
@@ -5118,19 +5227,45 @@ export default function EntityReviewWizard({
                       </TeamMatchSearch>
                     ) : (
                       !linkingOpen && (
-                        <NearMatchPanel
-                          kind={current.kind}
-                          matches={panelMatches}
-                          onPick={(id) => {
-                            if (busy) return;
-                            void handleLink(
-                              current._id,
-                              current.kind,
-                              id as Id<"players"> | Id<"teams"> | Id<"leagues">,
-                              linkOptions,
-                            );
-                          }}
-                        />
+                        <>
+                          {/*
+                            NEO-463 — the fragment question, ahead of the close
+                            spellings: "Just Walker? We've got Devin Walker."
+                            Its choices link like every other `Link to …` here;
+                            the one-name create is the footer's primary, so the
+                            panel carries no button of its own.
+                          */}
+                          {fragmentStep && (
+                            <NameFragmentPanel
+                              panelRef={fragmentPanelRef}
+                              name={current.name}
+                              matches={fragmentLiveMatches}
+                              disabled={busy}
+                              onPick={(id) => {
+                                if (busy) return;
+                                void handleLink(
+                                  current._id,
+                                  "player",
+                                  id as Id<"players">,
+                                  linkOptions,
+                                );
+                              }}
+                            />
+                          )}
+                          <NearMatchPanel
+                            kind={current.kind}
+                            matches={panelMatches}
+                            onPick={(id) => {
+                              if (busy) return;
+                              void handleLink(
+                                current._id,
+                                current.kind,
+                                id as Id<"players"> | Id<"teams"> | Id<"leagues">,
+                                linkOptions,
+                              );
+                            }}
+                          />
+                        </>
                       )
                     )}
 

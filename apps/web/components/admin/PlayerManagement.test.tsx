@@ -42,6 +42,7 @@
  */
 
 import {
+  act,
   fireEvent,
   render as renderBare,
   screen,
@@ -73,6 +74,8 @@ vi.mock("../../convex/_generated/api", () => ({
       // a raw string. `get` stays mocked because it stays exported.
       getByIdParam: "players.getByIdParam",
       nearMatches: "players.nearMatches",
+      // NEO-463: the one-word fragment pre-check behind Create.
+      nameFragmentCheck: "players.nameFragmentCheck",
       createByAdmin: "players.createByAdmin",
       savePlayerFields: "players.savePlayerFields",
       enrichFromWikidata: "players.enrichFromWikidata",
@@ -398,6 +401,8 @@ const BORDERLINE_PLAYER = {
 let management: unknown;
 let searchResults: unknown;
 let nearMatches: unknown;
+/** NEO-463 — `players.nameFragmentCheck`'s answer; undefined = not answered. */
+let fragmentCheck: unknown;
 /** NEO-313 — `players.cardsForPlayer`'s answer, keyed by player id. */
 let cardsForPlayerById: Record<string, unknown> = {};
 /**
@@ -417,6 +422,8 @@ function routeQuery(ref: string, args: Record<string, unknown>): unknown {
       return searchResults;
     case "players.nearMatches":
       return nearMatches;
+    case "players.nameFragmentCheck":
+      return fragmentCheck;
     case "players.get":
       return PLAYERS_BY_ID[args.id as string] ?? null;
     // NEO-235: same map, and the same `?? null` for anything not in it. That
@@ -455,6 +462,7 @@ beforeEach(() => {
   };
   searchResults = [GRIFFEY, TROUT];
   nearMatches = undefined;
+  fragmentCheck = undefined;
   cardsForPlayerById = {};
   loadingIds.clear();
   PLAYERS_BY_ID["p-gwynn"] = GWYNN;
@@ -810,16 +818,17 @@ describe("PlayerManagement — the add form", () => {
       target: { value: "Ken Griffey Jr." },
     });
 
-    // EXACTLY ONE `Open Ken Griffey Jr.` control. The promoted primary IS the
-    // exact panel row, so that row is filtered out of the panel — two controls
-    // sharing one accessible name is ambiguous to a screen reader reading the
-    // list and to a Maestro `tapOn` matching by it. Same rule the wizard
-    // already applies to `Link to {name}`.
+    // EXACTLY ONE `Open Ken Griffey Jr.` control: the primary. NEO-462 keeps
+    // the exact row in the panel too, but its name ends `— same name`, so two
+    // controls never share one accessible name.
     await waitFor(() =>
       expect(
         screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
       ).toHaveLength(1),
     );
+    expect(
+      screen.getByRole("button", { name: "Open Ken Griffey Jr. — same name" }),
+    ).toBeTruthy();
     expect(
       screen.getByLabelText("Create player Ken Griffey Jr. anyway"),
     ).toBeTruthy();
@@ -2024,7 +2033,7 @@ describe("PlayerManagement — an enrichment landing under an open panel", () =>
 // ---------------------------------------------------------------------------
 
 describe("PlayerManagement — accessibility", () => {
-  it("filters the promoted exact row out of the panel but keeps the others", async () => {
+  it("NEO-462: lists the promoted exact row first in the panel, under a name of its own", async () => {
     nearMatches = [
       { _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "exact" },
       { _id: "p-griffey-sr", name: "Ken Griffey", confidence: "close" },
@@ -2035,15 +2044,110 @@ describe("PlayerManagement — accessibility", () => {
       target: { value: "Ken Griffey Jr." },
     });
 
-    // The promoted row appears exactly once, as the primary button...
+    // The primary keeps the bare name, and is the only control that has it...
     await waitFor(() =>
       expect(
         screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
       ).toHaveLength(1),
     );
-    // ...and a genuinely different player is still listed for the operator.
-    expect(screen.getByText("Possible matches")).toBeTruthy();
-    expect(screen.getByLabelText("Open Ken Griffey")).toBeTruthy();
+    // ...the same man is ALSO the first row of the list, tagged same name...
+    const list = screen.getByRole("list", { name: "Possible player matches" });
+    const rows = within(list).getAllByRole("button");
+    expect(rows.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Open Ken Griffey Jr. — same name",
+      "Open Ken Griffey",
+    ]);
+    // ...and picking that row opens him, as the primary would.
+    fireEvent.click(rows[0]);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Ken Griffey Jr." }),
+    ).toBeTruthy();
+  });
+
+  it("NEO-462: the Tony Gwynn case lists both men, the one typed first, each described", async () => {
+    // What Jason saw on the preview: the alias hit was the only row, and the
+    // real Tony Gwynn sat on a bare green button that did not read as an option.
+    // The server sends the alias row FIRST here, to prove the panel and the
+    // primary both put the same-name man ahead of it regardless.
+    nearMatches = [
+      {
+        _id: "p-gwynn-jr",
+        name: "Tony Gwynn Jr.",
+        confidence: "exact",
+        matchedAlias: "Tony Gwynn",
+        birthYear: 1982,
+        career: {
+          teams: [{ name: "Brewers", spans: [{ fromYear: 2006, toYear: 2008 }] }],
+          moreTeams: 0,
+        },
+      },
+      {
+        _id: "p-gwynn",
+        name: "Tony Gwynn",
+        confidence: "exact",
+        birthYear: 1960,
+        career: {
+          teams: [{ name: "Padres", spans: [{ fromYear: 1982, toYear: 2001 }] }],
+          moreTeams: 0,
+        },
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Tony Gwynn" },
+    });
+
+    const primary = await screen.findByRole("button", { name: "Open Tony Gwynn" });
+    expect(primary.textContent).toBe("Open Tony Gwynn");
+
+    const list = screen.getByRole("list", { name: "Possible player matches" });
+    const names = within(list)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label"));
+    expect(names).toEqual([
+      "Open Tony Gwynn, born 1960, Padres 1982 to 2001 — same name",
+      "Open Tony Gwynn Jr., born 1982, Brewers 2006 to 2008",
+    ]);
+    // Never the primary's name on a row.
+    expect(names).not.toContain("Open Tony Gwynn");
+    // The row shows what the primary does not: who he is.
+    expect(within(list).getByText(/b\. 1960/)).toBeTruthy();
+
+    // Enter on the primary opens the man whose name was typed.
+    fireEvent.click(primary);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(lastArgs("players.getByIdParam")).toEqual({ id: "p-gwynn" });
+  });
+
+  it("NEO-462: an alias-only, fact-less primary row still reads differently from the primary", async () => {
+    // The one row the panel adds nothing to: an alias hit (no same-name tag)
+    // with nothing on file. It says what its second line shows.
+    nearMatches = [
+      {
+        _id: "p-metta",
+        name: "Metta World Peace",
+        confidence: "exact",
+        matchedAlias: "Ron Artest",
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ron Artest" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Open Metta World Peace" }),
+      ).toHaveLength(1),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Open Metta World Peace, nothing on file yet",
+      }),
+    ).toBeTruthy();
   });
 
   it("keeps focus on the primary action when an exact match arrives", async () => {
@@ -2470,8 +2574,12 @@ describe("NEO-254: birth year", () => {
     // The panel appends its own "— same name" tag to an exact row's
     // accessible name (NEO-212: a warning only sighted operators receive is
     // not a warning). Uniqueness holds with or without it.
+    // NEO-462 — BOTH men are rows, the primary's included, in server order.
     expect(
-      screen.getByRole("button", { name: "Open Bob Allen, b. 1975 — same name" }),
+      screen.getByRole("button", { name: "Open Bob Allen, born 1960 — same name" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Open Bob Allen, born 1975 — same name" }),
     ).toBeTruthy();
     // The ambiguous label is gone entirely — including from the promoted
     // primary, which would otherwise not say which man it opens.
@@ -2481,8 +2589,8 @@ describe("NEO-254: birth year", () => {
       .getAllByRole("button")
       .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "")
       .filter((n) => n.startsWith("Open Bob Allen"));
-    expect(openNames).toHaveLength(2);
-    expect(new Set(openNames).size).toBe(2);
+    expect(openNames).toHaveLength(3);
+    expect(new Set(openNames).size).toBe(3);
 
     // And the E2E-targeted create control is untouched.
     expect(
@@ -2509,9 +2617,55 @@ describe("NEO-254: birth year", () => {
         }),
       ).toBeTruthy(),
     );
+    // NEO-462 — the primary's own row is listed too; the tag keeps it apart.
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, no birth year (1 of 2) — same name",
+      }),
+    ).toBeTruthy();
     expect(
       screen.getByRole("button", {
         name: "Open Bob Allen, no birth year (2 of 2) — same name",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("NEO-462: a fact-less panel row keeps its label; a row with only teams speaks them", async () => {
+    // The panel speaks a row's facts itself, so a row WITH facts gets the
+    // bare `Open {name}` (no birth year said twice); a row with none keeps
+    // the "no birth year" label so it never reads as a prefix of the primary.
+    nearMatches = [
+      { _id: "p-old", name: "Bob Allen", confidence: "exact", birthYear: 1960 },
+      { _id: "p-bare", name: "Bob Allen", confidence: "exact" },
+      {
+        _id: "p-teams",
+        name: "Bob Allen",
+        confidence: "exact",
+        career: {
+          teams: [{ name: "Padres", spans: [{ fromYear: 1961 }] }],
+          moreTeams: 0,
+        },
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Open Bob Allen, b. 1960" }),
+      ).toBeTruthy(),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, no birth year (2 of 3) — same name",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, Padres 1961 to present — same name",
       }),
     ).toBeTruthy();
   });
@@ -2538,7 +2692,16 @@ describe("NEO-254: birth year", () => {
         screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
       ).toHaveLength(1),
     );
-    expect(screen.queryByText(/b\. 1969/)).toBeNull();
+    // The primary's TEXT is the bare label too; the year is the panel row's
+    // to show (NEO-462 keeps that row in the list, described).
+    expect(
+      screen.getByRole("button", { name: "Open Ken Griffey Jr." }).textContent,
+    ).toBe("Open Ken Griffey Jr.");
+    expect(
+      screen.getByRole("button", {
+        name: "Open Ken Griffey Jr., born 1969 — same name",
+      }),
+    ).toBeTruthy();
   });
 
   it("omits the key entirely when the field is left blank", async () => {
@@ -2878,5 +3041,163 @@ describe("playerCounterSentence (NEO-330)", () => {
       expect(sample).not.toMatch(/of /);
       expect(sample).not.toMatch(/truncated|type to search|keep typing/);
     }
+  });
+});
+
+describe("NEO-463: a one-word name that is a piece of a fuller one", () => {
+  const GRIFFEY_FRAGMENT = {
+    isFragment: true,
+    matches: [{ _id: "p-griffey", name: "Ken Griffey Jr." }],
+  };
+  const QUESTION =
+    "Just Griffey? We've got Ken Griffey Jr. Pick one, or add Griffey as a one-name player.";
+
+  /** Type the name and wait until the debounced check has been asked about it. */
+  async function typeChecked(container: HTMLElement, name: string) {
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: name },
+    });
+    await waitFor(() =>
+      expect(lastArgs("players.nameFragmentCheck")).toEqual({
+        name,
+        sportId: "sport-baseball",
+      }),
+    );
+  }
+
+  it("stops Create on a fragment, shows the question focused, and writes nothing", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    const panel = screen.getByRole("group", { name: QUESTION });
+    expect(document.activeElement).toBe(panel);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+  });
+
+  it("creates as usual when the check says the name is not a fragment", async () => {
+    fragmentCheck = { isFragment: false, matches: [] };
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Ichiro");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create player Ichiro" }));
+
+    expect(screen.queryByRole("group", { name: /^Just Ichiro\?/ })).toBeNull();
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Ichiro",
+        sportId: "sport-baseball",
+      }),
+    );
+  });
+
+  it("a choice opens the existing fuller-named player", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Ken Griffey Jr." }));
+
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole("heading", { level: 3, name: "Ken Griffey Jr." }),
+    ).toBeTruthy();
+  });
+
+  it("'Add as a one-name player' creates with oneNamePlayer: true", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as a one-name player" }));
+
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Griffey",
+        sportId: "sport-baseball",
+        oneNamePlayer: true,
+      }),
+    );
+  });
+
+  it("opens the question from the server's refusal when the check had not answered", async () => {
+    mockCreateByAdmin.mockRejectedValue(
+      new ConvexError({
+        code: "PLAYER_NAME_FRAGMENT",
+        message: "Griffey is part of a player NeonBinder already has.",
+        matches: [{ _id: "p-griffey", name: "Ken Griffey Jr." }],
+      }),
+    );
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Griffey");
+
+    expect(await screen.findByRole("group", { name: QUESTION })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("never lists a fuller name twice: Possible matches drops what the question owns", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    nearMatches = [{ _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "close" }];
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    expect(
+      screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
+    ).toHaveLength(1);
+  });
+
+  it("Escape shuts the question and returns focus to Create", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    const create = screen.getByRole("button", { name: "Create player Griffey" });
+    fireEvent.click(create);
+
+    fireEvent.keyDown(screen.getByRole("group", { name: QUESTION }), { key: "Escape" });
+
+    expect(screen.queryByRole("group", { name: QUESTION })).toBeNull();
+    expect(document.activeElement).toBe(create);
+  });
+
+  it("a repeat Create with the question already up moves focus back to it", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    const create = screen.getByRole("button", { name: "Create player Griffey" });
+    fireEvent.click(create);
+    const panel = screen.getByRole("group", { name: QUESTION });
+
+    // The operator tabs away and presses Create again: the panel is already
+    // mounted, so its own autoFocus cannot answer the press.
+    act(() => create.focus());
+    expect(document.activeElement).toBe(create);
+    fireEvent.click(create);
+
+    expect(document.activeElement).toBe(panel);
+    expect(screen.getAllByRole("group", { name: QUESTION })).toHaveLength(1);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+  });
+
+  it("a truncated read asks for the whole name, lists no choices, and keeps the one-name button", async () => {
+    fragmentCheck = { isFragment: true, truncated: true, matches: [] };
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    expect(
+      screen.getByRole("group", {
+        name: "Just Griffey? That's part of a fuller name we've got. Type the whole name to find them, or add Griffey as a one-name player.",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Fuller names for Griffey" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as a one-name player" })).toBeTruthy();
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
   });
 });
