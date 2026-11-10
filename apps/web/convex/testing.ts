@@ -746,6 +746,22 @@ const SEED_SITE_ENV: Record<string, { username: string; password: string }> = {
 export const SEED_BSC_MAX_RELOGINS = 4;
 /** NEO-482: {@link seedBscWithSellerId} starts no sign-in once this long has passed since it began. */
 export const SEED_BSC_RELOGIN_WINDOW_MS = 58_000;
+/**
+ * NEO-482: the least time between the STARTS of two sign-ins in
+ * {@link seedBscWithSellerId}. A BSC profile stall heals with time, so the
+ * tries are spread across the window (starts near 0, 12, 24, 36 and 48 s)
+ * instead of firing back to back once a stall ends and sign-ins come back
+ * fast and still without the id.
+ */
+export const SEED_BSC_RELOGIN_SPACING_MS = 12_000;
+/**
+ * NEO-482: the wait {@link seedBscWithSellerId} uses between sign-ins. An
+ * object so a test can replace `sleep` (and move its spied clock instead of
+ * waiting real seconds); nothing else reassigns it.
+ */
+export const seedBscReloginClock = {
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};
 
 /** One entry of {@link seedMyTestCredentials}' `seeded` array. */
 type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: string };
@@ -771,18 +787,25 @@ type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: s
  *   the id. Missing: sign in fresh again, no logout. A BSC profile stall
  *   heals with time, not with a new session, and our password login is
  *   already a new session each time, so the loop is what buys the time. At
- *   most {@link SEED_BSC_MAX_RELOGINS} re-logins after the first, and none
- *   started once {@link SEED_BSC_RELOGIN_WINDOW_MS} has passed. A stalled
- *   sign-in takes about 13 s, so the usual worst case is about 73 s, inside
- *   the hop's 90 s `SEED_SIGN_IN`. The window bounds when a login starts,
- *   not when it ends: one started near 58 s can run to its own 60 s timeout
- *   (longer under browser-service 503 retries), and the hop then times out
- *   instead of printing the reason. Either way the run is red.
+ *   most {@link SEED_BSC_MAX_RELOGINS} re-logins after the first, each
+ *   started at least {@link SEED_BSC_RELOGIN_SPACING_MS} after the previous
+ *   one STARTED (a sign-in that already took that long gets no extra wait),
+ *   so fast id-less sign-ins start near 0, 12, 24, 36 and 48 s rather than
+ *   spending all five tries in the first half-minute. None starts at or after
+ *   {@link SEED_BSC_RELOGIN_WINDOW_MS}: when the spacing wait would carry the
+ *   next start there, the loop stops with the stalled reason instead. A
+ *   stalled sign-in takes about 13 s, so the usual worst case is the last
+ *   start just under 58 s plus one stall, about 71 s, inside the hop's 90 s
+ *   `SEED_SIGN_IN`. The window bounds when a login starts, not when it ends:
+ *   one started near 58 s can run to its own 60 s timeout (longer under
+ *   browser-service 503 retries), and the hop then times out instead of
+ *   printing the reason. Either way the run is red.
  * - a login that fails (`success: false` or a throw) stops at once, with that
  *   login's message as the reason.
  *
  * Logs one line per sign-in: `{msg: "seed_bsc_relogin", attempt, idSaved,
- * elapsedMs}` (attempt 1 is the first sign-in). Neither a log line nor a
+ * elapsedMs, waitedMs}` (attempt 1 is the first sign-in; `waitedMs` is the
+ * spacing wait spent just before that sign-in started, 0 for the first). Neither a log line nor a
  * reason ever carries the id, the password or a token: `storeTestCredentials`'
  * messages are fixed per-site product copy.
  */
@@ -832,22 +855,32 @@ async function seedBscWithSellerId(
   }
 
   let attempt = 0;
+  let waitedMs = 0;
   for (;;) {
     attempt += 1;
+    const signInStartedAt = Date.now();
     const stored = await store();
     if (!stored.success) return { site, stored: false, reason: stored.message };
     const idSaved = await sellerIdSaved();
     console.log(
-      JSON.stringify({ msg: "seed_bsc_relogin", attempt, idSaved, elapsedMs: Date.now() - startedAt }),
+      JSON.stringify({ msg: "seed_bsc_relogin", attempt, idSaved, elapsedMs: Date.now() - startedAt, waitedMs }),
     );
     if (idSaved) return { site, stored: true };
-    if (attempt > SEED_BSC_MAX_RELOGINS || Date.now() - startedAt >= SEED_BSC_RELOGIN_WINDOW_MS) {
-      return {
-        site,
-        stored: false,
-        reason: `BuySportsCards seller id not saved: the profile read stalled on every sign-in (${attempt} tries).`,
-      };
-    }
+    const stalled = {
+      site,
+      stored: false,
+      reason: `BuySportsCards seller id not saved: the profile read stalled on every sign-in (${attempt} tries).`,
+    };
+    if (attempt > SEED_BSC_MAX_RELOGINS) return stalled;
+    // Space the next START from this one's; never start at or past the window.
+    const now = Date.now();
+    const wait = Math.max(0, signInStartedAt + SEED_BSC_RELOGIN_SPACING_MS - now);
+    if (now + wait - startedAt >= SEED_BSC_RELOGIN_WINDOW_MS) return stalled;
+    const waitStartedAt = Date.now();
+    if (wait > 0) await seedBscReloginClock.sleep(wait);
+    waitedMs = Date.now() - waitStartedAt;
+    // A real timer can overshoot; the window still bounds the start.
+    if (Date.now() - startedAt >= SEED_BSC_RELOGIN_WINDOW_MS) return stalled;
   }
 }
 

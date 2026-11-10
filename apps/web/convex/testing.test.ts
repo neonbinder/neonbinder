@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
+import { SEED_BSC_RELOGIN_SPACING_MS, seedBscReloginClock } from "./testing";
 import { insertTestCard } from "../lib/testing/card-row";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -1093,10 +1094,34 @@ describe("seedMyTestCredentials — the listing test marker", () => {
 // reads BSC's profile inside the login (best effort, so a stalled read still
 // returns a session with no id) and `credentials.runSiteLogin` saves it. The
 // seed makes no profile read of its own. With no id saved it signs in again
-// (no logout), up to 5 sign-ins and none started after 58 s. With an id
-// already saved it adds nothing to the old behaviour.
+// (no logout), up to 5 sign-ins, each started at least 12 s after the last
+// one started, and none started at or after 58 s. With an id already saved
+// it adds nothing to the old behaviour.
 describe("seedMyTestCredentials — NEO-482 seller id", () => {
+  /**
+   * Every test here runs on a frozen virtual clock: `Date.now` moves only
+   * when a login stub calls `advance` or the seed's spacing sleep runs (the
+   * sleep is spied to move the clock by its `ms` instead of waiting), so the
+   * timing is exact and no test waits real seconds.
+   */
+  let advance: (ms: number) => void;
+  /** Every spacing wait the seed asked for, in order. */
+  let sleeps: number[];
+  /** The virtual clock's reading when the test began. */
+  let t0: number;
+
   beforeEach(() => {
+    t0 = Date.now();
+    let skew = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => t0 + skew);
+    advance = (ms) => {
+      skew += ms;
+    };
+    sleeps = [];
+    vi.spyOn(seedBscReloginClock, "sleep").mockImplementation(async (ms) => {
+      sleeps.push(ms);
+      advance(ms);
+    });
     process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
     __resetContractCache();
     process.env.DEV_BSC_USERNAME = BSC_USERNAME;
@@ -1198,18 +1223,21 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       log.mock.calls
         .map(([line]) => String(line))
         .filter((line) => line.startsWith("{") && line.includes('"seed_bsc_relogin"'))
-        .map((line) => JSON.parse(line) as { msg: string; attempt: number; idSaved: boolean; elapsedMs: number });
-    return { all, relogins };
+        .map(
+          (line) =>
+            JSON.parse(line) as { msg: string; attempt: number; idSaved: boolean; elapsedMs: number; waitedMs: number },
+        );
+    /** Drop just these two spies (the describe's clock and sleep spies stay). */
+    const restore = () => {
+      log.mockRestore();
+      error.mockRestore();
+    };
+    return { all, relogins, restore };
   }
 
-  /** Move `Date.now` forward by `ms` per call to `advance`, leaving real time otherwise. */
+  /** The describe's virtual clock: `advance(ms)` moves `Date.now` forward. */
   function skewClock() {
-    const realNow = Date.now.bind(Date);
-    let skew = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => realNow() + skew);
-    return (ms: number) => {
-      skew += ms;
-    };
+    return advance;
   }
 
   test("the first login returns the seller id: saved, exactly one login, stored true", async () => {
@@ -1309,6 +1337,136 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
 
     expect(state.logins).toBe(5);
     expect(result.seeded[0].reason).toBe(stalled(5));
+    // 10 s each, so each later start waits the 2 s left of the 12 s spacing.
+    expect(sleeps).toEqual([2_000, 2_000, 2_000, 2_000]);
+    await drainScheduled(t);
+  });
+
+  test("spacing: fast id-less sign-ins start 12 s apart (0, 12, 24, 36, 48 s), each wait logged", async () => {
+    const t = convexTest(schema, modules);
+    const starts: number[] = [];
+    // Each login takes no time and never carries the id.
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}], onLogin: () => starts.push(Date.now() - t0) });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    const result = await seed(t, true);
+
+    expect(state.logins).toBe(5);
+    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: stalled(5) }]);
+    expect(starts).toEqual([0, 12_000, 24_000, 36_000, 48_000]);
+    for (let i = 1; i < starts.length; i++) {
+      expect(starts[i] - starts[i - 1]).toBeGreaterThanOrEqual(SEED_BSC_RELOGIN_SPACING_MS);
+    }
+    for (const s of starts) expect(s).toBeLessThan(58_000);
+    expect(sleeps).toEqual([12_000, 12_000, 12_000, 12_000]);
+    expect(con.relogins().map((l) => [l.attempt, l.waitedMs])).toEqual([
+      [1, 0],
+      [2, 12_000],
+      [3, 12_000],
+      [4, 12_000],
+      [5, 12_000],
+    ]);
+    await drainScheduled(t);
+  });
+
+  test("spacing: only the rest of the 12 s is waited after a 5 s sign-in", async () => {
+    const t = convexTest(schema, modules);
+    const starts: number[] = [];
+    const { state, fetchFn } = loginStub({
+      metadata: 404,
+      steps: [{}, { sellerId: SELLER }],
+      onLogin: (n) => {
+        starts.push(Date.now() - t0);
+        if (n === 0) advance(5_000);
+      },
+    });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(2);
+    expect(starts).toEqual([0, 12_000]);
+    expect(sleeps).toEqual([7_000]);
+    expect(con.relogins().map((l) => l.waitedMs)).toEqual([0, 7_000]);
+    await drainScheduled(t);
+  });
+
+  test("spacing: a sign-in that already took 12 s or more gets no extra wait", async () => {
+    const t = convexTest(schema, modules);
+    const starts: number[] = [];
+    const { state, fetchFn } = loginStub({
+      metadata: 404,
+      steps: [{}, {}, { sellerId: SELLER }],
+      onLogin: (n) => {
+        starts.push(Date.now() - t0);
+        // The first takes exactly the spacing, the second a stall's 13 s.
+        advance(n === 0 ? 12_000 : 13_000);
+      },
+    });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(3);
+    expect(starts).toEqual([0, 12_000, 25_000]);
+    expect(sleeps).toEqual([]);
+    expect(con.relogins().map((l) => l.waitedMs)).toEqual([0, 0, 0]);
+    await drainScheduled(t);
+  });
+
+  test("spacing: the window stops the loop before five sign-ins when the wait would carry a start past 58 s", async () => {
+    const t = convexTest(schema, modules);
+    const starts: number[] = [];
+    // The first sign-in stalls 25 s; the rest are fast. Starts 0, 25, 37, 49;
+    // the next would be 61 s, so the seed stops at 49 s elapsed without waiting.
+    const { state, fetchFn } = loginStub({
+      metadata: 404,
+      steps: [{}],
+      onLogin: (n) => {
+        starts.push(Date.now() - t0);
+        if (n === 0) advance(25_000);
+      },
+    });
+    stubFetch(fetchFn);
+    const con = captureConsole();
+
+    const result = await seed(t, true);
+
+    expect(state.logins).toBe(4);
+    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: stalled(4) }]);
+    expect(starts).toEqual([0, 25_000, 37_000, 49_000]);
+    expect(sleeps).toEqual([12_000, 12_000]);
+    // Stopped by the spacing, not by elapsed time: the last line is well inside 58 s.
+    expect(con.relogins().at(-1)?.elapsedMs).toBe(49_000);
+    expect(Date.now() - t0).toBe(49_000);
+    await drainScheduled(t);
+  });
+
+  test("spacing: a wait that overshoots to 58 s starts no further sign-in", async () => {
+    const t = convexTest(schema, modules);
+    // Login 1 takes 45 s; login 2 is fast, so the next start is planned at 57 s.
+    const { state, fetchFn } = loginStub({
+      metadata: 404,
+      steps: [{}],
+      onLogin: (n) => {
+        if (n === 0) advance(45_000);
+      },
+    });
+    stubFetch(fetchFn);
+    // A real timer can fire late: this one lands 1 s past what was asked.
+    vi.mocked(seedBscReloginClock.sleep).mockImplementation(async (ms) => {
+      sleeps.push(ms);
+      advance(ms + 1_000);
+    });
+
+    const result = await seed(t, true);
+
+    expect(state.logins).toBe(2);
+    expect(sleeps).toEqual([12_000]);
+    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: stalled(2) }]);
     await drainScheduled(t);
   });
 
@@ -1411,14 +1569,13 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     [57_999, 2, "signs in again at 57999 ms elapsed"],
   ])("deadline boundary: after a stalled login at %i ms, %i login(s) in total (%s)", async (elapsed, logins, _name) => {
     const t = convexTest(schema, modules);
-    // A frozen clock, so elapsed is exactly what the login advances.
-    let now = Date.now();
-    vi.spyOn(Date, "now").mockImplementation(() => now);
+    // The describe's frozen clock, so elapsed is exactly what the login
+    // advances (past the 12 s spacing, so no wait is added).
     const { state, fetchFn } = loginStub({
       metadata: 404,
       steps: [{}, { sellerId: SELLER }],
       onLogin: (n) => {
-        if (n === 0) now += elapsed;
+        if (n === 0) advance(elapsed);
       },
     });
     stubFetch(fetchFn);
@@ -1611,7 +1768,7 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       expect(haystack).not.toContain(BSC_PASSWORD);
       expect(haystack).not.toMatch(/token/i);
       await drainScheduled(t);
-      vi.restoreAllMocks();
+      con.restore();
     }
   });
 
