@@ -463,7 +463,7 @@ describe("ParallelGroupingModal — a demoted row is a drop target at once", () 
 
     // Straight away, with no parallels in it yet.
     const zone = zoneOf(AUTOS);
-    expect(within(zone).getByText("0 parallels")).toBeTruthy();
+    expect(within(zone).getByText("drop here")).toBeTruthy();
 
     fireEvent.click(screen.getByText(GOLD));
     fireEvent.click(screen.getByText(boxTitle(AUTOS)));
@@ -514,7 +514,7 @@ describe("ParallelGroupingModal — a demoted row is a drop target at once", () 
     renderModal();
 
     fireEvent.click(screen.getByLabelText(`Remove ${AUTOS} from parallels`));
-    expect(within(zoneOf(AUTOS)).getByText("0 parallels")).toBeTruthy();
+    expect(within(zoneOf(AUTOS)).getByText("drop here")).toBeTruthy();
     fireEvent.click(screen.getByText(GOLD));
     fireEvent.click(screen.getByText(boxTitle(AUTOS)));
 
@@ -1478,5 +1478,544 @@ describe("groupingReducer — a move of several rows is all or nothing", () => {
       from: id("a"),
     });
     expect(ranged.selected).toEqual(["a", "b"]);
+  });
+});
+
+/**
+ * NEO-472 — two panes, one filter, and a jump from a row to its box.
+ *
+ * From `md` up the top-level rows sit in a left pane and the "Parallels of …"
+ * boxes in a right pane, each its own scroller; on a phone they stack in the
+ * one scrolling body. happy-dom applies no Tailwind, so a test that wants the
+ * desktop layout gives the right pane `overflow-y: auto` inline, which is
+ * what the jump looks for, and stubs the rectangles it measures.
+ */
+describe("ParallelGroupingModal — two panes, filter and jump", () => {
+  const TRADED = "1991 Topps Traded";
+  const BOWMAN = "Bowman Chrome";
+  const STADIUM = "Stadium Club";
+  const FOIL = "Gold Foil";
+  const RAINBOW = "Rainbow";
+
+  /** No name is a prefix of another, so nothing opens as a suggestion. */
+  function paneTree() {
+    return [
+      { insert: { _id: "traded", value: TRADED }, parallels: [] },
+      { insert: { _id: "bowman", value: BOWMAN }, parallels: [] },
+      {
+        insert: { _id: "stadium", value: STADIUM },
+        parallels: [
+          { _id: "foil", value: FOIL },
+          { _id: "rainbow", value: RAINBOW },
+        ],
+      },
+    ];
+  }
+
+  beforeEach(() => {
+    tree = paneTree();
+  });
+
+  const leftPane = () => screen.getByRole("region", { name: "Inserts" });
+  const rightPane = () =>
+    screen.getByRole("region", { name: "Parallels by insert" });
+  const body = () =>
+    document.querySelector("[data-grouping-body]") as HTMLElement;
+  const filterBox = () => screen.getByRole("textbox", { name: "Filter inserts" });
+  const boxTitle = (name: string) => `Parallels of "${name}"`;
+  const box = (name: string) => screen.getByRole("group", { name: boxTitle(name) });
+  const jump = (name: string) =>
+    screen.getByRole("button", { name: `${name} has parallels. Jump to them` });
+  const tick = (name: string) =>
+    screen.getByRole("checkbox", { name: `Select ${name}` });
+  const count = () =>
+    document.querySelector('[role="status"][data-selection-count]')!.textContent;
+  const typeFilter = (text: string) =>
+    fireEvent.change(filterBox(), { target: { value: text } });
+
+  /** Stub one element's rectangle; returns the restore. */
+  function stubTop(el: HTMLElement, top: number) {
+    const original = el.getBoundingClientRect;
+    el.getBoundingClientRect = () =>
+      ({ top, left: 0, width: 400, height: 40, bottom: top + 40, right: 400, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+    return () => {
+      el.getBoundingClientRect = original;
+    };
+  }
+
+  /** prefers-reduced-motion, as the jump reads it. */
+  function stubReducedMotion(reduce: boolean) {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: reduce && query.includes("prefers-reduced-motion"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
+    return () => {
+      window.matchMedia = original;
+    };
+  }
+
+  test("rows sit in the left pane and their boxes in the right, same order", () => {
+    renderModal();
+    expect(body().contains(leftPane())).toBe(true);
+    expect(body().contains(rightPane())).toBe(true);
+    const rowNames = within(leftPane())
+      .getAllByRole("checkbox")
+      .map((c) => c.getAttribute("aria-label"));
+    expect(rowNames).toEqual([
+      `Select ${TRADED}`,
+      `Select ${BOWMAN}`,
+      `Select ${STADIUM}`,
+    ]);
+    const boxNames = within(rightPane())
+      .getAllByRole("group")
+      .filter((g) => g.hasAttribute("data-box-for"))
+      .map((g) => within(g).getByText(/^Parallels of/).textContent);
+    expect(boxNames).toEqual([boxTitle(TRADED), boxTitle(BOWMAN), boxTitle(STADIUM)]);
+    // The parallels live in the right pane, under their box.
+    expect(within(box(STADIUM)).getByText(FOIL)).toBeTruthy();
+    expect(within(leftPane()).queryByText(FOIL)).toBeNull();
+  });
+
+  describe("the filter", () => {
+    test("narrows both panes to the matching rows and their boxes", () => {
+      renderModal();
+      typeFilter("1991 topps");
+      expect(within(leftPane()).getByText(TRADED)).toBeTruthy();
+      expect(within(leftPane()).queryByText(BOWMAN)).toBeNull();
+      expect(within(leftPane()).queryByText(STADIUM)).toBeNull();
+      expect(within(rightPane()).getByText(boxTitle(TRADED))).toBeTruthy();
+      expect(within(rightPane()).queryByText(boxTitle(BOWMAN))).toBeNull();
+      expect(within(rightPane()).queryByText(boxTitle(STADIUM))).toBeNull();
+      expect(document.querySelector("[data-filter-count]")!.textContent).toBe(
+        "1 of 3 inserts",
+      );
+    });
+
+    test("every word must match, in any order", () => {
+      renderModal();
+      typeFilter("topps 1991");
+      expect(within(leftPane()).getByText(TRADED)).toBeTruthy();
+      typeFilter("topps bowman");
+      expect(within(leftPane()).queryByText(TRADED)).toBeNull();
+      expect(within(leftPane()).getByText('No inserts match "topps bowman"')).toBeTruthy();
+      expect(
+        within(rightPane()).getByText('No parallels to show for "topps bowman"'),
+      ).toBeTruthy();
+    });
+
+    test("a parallel's name shows its parent and the whole box", () => {
+      renderModal();
+      typeFilter("foil");
+      expect(within(leftPane()).getByText(STADIUM)).toBeTruthy();
+      expect(within(leftPane()).queryByText(TRADED)).toBeNull();
+      // The box shows whole: the filter picks groups, it does not split one.
+      expect(within(box(STADIUM)).getByText(FOIL)).toBeTruthy();
+      expect(within(box(STADIUM)).getByText(RAINBOW)).toBeTruthy();
+    });
+
+    test("Escape clears the filter and leaves the dialog open; the × clears it too", () => {
+      const { onClose } = renderModal();
+      typeFilter("bowman");
+      fireEvent.keyDown(filterBox(), { key: "Escape" });
+      expect((filterBox() as HTMLInputElement).value).toBe("");
+      expect(onClose).not.toHaveBeenCalled();
+      expect(within(leftPane()).getByText(TRADED)).toBeTruthy();
+
+      typeFilter("bowman");
+      fireEvent.click(screen.getByRole("button", { name: "Clear the insert filter" }));
+      expect((filterBox() as HTMLInputElement).value).toBe("");
+      expect(document.activeElement).toBe(filterBox());
+    });
+
+    test("selected rows the filter hides stay selected, are counted, and move", () => {
+      renderModal();
+      fireEvent.click(tick(BOWMAN));
+      typeFilter("stadium");
+      expect(within(leftPane()).queryByText(BOWMAN)).toBeNull();
+      expect(count()).toBe("1 selected (1 hidden by the filter)");
+
+      // Click-to-place moves the selection, hidden row included.
+      fireEvent.click(screen.getByText(boxTitle(STADIUM)));
+      expect(screen.getByText("1 promotion, 0 demotions")).toBeTruthy();
+      expect(within(box(STADIUM)).getByText(BOWMAN)).toBeTruthy();
+    });
+
+    test("a Shift range skips the rows the filter hides", () => {
+      tree = [
+        { insert: { _id: "a", value: "Alpha Topps" }, parallels: [] },
+        { insert: { _id: "b", value: "Beta Bowman" }, parallels: [] },
+        { insert: { _id: "c", value: "Gamma Topps" }, parallels: [] },
+      ];
+      renderModal();
+      typeFilter("topps");
+      fireEvent.click(screen.getByText("Alpha Topps"));
+      fireEvent.click(screen.getByText("Gamma Topps"), { shiftKey: true });
+      expect(count()).toBe("2 selected");
+      typeFilter("");
+      expect(tick("Beta Bowman").getAttribute("aria-checked")).toBe("false");
+    });
+  });
+
+  describe("the has-parallels jump", () => {
+    let restores: Array<() => void> = [];
+    afterEach(() => {
+      for (const r of restores.reverse()) r();
+      restores = [];
+      vi.useRealTimers();
+    });
+
+    test("only a row holding parallels has one", () => {
+      renderModal();
+      expect(jump(STADIUM)).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: `${TRADED} has parallels. Jump to them` }),
+      ).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Gold Foil has parallels/ })).toBeNull();
+    });
+
+    test("scrolls the right pane to the box, lights it, focuses it, and selects nothing", () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      renderModal();
+      const pane = rightPane();
+      pane.style.overflowY = "auto"; // the desktop layout
+      restores.push(stubReducedMotion(true));
+      restores.push(stubTop(pane, 120));
+      restores.push(stubTop(box(STADIUM), 640));
+      body().scrollTop = 0;
+
+      fireEvent.click(jump(STADIUM));
+
+      // 640 - 120, less the 8px of breathing room.
+      expect(pane.scrollTop).toBe(512);
+      expect(body().scrollTop).toBe(0);
+      expect(box(STADIUM).getAttribute("data-jumped")).toBe("true");
+      expect(document.activeElement).toBe(box(STADIUM));
+      expect(tick(STADIUM).getAttribute("aria-checked")).toBe("false");
+      expect(count()).toBe("");
+      expect(screen.getByText("No changes yet")).toBeTruthy();
+
+      act(() => {
+        vi.advanceTimersByTime(1600);
+      });
+      expect(box(STADIUM).hasAttribute("data-jumped")).toBe(false);
+      // The light going out scrolls nothing.
+      expect(pane.scrollTop).toBe(512);
+    });
+
+    test("scrolls smoothly unless reduced motion is asked for", () => {
+      renderModal();
+      const pane = rightPane();
+      pane.style.overflowY = "auto";
+      restores.push(stubReducedMotion(false));
+      const scrollTo = vi.fn();
+      pane.scrollTo = scrollTo as unknown as typeof pane.scrollTo;
+      fireEvent.click(jump(STADIUM));
+      expect(scrollTo).toHaveBeenCalledWith(
+        expect.objectContaining({ behavior: "smooth" }),
+      );
+    });
+
+    test("with a selection up, the jump does not drop it into the top level", () => {
+      renderModal();
+      restores.push(stubReducedMotion(true));
+      fireEvent.click(screen.getByText(FOIL));
+      expect(count()).toBe("1 selected");
+      fireEvent.click(jump(STADIUM));
+      expect(screen.getByText("No changes yet")).toBeTruthy();
+      expect(count()).toBe("1 selected");
+    });
+
+    test("stacked (phone): the body is the scroller, so the body scrolls", () => {
+      renderModal();
+      restores.push(stubReducedMotion(true));
+      restores.push(stubTop(body(), 100));
+      restores.push(stubTop(box(STADIUM), 700));
+      body().scrollTop = 0;
+      fireEvent.click(jump(STADIUM));
+      expect(body().scrollTop).toBe(592);
+      expect(rightPane().scrollTop).toBe(0);
+    });
+  });
+
+  describe("an empty box is one line", () => {
+    test("title and 'drop here' only, and it still takes a click-to-place", () => {
+      renderModal();
+      const empty = box(BOWMAN);
+      expect(within(empty).getByText("drop here")).toBeTruthy();
+      // One line: no empty-state paragraph under a header.
+      expect(within(empty).queryByText(/no parallels|drop rows here/i)).toBeNull();
+      expect(within(empty).getByText(boxTitle(BOWMAN)).parentElement!.parentElement).toBe(empty);
+      expect(empty.children).toHaveLength(1);
+      expect(within(empty).queryByText(/parallels?$/)).toBeNull();
+
+      fireEvent.click(screen.getByText(FOIL));
+      // A selection up: the one line offers the move, as every box does.
+      expect(
+        within(box(BOWMAN)).getByText("Click here to make the selected row a parallel"),
+      ).toBeTruthy();
+      fireEvent.click(screen.getByText(boxTitle(BOWMAN)));
+      expect(screen.getByText("0 promotions, 0 demotions, 1 re-parented")).toBeTruthy();
+      // No longer empty: the full box, with its count.
+      expect(within(box(BOWMAN)).getByText("1 parallel")).toBeTruthy();
+    });
+
+    test("it is still a drop target", () => {
+      renderModal();
+      act(() => {
+        dnd.onDragStart!({ active: { id: "rainbow" } });
+        dnd.onDragEnd!({ active: { id: "rainbow" }, over: { id: "drop-insert-traded" } });
+      });
+      expect(within(box(TRADED)).getByText(RAINBOW)).toBeTruthy();
+    });
+  });
+
+  test("nothing scrolls either pane or the body on a state change", async () => {
+    tree = [
+      ...paneTree(),
+      // Prefix of nothing else, but "Stadium Club Gold" opens suggested.
+      { insert: { _id: "scg", value: "Stadium Club Gold" }, parallels: [] },
+    ];
+    const proto = Element.prototype as unknown as {
+      scrollIntoView?: (arg?: unknown) => void;
+    };
+    const original = proto.scrollIntoView;
+    const scrollSpy = vi.fn();
+    proto.scrollIntoView = scrollSpy;
+    try {
+      renderModal();
+      body().scrollTop = 11;
+      leftPane().scrollTop = 37;
+      rightPane().scrollTop = 59;
+      const unmoved = () => {
+        expect(body().scrollTop).toBe(11);
+        expect(leftPane().scrollTop).toBe(37);
+        expect(rightPane().scrollTop).toBe(59);
+      };
+
+      fireEvent.click(screen.getByLabelText(`Remove ${RAINBOW} from parallels`));
+      unmoved();
+      fireEvent.click(screen.getByText(/Accept all suggestions/));
+      unmoved();
+      typeFilter("stadium");
+      unmoved();
+      typeFilter("");
+      unmoved();
+      fireEvent.click(screen.getByText(FOIL));
+      fireEvent.click(screen.getByText(boxTitle(BOWMAN)));
+      unmoved();
+      await act(async () => {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      });
+      unmoved();
+      expect(scrollSpy).not.toHaveBeenCalled();
+    } finally {
+      proto.scrollIntoView = original;
+    }
+  });
+});
+
+/**
+ * NEO-472 fix round — the a11y findings from the audit, each pinned.
+ */
+describe("ParallelGroupingModal — two panes, keyboard and screen reader", () => {
+  const BOWMAN = "Bowman Chrome";
+  const STADIUM = "Stadium Club";
+  const FOIL = "Gold Foil";
+  const TRADED = "1991 Topps Traded";
+
+  beforeEach(() => {
+    tree = [
+      { insert: { _id: "traded", value: TRADED }, parallels: [] },
+      { insert: { _id: "bowman", value: BOWMAN }, parallels: [] },
+      {
+        insert: { _id: "stadium", value: STADIUM },
+        parallels: [
+          { _id: "foil", value: FOIL },
+          { _id: "rainbow", value: "Rainbow" },
+        ],
+      },
+    ];
+  });
+
+  const box = (name: string) =>
+    screen.getByRole("group", { name: `Parallels of "${name}"` });
+  const jump = (name: string) =>
+    screen.getByRole("button", { name: `${name} has parallels. Jump to them` });
+  const filterBox = () => screen.getByRole("textbox", { name: "Filter inserts" });
+  const describedBy = (el: HTMLElement) =>
+    (el.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .filter(Boolean)
+      .map((id) => document.getElementById(id)!.textContent)
+      .join(" | ");
+
+  test("a row holding parallels is not aria-disabled, so its jump is pressable", () => {
+    renderModal();
+    const row = screen.getByRole("group", { name: STADIUM });
+    expect(row.hasAttribute("aria-disabled")).toBe(false);
+    expect(jump(STADIUM).closest("[aria-disabled='true']")).toBeNull();
+    // The row's own controls still say it cannot move.
+    expect(
+      (screen.getByRole("checkbox", { name: `Select ${STADIUM}` }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    // A movable row is not aria-disabled either.
+    expect(
+      screen.getByRole("group", { name: BOWMAN }).hasAttribute("aria-disabled"),
+    ).toBe(false);
+  });
+
+  describe("a scroller is a Tab stop exactly while it scrolls", () => {
+    type Entry = { cb: (entries: unknown[]) => void };
+    let observers: Entry[] = [];
+    let original: typeof ResizeObserver | undefined;
+    beforeEach(() => {
+      observers = [];
+      original = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        private entry: Entry;
+        constructor(cb: (entries: unknown[]) => void) {
+          this.entry = { cb };
+          observers.push(this.entry);
+        }
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+    });
+    afterEach(() => {
+      if (original) globalThis.ResizeObserver = original;
+    });
+    const fire = () =>
+      act(() => {
+        for (const o of observers) o.cb([]);
+      });
+    const setHeights = (el: HTMLElement, scroll: number, client: number) => {
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: scroll });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: client });
+    };
+
+    test("the right pane overflowing (all boxes empty) takes a tabIndex, the others don't", () => {
+      renderModal();
+      const right = screen.getByRole("region", { name: "Parallels by insert" });
+      const left = screen.getByRole("region", { name: "Inserts" });
+      const body = document.querySelector("[data-grouping-body]") as HTMLElement;
+      setHeights(right, 900, 400);
+      setHeights(left, 300, 400);
+      setHeights(body, 400, 400);
+      fire();
+      expect(right.getAttribute("tabindex")).toBe("0");
+      expect(left.hasAttribute("tabindex")).toBe(false);
+      expect(body.hasAttribute("tabindex")).toBe(false);
+
+      // Phone: the body scrolls, the stacked panes don't; it is named then.
+      setHeights(right, 400, 400);
+      setHeights(body, 1400, 600);
+      fire();
+      expect(right.hasAttribute("tabindex")).toBe(false);
+      expect(body.getAttribute("tabindex")).toBe("0");
+      expect(body.getAttribute("aria-label")).toBe("Inserts and their parallels");
+    });
+  });
+
+  test("Shift+Tab from a jumped-to box is left to the browser, not sent to the footer", () => {
+    renderModal();
+    fireEvent.click(jump(STADIUM));
+    expect(document.activeElement).toBe(box(STADIUM));
+    const notCancelled = fireEvent.keyDown(box(STADIUM), { key: "Tab", shiftKey: true });
+    expect(notCancelled).toBe(true);
+    expect(document.activeElement).toBe(box(STADIUM));
+
+    // The parked heading still wraps to the last control, as before.
+    act(() => heading().focus());
+    const cancelled = !fireEvent.keyDown(heading(), { key: "Tab", shiftKey: true });
+    expect(cancelled).toBe(true);
+    expect(document.activeElement).not.toBe(heading());
+  });
+
+  test("the match count shows at once but is announced once typing pauses", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      renderModal();
+      const announce = () =>
+        document.querySelector('[role="status"][data-filter-announce]')!.textContent;
+      fireEvent.change(filterBox(), { target: { value: "s" } });
+      fireEvent.change(filterBox(), { target: { value: "st" } });
+      fireEvent.change(filterBox(), { target: { value: "stadium" } });
+      expect(document.querySelector("[data-filter-count]")!.textContent).toBe(
+        "1 of 3 inserts",
+      );
+      // The visible count is no live region of its own.
+      expect(document.querySelector("[data-filter-count]")!.getAttribute("role")).toBeNull();
+      expect(announce()).toBe("");
+      act(() => {
+        vi.advanceTimersByTime(499);
+      });
+      expect(announce()).toBe("");
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(announce()).toBe("1 of 3 inserts");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a box says its count, and with a selection up it takes Tab and Enter", () => {
+    renderModal();
+    expect(describedBy(box(STADIUM))).toBe("2 parallels");
+    expect(describedBy(box(BOWMAN))).toBe("drop here");
+    // No selection: not a Tab stop (focusable from script only).
+    expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");
+
+    fireEvent.click(screen.getByText(FOIL));
+    expect(box(BOWMAN).getAttribute("tabindex")).toBe("0");
+    expect(describedBy(box(BOWMAN))).toBe(
+      "Click here to make the selected row a parallel | Press Enter to move the selection here.",
+    );
+    // The top-level box too.
+    const topLevel = screen.getByRole("group", { name: "Top-level inserts" });
+    expect(topLevel.getAttribute("tabindex")).toBe("0");
+
+    // A key on a row's own control inside a box is that control's.
+    fireEvent.keyDown(screen.getByRole("checkbox", { name: "Select Rainbow" }), {
+      key: "Enter",
+    });
+    expect(screen.getByText("No changes yet")).toBeTruthy();
+
+    // Enter on the far-away empty box itself places the selection there.
+    act(() => box(BOWMAN).focus());
+    fireEvent.keyDown(box(BOWMAN), { key: "Enter" });
+    expect(screen.getByText("0 promotions, 0 demotions, 1 re-parented")).toBeTruthy();
+    expect(within(box(BOWMAN)).getByText(FOIL)).toBeTruthy();
+    // Selection spent: the box leaves the Tab order again.
+    expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");
+  });
+
+  test("Space on a box places too, and a box refusing the selection takes no key", () => {
+    renderModal();
+    fireEvent.click(screen.getByRole("checkbox", { name: `Select ${BOWMAN}` }));
+    // Bowman's own box refuses its own row: not a target, not a stop.
+    expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");
+    fireEvent.keyDown(box(BOWMAN), { key: "Enter" });
+    expect(screen.getByText("No changes yet")).toBeTruthy();
+
+    fireEvent.keyDown(box(TRADED), { key: " " });
+    expect(screen.getByText("1 promotion, 0 demotions")).toBeTruthy();
+  });
+
+  test("the jump's light is its own mark, and it goes out when a drag starts", () => {
+    renderModal();
+    fireEvent.click(jump(STADIUM));
+    expect(box(STADIUM).getAttribute("data-jumped")).toBe("true");
+    expect(box(STADIUM).className).toContain("ring-selection");
+    act(() => {
+      dnd.onDragStart!({ active: { id: "traded" } });
+    });
+    expect(box(STADIUM).hasAttribute("data-jumped")).toBe(false);
+    expect(box(STADIUM).className).not.toContain("ring-selection");
   });
 });
