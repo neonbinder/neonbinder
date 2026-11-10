@@ -103,3 +103,4 @@
 - [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
 - [Card photo viewer specs](patterns_card_photo_viewer_specs.md) — NEO-481: viewer/tile names, served-file orientation, crop-box drag geometry, More steps, restart a frozen Vite after resync
+- [aria-disabled refusal by keyboard](patterns_aria_disabled_refusal_by_keyboard.md) — focus()+Enter to prove a refusal; blur (Tab) a field before clicking the control its value enables

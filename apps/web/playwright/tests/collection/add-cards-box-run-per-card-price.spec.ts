@@ -1,13 +1,23 @@
 // NEO-481 (R1): on Add cards into a BOX, every waiting card has a price of its
-// own. The field ("Price, <card>") starts at the run's Min price; `p` on the
-// selected card jumps there, a typed price and Enter save THAT card at it (a
-// text that isn't a price stays, with an alert under the field, and saves
-// nothing), and
-// a card saved with the field untouched goes in at the run's default. The card
-// drawer then shows each line's own price. A binder never shows a price: that
-// half is asserted on the binder run of add-cards-from-photos-real-scans (its
-// tiles have a Count and no Price), so this spec pays for one pipeline run, not
-// two.
+// own, and a card saves into the box only WITH a price: its own, else the run's
+// Min price, else the collector's common price for the set. With none of the
+// three the tile says "Price it first: type a price, or set a common price."
+// under its Price field, Yes is aria-disabled (pointing at the same line) and
+// pressing it saves nothing and sends focus to that card's Price field; "Save N
+// matched" saves the priced cards only and says how many wait. The server
+// refuses the same save (convex unit tests; the page never lets one through).
+//
+// The spec walks that live: the run starts with NO Min price and the set has no
+// common price (it is a per-attempt set this spec builds and nothing writes one
+// to it), so both cards wait. Then McFadden: Yes refused, `p` jumps to the field,
+// a text that isn't a price stays with an alert under the field and saves
+// nothing, a typed price (tab away to keep it) lifts the wait and the same Yes
+// saves THAT card at it. Then Bowe: Yes refused, the run's Min price set mid-run
+// lifts the wait, the field starts at it and Enter saves the card at the run's
+// default. The card drawer then shows each line's own price. A binder never
+// shows a price: that half is asserted on the binder run of
+// add-cards-from-photos-real-scans (its tiles have a Count and no Price), so
+// this spec pays for one pipeline run, not two.
 //
 // The pairs are real: two 2014 Score scans pairs (McFadden #160, Bowe #315,
 // `playwright/fixtures/intake/`) go through the real pipeline and are matched
@@ -41,9 +51,11 @@ const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "
 const scans = (...names: string[]) => names.map((n) => path.join(FIXTURES, n));
 /** The placeholder pipeline's exception: the same ceiling as add-cards-from-photos-real-scans (NEO-407). */
 const PIPELINE = 480_000;
+/** What a box card with no price at all says (and its Yes points at). */
+const NEEDS_PRICE = "Price it first: type a price, or set a common price.";
 
 test(
-  "Add cards into a box: each card has its own price, prefilled from the run's Min price; p, a price and Enter save that card at it",
+  "Add cards into a box: a card with no price waits (Yes and Save matched save nothing); its own price or the run's Min price lets it save",
   { tag: ["@collection"] },
   async ({ page, signIn, env }) => {
     const setName = `intkp-${env.ATTEMPT_TOKEN}`;
@@ -101,7 +113,7 @@ test(
       await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
       for (const card of [mcfadden, bowe]) await addCardViaForm(page, card);
 
-      // --- A box that lists nowhere (no listing gate), and a run into it at $1.25 -----------
+      // --- A box that lists nowhere (no listing gate), and a run into it with NO price yet --------
       await page.goto("/inventory?tab=boxes");
       await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
       await createBox(page, boxName);
@@ -115,13 +127,10 @@ test(
       await page.getByRole("combobox", { name: "Put them in this box" }).selectOption({ label: boxName });
       await pickIntakeSet(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set: setName }, { under: "Insert" });
       const defaults = page.getByRole("button", { name: /^Defaults: / });
-      await defaults.click();
+      // No Min price (the box lists nowhere, so nothing holds the photos back for one),
+      // and no common price for this set: the cards will wait for a price of their own.
+      await expect(defaults).not.toHaveAccessibleName(/\$/);
       const minPrice = page.getByRole("textbox", { name: "Min price", exact: true });
-      await minPrice.fill("1.25");
-      await minPrice.press("Enter");
-      await expect(defaults).toHaveAccessibleName(/^Defaults: .*, \$1\.25$/);
-      await defaults.click();
-      await expect(defaults).toHaveAttribute("aria-expanded", "false");
 
       // --- Four photos: two cards, read, paired and matched -----------------------------------
       await intakeDropzone(page).setInputFiles(
@@ -141,20 +150,54 @@ test(
       await expect(mcfaddenTile.getByText(/^Matched \d+%$/)).toBeVisible();
       await expect(boweTile.getByText(/^Matched \d+%$/)).toBeVisible();
 
-      // --- Each card's own price, starting at the run's Min price ------------------------------
+      // --- No price anywhere: both cards wait ---------------------------------------------------
       const mcfaddenPrice = mcfaddenTile.getByRole("textbox", { name: "Price, #160 Darren McFadden", exact: true });
       const bowePrice = boweTile.getByRole("textbox", { name: "Price, #315 Dwayne Bowe", exact: true });
-      await expect(mcfaddenPrice).toHaveValue("1.25");
-      await expect(bowePrice).toHaveValue("1.25");
-      await expectAccessible(page, { label: "Add cards into a box, each card with its own price" });
+      const mcfaddenYes = mcfaddenTile.getByRole("button", { name: "Yes, save #160 Darren McFadden", exact: true });
+      const boweYes = boweTile.getByRole("button", { name: "Yes, save #315 Dwayne Bowe", exact: true });
+      const mcfaddenWaits = mcfaddenTile.getByText(NEEDS_PRICE, { exact: true });
+      const boweWaits = boweTile.getByText(NEEDS_PRICE, { exact: true });
+      await expect(mcfaddenPrice).toHaveValue("");
+      await expect(bowePrice).toHaveValue("");
+      await expect(mcfaddenWaits).toBeVisible();
+      await expect(boweWaits).toBeVisible();
+      // Yes is inert (aria-disabled keeps it in the tab order) and its reason is the same line.
+      await expect(mcfaddenYes).toHaveAttribute("aria-disabled", "true");
+      await expect(mcfaddenYes).toHaveAccessibleDescription(NEEDS_PRICE);
+      await expect(boweYes).toHaveAttribute("aria-disabled", "true");
+      await expect(boweYes).toHaveAccessibleDescription(NEEDS_PRICE);
+      await expect(mcfaddenPrice).toHaveAccessibleDescription(new RegExp(escapeRe(NEEDS_PRICE)));
+      await expectAccessible(page, { label: "Add cards into a box, cards waiting for a price" });
 
-      // --- p on the card, a price, Enter: that card saves at it --------------------------------
-      // Keys act on the card that has focus (WCAG 2.1.4): focus McFadden's own Yes first.
-      await mcfaddenTile.getByRole("button", { name: "Yes, save #160 Darren McFadden", exact: true }).focus();
+      // "Save 2 matched" has nothing priced to save: it says so and lands on the first price.
+      await page.getByRole("button", { name: "Save 2 matched", exact: true }).click();
+      await expect(said("2 cards wait for a price. Type one on the card, or set a common price.")).toBeVisible();
+      await expect(mcfaddenPrice).toBeFocused();
+      await expect(waiting).toHaveAccessibleName("Needs you, 2");
+      await expect(saved).toHaveAccessibleName("Saved, 0");
+
+      // --- Yes with no price: nothing saves, focus goes to THAT card's price ---------------------
+      // Pressed from the keyboard (an aria-disabled control can't be clicked by the book).
+      await boweYes.focus();
+      await page.keyboard.press("Enter");
+      await expect(bowePrice).toBeFocused();
+      await expect(waiting).toHaveAccessibleName("Needs you, 2");
+      await expect(saved).toHaveAccessibleName("Saved, 0");
+      await expect(boweWaits).toBeVisible();
+
+      // Keys act on the card that has focus (WCAG 2.1.4): McFadden's own Yes, refused the same way.
+      await mcfaddenYes.focus();
+      await page.keyboard.press("Enter");
+      await expect(mcfaddenPrice).toBeFocused();
+      await expect(waiting).toHaveAccessibleName("Needs you, 2");
+      await expect(saved).toHaveAccessibleName("Saved, 0");
+      await expect(mcfaddenWaits).toBeVisible();
+
+      // --- p on the card, a text that isn't a price, then a price -------------------------------
+      await mcfaddenYes.focus();
       await page.keyboard.press("p");
       await expect(mcfaddenPrice).toBeFocused();
       // A price that isn't one stays in the field with why under it, and Enter saves nothing.
-      // The field selects its number on focus, so typing replaces it.
       const priceProblem = mcfaddenTile.getByRole("alert").filter({ hasText: "That price doesn't look right. Try something like 1.50." });
       await page.keyboard.type("4.2.5");
       await page.keyboard.press("Enter");
@@ -165,20 +208,37 @@ test(
       await expect(waiting).toHaveAccessibleName("Needs you, 2");
       await expect(saved).toHaveAccessibleName("Saved, 0");
       await expectAccessible(page, { label: "Add cards into a box, a card price that doesn't look right" });
-      // A real price clears it.
+      // A real price clears the alert; tabbing away keeps it, which lifts the wait.
       await page.keyboard.press("ControlOrMeta+a");
       await page.keyboard.type("4.25");
       await expect(priceProblem).toBeHidden();
       await expect(mcfaddenPrice).not.toHaveAttribute("aria-invalid", "true");
       await expect(mcfaddenPrice).toHaveValue("4.25");
-      await page.keyboard.press("Enter");
+      await page.keyboard.press("Tab");
+      await expect(mcfaddenWaits).toBeHidden();
+      await expect(mcfaddenYes).not.toHaveAttribute("aria-disabled", "true");
+      await expect(mcfaddenYes).toBeEnabled();
+      await expect(mcfaddenPrice).toHaveValue("4.25");
+      // The other card still waits: a price on one card is not a price on the next.
+      await expect(boweWaits).toBeVisible();
+      // The same Yes that was refused now saves it, at its own price.
+      await mcfaddenYes.click();
       copiesLeft.add("160");
       await expect(saved).toHaveAccessibleName("Saved, 1");
       await expect(waiting).toHaveAccessibleName("Needs you, 1");
 
-      // --- The other card, untouched: Yes saves it at the run's default -------------------------
+      // --- The run's Min price lifts the other card's wait; Enter saves it at the default -------
+      await defaults.click();
+      await minPrice.fill("1.25");
+      await minPrice.press("Enter");
+      await expect(defaults).toHaveAccessibleName(/^Defaults: .*, \$1\.25$/);
+      await defaults.click();
+      await expect(defaults).toHaveAttribute("aria-expanded", "false");
       await expect(bowePrice).toHaveValue("1.25");
-      await boweTile.getByRole("button", { name: "Yes, save #315 Dwayne Bowe", exact: true }).click();
+      await expect(boweWaits).toBeHidden();
+      await expect(boweYes).not.toHaveAttribute("aria-disabled", "true");
+      await bowePrice.focus();
+      await page.keyboard.press("Enter");
       copiesLeft.add("315");
       await expect(saved).toHaveAccessibleName("Saved, 2");
       await expect(waiting).toHaveAccessibleName("Needs you, 0");
