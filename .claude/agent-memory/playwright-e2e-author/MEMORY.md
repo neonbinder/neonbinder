@@ -102,3 +102,4 @@
 - [Custom-sport player fixture makes no lookup](patterns_custom_sport_player_fixture_makes_no_lookup.md) — NEO-462: minted players in the custom sport, no_match log is a refusal, birth-year forks, Back is an exit
 - [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
+- [Card photo viewer specs](patterns_card_photo_viewer_specs.md) — NEO-481: viewer/tile names, orientation by the served file header, held view-only, renders fail on a worktree deployment

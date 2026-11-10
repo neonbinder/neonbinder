@@ -38,6 +38,28 @@ describe("ScanImage", () => {
     expect(onOpen).toHaveBeenCalledWith(button);
   });
 
+  it("an opener keeps its name and is described by the picture's state", async () => {
+    const describedBy = (el: HTMLElement) => document.getElementById(el.getAttribute("aria-describedby") ?? "")?.textContent;
+    render(
+      <ScanImage
+        jobId="j"
+        entryIndex={0}
+        alt="Front scan"
+        onOpen={vi.fn()}
+        openLabel="Open front of Ken Griffey Jr."
+        pending={{ status: "rendering", edit: { turns: 1, crop: null } }}
+      />,
+    );
+    await screen.findByText("Touching it up…");
+    expect(describedBy(screen.getByRole("button", { name: "Open front of Ken Griffey Jr." }))).toBe("Touching it up…");
+    cleanup();
+
+    mint.mockRejectedValueOnce(new Error("gone"));
+    render(<ScanImage jobId="j" entryIndex={1} alt="Back scan" onOpen={vi.fn()} openLabel="Open back of Ken Griffey Jr." />);
+    await screen.findByText("Image unavailable");
+    expect(describedBy(screen.getByRole("button", { name: "Open back of Ken Griffey Jr." }))).toBe("Image unavailable");
+  });
+
   it("while an edit renders, says so over the picture", async () => {
     render(<ScanImage jobId="j" entryIndex={0} alt="Front scan" pending={{ status: "rendering", edit: { turns: 1, crop: null } }} />);
     await screen.findByText("Touching it up…");

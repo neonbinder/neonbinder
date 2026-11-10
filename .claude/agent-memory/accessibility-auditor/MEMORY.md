@@ -48,3 +48,4 @@
 - [Required pill group, no words NEO-331](required-pill-group-no-words-neo331.md) — radiogroup+aria-required and focus-the-field on a held primary, zero new copy
 - [Collection store UI NEO-358](collection-store-ui-neo358.md) — collector page: focus loss on unmount, state-in-name toggles, label-in-name, stacked loading statuses
 - [Tab trap offList swallows script focus targets](tab-trap-offlist-swallows-script-focus-targets.md) — Shift+Tab from any tabIndex=-1 target wraps to the last control; name parked targets explicitly (NEO-472)
+- [Nested Overlay portal Tab bubbling](nested-overlay-portal-tab-bubbling.md) — Overlay inside Overlay's React children: outer trap eats every Tab (NEO-481); translucent danger chip over photo 1.24:1

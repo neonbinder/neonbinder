@@ -65,6 +65,7 @@ export function LineThumb({
 }) {
   const ext = useCopyPhotos();
   const viewer = usePhotoViewer();
+  const stateId = useId();
   const side: PhotoSide = photos?.front ? "front" : "back";
   const shown = photos?.[side];
   if (!shown) return null;
@@ -76,6 +77,7 @@ export function LineThumb({
       pending={shown.pending}
       previewKey={copy ? copyPreviewKey(copy.id, side) : undefined}
       chip={false}
+      chipId={copy ? stateId : undefined}
       loading="lazy"
     />
   );
@@ -86,6 +88,7 @@ export function LineThumb({
         type="button"
         className="shrink-0 rounded-sm focus-outline max-sm:min-h-11"
         aria-label={`Open photos of ${line}`}
+        aria-describedby={shown.pending ? stateId : undefined}
         data-copy-photo-open={copy.id}
         onClick={(e) => viewer.open(side, e.currentTarget)}
       >
@@ -190,6 +193,8 @@ function PhotosBox({
 }) {
   const headingId = useId();
   const helpId = useId();
+  /** A tile's pending-edit words, its button's description (the aria-label hides them). */
+  const tileStateId = useId();
   const [over, setOver] = useState<PhotoSide | "box" | null>(null);
   const inputs = useRef<Record<PhotoSide, HTMLInputElement | null>>({ front: null, back: null });
   const addRefs = useRef<Record<PhotoSide, HTMLButtonElement | null>>({ front: null, back: null });
@@ -313,6 +318,7 @@ function PhotosBox({
                     over === side ? "ring-4 ring-selection" : ""
                   }`}
                   aria-label={`Open ${side} of ${line}`}
+                  aria-describedby={shown.pending ? `${tileStateId}-${side}` : undefined}
                   data-copy-photo-open={side}
                   onClick={(e) => onOpen(side, e.currentTarget)}
                 >
@@ -323,6 +329,7 @@ function PhotosBox({
                     className={TILE_IMAGE}
                     pending={shown.pending}
                     previewKey={previewKeyOf?.(side)}
+                    chipId={`${tileStateId}-${side}`}
                   />
                 </button>
               ) : (

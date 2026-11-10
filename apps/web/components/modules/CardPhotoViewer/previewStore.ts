@@ -7,7 +7,7 @@
  * the picture the tools used, so the collector sees the turn or crop straight
  * away. That picture (a scan's original, or the stored photo) is only known
  * to the viewer that made the edit, so it is kept here, by photo, for the
- * life of the page. A reload forgets it: the tile then shows the old photo
+ * life of the page and the signed-in user (`keepPreviewsFor`). A reload forgets it: the tile then shows the old photo
  * with "Touching it up…" until the new one lands, never a wrong picture.
  *
  * Nothing here is ever saved; the server's file is the truth.
@@ -58,8 +58,32 @@ export function usePreview(key: string | undefined, pending: PhotoEdit | undefin
   return editsEqual(preview.edit, pending) ? preview : undefined;
 }
 
-/** For tests: start each one with an empty memory. */
+/** Whose previews these are: unset until Clerk has loaded, null when signed out. */
+let owner: string | null | undefined;
+
+/**
+ * The signed-in user changed (or signed out): forget every preview. Each one
+ * holds a signed URL to the last user's picture, which must not wait in this
+ * page for the next person on the browser. Run from above the signed-in
+ * layout (`PreviewOwner`), like the held-photo store's `keepHeldFor`.
+ */
+export function keepPreviewsFor(userId: string | null | undefined): void {
+  const next = userId ?? null;
+  if (owner !== undefined && owner === next) return;
+  owner = next;
+  if (previews.size === 0) return;
+  previews.clear();
+  for (const l of listeners) l();
+}
+
+/** For tests: how many previews are remembered. */
+export function previewCountForTest(): number {
+  return previews.size;
+}
+
+/** For tests: start each one with an empty memory and no owner. */
 export function resetPreviewsForTest(): void {
   previews.clear();
+  owner = undefined;
   for (const l of listeners) l();
 }

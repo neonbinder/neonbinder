@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { PendingPhotoEdit } from "@/lib/photo-edit/geometry";
@@ -69,6 +69,9 @@ export function ScanImage({
   const [landscape, setLandscape] = useState(false);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // The opener's aria-label replaces what is inside it, so a state shown in the
+  // picture (a pending edit, an unavailable image) is its description instead.
+  const stateId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -93,11 +96,12 @@ export function ScanImage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, entryIndex, attempt, version]);
 
-  const opener = (picture: ReactNode) =>
+  const opener = (picture: ReactNode, described = false) =>
     onOpen ? (
       <button
         type="button"
         aria-label={openLabel ?? alt}
+        aria-describedby={described ? stateId : undefined}
         className="shrink-0 rounded focus-outline"
         onClick={(e) => onOpen(e.currentTarget)}
       >
@@ -110,10 +114,12 @@ export function ScanImage({
   if (failed) {
     return opener(
       <div
+        id={stateId}
         className={`flex items-center justify-center bg-field/60 p-2 text-center text-xs text-ink-3 ${className}`}
       >
         Image unavailable
       </div>,
+      true,
     );
   }
 
@@ -135,7 +141,9 @@ export function ScanImage({
         className={className}
         pending={pending}
         previewKey={scanPreviewKey(jobId, entryIndex)}
+        chipId={stateId}
       />,
+      true,
     );
   }
 

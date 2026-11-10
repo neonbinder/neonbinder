@@ -88,6 +88,7 @@ export function CardPhoto({
   previewKey,
   chip = true,
   loading,
+  chipId,
 }: {
   src: string;
   alt: string;
@@ -98,6 +99,12 @@ export function CardPhoto({
   /** False on a tile too small for words: the chip's text is said elsewhere. */
   chip?: boolean;
   loading?: "lazy" | "eager";
+  /**
+   * The id of the words for a pending edit, for an opener's `aria-describedby`
+   * (its `aria-label` hides what is inside it). With `chip` false the words are
+   * there for a screen reader only.
+   */
+  chipId?: string;
 }) {
   const rendering = pending?.status === "rendering" ? pending.edit : undefined;
   const preview = usePreview(previewKey, rendering);
@@ -108,14 +115,31 @@ export function CardPhoto({
   ) : (
     <img src={src} alt={alt} className={className} decoding="async" loading={loading} draggable={false} />
   );
-  if (!pending || !chip) return picture;
+  if (!pending) return picture;
+  const words = pending.status === "rendering" ? "Touching it up…" : "Edit didn\u2019t save";
+  if (!chip) {
+    if (!chipId) return picture;
+    return (
+      <>
+        {picture}
+        <span id={chipId} className="sr-only">
+          {words}
+        </span>
+      </>
+    );
+  }
   return (
     <span className="relative inline-block max-w-full align-top" data-photo-pending={pending.status}>
       {picture}
+      {/* An opaque ground: the chip sits over the card's own (often white) border. */}
       {pending.status === "rendering" ? (
-        <span className={`${CHIP} bg-raised/90 text-ink-2`}>Touching it up…</span>
+        <span id={chipId} className={`${CHIP} bg-raised text-ink-2`}>
+          {words}
+        </span>
       ) : (
-        <span className={`${CHIP} bg-notice-danger-bg text-notice-danger-ink`}>Edit didn&rsquo;t save</span>
+        <span id={chipId} className={`${CHIP} bg-raised text-notice-danger-ink ring-1 ring-notice-danger-rule`}>
+          {words}
+        </span>
       )}
     </span>
   );

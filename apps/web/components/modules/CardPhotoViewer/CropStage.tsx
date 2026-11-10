@@ -5,7 +5,7 @@
  * Pointer: drag inside the box to move it, a corner to resize it (the
  * opposite corner stays put), the round handle above its top edge to spin it;
  * two fingers on the stage spin and resize it together. Keyboard: the box is
- * one focusable group named "Crop box" (its instructions are its
+ * one focusable application named "Crop box" (its instructions are its
  * description). The viewer's visible step buttons do the same steps, so
  * nothing here needs a drag (WCAG 2.1.1, 2.5.7).
  *
@@ -25,6 +25,7 @@ import {
   nudgeCrop,
   RESIZE_STEP,
   resizeCrop,
+  resizeCropSide,
   rotatePoint,
   tiltCrop,
   turnedSize,
@@ -52,6 +53,13 @@ export function cropKeyStep(key: string, shift: boolean): ((crop: PhotoCrop, tur
     case "-":
     case "_":
       return (c) => resizeCrop(c, 1 / RESIZE_STEP);
+    // Width and height on their own (WCAG 2.5.7): W wider, Shift+W narrower; H taller, Shift+H shorter.
+    case "w":
+    case "W":
+      return (c) => resizeCropSide(c, "w", shift ? 1 / RESIZE_STEP : RESIZE_STEP);
+    case "h":
+    case "H":
+      return (c) => resizeCropSide(c, "h", shift ? 1 / RESIZE_STEP : RESIZE_STEP);
     // Shift+comma is "<" and Shift+period ">" on most layouts; both spellings count.
     case ",":
       return (c) => tiltCrop(c, shift ? -15 : -1);
@@ -244,7 +252,9 @@ export default function CropStage({
           pointerEvents="none"
         />
         <g
-          role="group"
+          // Its own keys (arrows, letters) must reach it past a screen reader's browse mode.
+          role="application"
+          aria-roledescription="crop box"
           aria-label={boxLabel}
           aria-describedby={instructionsId}
           tabIndex={0}

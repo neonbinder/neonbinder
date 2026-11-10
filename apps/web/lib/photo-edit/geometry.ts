@@ -261,6 +261,29 @@ export function resizeCrop(crop: PhotoCrop, factor: number): PhotoCrop {
 /** One resize step: 4% of the box. */
 export const RESIZE_STEP = 1.04;
 
+/**
+ * Grow (factor > 1) or shrink only the box's width or only its height, about
+ * its centre. Growing stops where the turned box would leave the frame, so
+ * the other side never shrinks to make room.
+ */
+export function resizeCropSide(crop: PhotoCrop, side: "w" | "h", factor: number): PhotoCrop {
+  const t = (normalizeAngle(crop.angle) * Math.PI) / 180;
+  const c = Math.abs(Math.cos(t));
+  const s = Math.abs(Math.sin(t));
+  const other = side === "w" ? crop.h : crop.w;
+  // The turned box's upright extents are (w·c + h·s, w·s + h·c): for `side` = w,
+  // w·c + h·s ≤ srcW and w·s + h·c ≤ srcH; for `side` = h the frame's axes swap roles.
+  const [alongW, alongH] = side === "w" ? [c, s] : [s, c];
+  const cap = (room: number, k: number) => (k > 1e-9 ? room / k : Number.POSITIVE_INFINITY);
+  const most = Math.min(
+    cap(crop.srcW - other * (side === "w" ? s : c), alongW),
+    cap(crop.srcH - other * (side === "w" ? c : s), alongH),
+  );
+  const current = side === "w" ? crop.w : crop.h;
+  const next = factor > 1 ? Math.max(current, Math.min(current * factor, most)) : current * factor;
+  return clampCrop(side === "w" ? { ...crop, w: next } : { ...crop, h: next });
+}
+
 /** Tilt the box `deg` more degrees clockwise. */
 export function tiltCrop(crop: PhotoCrop, deg: number): PhotoCrop {
   return clampCrop({ ...crop, angle: normalizeAngle(crop.angle + deg) });
@@ -388,10 +411,29 @@ export function asPendingPhotoEdit(value: unknown): PendingPhotoEdit | undefined
   return { status: o.status, edit, ...(typeof o.error === "string" ? { error: o.error } : {}) };
 }
 
-/** What a screen reader hears about the box: its tilt and the size it will keep. */
+/**
+ * Where the box sits on screen: the gap from the turned picture's left and top
+ * edges to the box's upright outline, as whole percents of the picture.
+ */
+export function cropPlacement(edit: PhotoEdit, srcW: number, srcH: number): { left: number; top: number } {
+  const crop = effectiveCrop(edit, srcW, srcH);
+  const { ex, ey } = cropExtents(crop);
+  // The source's gaps, clockwise from the top: top, right, bottom, left.
+  const gaps = [crop.cy - ey, srcW - crop.cx - ex, srcH - crop.cy - ey, crop.cx - ex];
+  // A quarter turn clockwise puts the source's left edge at the top of the screen.
+  const onScreen = (i: number) => Math.max(0, gaps[(i - edit.turns + 4) % 4]);
+  const shown = turnedSize(edit.turns, srcW, srcH);
+  return {
+    left: Math.round((100 * onScreen(3)) / shown.w),
+    top: Math.round((100 * onScreen(0)) / shown.h),
+  };
+}
+
+/** What a screen reader hears about the box: its tilt, the size it will keep, and where it sits. */
 export function describeCrop(edit: PhotoEdit, srcW: number, srcH: number): string {
   const crop = effectiveCrop(edit, srcW, srcH);
   const out = outputSize(edit, srcW, srcH);
   const angle = Math.round(normalizeAngle(crop.angle));
-  return `Tilted ${angle}°, ${out.w} by ${out.h} pixels.`;
+  const at = cropPlacement(edit, srcW, srcH);
+  return `Tilted ${angle}°, ${out.w} by ${out.h} pixels, ${at.left}% from the left and ${at.top}% from the top.`;
 }

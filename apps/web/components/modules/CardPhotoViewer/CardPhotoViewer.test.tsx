@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Theme } from "@radix-ui/themes";
 import type { PhotoEdit } from "@/lib/photo-edit/geometry";
+import Overlay from "@/app/collection/prototypes/p1/Overlay";
 import CardPhotoViewer, { VIEWER_WORDS } from "./CardPhotoViewer";
 import { CardPhoto } from "./EditedPhoto";
 import { rememberPreview, resetPreviewsForTest } from "./previewStore";
@@ -70,10 +71,29 @@ describe("opening", () => {
     expect(document.activeElement).toBe(heading);
     await waitFor(() => expect(front.load).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Back" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Back" }));
     expect(within(dialog).getByRole("heading", { name: /^Back of / })).toBeTruthy();
-    expect(within(dialog).getByRole("button", { name: "Back" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(dialog).getByRole("radio", { name: "Back" }).getAttribute("aria-checked")).toBe("true");
     await waitFor(() => expect(back.load).toHaveBeenCalledTimes(1));
+  });
+
+  it("the sides are one radio group: one tab stop, arrows move between them", () => {
+    const back = side({ imageUrl: "blob:back-image", previewKey: "test:back" });
+    const { dialog } = open({ label: "a card", front: side(), back });
+    const group = within(dialog).getByRole("radiogroup", { name: "Which side" });
+    const frontRadio = within(group).getByRole("radio", { name: "Front" });
+    const backRadio = within(group).getByRole("radio", { name: "Back" });
+    expect([frontRadio.tabIndex, backRadio.tabIndex]).toEqual([0, -1]);
+    frontRadio.focus();
+    fireEvent.keyDown(frontRadio, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(backRadio);
+    expect(backRadio.getAttribute("aria-checked")).toBe("true");
+    expect([frontRadio.tabIndex, backRadio.tabIndex]).toEqual([-1, 0]);
+    expect(within(dialog).getByRole("heading", { name: /^Back of / })).toBeTruthy();
+    // It wraps.
+    fireEvent.keyDown(backRadio, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(frontRadio);
+    expect(frontRadio.getAttribute("aria-checked")).toBe("true");
   });
 
   it("a held photo opens view-only: the reason, the picture, no tools and no Save", () => {
@@ -152,7 +172,7 @@ describe("turning and saving", () => {
     fireEvent.keyDown(panel, { key: "[" });
     fireEvent.keyDown(panel, { key: "c" });
     expect(within(dialog).getByRole("button", { name: "Crop by hand" }).getAttribute("aria-pressed")).toBe("true");
-    expect(within(dialog).getByRole("group", { name: "Crop box" })).toBeTruthy();
+    expect(within(dialog).getByRole("application", { name: "Crop box" })).toBeTruthy();
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save photo" })));
     expect(savedEdit(front).turns).toBe(1);
   });
@@ -174,7 +194,7 @@ describe("the crop box", () => {
     const front = side({}, start);
     const view = open({ label: "a card", front });
     fireEvent.click(await within(view.dialog).findByRole("button", { name: "Crop by hand" }));
-    const box = within(view.dialog).getByRole("group", { name: "Crop box" });
+    const box = within(view.dialog).getByRole("application", { name: "Crop box" });
     return { ...view, front, box };
   }
 
@@ -240,6 +260,50 @@ describe("the crop box", () => {
     expect(savedEdit(front).crop!.angle).toBe(-30);
   });
 
+  it("width and height change on their own, by button and by key (W, H; Shift for less)", async () => {
+    const { dialog, box, front } = await cropping();
+    for (let i = 0; i < 6; i++) fireEvent.keyDown(box, { key: "-" });
+    const group = within(dialog).getByRole("group", { name: "Width and height steps" });
+    fireEvent.click(within(group).getByRole("button", { name: "Make crop narrower" }));
+    fireEvent.click(within(group).getByRole("button", { name: "Make crop narrower" }));
+    fireEvent.keyDown(box, { key: "H", shiftKey: true });
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save photo" })));
+    const s0 = 1 / 1.04 ** 6;
+    let crop = savedEdit(front).crop!;
+    expect(crop.w).toBeCloseTo((1000 * s0) / 1.04 ** 2, 1);
+    expect(crop.h).toBeCloseTo((1400 * s0) / 1.04, 1);
+
+    cleanup();
+    const again = await cropping();
+    for (let i = 0; i < 6; i++) fireEvent.keyDown(again.box, { key: "-" });
+    fireEvent.keyDown(again.box, { key: "w" });
+    fireEvent.click(within(again.dialog).getByRole("button", { name: "Make crop taller" }));
+    fireEvent.click(within(again.dialog).getByRole("button", { name: "Make crop shorter" }));
+    fireEvent.click(within(again.dialog).getByRole("button", { name: "Make crop wider" }));
+    await act(async () => fireEvent.click(within(again.dialog).getByRole("button", { name: "Save photo" })));
+    crop = savedEdit(again.front).crop!;
+    expect(crop.w).toBeCloseTo(1000 * s0 * 1.04 ** 2, 1);
+    expect(crop.h).toBeCloseTo(1400 * s0, 1);
+  });
+
+  it("an angle past ±180 is taken the short way round, and said so", async () => {
+    const { dialog, front } = await cropping();
+    const angle = within(dialog).getByRole("spinbutton", { name: "Angle, degrees" });
+    fireEvent.change(angle, { target: { value: "270" } });
+    expect(within(dialog).getByText("270° is the same tilt as -90°.")).toBeTruthy();
+    expect(angle.getAttribute("aria-describedby")).toBeTruthy();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save photo" })));
+    expect(savedEdit(front).crop!.angle).toBe(-90);
+  });
+
+  it("c on the box closes the crop and puts focus on Crop by hand, never on the page", async () => {
+    const { dialog, box } = await cropping();
+    box.focus();
+    fireEvent.keyDown(box, { key: "c" });
+    expect(within(dialog).queryByRole("application", { name: "Crop box" })).toBeNull();
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Crop by hand" }));
+  });
+
   it("reads the box out once it holds still", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { dialog, box } = await cropping();
@@ -248,18 +312,115 @@ describe("the crop box", () => {
     const live = dialog.querySelector('[aria-live="polite"]')!;
     expect(live.textContent).toBe("");
     await act(async () => vi.advanceTimersByTime(700));
-    expect(live.textContent).toMatch(/^Tilted 1°, \d+ by \d+ pixels\.$/);
+    expect(live.textContent).toMatch(/^Tilted 1°, \d+ by \d+ pixels, \d+% from the left and \d+% from the top\.$/);
   });
 
   it("arrows follow the screen on a turned photo", async () => {
     const { dialog, front } = await cropping();
     fireEvent.click(within(dialog).getByRole("button", { name: "Turn right" }));
-    const box = within(dialog).getByRole("group", { name: "Crop box" });
+    const box = within(dialog).getByRole("application", { name: "Crop box" });
     for (let i = 0; i < 5; i++) fireEvent.keyDown(box, { key: "-" });
     fireEvent.keyDown(box, { key: "ArrowRight" });
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save photo" })));
     // Turned a quarter right, screen right is source up.
     expect(savedEdit(front).crop!.cy).toBeCloseTo(693, 1);
+  });
+});
+
+describe("focus and live lines", () => {
+  it("the same refusal twice is said twice", async () => {
+    const front = side();
+    const { dialog } = open({ label: "a card", front });
+    const save = await within(dialog).findByRole("button", { name: "Save photo" });
+    await act(async () => fireEvent.click(save));
+    const alert = within(dialog).getByRole("alert");
+    const first = alert.textContent;
+    expect(first?.trim()).toBe(VIEWER_WORDS.nothingChanged);
+    await act(async () => fireEvent.click(save));
+    expect(alert.textContent?.trim()).toBe(VIEWER_WORDS.nothingChanged);
+    expect(alert.textContent).not.toBe(first);
+  });
+
+  it("a copy's Undo, once done, leaves focus on the heading", async () => {
+    const front = side({ undo: vi.fn(async () => undefined) });
+    const { dialog } = open({ label: "a card", front });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Turn left" }));
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save photo" })));
+    const undo = within(dialog).getByRole("button", { name: "Undo" });
+    undo.focus();
+    await act(async () => fireEvent.click(undo));
+    expect(within(dialog).queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(document.activeElement).toBe(within(dialog).getByRole("heading"));
+  });
+
+  it("Open it again leaves focus on the heading as the read starts", async () => {
+    const load = vi.fn().mockRejectedValueOnce(new Error("nope")).mockResolvedValue(STORED);
+    const { dialog } = open({ label: "a card", front: side({ load }) });
+    const again = await within(dialog).findByRole("button", { name: "Open it again" });
+    again.focus();
+    await act(async () => fireEvent.click(again));
+    expect(within(dialog).queryByRole("button", { name: "Open it again" })).toBeNull();
+    expect(document.activeElement).toBe(within(dialog).getByRole("heading"));
+  });
+
+  it("when a failed edit's buttons go (it renders again, or the note is cleared), focus goes to the heading", async () => {
+    const failed: PhotoEdit = { turns: 2, crop: null };
+    const make = (pending?: PhotoSideSource["pending"]) =>
+      ({ label: "a card", front: side({ pending, dismissFailure: vi.fn(async () => undefined) }) }) as PhotoSource;
+    const view = render(
+      <Theme>
+        <CardPhotoViewer source={make({ status: "failed", edit: failed })} onClose={vi.fn()} />
+      </Theme>,
+    );
+    const dialog = screen.getByRole("dialog");
+    const keep = within(dialog).getByRole("button", { name: "Keep the old photo" });
+    keep.focus();
+    view.rerender(
+      <Theme>
+        <CardPhotoViewer source={make(undefined)} onClose={vi.fn()} />
+      </Theme>,
+    );
+    expect(within(dialog).queryByRole("button", { name: "Keep the old photo" })).toBeNull();
+    expect(document.activeElement).toBe(within(dialog).getByRole("heading"));
+  });
+
+  describe("opened from inside another layer (the card drawer)", () => {
+    // happy-dom lays nothing out, so no element has an offsetParent: the Overlay's Tab trap would see no stops.
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetParent");
+    beforeEach(() => {
+      Object.defineProperty(HTMLElement.prototype, "offsetParent", { configurable: true, get: () => document.body });
+    });
+    afterEach(() => {
+      if (original) Object.defineProperty(HTMLElement.prototype, "offsetParent", original);
+    });
+
+    it("Tab moves through the viewer's own tools: the drawer under it never traps it", async () => {
+      const drawerClose = vi.fn();
+      const front = side();
+      // The drawer is open first; the viewer opens from a photo inside it.
+      const drawer = (viewerOpen: boolean) => (
+        <Theme>
+          <Overlay labelledBy="drawer-title" onClose={drawerClose}>
+            <h2 id="drawer-title" tabIndex={-1}>
+              Card drawer
+            </h2>
+            <button type="button">Drawer button</button>
+            {viewerOpen && <CardPhotoViewer source={{ label: "a card", front }} onClose={vi.fn()} />}
+          </Overlay>
+        </Theme>
+      );
+      const view = render(drawer(false));
+      view.rerender(drawer(true));
+      const viewer = screen.getAllByRole("dialog").find((d) => d.querySelector("[data-card-photo-viewer]"))!;
+      const middle = await within(viewer).findByRole("button", { name: "Turn right" });
+      middle.focus();
+      // fireEvent returns false when a handler prevented the browser's own Tab.
+      expect(fireEvent.keyDown(middle, { key: "Tab" })).toBe(true);
+      expect(fireEvent.keyDown(middle, { key: "Tab", shiftKey: true })).toBe(true);
+      expect(document.activeElement).toBe(middle);
+      fireEvent.keyDown(middle, { key: "Escape" });
+      expect(drawerClose).not.toHaveBeenCalled();
+    });
   });
 });
 

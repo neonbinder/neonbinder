@@ -3536,7 +3536,7 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     const viewer = viewerOf(`Front of ${CARD}`);
     expect(viewer).toBeTruthy();
     // Both of the pair's scans are in it: it switches sides itself.
-    expect(within(viewer!).getByRole("group", { name: "Which side" })).toBeTruthy();
+    expect(within(viewer!).getByRole("radiogroup", { name: "Which side" })).toBeTruthy();
     closeViewer();
     expect(viewerHeading(`Front of ${CARD}`)).toBeNull();
     // Focus goes back to the photo that opened it.
@@ -3598,7 +3598,7 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     const viewer = viewerOf("Front of scan-0.jpg");
     expect(viewer).toBeTruthy();
     // A loose photo has no other side yet.
-    expect(within(viewer!).queryByRole("group", { name: "Which side" })).toBeNull();
+    expect(within(viewer!).queryByRole("radiogroup", { name: "Which side" })).toBeNull();
     cleanup();
     render(<Tab runId={runId} />);
     const crop = screen.getByRole("button", { name: "Crop by hand: scan-1.jpg" });

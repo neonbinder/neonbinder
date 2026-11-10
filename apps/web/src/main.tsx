@@ -15,6 +15,7 @@ import { ThemeProvider, useTheme } from "@/src/theme/ThemeProvider";
 import ConvexClientProvider from "@/components/modules/ConvexClientProvider";
 import { ProfileThemeSync } from "@/src/theme/ProfileThemeSync";
 import { HeldIntakeOwner } from "@/app/collection/final/intake/HeldIntakeOwner";
+import { PreviewOwner } from "@/components/modules/CardPhotoViewer/PreviewOwner";
 import * as Sentry from "@sentry/react";
 
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
@@ -350,6 +351,7 @@ function ThemedApp() {
         <PostHogProvider>
           <ConvexClientProvider>
             <HeldIntakeOwner />
+            <PreviewOwner />
             <ProfileThemeSync />
             <SentryErrorBoundary />
           </ConvexClientProvider>

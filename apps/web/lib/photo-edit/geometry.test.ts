@@ -6,6 +6,8 @@ import {
   asPhotoEdit,
   clampCrop,
   cropCorners,
+  cropPlacement,
+  describeCrop,
   cropExtents,
   cropOrNull,
   dragCorner,
@@ -18,6 +20,7 @@ import {
   openingTurns,
   previewGeometry,
   resizeCrop,
+  resizeCropSide,
   screenToSourceDelta,
   thumbnailSize,
   tidyEdit,
@@ -221,6 +224,37 @@ describe("previews and the wire", () => {
     expect(editsEqual(a, b)).toBe(true);
     expect(editsEqual(a, { ...a, turns: 1 })).toBe(false);
     expect(editsEqual(a, { turns: 0, crop: null })).toBe(false);
+  });
+
+  it("resizes one side alone, and growing stops at the frame instead of squeezing the other side", () => {
+    const box: PhotoCrop = { cx: 500, cy: 700, w: 400, h: 600, angle: 0, srcW: 1000, srcH: 1400 };
+    const wider = resizeCropSide(box, "w", 1.5);
+    expect([wider.w, wider.h]).toEqual([600, 600]);
+    const shorter = resizeCropSide(box, "h", 0.5);
+    expect([shorter.w, shorter.h]).toEqual([400, 300]);
+    // As wide as the frame allows, then no further, and the height never gives way.
+    let w = box;
+    for (let i = 0; i < 40; i++) w = resizeCropSide(w, "w", 1.04);
+    expect(w.w).toBeCloseTo(1000, 6);
+    expect(w.h).toBe(600);
+    // Tilted, the cap is where a turned corner meets the edge.
+    let t: PhotoCrop = { ...box, angle: 20 };
+    for (let i = 0; i < 60; i++) t = resizeCropSide(t, "h", 1.04);
+    expect(t.w).toBe(400);
+    expect(inside(t)).toBe(true);
+    const { ey } = cropExtents(t);
+    expect(2 * ey).toBeCloseTo(1400, 4);
+  });
+
+  it("says where the box sits on screen, the turn included", () => {
+    const edit: PhotoEdit = { turns: 0, crop: { cx: 300, cy: 400, w: 200, h: 400, angle: 0, srcW: 1000, srcH: 1400 } };
+    // Left gap 200 of 1000, top gap 200 of 1400.
+    expect(cropPlacement(edit, 1000, 1400)).toEqual({ left: 20, top: 14 });
+    // A quarter turn right: the source's left edge is now the top, its bottom the left.
+    // Shown 1400 wide by 1000 tall: left gap = source bottom gap 800 of 1400, top gap = source left gap 200 of 1000.
+    expect(cropPlacement({ ...edit, turns: 1 }, 1000, 1400)).toEqual({ left: 57, top: 20 });
+    expect(describeCrop(edit, 1000, 1400)).toBe("Tilted 0°, 200 by 400 pixels, 20% from the left and 14% from the top.");
+    expect(cropPlacement({ turns: 2, crop: null }, 1000, 1400)).toEqual({ left: 0, top: 0 });
   });
 
   it("tidies numbers for the wire", () => {

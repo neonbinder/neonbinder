@@ -5,7 +5,9 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
 import { initialCollectionState } from "./store";
-import { HeldPhotosField, sidesForDrop, type HeldPhotos } from "./CopyPhotosField";
+import CopyPhotosField, { HeldPhotosField, LineThumb, sidesForDrop, type HeldPhotos } from "./CopyPhotosField";
+import type { CopyPhotosExtension } from "./data/store";
+import type { Copy } from "./data/types";
 
 /**
  * NEO-377 — a copy line's photos live in the line's Edit form, on the public
@@ -586,5 +588,42 @@ describe("sidesForDrop", () => {
     expect(sidesForDrop(1, null, { front: { imageUrl: "a", thumbUrl: "b" } })).toEqual(["back"]);
     expect(sidesForDrop(2, "back", undefined)).toEqual(["front", "back"]);
     expect(sidesForDrop(0, null, undefined)).toEqual([]);
+  });
+});
+
+describe("a photo whose edit failed (NEO-481)", () => {
+  // The opener's aria-label replaces what is inside it, so the chip's words are its description.
+  const failed = { status: "failed" as const, edit: { turns: 1 as const, crop: null } };
+  const photos = { front: { imageUrl: "blob:img", thumbUrl: "blob:thumb", pending: failed } };
+  const describedBy = (el: HTMLElement) => document.getElementById(el.getAttribute("aria-describedby") ?? "")?.textContent;
+  const copy = { ...STACK, homeKind: "box" } as Copy;
+
+  it("the Edit form's tile keeps its name and is described by the chip", () => {
+    render(
+      <Theme>
+        <CopyPhotosField copy={copy} line="Raw, Excellent" photos={photos} ext={{} as CopyPhotosExtension} />
+      </Theme>,
+    );
+    const tile = screen.getByRole("button", { name: "Open front of Raw, Excellent" });
+    expect(describedBy(tile)).toBe("Edit didn\u2019t save");
+  });
+
+  it("the line's thumbnail (too small for the chip) is described by the same words", () => {
+    render(
+      <Theme>
+        <LineThumb photos={photos} line="Raw, Excellent" copy={copy} />
+      </Theme>,
+    );
+    const thumb = screen.getByRole("button", { name: "Open photos of Raw, Excellent" });
+    expect(describedBy(thumb)).toBe("Edit didn\u2019t save");
+  });
+
+  it("a photo with nothing pending has no description", () => {
+    render(
+      <Theme>
+        <LineThumb photos={{ front: { imageUrl: "blob:img", thumbUrl: "blob:thumb" } }} line="Raw, Excellent" copy={copy} />
+      </Theme>,
+    );
+    expect(screen.getByRole("button", { name: "Open photos of Raw, Excellent" }).getAttribute("aria-describedby")).toBeNull();
   });
 });

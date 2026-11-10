@@ -14,7 +14,7 @@
  * (`usePhotoViewer`).
  */
 
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ArrowDownIcon,
   ArrowLeftIcon,
@@ -38,6 +38,7 @@ import {
   normalizeAngle,
   RESIZE_STEP,
   resizeCrop,
+  resizeCropSide,
   setCropAngle,
   tidyEdit,
   tiltCrop,
@@ -96,9 +97,36 @@ export default function CardPhotoViewer({
   const [saves, setSaves] = useState<Partial<Record<ViewerSide, { before: PhotoEdit; after: PhotoEdit }>>>({});
   const [cropping, setCropping] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [said, setSaid] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // A live region only speaks when its text changes, so a line said twice in a
+  // row carries a count: the second "Saved." gets a trailing no-break space.
+  const [said, setSaidLine] = useState({ text: "", n: 0 });
+  const [error, setErrorLine] = useState<{ text: string; n: number } | null>(null);
+  const setSaid = useCallback((text: string) => setSaidLine((p) => ({ text, n: text && text === p.text ? p.n + 1 : 0 })), []);
+  const setError = useCallback(
+    (text: string | null) => setErrorLine((p) => (text === null ? null : { text, n: p && text === p.text ? p.n + 1 : 0 })),
+    [],
+  );
   const [heard, setHeard] = useState("");
+
+  // Focus never drops to <body> when the control holding it goes away: a
+  // control that unmounts while focused hands focus to the heading (or, for
+  // the crop tools, to "Crop by hand"). React runs a ref's cleanup before the
+  // node leaves the page, so it can still tell whether focus was inside.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const cropButtonRef = useRef<HTMLButtonElement>(null);
+  const parkOnHeading = useCallback((el: HTMLElement | null) => {
+    if (!el) return;
+    return () => {
+      if (el.contains(document.activeElement)) headingRef.current?.focus({ preventScroll: true });
+    };
+  }, []);
+  const parkOnCropButton = useCallback((el: Element | null) => {
+    if (!el) return;
+    return () => {
+      if (el.contains(document.activeElement)) (cropButtonRef.current ?? headingRef.current)?.focus({ preventScroll: true });
+    };
+  }, []);
+  const sideRefs = useRef<Partial<Record<ViewerSide, HTMLButtonElement | null>>>({});
 
   const entry = loaded[side];
   const start = entry?.state === "ready" ? entry.start : undefined;
@@ -155,7 +183,7 @@ export default function CardPhotoViewer({
   useEffect(() => {
     if (wasRendering.current && !pending && saves[side]) setSaid(VIEWER_WORDS.landed);
     wasRendering.current = rendering;
-  }, [rendering, pending, saves, side]);
+  }, [rendering, pending, saves, side, setSaid]);
 
   // Read the box out once it holds still.
   const description = cropping && editable && draft ? describeCrop(draft, editable.srcW, editable.srcH) : "";
@@ -289,6 +317,16 @@ export default function CardPhotoViewer({
     setSide(to);
   };
 
+  const onSideKeys = (e: KeyboardEvent<HTMLButtonElement>) => {
+    const by = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    if (!by) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const to = sides[(sides.indexOf(side) + by + sides.length) % sides.length];
+    switchSide(to);
+    sideRefs.current[to]?.focus();
+  };
+
   const word = SIDE_WORD[side];
   const alt = `${word} of ${source.label}`;
   const blocked = blockedBy();
@@ -301,17 +339,23 @@ export default function CardPhotoViewer({
         data-card-photo-viewer=""
       >
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-rule px-4 py-3">
-          <h2 id={headingId} tabIndex={-1} className="min-w-0 flex-1 rounded-sm text-lg font-semibold focus-outline">
+          <h2 ref={headingRef} id={headingId} tabIndex={-1} className="min-w-0 flex-1 rounded-sm text-lg font-semibold focus-outline">
             {alt}
           </h2>
           {sides.length > 1 && (
-            <div role="group" aria-label="Which side" className="flex rounded-md border border-control p-0.5">
+            <div role="radiogroup" aria-label="Which side" className="flex rounded-md border border-control p-0.5">
               {sides.map((s) => (
                 <button
                   key={s}
+                  ref={(el) => {
+                    sideRefs.current[s] = el;
+                  }}
                   type="button"
-                  aria-pressed={s === side}
+                  role="radio"
+                  aria-checked={s === side}
+                  tabIndex={s === side ? 0 : -1}
                   onClick={() => switchSide(s)}
+                  onKeyDown={onSideKeys}
                   className={`min-h-11 min-w-16 rounded px-3 text-sm font-medium focus-outline ${
                     s === side ? "bg-neon-blue text-on-neon-blue" : "text-ink-2 hover:text-ink"
                   }`}
@@ -334,6 +378,7 @@ export default function CardPhotoViewer({
           busy={busy}
           onTryAgain={editable && current?.save ? tryAgain : undefined}
           onKeepOld={current?.dismissFailure ? keepOld : undefined}
+          parkRef={parkOnHeading}
         />
 
         <div
@@ -341,15 +386,17 @@ export default function CardPhotoViewer({
           className="relative mx-4 my-3 min-h-[15rem] flex-1 overflow-hidden rounded-md bg-raised-deep"
         >
           {editable && draft && cropping ? (
-            <CropStage
-              sourceUrl={editable.sourceUrl}
-              srcW={editable.srcW}
-              srcH={editable.srcH}
-              turns={draft.turns}
-              crop={draft.crop}
-              onChange={setCrop}
-              instructionsId={helpId}
-            />
+            <div ref={parkOnCropButton} className="contents">
+              <CropStage
+                sourceUrl={editable.sourceUrl}
+                srcW={editable.srcW}
+                srcH={editable.srcH}
+                turns={draft.turns}
+                crop={draft.crop}
+                onChange={setCrop}
+                instructionsId={helpId}
+              />
+            </div>
           ) : editable && draft && (dirty || current?.shown) ? (
             <EditedImage
               src={editable.sourceUrl}
@@ -382,6 +429,7 @@ export default function CardPhotoViewer({
               <Tool label="Turn left" icon={<ArrowUturnLeftIcon />} onClick={() => turn(-1)} shortcut="[" />
               <Tool label="Turn right" icon={<ArrowUturnRightIcon />} onClick={() => turn(1)} shortcut="]" />
               <NeonButton
+                ref={cropButtonRef}
                 type="button"
                 variant="tertiary"
                 outline={!cropping}
@@ -399,12 +447,14 @@ export default function CardPhotoViewer({
                   icon={<ArrowUturnLeftIcon />}
                   onClick={undo}
                   disabledBecause={blocked ?? undefined}
+                  parkRef={parkOnHeading}
                 />
               )}
             </div>
 
             {cropping && crop && (
               <CropControls
+                parkRef={parkOnCropButton}
                 crop={crop}
                 turns={draft.turns}
                 onChange={setCrop}
@@ -419,10 +469,10 @@ export default function CardPhotoViewer({
           {heard}
         </div>
         <p className="min-h-5 px-4 pt-2 text-sm text-ink-2" role="status">
-          {said}
+          {said.text + (said.n % 2 ? "\u00a0" : "")}
         </p>
         <p className="min-h-5 px-4 text-sm text-neon-pink-text" role="alert">
-          {error ?? ""}
+          {error ? error.text + (error.n % 2 ? "\u00a0" : "") : ""}
         </p>
 
         <div className="mt-auto flex flex-wrap items-center justify-end gap-2 border-t border-rule px-4 py-3">
@@ -454,15 +504,19 @@ function Tool({
   onClick,
   shortcut,
   disabledBecause,
+  parkRef,
 }: {
   label: string;
   icon: ReactNode;
   onClick: () => void;
   shortcut?: string;
   disabledBecause?: string;
+  /** Where focus goes if this tool unmounts while it holds focus. */
+  parkRef?: (el: HTMLElement | null) => (() => void) | undefined;
 }) {
   return (
     <NeonButton
+      ref={parkRef}
       type="button"
       variant="secondary"
       outline
@@ -489,7 +543,9 @@ function CropControls({
   onChange,
   helpId,
   noAutoCrop,
+  parkRef,
 }: {
+  parkRef: (el: HTMLElement | null) => (() => void) | undefined;
   crop: PhotoCrop;
   turns: PhotoEdit["turns"];
   onChange: (c: PhotoCrop) => void;
@@ -497,8 +553,18 @@ function CropControls({
   /** The photo has no auto crop, so the box opened on the whole frame. */
   noAutoCrop: boolean;
 }) {
+  const angleNoteId = useId();
   const [angleText, setAngleText] = useState<string | null>(null);
   const shownAngle = angleText ?? String(Math.round(normalizeAngle(crop.angle) * 10) / 10);
+  const typed = angleText === null || angleText.trim() === "" ? null : Number(angleText);
+  // An angle past ±180 is the same tilt the short way round: it is taken as that, and said so.
+  const wrapped = typed !== null && Number.isFinite(typed) && (typed < -180 || typed > 180) ? normalizeAngle(typed) : null;
+  const angleNote =
+    typed !== null && !Number.isFinite(typed)
+      ? "Type the angle as a number of degrees."
+      : wrapped !== null
+        ? `${typed}° is the same tilt as ${Math.round(wrapped * 10) / 10}°.`
+        : "";
   const step = (label: string, icon: ReactNode, next: () => PhotoCrop) => (
     <NeonButton
       type="button"
@@ -515,14 +581,14 @@ function CropControls({
     </NeonButton>
   );
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-rule p-3">
+    <div ref={parkRef} className="flex flex-col gap-2 rounded-md border border-rule p-3">
       {noAutoCrop && <p className="text-sm text-ink-2">{VIEWER_WORDS.noAutoCrop}</p>}
       <p id={helpId} className="text-xs text-ink-3">
         Drag the box to move it, a corner to resize it, or the round handle to spin it.
         <span className="[@media(pointer:coarse)]:sr-only">
           {" "}
-          On the box: arrows nudge it (Shift for bigger steps), + and − resize it, comma and period tilt it a degree (Shift
-          for 15°).
+          On the box: arrows nudge it (Shift for bigger steps), + and − resize it, W and H make it wider and taller (Shift+W
+          and Shift+H narrower and shorter), comma and period tilt it a degree (Shift for 15°).
         </span>
       </p>
       <div className="flex flex-wrap items-center gap-2">
@@ -535,6 +601,18 @@ function CropControls({
         <div role="group" aria-label="Size steps" className="flex gap-1">
           {step("Shrink crop", <MinusIcon />, () => resizeCrop(crop, 1 / RESIZE_STEP))}
           {step("Grow crop", <PlusIcon />, () => resizeCrop(crop, RESIZE_STEP))}
+        </div>
+        <div role="group" aria-label="Width and height steps" className="flex items-center gap-1">
+          <span aria-hidden="true" className="text-sm text-ink-2">
+            Width
+          </span>
+          {step("Make crop narrower", <MinusIcon />, () => resizeCropSide(crop, "w", 1 / RESIZE_STEP))}
+          {step("Make crop wider", <PlusIcon />, () => resizeCropSide(crop, "w", RESIZE_STEP))}
+          <span aria-hidden="true" className="ml-2 text-sm text-ink-2">
+            Height
+          </span>
+          {step("Make crop shorter", <MinusIcon />, () => resizeCropSide(crop, "h", 1 / RESIZE_STEP))}
+          {step("Make crop taller", <PlusIcon />, () => resizeCropSide(crop, "h", RESIZE_STEP))}
         </div>
         <div role="group" aria-label="Tilt steps" className="flex items-center gap-1">
           {step("Tilt crop left", <ArrowUturnLeftIcon />, () => tiltCrop(crop, -1))}
@@ -550,11 +628,12 @@ function CropControls({
               step={1}
               aria-label="Angle, degrees"
               value={shownAngle}
+              aria-describedby={angleNote ? angleNoteId : undefined}
               onChange={(e) => {
                 const text = e.target.value;
                 setAngleText(text);
                 const n = Number(text);
-                if (text.trim() !== "" && Number.isFinite(n) && n >= -180 && n <= 180) onChange(setCropAngle(crop, n));
+                if (text.trim() !== "" && Number.isFinite(n)) onChange(setCropAngle(crop, normalizeAngle(n)));
               }}
               onBlur={() => setAngleText(null)}
               onKeyDown={(e) => {
@@ -566,6 +645,9 @@ function CropControls({
           </label>
         </div>
       </div>
+      <p id={angleNoteId} role="status" className="min-h-4 text-xs text-ink-2 empty:min-h-0">
+        {angleNote}
+      </p>
     </div>
   );
 }
@@ -582,7 +664,10 @@ function Notices({
   onTryAgain,
   onKeepOld,
   onRetryLoad,
+  parkRef,
 }: {
+  /** Where focus goes when a notice's button leaves while it holds focus. */
+  parkRef: (el: HTMLElement | null) => (() => void) | undefined;
   viewOnly: string | undefined;
   loading: boolean;
   loadFailed: boolean;
@@ -601,7 +686,7 @@ function Notices({
     lines.push(
       <div key="fail" className="flex flex-wrap items-center gap-2">
         <p>{VIEWER_WORDS.loadFailed}</p>
-        <NeonButton type="button" variant="secondary" outline onClick={onRetryLoad} className="min-h-11">
+        <NeonButton ref={parkRef} type="button" variant="secondary" outline onClick={onRetryLoad} className="min-h-11">
           Open it again
         </NeonButton>
       </div>,
@@ -618,12 +703,20 @@ function Notices({
       <div key="pending" className="flex flex-wrap items-center gap-2" data-viewer-pending={pending.status}>
         <p className={pending.status === "failed" ? "text-notice-danger-ink" : ""}>{pendingWords(pending)}</p>
         {pending.status === "failed" && onTryAgain && (
-          <NeonButton type="button" variant="primary" outline onClick={onTryAgain} aria-disabled={busy || undefined} className="min-h-11">
+          <NeonButton
+            ref={parkRef}
+            type="button"
+            variant="primary"
+            outline
+            onClick={onTryAgain}
+            aria-disabled={busy || undefined}
+            className="min-h-11"
+          >
             Try again
           </NeonButton>
         )}
         {pending.status === "failed" && onKeepOld && (
-          <NeonButton type="button" variant="secondary" outline onClick={onKeepOld} className="min-h-11">
+          <NeonButton ref={parkRef} type="button" variant="secondary" outline onClick={onKeepOld} className="min-h-11">
             Keep the old photo
           </NeonButton>
         )}
