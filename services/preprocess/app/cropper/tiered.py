@@ -769,11 +769,38 @@ def fast_tiered_crop(image_bytes: bytes) -> bytes | None:
     it declines still escalates to this pipeline's BiRefNet pass. This
     function stays identity-only.
     """
+    accepted, _reason = fast_tiered_verdict(image_bytes)
+    return accepted
+
+
+# Reasons `fast_tiered_verdict` returns. "frame" is the only accept.
+FAST_VERDICT_REASONS: tuple[str, ...] = (
+    "frame",
+    "weak",
+    "margin",
+    "crop",
+    "not_card_aspect",
+    "undecodable",
+    "error",
+)
+
+
+def fast_tiered_verdict(image_bytes: bytes) -> tuple[bytes | None, str]:
+    """`fast_tiered_crop` with the reason behind its answer (NEO-399).
+
+    Returns `(image_bytes, "frame")` for the classical identity accept, else
+    `(None, reason)`: `"weak"` / `"margin"` are `should_identity`'s unsettled
+    verdicts, `"crop"` means the classical pass found a card inside the frame,
+    `"not_card_aspect"` that the frame itself is not card-aspect, and
+    `"undecodable"` / `"error"` that the pass could not run. The reason lets
+    the next FAST stage (`frame_content`) follow only the `"weak"` frames;
+    `fast_tiered_crop` keeps the bytes-or-None contract.
+    """
     try:
         full, work, scale = _load(image_bytes)
     except Exception as exc:  # noqa: BLE001
         logger.warning("fast_tiered_crop: cannot open image: %s", exc)
-        return None  # escalate; the full pipeline owns the undecodable path
+        return None, "undecodable"  # escalate; the full pipeline owns the undecodable path
 
     try:
         fh, fw = work.shape[:2]
@@ -782,7 +809,7 @@ def fast_tiered_crop(image_bytes: bytes) -> bytes | None:
             # A frame that is not itself card-aspect is never a pre-cropped
             # card handed back to us — it is a photo with framing to remove.
             logger.info("fast: escalate (frame not card-aspect)")
-            return None
+            return None, "not_card_aspect"
 
         lab_work = cv2.cvtColor(work, cv2.COLOR_BGR2LAB).astype(np.float32)
         bg = border_bg_lab(lab_work)
@@ -793,9 +820,9 @@ def fast_tiered_crop(image_bytes: bytes) -> bytes | None:
         # what BiRefNet is for — so those escalate rather than pass through.
         if identity and reason == "frame":
             logger.info("fast: identity (frame-fill card-aspect frame), skipping BiRefNet")
-            return image_bytes
+            return image_bytes, "frame"
         logger.info("fast: escalate (identity=%s reason=%s)", identity, reason)
-        return None
+        return None, reason if identity else "crop"
     except Exception:
         logger.exception("fast_tiered_crop: classical pass failed; escalating")
-        return None
+        return None, "error"
