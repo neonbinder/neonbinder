@@ -58,28 +58,11 @@ def _ring_sensitive(h: int, w: int) -> np.ndarray:
 
 
 def _app_padding(work: np.ndarray, monkeypatch) -> tuple[np.ndarray, int]:
-    """The app's own padding: `tiered.pad_for_birefnet` when it exists, else the
-    padded input the pre-NEO-484 `birefnet_mask` hands to rembg."""
+    """The app's own padding, `tiered.pad_for_birefnet` (what `birefnet_mask` feeds
+    the model). The script keeps its own copy so it also runs in pre-NEO-484 images."""
     from app.cropper import tiered
 
-    pad = getattr(tiered, "pad_for_birefnet", None)
-    if pad is not None:
-        return pad(work)
-
-    seen: dict[str, np.ndarray] = {}
-
-    def fake_remove(rgb, session=None, **_kw):
-        seen["rgb"] = rgb.copy()
-        out = np.zeros((*rgb.shape[:2], 4), np.uint8)
-        return out
-
-    fake_rembg = type(sys)("rembg")
-    fake_rembg.remove = fake_remove
-    monkeypatch.setitem(sys.modules, "rembg", fake_rembg)
-    monkeypatch.setattr(tiered, "_get_session", lambda: object())
-    tiered.birefnet_mask(work)
-    h, w = work.shape[:2]
-    return seen["rgb"], (seen["rgb"].shape[0] - h) // 2
+    return tiered.pad_for_birefnet(work)
 
 
 @pytest.mark.parametrize("shape", [(1200, 857), (857, 1200), (40, 31), (5, 7)])
@@ -113,18 +96,33 @@ def test_padding_truncates_a_half_median(monkeypatch):
     assert np.array_equal(padded, theirs)
 
 
-def test_padded_input_refuses_an_app_padding_that_disagrees(monkeypatch):
+def _one_bit_off(padded: np.ndarray) -> np.ndarray:
+    padded = padded.copy()
+    padded[0, 0, 0] ^= 1
+    return padded
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [_one_bit_off, lambda padded: padded[..., ::-1].copy()],  # one bit; BGR instead of RGB
+    ids=["one-bit", "bgr"],
+)
+def test_padded_input_refuses_an_app_padding_that_disagrees(monkeypatch, corrupt):
     from app.cropper import tiered
 
     def other(work):
         padded, p = gm.pad_for_birefnet(work)
-        padded = padded.copy()
-        padded[0, 0, 0] ^= 1
-        return padded, p
+        return corrupt(padded), p
 
     monkeypatch.setattr(tiered, "pad_for_birefnet", other, raising=False)
     with pytest.raises(gm.InputMismatchError):
         gm._padded_input(_work(50, 40))
+
+
+def test_padded_input_agrees_with_the_app_and_is_rgb():
+    work = _work(50, 40)
+    padded, p = gm._padded_input(work)
+    assert tuple(padded[0, 0]) == tuple(int(v) for v in work[1, 0][::-1])  # border colour, RGB
 
 
 # ── Host fingerprint ────────────────────────────────────────────────────────

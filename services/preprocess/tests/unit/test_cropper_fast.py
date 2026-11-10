@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import pytest
 
-from app.cropper import tiered
+from app.cropper import birefnet, tiered
 from app.cropper.tiered import fast_tiered_crop
 
 BG = (120, 120, 120)  # BGR mid-gray background
@@ -72,7 +72,8 @@ def _forbid_birefnet(monkeypatch):
         raise AssertionError("fast_tiered_crop must not touch BiRefNet")
 
     monkeypatch.setattr(tiered, "birefnet_mask", _boom)
-    monkeypatch.setattr(tiered, "_get_session", _boom)
+    monkeypatch.setattr(birefnet, "get_session", _boom)
+    monkeypatch.setattr(birefnet, "predict_alpha", _boom)
 
 
 class TestIdentityAccept:

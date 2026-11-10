@@ -146,6 +146,9 @@ def _padded_input(work: np.ndarray) -> tuple[np.ndarray, int]:
     padded, p = pad_for_birefnet(work)
     from app.cropper import tiered
 
+    # Both sides are RGB: the script's copy converts BGR->RGB last, as
+    # `tiered.pad_for_birefnet` does, so a channel-order slip fails here too.
+    # Absent in the pre-NEO-484 image, where the script's copy is the only one.
     app_pad = getattr(tiered, "pad_for_birefnet", None)
     if app_pad is not None:
         other, other_p = app_pad(work)

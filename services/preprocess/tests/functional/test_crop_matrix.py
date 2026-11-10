@@ -11,7 +11,7 @@ So this suite asserts the geometry directly, against the real container — real
 BiRefNet weights, real Cloud Run CPU — because the crop cascade's behaviour is
 a property of the deployed artifact, not of an in-process import. The unit
 suite cannot substitute: `tests/unit/conftest.py` deliberately blocks
-`rembg.new_session` so no unit test can ever run the model.
+`birefnet._new_inference_session` so no unit test can ever run the model.
 
 ## What each fixture asserts
 
