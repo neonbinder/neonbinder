@@ -47,13 +47,23 @@ import type { FunctionReference } from "convex/server";
 import EntityColumn from "./EntityColumn";
 import EntitySelector, { displayByValue } from "./EntitySelector";
 import type { PinnedEntry } from "./EntitySelector";
+import { columnSyncFailedMessage } from "./column-sync-failed";
 
 const YEAR_PARENT = "sport-baseball" as never;
 const EMPTY_LINE = "No years available. Sync from marketplaces to populate.";
+// NEO-450: the column names itself and never echoes the server's message, so
+// the stored message here is deliberately one the column must NOT show.
+const SERVER_MESSAGE = "Couldn't sync options — please try again.";
 const FAILED: { status: string; message: string } = {
   status: "error",
-  message: "Couldn't sync options — please try again.",
+  message: SERVER_MESSAGE,
 };
+const YEARS_FAILED = columnSyncFailedMessage("Years");
+
+/** The column's one failed-sync box: an alert that names the column. */
+function expectYearsAlert() {
+  expect(screen.getByRole("alert").textContent).toBe(YEARS_FAILED);
+}
 const ALL_BRANDS: PinnedEntry[] = [
   { id: "all-brands", name: "All Brands", ariaLabel: "All Brands, every set" },
 ];
@@ -110,7 +120,7 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
     renderYears();
 
     expect(screen.queryByText(EMPTY_LINE)).toBeNull();
-    expect(screen.getByText(FAILED.message)).toBeTruthy();
+    expectYearsAlert();
     expect(screen.getByRole("button", { name: "Sync Years" })).toBeTruthy();
     // Not stranded: an operator can still add the year by hand.
     expect(screen.getByRole("button", { name: "Add custom Years" })).toBeTruthy();
@@ -135,7 +145,8 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
     renderYears();
 
     expect(screen.getByText(EMPTY_LINE)).toBeTruthy();
-    expect(screen.queryByText(FAILED.message)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(YEARS_FAILED)).toBeNull();
     expect(screen.getByRole("button", { name: "Sync Years" })).toBeTruthy();
   });
 
@@ -149,6 +160,7 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
     renderYears();
 
     expect(screen.getByText(EMPTY_LINE)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("with options and a failed sync, the list and the error both stay", () => {
@@ -158,7 +170,7 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
 
     const list = screen.getByRole("listbox", { name: "Years" });
     expect(within(list).getByRole("option", { name: "2024" })).toBeTruthy();
-    expect(screen.getByText(FAILED.message)).toBeTruthy();
+    expectYearsAlert();
     expect(screen.queryByText(EMPTY_LINE)).toBeNull();
   });
 
@@ -172,7 +184,7 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
       }),
     ).toBeTruthy();
     expect(screen.queryByText(EMPTY_LINE)).toBeNull();
-    expect(screen.getByText(FAILED.message)).toBeTruthy();
+    expectYearsAlert();
   });
 
   it("the line under a pinned view stays when nothing failed", () => {
@@ -193,6 +205,7 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
 
     expect(screen.getByText("No matches found")).toBeTruthy();
     expect(screen.queryByText(EMPTY_LINE)).toBeNull();
+    expectYearsAlert();
   });
 
   it("the line stays away while the custom form is open over a failed sync", () => {
@@ -203,6 +216,9 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
 
     expect(screen.getByRole("heading", { name: "Add Custom Entry" })).toBeTruthy();
     expect(screen.queryByText(EMPTY_LINE)).toBeNull();
+    // The form replaces the sync row, alert included: any alert in the column
+    // now belongs to the form, so a column-scoped alert locator stays single.
+    expect(screen.queryByText(YEARS_FAILED)).toBeNull();
   });
 
   it("a column on the legacy sync path keeps its line", () => {
@@ -211,11 +227,132 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
     renderYears({ useEnsureSync: false });
 
     expect(screen.getByText(EMPTY_LINE)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("a selector rendered outside any column keeps its line", () => {
     render(selector());
 
     expect(screen.getByText(EMPTY_LINE)).toBeTruthy();
+  });
+});
+
+describe("EntityColumn — the failed-sync alert names its column (NEO-450)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.items = [];
+    state.status = null;
+    mockEnsure.mockResolvedValue({
+      ran: true,
+      reason: "synced",
+      skippedSides: [],
+      pausedSides: [],
+    });
+  });
+
+  it("shows the column's sentence, not whatever message the server stored", () => {
+    const unrelated = "BSC facet lookup returned HTTP 503 for parent sport-baseball";
+    state.status = { status: "error", message: unrelated };
+    renderYears();
+
+    expectYearsAlert();
+    expect(screen.queryByText(unrelated, { exact: false })).toBeNull();
+  });
+
+  it("an error with no stored message still names the column", () => {
+    state.status = { status: "error" };
+    renderYears();
+
+    expectYearsAlert();
+  });
+
+  it.each([
+    ["idle (no status row)", null],
+    ["syncing", { status: "syncing" }],
+    ["done", { status: "done" }],
+    [
+      "done with a partial-failure notice",
+      {
+        status: "done",
+        message: "SportLots couldn't be reached: only BSC's years were synced.",
+      },
+    ],
+  ])("renders no alert when the status is %s", (_label, status) => {
+    state.status = status;
+    renderYears();
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(YEARS_FAILED)).toBeNull();
+  });
+
+  it("a done-with-notice status over rows keeps the rows and raises no alert", () => {
+    state.items = [{ _id: "y2024", value: "2024" }];
+    state.status = {
+      status: "done",
+      message: "SportLots is on pause: nothing from SportLots was asked for or changed.",
+    };
+    renderYears();
+
+    expect(
+      within(screen.getByRole("listbox", { name: "Years" })).getByRole("option", {
+        name: "2024",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a pinned view over rows and a failed sync: every option stays, one alert", () => {
+    state.items = [{ _id: "y2024", value: "2024" }];
+    state.status = FAILED;
+    renderYears({ pinnedEntries: ALL_BRANDS });
+
+    const list = screen.getByRole("listbox", { name: "Years" });
+    expect(within(list).getByRole("option", { name: "All Brands, every set" })).toBeTruthy();
+    expect(within(list).getByRole("option", { name: "2024" })).toBeTruthy();
+    expectYearsAlert();
+    expect(screen.queryByText(EMPTY_LINE)).toBeNull();
+  });
+
+  it("a pinned view whose search hides it still answers 'No matches found'", () => {
+    state.status = FAILED;
+    renderYears({ pinnedEntries: ALL_BRANDS });
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Search years" }), {
+      target: { value: "zzz" },
+    });
+
+    expect(screen.getByText("No matches found")).toBeTruthy();
+    expectYearsAlert();
+  });
+
+  it("recovering from the error removes the alert and brings the line back", () => {
+    state.status = FAILED;
+    const view = renderYears();
+    expectYearsAlert();
+
+    state.status = { status: "done" };
+    view.rerender(
+      <EntityColumn
+        selector={selector()}
+        renderForm={() => <div>legacy-form</div>}
+        addButtonText="Sync Years"
+        isVisible
+        level="year"
+        parentId={YEAR_PARENT}
+        useEnsureSync
+      />,
+    );
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(EMPTY_LINE)).toBeTruthy();
+  });
+
+  it("the legacy sync path over rows shows no alert even if a status says error", () => {
+    state.items = [{ _id: "y2024", value: "2024" }];
+    state.status = FAILED;
+    renderYears({ useEnsureSync: false });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(YEARS_FAILED)).toBeNull();
   });
 });

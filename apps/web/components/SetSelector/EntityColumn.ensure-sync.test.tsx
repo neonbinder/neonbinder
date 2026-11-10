@@ -16,7 +16,7 @@
  * be controlled independently.
  */
 
-import { act, render } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { EntityColumnProps } from "./EntityColumn";
@@ -53,6 +53,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import EntityColumn from "./EntityColumn";
+import { columnSyncFailedMessage } from "./column-sync-failed";
 
 const vtProps: EntityColumnProps = {
   selector: <div>selector</div>,
@@ -97,12 +98,15 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
     expect(queryByText("legacy-form")).toBeNull();
   });
 
-  it("status=error surfaces the message but keeps + Custom available (not stranded)", async () => {
+  it("status=error raises the column-named alert but keeps + Custom available (not stranded)", async () => {
     state.items = [];
     state.status = { status: "error", message: "Couldn't sync options." };
     const { getByText } = renderVT();
     await act(async () => {});
-    expect(getByText("Couldn't sync options.")).toBeTruthy();
+    // NEO-450: the alert names the column; the server's message is not echoed.
+    expect(screen.getByRole("alert").textContent).toBe(
+      columnSyncFailedMessage("Variant Types"),
+    );
     expect(getByText("+ Custom")).toBeTruthy();
   });
 

@@ -62,6 +62,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import EntityColumn from "./EntityColumn";
+import { columnSyncFailedMessage } from "./column-sync-failed";
 
 const setProps: EntityColumnProps = {
   selector: <div>selector</div>,
@@ -366,7 +367,9 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     it("leaves a total failure on the error path, with Retry semantics intact", async () => {
       state.status = { status: "error", message: "Couldn't sync options." };
       await renderColumn();
-      expect(screen.getByText("Couldn't sync options.")).toBeTruthy();
+      expect(screen.getByRole("alert").textContent).toBe(
+        columnSyncFailedMessage("Sets"),
+      );
       // An error row is not dismissable — Sync is the way out.
       expect(screen.queryByLabelText("Dismiss Sets notice")).toBeNull();
     });
