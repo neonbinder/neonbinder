@@ -38,6 +38,8 @@ import { ListingGate } from "./listingGate";
 import { intakePhotoFailureValidator, listingPlatformValidator } from "./schema";
 import { DRAIN_LEASE_MS } from "./listingDrain";
 import { newToken } from "./listingOutbox";
+import type { ActionCtx } from "./_generated/server";
+import { closeBscSellerSession, fetchBscSellerId, openBscSellerSession } from "./adapters/bscSeller";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -741,6 +743,47 @@ const SEED_SITE_ENV: Record<string, { username: string; password: string }> = {
   sportlots: { username: "DEV_SPORTLOTS_USERNAME", password: "DEV_SPORTLOTS_PASSWORD" },
 };
 
+/**
+ * NEO-482 — a listing-on BuySportsCards seed must leave the caller's BSC
+ * seller id saved, or it reports why not.
+ *
+ * The E2E reset deletes the userProfiles row, and `bscSellerId` with it. The
+ * browser login reads the id only best-effort (a failed profile read still
+ * returns a session, with no id), and the "already signed in" seed path never
+ * saves one. Left unsaved, the first Sync's drain reads it inside
+ * "Send changes" (`fetchBscSellerId`, up to two bounded attempts), which can
+ * outrun that step's budget. Reading it here moves the wait into the seed
+ * step, and a failure stops the spec at the seed with the reason on screen.
+ *
+ * Null: the id is saved (already, or now). A string: the `reason` for a
+ * `stored: false` result. Never contains the id, a token or a BSC body: the
+ * failure message is NB-written (`BscSellerFailure.message`).
+ */
+async function ensureSeededBscSellerId(ctx: ActionCtx, userId: string): Promise<string | null> {
+  const profile = await ctx.runQuery(api.userProfile.getUserProfile, {});
+  if (profile?.marketplaceAccountIds?.bscSellerId) return null;
+
+  const opened = await openBscSellerSession(ctx, userId, { op: "seedSellerId" });
+  if (!opened.ok) return `BuySportsCards seller id not saved: ${opened.failure.message}`;
+  const session = opened.value;
+  try {
+    const sellerId = await fetchBscSellerId(ctx, session);
+    if (!sellerId.ok) return `BuySportsCards seller id not saved: ${sellerId.failure.message}`;
+    if (sellerId.value === null) {
+      return "BuySportsCards seller id not saved: BuySportsCards didn't say which seller account this is.";
+    }
+    await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
+      userId,
+      site: "buysportscards",
+      accountId: sellerId.value,
+    });
+    return null;
+  } finally {
+    // NEO-475: the session's one BSC call summary. Never throws.
+    await closeBscSellerSession(ctx, session);
+  }
+}
+
 export const seedMyTestCredentials = action({
   args: {
     sites: v.optional(v.array(v.string())),
@@ -925,6 +968,15 @@ export const seedMyTestCredentials = action({
         // "Test Credentials" button) would keep failing the util flows on that
         // runner with no way to self-heal. Seeding is the suite's repair
         // mechanism; it has to actually repair.
+        //
+        // NEO-482: a listing-on BSC seed saves the seller id first, as a real
+        // save writes it before the status write; this path never signs in,
+        // so nothing else would. A failure still sets the flag below (the
+        // credential stays stored) and reports stored: false with the reason.
+        const sellerIdMissing =
+          site === "buysportscards" && args.listing === true
+            ? await ensureSeededBscSellerId(ctx, userId)
+            : null;
         await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
           userId,
           site,
@@ -932,7 +984,11 @@ export const seedMyTestCredentials = action({
           needsReauth: false,
           listing: args.listing === true ? "save" : "testOff",
         });
-        seeded.push({ site, stored: true });
+        seeded.push(
+          sellerIdMissing === null
+            ? { site, stored: true }
+            : { site, stored: false, reason: sellerIdMissing },
+        );
         continue;
       }
 
@@ -957,11 +1013,21 @@ export const seedMyTestCredentials = action({
       // it is the only place that knows WHICH class of failure this was. On
       // success nothing is added, so the result shape is byte-identical to
       // before on every green path.
-      seeded.push({
-        site,
-        stored: storeResult.success,
-        ...(storeResult.success ? {} : { reason: storeResult.message }),
-      });
+      if (!storeResult.success) {
+        seeded.push({ site, stored: false, reason: storeResult.message });
+        continue;
+      }
+      // NEO-482: the login reads the seller id only best-effort, so a
+      // listing-on BSC seed confirms it was saved (see ensureSeededBscSellerId).
+      const sellerIdMissing =
+        site === "buysportscards" && args.listing === true
+          ? await ensureSeededBscSellerId(ctx, userId)
+          : null;
+      seeded.push(
+        sellerIdMissing === null
+          ? { site, stored: true }
+          : { site, stored: false, reason: sellerIdMissing },
+      );
     }
 
     // NEO-120 — EasyPost postage key.
