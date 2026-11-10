@@ -1,6 +1,6 @@
 ---
 name: checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall
-description: A checklist spec that asserts a card's team sub-line, red after "Saved N cards" with EVERY row teamless, is BSC's per-card team lookup timing out, not the PR; grep bsc_card_team_lookup_failures
+description: Teamless rows (checklist wizard opens on "Cards with no team", or a collection "Put here" strict-mode hit on parallels) = BSC per-card team lookup failing (timeout or HTTP 429), not the PR; grep bsc_card_team_lookup_failures in the shard AND seed logs
 metadata:
   type: project
 ---
@@ -16,6 +16,16 @@ post-name step ("Cards with no team") and the save commits teamless cards by
 design (CLAUDE.md rule 8: a lookup that never returned goes to the operator;
 `processBscTeamEnrichmentQueue` retries at +60 s / +5 min, beyond any 7 s bar).
 Seen 2026-11-07 on PR 431 (photo-intake only, nothing on the checklist path).
+
+**Second shape, 429 (seen 2026-11-10):** the card-listing fetch returns
+HTTP 429 (`card-listing fetch failed status=429`) instead of timing out, for
+every card, across PR runs that overlap in time. When it hits the **seed**
+job, the seeded 2024 Topps Chrome base (and every parallel built from it) is
+teamless for that whole pass, so collection specs fail far from the cause:
+a "Put here" hunt regex that expects the base name to end at the team
+(`..., <team>$`) instead matches each parallel (`..., Gold Wave Refractors`)
+and Playwright reports a strict-mode violation. Check `convex-logs-seed` for
+`failed == requested` before reading the collection spec.
 
 **Why:** the merged-main diff looks like a suspect (NEO-424 touched
 resolveChecklistEntities), but the teams are lost before that code runs.
