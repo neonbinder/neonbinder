@@ -766,6 +766,96 @@ describe("saved copies", () => {
   });
 });
 
+describe("saved copies: listings are queued at the commit, never at the reserve", () => {
+  /** The owner lists on both platforms; gooden1 carries a BSC ref, and eBay lists any catalog card. */
+  const listEverywhere = (w: Awaited<ReturnType<typeof copyWorld>>) =>
+    w.t.run(async (ctx) => {
+      for (const platform of ["bsc", "ebay"] as const) {
+        await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform, listingStartedAt: 1, lastUpdated: 0 });
+      }
+    });
+  const outbox = (w: Awaited<ReturnType<typeof copyWorld>>) =>
+    w.t.run(async (ctx) => await ctx.db.query("listingOutbox").collect());
+  /** The rows as a drain would see them: one per platform, for the copy's card, flagged for a photo refresh. */
+  const flagged = (w: Awaited<ReturnType<typeof copyWorld>>) =>
+    [
+      { platform: "bsc", cardId: w.fx.gooden1, refreshPhotos: true },
+      { platform: "ebay", cardId: w.fx.gooden1, refreshPhotos: true },
+    ];
+  const byPlatform = (rows: Array<Doc<"listingOutbox">>) =>
+    [...rows]
+      .sort((a, b) => a.platform.localeCompare(b.platform))
+      .map((r) => ({ platform: r.platform, cardId: r.cardId, refreshPhotos: r.refreshPhotos }));
+  /** A listed copy with nothing queued yet. */
+  async function listedCopy(opts: { scan?: boolean } = {}) {
+    const w = await copyWorld(opts);
+    await listEverywhere(w);
+    expect(await outbox(w)).toEqual([]);
+    return w;
+  }
+  const save = (w: Awaited<ReturnType<typeof copyWorld>>, mode: "stored" | "original" = "stored") =>
+    w.me.action(api.photoEdits.saveCopyPhotoEdit, {
+      copyId: w.copyId,
+      side: "front",
+      edit: { turns: 1, crop: null },
+      expectToken: w.token,
+      mode,
+    });
+
+  test("the reserve queues nothing: the outbox stays empty until the render lands", async () => {
+    const w = await listedCopy();
+    const { photoId } = await save(w);
+    expect((await w.rows()).find((r) => r._id === photoId)?.status).toBe("pending");
+    expect(await outbox(w)).toEqual([]);
+    await drainScheduled(w.t);
+  });
+
+  test("the commit queues one row per platform, flagged for a photo refresh", async () => {
+    const w = await listedCopy();
+    const { photoId } = await save(w);
+    await drainScheduled(w.t);
+    expect((await w.rows()).find((r) => r._id === photoId)?.status).toBe("live");
+    expect(byPlatform(await outbox(w))).toEqual(flagged(w));
+  });
+
+  test("a render that fails queues nothing: the live photo never changed", async () => {
+    const w = await listedCopy({ scan: true });
+    onScanRender = () => json(422, { error_code: "EDIT_OUT_OF_FRAME", detail: "crop reaches outside the source" });
+    const { photoId } = await save(w, "original");
+    await drainScheduled(w.t);
+    const edited = (await w.rows()).find((r) => r._id === photoId)!;
+    expect(edited.status).toBe("pending");
+    expect(edited.pendingEdit?.status).toBe("failed");
+    expect((await w.rows()).find((r) => r._id === w.photoId)?.status).toBe("live");
+    expect(await outbox(w)).toEqual([]);
+  });
+
+  test("Undo flags the rows for a refresh again, after a drain took the commit's", async () => {
+    const w = await listedCopy();
+    const { photoId } = await save(w);
+    await drainScheduled(w.t);
+    // The drain listed the edit and deleted its rows.
+    await w.t.run(async (ctx) => {
+      for (const row of await ctx.db.query("listingOutbox").collect()) await ctx.db.delete(row._id);
+    });
+    await w.me.action(api.photoEdits.undoCopyPhotoEdit, { copyId: w.copyId, photoId });
+    expect((await w.rows()).find((r) => r._id === w.photoId)?.status).toBe("live");
+    expect(byPlatform(await outbox(w))).toEqual(flagged(w));
+  });
+
+  test("a binder copy's edit lands and queues nothing", async () => {
+    const w = await copyWorld();
+    await w.t.run((ctx) => ctx.db.patch(w.homeId, { kind: "binder" }));
+    await listEverywhere(w);
+    const { photoId } = await save(w);
+    await drainScheduled(w.t);
+    expect((await w.rows()).find((r) => r._id === photoId)?.status).toBe("live");
+    expect(await outbox(w)).toEqual([]);
+    await w.me.action(api.photoEdits.undoCopyPhotoEdit, { copyId: w.copyId, photoId });
+    expect(await outbox(w)).toEqual([]);
+  });
+});
+
 describe("security C1: render tickets hold each collector to a rate and an in-flight count", () => {
   const tickets = (w: Awaited<ReturnType<typeof world>>) =>
     w.t.run((ctx) => ctx.db.query("photoEditTickets").collect());

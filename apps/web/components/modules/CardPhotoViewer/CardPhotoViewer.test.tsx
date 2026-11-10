@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Theme } from "@radix-ui/themes";
 import type { PhotoEdit } from "@/lib/photo-edit/geometry";
+import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import Overlay from "@/app/collection/prototypes/p1/Overlay";
 import CardPhotoViewer, { VIEWER_WORDS } from "./CardPhotoViewer";
 import { CardPhoto } from "./EditedPhoto";
@@ -129,6 +130,7 @@ describe("opening", () => {
     const { dialog } = open({ label: "a card", front });
     const again = await within(dialog).findByRole("button", { name: "Open it again" });
     expect(load).toHaveBeenCalledTimes(1);
+    await expectAccessibleInBothModes(document.body, { label: "Photo viewer, a failed read" });
     fireEvent.click(again);
     await within(dialog).findByRole("button", { name: "Crop by hand" });
     expect(load).toHaveBeenCalledTimes(2);
@@ -430,9 +432,11 @@ describe("pending, failure and Undo", () => {
     const { dialog } = open({ label: "a card", front });
     expect(within(dialog).getByText("Touching it up…")).toBeTruthy();
     fireEvent.click(await within(dialog).findByRole("button", { name: "Turn right" }));
+    await expectAccessibleInBothModes(document.body, { label: "Photo viewer, Touching it up…" });
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save photo" })));
     expect(front.save).not.toHaveBeenCalled();
     expect(within(dialog).getByRole("alert").textContent).toBe(VIEWER_WORDS.stillRendering);
+    await expectAccessibleInBothModes(document.body, { label: "Photo viewer, Still touching up the last edit" });
   });
 
   it("a failed edit keeps the old photo and offers Try again (the same save) and Keep the old photo", async () => {
@@ -442,10 +446,68 @@ describe("pending, failure and Undo", () => {
     const { dialog } = open({ label: "a card", front });
     expect(within(dialog).getByText("The renderer didn't answer.")).toBeTruthy();
     await waitFor(() => expect(front.load).toHaveBeenCalled());
+    await within(dialog).findByRole("button", { name: "Keep the old photo" });
+    await expectAccessibleInBothModes(document.body, { label: "Photo viewer, a failed render" });
     await act(async () => fireEvent.click(await within(dialog).findByRole("button", { name: "Try again" })));
     expect(savedEdit(front)).toEqual(failed);
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Keep the old photo" })));
     expect(dismissFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("a save whose render then fails: Saved. goes, the failure is the only word, and Undo goes; a retry that lands says so", async () => {
+    const save = vi.fn(async () => undefined);
+    const undo = vi.fn(async () => undefined);
+    const make = (pending?: PhotoSideSource["pending"]) =>
+      ({ label: "a card", front: side({ pending, save, undo, dismissFailure: vi.fn(async () => undefined) }) }) as PhotoSource;
+    const shown = (source: PhotoSource) => (
+      <Theme>
+        <CardPhotoViewer source={source} onClose={vi.fn()} />
+      </Theme>
+    );
+    const view = render(shown(make()));
+    const dialog = screen.getByRole("dialog");
+    const statusLine = () => within(dialog).getByRole("status").textContent?.trim();
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Turn right" }));
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save photo" })));
+    expect(statusLine()).toBe(VIEWER_WORDS.saved);
+    expect(within(dialog).getByRole("button", { name: "Undo" })).toBeTruthy();
+
+    const sent: PhotoEdit = savedEdit({ save });
+    view.rerender(shown(make({ status: "rendering", edit: sent })));
+    expect(statusLine()).toBe(VIEWER_WORDS.saved);
+
+    view.rerender(shown(make({ status: "failed", edit: sent, error: "We couldn't make that edit just now. Try again." })));
+    expect(statusLine()).toBe("");
+    expect(within(dialog).getByText("We couldn't make that edit just now. Try again.")).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(within(dialog).queryByText(VIEWER_WORDS.landed)).toBeNull();
+
+    // Try again: accepted, renders, lands.
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Try again" })));
+    expect(save).toHaveBeenCalledTimes(2);
+    view.rerender(shown(make({ status: "rendering", edit: sent })));
+    view.rerender(shown(make()));
+    expect(statusLine()).toBe(VIEWER_WORDS.landed);
+  });
+
+  it("a failed edit cleared with Keep the old photo never reads as landed", async () => {
+    const failed: PhotoEdit = { turns: 1, crop: null };
+    const make = (pending?: PhotoSideSource["pending"]) =>
+      ({ label: "a card", front: side({ pending, dismissFailure: vi.fn(async () => undefined) }) }) as PhotoSource;
+    const view = render(
+      <Theme>
+        <CardPhotoViewer source={make({ status: "rendering", edit: failed })} onClose={vi.fn()} />
+      </Theme>,
+    );
+    const dialog = screen.getByRole("dialog");
+    for (const pending of [{ status: "failed" as const, edit: failed }, undefined]) {
+      view.rerender(
+        <Theme>
+          <CardPhotoViewer source={make(pending)} onClose={vi.fn()} />
+        </Theme>,
+      );
+    }
+    expect(within(dialog).getByRole("status").textContent?.trim()).toBe("");
   });
 
   it("a scan's Undo saves the edit it had before", async () => {

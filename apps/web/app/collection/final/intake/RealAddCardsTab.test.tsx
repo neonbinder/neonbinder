@@ -1202,7 +1202,7 @@ describe("RealAddCardsTab listing gate (NEO-370, NEO-452)", () => {
   });
 
   it("a Min price that is not a price keeps the note, marks the field and says how, tied to it", async () => {
-    newRunIntoBox(HELD);
+    const { container, rerender } = newRunIntoBox(HELD);
     await pickSet();
     const field = minPrice();
     fireEvent.change(field, { target: { value: "a buck" } });
@@ -1214,6 +1214,7 @@ describe("RealAddCardsTab listing gate (NEO-370, NEO-452)", () => {
     // The typed text stays to fix; nothing was stored, so the note stays.
     expect(field.value).toBe("a buck");
     expect(screen.getByText(gateLine)).toBeTruthy();
+    await expectAccessibleInBothModes(container, { label: "Intake, a Min price that is not a price", rerender: () => rerender(<NewRun />) });
     fireEvent.change(field, { target: { value: "2" } });
     fireEvent.blur(field);
     expect(field.getAttribute("aria-invalid")).toBeNull();
@@ -3689,7 +3690,7 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     it("a failed render says why, Try again saves the same edit again, and Keep the old one drops it", async () => {
       const save = mocks.mutation("photoEdits.saveScanEdit");
       const dismiss = mocks.mutation("photoEdits.dismissPhotoEditFailure");
-      const { runId } = showPair(
+      const { runId, container, rerender } = showPair(
         {},
         {
           images: [
@@ -3700,6 +3701,11 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       );
       expect(screen.getByText(/The original scan just aged out/)).toBeTruthy();
       expect(screen.queryByText("ENTRY_NOT_FOUND")).toBeNull();
+      expect(screen.getByRole("button", { name: `Keep the old one: the front of ${CARD}` })).toBeTruthy();
+      await expectAccessibleInBothModes(container, {
+        label: "Intake, a tile whose touch-up failed",
+        rerender: () => rerender(<Tab runId={runId} />),
+      });
       fireEvent.click(screen.getByRole("button", { name: `Try again: touch up the front of ${CARD}` }));
       await waitFor(() =>
         expect(save).toHaveBeenCalledWith({
@@ -3791,8 +3797,8 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       expect(save()).not.toHaveBeenCalled();
     });
 
-    it("Escape puts back what it showed; a price that doesn't parse says so and saves nothing", () => {
-      boxWithMin(150);
+    it("Escape puts back what it showed; a price that doesn't parse says so and saves nothing", async () => {
+      const { container, rerender, runId } = boxWithMin(150);
       const field = priceField()!;
       fireEvent.change(field, { target: { value: "9" } });
       fireEvent.keyDown(field, { key: "Escape" });
@@ -3802,6 +3808,10 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       expect(notify).toHaveBeenCalledWith("That price doesn't look right. Try something like 1.50.");
       expect(save()).not.toHaveBeenCalled();
       expect(setPrice()).not.toHaveBeenCalled();
+      await expectAccessibleInBothModes(container, {
+        label: "Intake, a card price that doesn't parse",
+        rerender: () => rerender(<Tab runId={runId} />),
+      });
     });
   });
 });
