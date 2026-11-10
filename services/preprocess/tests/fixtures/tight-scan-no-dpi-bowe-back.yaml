@@ -1,0 +1,18 @@
+# NEO-399: tight scan, no usable resolution; settles on FAST by frame content.
+# 2014 Score football, the intake E2E's 04-bowe-back.
+orient:
+  rotation_degrees: 0
+
+classify:
+  side: back
+  player:
+    contains: Bowe
+  team:
+    contains: Chiefs
+  card_number:
+    equals: '315'
+
+crop:
+  category: tight-scan-no-dpi / white border, back
+  source: frame_content
+  identity: true

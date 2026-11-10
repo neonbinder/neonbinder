@@ -13,6 +13,7 @@ module binding because that's where `crop()` imports them.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -64,6 +65,30 @@ def _classify(
         side=side,
         raw_text="{}",
     )
+
+
+@pytest.fixture(autouse=True)
+def _verdict_follows_fast_crop_stubs(monkeypatch):
+    """NEO-399: the cascade now calls `tiered.fast_tiered_verdict`, which
+    `fast_tiered_crop` wraps. The tests below stub `fast_tiered_crop` (the
+    bytes-or-None contract); route the verdict through whatever stub is in
+    place, so they keep meaning what they say. An unstubbed `fast_tiered_crop`
+    leaves the real verdict in charge. A stubbed decline reports `crop`, a
+    verdict the frame-content stage never follows, exactly as before NEO-399.
+    """
+    from app.cropper import tiered
+
+    real_crop = tiered.fast_tiered_crop
+    real_verdict = tiered.fast_tiered_verdict
+
+    def _verdict(image_bytes: bytes):
+        current = tiered.fast_tiered_crop
+        if current is real_crop:
+            return real_verdict(image_bytes)
+        out = current(image_bytes)
+        return (out, "frame") if out is not None else (None, "crop")
+
+    monkeypatch.setattr(tiered, "fast_tiered_verdict", _verdict)
 
 
 @pytest.fixture
@@ -1577,3 +1602,194 @@ class TestQuadStage:
 
         assert timings.quad_ms >= 30
         assert timings.classical_ms < 30
+
+
+class TestFrameContentStage:
+    """NEO-399: the FAST role's frame-content identity.
+
+    It runs after the quad stage, only when the classical verdict was `weak`
+    and the quad declined with `no_quad` or `weak_edges`, and it returns the
+    input untouched (identity) through the same gates, reusing the baseline
+    orient, so it costs no Vision call of its own.
+    """
+
+    INTAKE = (
+        Path(__file__).resolve().parents[4]
+        / "apps"
+        / "web"
+        / "playwright"
+        / "fixtures"
+        / "intake"
+        / "02-mcfadden-back.jpg"
+    )
+
+    def _scan(self) -> bytes:
+        if not self.INTAKE.exists():
+            pytest.skip(f"intake fixture not in this checkout: {self.INTAKE}")
+        return self.INTAKE.read_bytes()
+
+    @staticmethod
+    def _forbid_models(monkeypatch) -> None:
+        def _boom(*_a, **_k):
+            raise AssertionError("model-backed code ran under escalate_only")
+
+        monkeypatch.setattr("app.cropper.tiered.birefnet_mask", _boom)
+        monkeypatch.setattr("app.cropper.birefnet.get_session", _boom)
+        monkeypatch.setattr("app.cropper.birefnet.predict_alpha", _boom)
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", _boom)
+        monkeypatch.setattr("app.cropper.sam.sam_crop", _boom)
+        monkeypatch.setattr("app.cropper.haiku_bbox.haiku_bbox_crop", _boom)
+        monkeypatch.setattr("app.cropper.pil_trim.trim_dark", _boom)
+        monkeypatch.setattr("app.cropper.pil_trim.trim_light", _boom)
+
+    @staticmethod
+    def _spy(monkeypatch, *, accept: bool | None = None) -> list[dict]:
+        """Record calls into the stage; `accept` forces its answer."""
+        from app.cropper import frame_content
+
+        calls: list[dict] = []
+        real = frame_content.frame_content_identity
+
+        def _stage(image_bytes, **kwargs):
+            calls.append({"bytes": image_bytes, **kwargs})
+            if accept is None:
+                return real(image_bytes, **kwargs)
+            return frame_content.FrameContentResult(accept, "ok" if accept else "forced")
+
+        monkeypatch.setattr(frame_content, "frame_content_identity", _stage)
+        return calls
+
+    def test_a_real_tight_scan_settles_as_frame_content_identity(
+        self, monkeypatch, stub_orient, stub_classify
+    ):
+        from app.timing import Timings
+
+        image = self._scan()
+        vision = stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        timings = Timings()
+
+        result = crop(image_bytes=image, precropped_bytes=None, escalate_only=True, timings=timings)
+
+        assert isinstance(result, CropResult)
+        assert result.source == "frame_content"
+        assert result.image_bytes is image
+        assert result.returned_bytes_differ is False
+        assert vision == [image], "the baseline is the only Vision call"
+        assert timings.vision_calls == 1
+
+    def test_it_follows_a_weak_verdict_and_a_no_quad_decline(
+        self, monkeypatch, stub_orient, stub_classify
+    ):
+        stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        image = _card_jpeg()
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "weak"))
+        monkeypatch.setattr("app.cropper.quad.quad_crop", lambda _b: QuadResult(None, "no_quad"))
+        calls = self._spy(monkeypatch, accept=True)
+
+        result = crop(image_bytes=image, precropped_bytes=None, escalate_only=True)
+
+        assert len(calls) == 1
+        assert calls[0]["bytes"] is image
+        assert calls[0]["classical_reason"] == "weak"
+        assert calls[0]["quad_reason"] == "no_quad"
+        assert isinstance(result, CropResult)
+        assert result.source == "frame_content"
+        assert result.returned_bytes_differ is False
+
+    @pytest.mark.parametrize(
+        "reason",
+        ["frame_edge", "shaved", "loose", "multi_card", "off_aspect", "undecodable", "error"],
+    )
+    def test_a_quad_decline_outside_no_quad_and_weak_edges_never_calls_it(
+        self, monkeypatch, stub_orient, stub_classify, reason
+    ):
+        stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "weak"))
+        monkeypatch.setattr("app.cropper.quad.quad_crop", lambda _b: QuadResult(None, reason))
+        calls = self._spy(monkeypatch, accept=True)
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert calls == []
+        assert isinstance(result, CropDeclined)
+
+    def test_a_quad_crop_that_fails_its_gates_never_calls_it(
+        self, monkeypatch, stub_orient, stub_classify
+    ):
+        stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "weak"))
+        monkeypatch.setattr("app.cropper.quad.quad_crop", lambda _b: QuadResult(_tiny_jpeg(), "ok"))
+        calls = self._spy(monkeypatch, accept=True)
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert calls == []
+        assert isinstance(result, CropDeclined)
+
+    @pytest.mark.parametrize("classical", ["margin", "crop", "not_card_aspect"])
+    def test_a_real_tight_scan_is_declined_after_any_verdict_but_weak(
+        self, monkeypatch, stub_orient, stub_classify, classical
+    ):
+        stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        image = self._scan()
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, classical))
+
+        result = crop(image_bytes=image, precropped_bytes=None, escalate_only=True)
+
+        assert isinstance(result, CropDeclined)
+
+    def test_a_decline_still_carries_the_baseline(self, monkeypatch, stub_orient, stub_classify):
+        baseline = _orient(text_count=19, rotation=90, confidence=0.7)
+        stub_orient(baseline)
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda _b: (None, "weak"))
+        monkeypatch.setattr("app.cropper.quad.quad_crop", lambda _b: QuadResult(None, "no_quad"))
+        self._spy(monkeypatch, accept=False)
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert isinstance(result, CropDeclined)
+        assert result.reason == "fast_path_declined"
+        assert result.baseline == baseline
+
+    def test_skip_fast_path_never_calls_it(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify()
+        disable_server_strategies()
+        calls = self._spy(monkeypatch, accept=True)
+
+        crop(image_bytes=_card_jpeg(), precropped_bytes=None, skip_fast_path=True)
+
+        assert calls == []
+
+    def test_strong_mode_never_calls_it(self, monkeypatch, stub_orient, stub_classify):
+        stub_orient()
+        stub_classify()
+        calls = self._spy(monkeypatch, accept=True)
+
+        result = crop(
+            image_bytes=_card_jpeg(),
+            precropped_bytes=None,
+            crop_quality="strong",
+            escalate_only=True,
+        )
+
+        assert calls == []
+        assert isinstance(result, CropDeclined)

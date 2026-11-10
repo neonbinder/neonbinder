@@ -15,12 +15,14 @@ as a near_card_frame; a 1000x1000 canvas is square and never does.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
 
 from app.cropper import birefnet, tiered
-from app.cropper.tiered import fast_tiered_crop
+from app.cropper.tiered import fast_tiered_crop, fast_tiered_verdict
 
 BG = (120, 120, 120)  # BGR mid-gray background
 CARD = (30, 60, 140)  # BGR saturated card fill — far from BG in LAB
@@ -105,3 +107,77 @@ class TestEscalate:
 
     def test_undecodable_bytes_escalate_without_raising(self):
         assert fast_tiered_crop(b"not-an-image") is None
+
+
+# ── NEO-399: the verdict behind the answer ───────────────────────────────
+
+_INTAKE_DIR = (
+    Path(__file__).resolve().parents[4] / "apps" / "web" / "playwright" / "fixtures" / "intake"
+)
+
+
+def _intake(name: str) -> bytes:
+    path = _INTAKE_DIR / f"{name}.jpg"
+    if not path.exists():
+        pytest.skip(f"intake fixture not in this checkout: {path}")
+    return path.read_bytes()
+
+
+def _scenes() -> dict[str, bytes]:
+    square = _canvas((1000, 1000))
+    _draw_card(square, (10, 10, 990, 990))
+    return {
+        "frame_fill": _frame_fill_jpeg(),
+        "landscape_frame_fill": _frame_fill_jpeg(size=(980, 700)),
+        "small_card": _small_card_jpeg(),
+        "square": _jpeg(square),
+        "blank": _jpeg(_canvas((700, 980))),
+        "undecodable": b"not-an-image",
+    }
+
+
+class TestFastTieredVerdict:
+    """`fast_tiered_verdict` returns `fast_tiered_crop`'s answer plus the
+    reason, so the frame-content stage can follow only `weak` frames."""
+
+    def test_frame_fill_is_the_input_object_with_reason_frame(self):
+        data = _frame_fill_jpeg()
+        accepted, reason = fast_tiered_verdict(data)
+        assert accepted is data
+        assert reason == "frame"
+
+    def test_non_card_aspect_frame_names_its_reason(self):
+        img = _canvas((1000, 1000))
+        _draw_card(img, (10, 10, 990, 990))
+        assert fast_tiered_verdict(_jpeg(img)) == (None, "not_card_aspect")
+
+    def test_undecodable_bytes_name_their_reason_without_raising(self):
+        assert fast_tiered_verdict(b"not-an-image") == (None, "undecodable")
+
+    @pytest.mark.parametrize("scene", sorted(_scenes()))
+    def test_every_decline_is_none_with_a_known_reason(self, scene):
+        accepted, reason = fast_tiered_verdict(_scenes()[scene])
+        assert reason in tiered.FAST_VERDICT_REASONS
+        assert (accepted is not None) == (reason == "frame")
+
+    @pytest.mark.parametrize("scene", sorted(_scenes()))
+    def test_fast_tiered_crop_is_unchanged_by_the_wrapper(self, scene):
+        data = _scenes()[scene]
+        accepted, _reason = fast_tiered_verdict(data)
+        assert fast_tiered_crop(data) is accepted
+
+    def test_a_real_frame_fill_scan_is_frame(self):
+        data = _intake("01-mcfadden-front")
+        accepted, reason = fast_tiered_verdict(data)
+        assert accepted is data
+        assert reason == "frame"
+        assert fast_tiered_crop(data) is data
+
+    @pytest.mark.parametrize(
+        "name",
+        ["02-mcfadden-back", "04-bowe-back", "05-bell-front", "06-bell-back", "08-bowe-again-back"],
+    )
+    def test_a_real_tight_scan_is_weak_and_still_escalates_here(self, name):
+        data = _intake(name)
+        assert fast_tiered_verdict(data) == (None, "weak")
+        assert fast_tiered_crop(data) is None
