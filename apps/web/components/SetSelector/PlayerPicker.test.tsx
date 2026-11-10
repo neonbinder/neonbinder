@@ -38,6 +38,8 @@ vi.mock("../../convex/_generated/api", () => ({
       search: "players.search",
       // NEO-313: PlayerGuestTag's "is this really a guest?" read.
       getByIdParam: "players.getByIdParam",
+      // NEO-463: the one-word fragment pre-check behind "+ Create".
+      nameFragmentCheck: "players.nameFragmentCheck",
     },
     // NEO-313: SportTagById and the popover's SportSwitch both read the sport
     // list to render (a tag's label, the switch's option list).
@@ -60,6 +62,9 @@ let currentSearchResults: unknown;
 /** NEO-313 — `players.getByIdParam`, keyed by the id the guest tag asked for. */
 let currentPlayerById: Map<string, { alsoSportIds?: unknown[] }>;
 const mockFindOrCreate = vi.fn();
+/** NEO-463 — `players.nameFragmentCheck`'s answer; undefined = not answered. */
+let currentFragmentCheck: unknown;
+let lastFragmentArgs: unknown;
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -72,6 +77,11 @@ vi.mock("convex/react", () => ({
       return currentPlayerById.get(id);
     }
     if (ref === "selectorOptions.getSelectorOptions") return currentSports;
+    if (ref === "players.nameFragmentCheck") {
+      if (args === "skip") return undefined;
+      lastFragmentArgs = args;
+      return currentFragmentCheck;
+    }
     return undefined;
   },
   useMutation: (ref: string) =>
@@ -142,6 +152,8 @@ describe("PlayerPicker", () => {
     currentSports = [];
     currentSearchResults = undefined;
     currentPlayerById = new Map();
+    currentFragmentCheck = undefined;
+    lastFragmentArgs = undefined;
     mockFindOrCreate.mockResolvedValue(pid("new-player-1"));
   });
 
@@ -953,5 +965,217 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(document.activeElement).toBe(screen.getByLabelText("Add player"));
+  });
+  // -------------------------------------------------------------------------
+  // NEO-463 — a one-word name that is a piece of a fuller one on file
+  // -------------------------------------------------------------------------
+
+  describe("NEO-463 name fragment", () => {
+    const WALKER = {
+      isFragment: true,
+      matches: [{ _id: "p-devin", name: "Devin Walker" }],
+    };
+
+    function typeAndCreate(name: string) {
+      openPopover();
+      fireEvent.change(screen.getByLabelText("Search players"), {
+        target: { value: name },
+      });
+      fireEvent.click(screen.getByLabelText(`Create player ${name}`));
+    }
+
+    it("asks the check about the name Create would add, in the searched sport", () => {
+      currentFragmentCheck = WALKER;
+      renderPicker();
+      openPopover();
+      fireEvent.change(screen.getByLabelText("Search players"), {
+        target: { value: "Walker" },
+      });
+      expect(lastFragmentArgs).toEqual({ name: "Walker", sportId: SPORT_ID });
+    });
+
+    it("stops Create on a fragment and shows the panel, focused, without writing", async () => {
+      currentFragmentCheck = WALKER;
+      renderPicker();
+      typeAndCreate("Walker");
+
+      const panel = screen.getByRole("group", {
+        name: "Just Walker? We've got Devin Walker. Pick one, or add Walker as a one-name player.",
+      });
+      expect(panel).toBeTruthy();
+      expect(document.activeElement).toBe(panel);
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+      // The typeahead rows step aside while the panel answers.
+      expect(screen.queryByLabelText("Create player Walker")).toBeNull();
+    });
+
+    it("does not show the panel for a name the check says is not a fragment", async () => {
+      currentFragmentCheck = { isFragment: false, matches: [] };
+      renderPicker();
+      typeAndCreate("Ichiro");
+
+      expect(screen.queryByRole("group", { name: /^Just Ichiro\?/ })).toBeNull();
+      await waitFor(() => {
+        expect(mockFindOrCreate).toHaveBeenCalledWith({
+          name: "Ichiro",
+          sportId: SPORT_ID,
+        });
+      });
+    });
+
+    it("a link choice adds the existing fuller-named player and creates nothing", async () => {
+      currentFragmentCheck = WALKER;
+      const { onChange } = renderPicker();
+      typeAndCreate("Walker");
+
+      fireEvent.click(screen.getByRole("button", { name: "Add Devin Walker" }));
+
+      expect(onChange).toHaveBeenCalledWith([pid("p-devin")]);
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+    });
+
+    it("'Add as a one-name player' creates with oneNamePlayer: true and adds the chip", async () => {
+      currentFragmentCheck = WALKER;
+      mockFindOrCreate.mockResolvedValue(pid("p-walker"));
+      const { onChange } = renderPicker();
+      typeAndCreate("Walker");
+
+      fireEvent.click(screen.getByRole("button", { name: "Add as a one-name player" }));
+
+      await waitFor(() => {
+        expect(mockFindOrCreate).toHaveBeenCalledWith({
+          name: "Walker",
+          sportId: SPORT_ID,
+          oneNamePlayer: true,
+        });
+      });
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalledWith([pid("p-walker")]);
+      });
+    });
+
+    it("opens the panel from the server's PLAYER_NAME_FRAGMENT refusal when the check had not answered", async () => {
+      currentFragmentCheck = undefined;
+      mockFindOrCreate.mockRejectedValue(
+        new ConvexError({
+          code: "PLAYER_NAME_FRAGMENT",
+          message: "Walker is part of a player NeonBinder already has.",
+          matches: [{ _id: "p-devin", name: "Devin Walker" }],
+        }),
+      );
+      renderPicker();
+      typeAndCreate("Walker");
+
+      expect(
+        await screen.findByRole("group", { name: /^Just Walker\? We've got Devin Walker\./ }),
+      ).toBeTruthy();
+      // The refusal is the panel, not an error line.
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("Escape in the panel shuts it and hands focus back to the search box", async () => {
+      currentFragmentCheck = WALKER;
+      renderPicker();
+      typeAndCreate("Walker");
+
+      const panel = screen.getByRole("group", { name: /^Just Walker\?/ });
+      fireEvent.keyDown(panel, { key: "Escape" });
+
+      expect(screen.queryByRole("group", { name: /^Just Walker\?/ })).toBeNull();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(document.activeElement).toBe(screen.getByLabelText("Search players"));
+    });
+
+    it("typing shuts the panel: it was about the old name", () => {
+      currentFragmentCheck = WALKER;
+      renderPicker();
+      typeAndCreate("Walker");
+
+      fireEvent.change(screen.getByLabelText("Search players"), {
+        target: { value: "Walke" },
+      });
+      fireEvent.change(screen.getByLabelText("Search players"), {
+        target: { value: "Walker" },
+      });
+      expect(screen.queryByRole("group", { name: /^Just Walker\?/ })).toBeNull();
+    });
+
+    it("a truncated read asks for the whole name, lists no choices, and keeps the one-name button", () => {
+      currentFragmentCheck = { isFragment: true, truncated: true, matches: [] };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      const panel = screen.getByRole("group", {
+        name: "Just Walker? That's part of a fuller name we've got. Type the whole name to find them, or add Walker as a one-name player.",
+      });
+      expect(panel).toBeTruthy();
+      expect(screen.queryByRole("list", { name: "Fuller names for Walker" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Add as a one-name player" })).toBeTruthy();
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+    });
+
+    it("tells two players with one name apart by birth year, beside each choice", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker", birthYear: 1975 },
+          { _id: "p-devin-2", name: "Devin Walker", birthYear: 1991 },
+          { _id: "p-larry", name: "Larry Walker", birthYear: 1966 },
+        ],
+      };
+      const { onChange } = renderPicker();
+      typeAndCreate("Walker");
+
+      const older = screen.getByRole("button", { name: "Add Devin Walker, b. 1975" });
+      expect(older.textContent).toContain("b. 1975");
+      expect(screen.getByRole("button", { name: "Add Devin Walker, b. 1991" })).toBeTruthy();
+      // A name that appears once keeps the bare contract label and no detail.
+      const larry = screen.getByRole("button", { name: "Add Larry Walker" });
+      expect(larry.textContent).toBe("Larry Walker");
+
+      fireEvent.click(screen.getByRole("button", { name: "Add Devin Walker, b. 1991" }));
+      expect(onChange).toHaveBeenCalledWith([pid("p-devin-2")]);
+    });
+
+    it("falls back to the choice's position when a repeated name has no birth year", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker" },
+          { _id: "p-devin-2", name: "Devin Walker" },
+        ],
+      };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, option 1 of 2" }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, option 2 of 2" }),
+      ).toBeTruthy();
+    });
+
+    it("an undated twin beside a dated one says it has no birth year", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker", birthYear: 1975 },
+          { _id: "p-devin-2", name: "Devin Walker" },
+        ],
+      };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      expect(screen.getByRole("button", { name: "Add Devin Walker, b. 1975" })).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, no birth year" }),
+      ).toBeTruthy();
+    });
   });
 });
