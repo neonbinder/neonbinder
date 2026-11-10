@@ -39,6 +39,7 @@ import {
   DRAIN_LEASE_MS,
   DRAIN_WATCH_TICK_MS,
   drainOwnerImpl,
+  MAX_PHOTO_UPLOADS_PER_VARIANT,
   MAX_PROGRESS_STEPS,
   ProgressLedger,
   readSheets,
@@ -204,6 +205,9 @@ class FakeBsc {
             availableQuantity: l.availableQuantity,
             price: l.price,
             ...(l.sellerSku !== undefined ? { sellerSku: l.sellerSku } : {}),
+            // BSC shows an uploaded key under its own path (the order fixture's shape).
+            ...(l.sellerImgFront !== undefined ? { sellerImgFront: bscImagePath(l.sellerImgFront) } : {}),
+            ...(l.sellerImgBack !== undefined ? { sellerImgBack: bscImagePath(l.sellerImgBack) } : {}),
           });
         }
       }
@@ -217,6 +221,10 @@ class FakeBsc {
 }
 
 const MODERN = ["near_mint", "excellent", "very_good", "poor"];
+
+/** A seller image as the sheet shows it once a PUT set it (a path already shown stays as it is). */
+const bscImagePath = (key: string) =>
+  key.startsWith("/") ? key : `/prod/card/undefined/product/undefined/${key.slice(key.lastIndexOf("/") + 1)}`;
 
 // ── Seeding ──────────────────────────────────────────────────────────────────
 
@@ -2828,5 +2836,271 @@ describe("NEO-475: the seller-id read stalls (BSC's profile call)", () => {
     expect(bsc.puts[0].sellerId).toBe("seller-from-profile");
     expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 2 } });
     expect(await outbox(s)).toHaveLength(0);
+  });
+});
+
+describe("NEO-481: a photo refresh reaches a BSC row that already shows a seller photo", () => {
+  /** Seller photo uploads (`.../attachment`): each answers a new object key; `failing` answers 500. */
+  function withAttachments(bsc: FakeBsc) {
+    const att = { uploads: 0, failing: 0 };
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/attachment")) {
+        if (att.failing > 0) {
+          att.failing -= 1;
+          return new Response("", { status: 500 });
+        }
+        att.uploads += 1;
+        return Response.json({ objectKey: `seller/photo-${att.uploads}.jpg` });
+      }
+      return bsc.fetch(url, init);
+    }) as typeof fetch);
+    return att;
+  }
+
+  /** Gives a copy a live photo on `side`, or moves its live photo there to a new token (an edit). */
+  async function shoot(s: S, copyId: Id<"collectionCopies">, side: "front" | "back", token: string) {
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(copyId, { hasPhotos: true });
+      const live = (await ctx.db.query("collectionCopyPhotos").collect()).find(
+        (p) => p.copyId === copyId && p.side === side && p.status === "live",
+      );
+      if (live) {
+        await ctx.db.patch(live._id, { token });
+        return;
+      }
+      await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: OWNER,
+        copyId,
+        side,
+        token,
+        contentType: "image/jpeg",
+        imageBytes: 1000,
+        thumbBytes: 100,
+        status: "live",
+        since: NOW,
+      });
+    });
+  }
+
+  /** What `enqueueListingCards({ refreshPhotos: true })` leaves: the row's seq bumped and the flag on. */
+  async function flag(s: S, cardId: Id<"cardChecklist">, variantId: Id<"selectorOptions">) {
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("listingOutbox")
+        .withIndex("by_owner_platform_card", (q) => q.eq("ownerId", OWNER).eq("platform", "bsc").eq("cardId", cardId))
+        .unique();
+      if (row) await ctx.db.patch(row._id, { seq: row.seq + 1, refreshPhotos: true });
+      else {
+        await ctx.db.insert("listingOutbox", {
+          ownerId: OWNER,
+          platform: "bsc",
+          cardId,
+          variantId,
+          seq: 1,
+          changedAt: NOW,
+          refreshPhotos: true,
+        });
+      }
+    });
+  }
+
+  let fetched: string[] = [];
+  const run = (s: S) =>
+    drainOwnerImpl(
+      stubCtx(s.t),
+      { ownerId: OWNER, platform: "bsc" },
+      {
+        fetchPhoto: async (key) => {
+          fetched.push(key);
+          return new ArrayBuffer(8);
+        },
+      },
+    );
+  beforeEach(() => {
+    fetched = [];
+  });
+
+  const sheetImages = (bsc: FakeBsc, ref = "bsc-1") => {
+    const row = bsc.rows.get(`${ref}|near_mint`);
+    return { front: row?.sellerImgFront, back: row?.sellerImgBack };
+  };
+
+  /** One Near Mint card listed with the copy's front and back already uploaded over BSC's stock images. */
+  async function listedWithSellerPhotos(s: S, sides: ReadonlyArray<"front" | "back"> = ["front", "back"]) {
+    const v = await seedVariant(s.t, { cards: [{ number: "1", ref: "bsc-1" }] });
+    const bsc = new FakeBsc([{ bscCardId: "bsc-1", cardNo: "1" }], MODERN);
+    const att = withAttachments(bsc);
+    const copyId = (await add(s, v.cardIds[0], { homeId: s.box, condition: "Near Mint", minPriceCents: 50 }))
+      .copyId as Id<"collectionCopies">;
+    for (const side of sides) await shoot(s, copyId, side, `tok-${side}-1`);
+    await listOnBsc(s);
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId }]);
+    await run(s);
+    expect(att.uploads).toBe(sides.length);
+    expect(await outbox(s)).toEqual([]);
+    bsc.puts = [];
+    fetched = [];
+    return { v, bsc, att, copyId, card: v.cardIds[0] };
+  }
+
+  test("a flagged card's new photos are uploaded over the seller photos, sent on its row, and the row clears", async () => {
+    const s = await setup();
+    const { v, bsc, att, copyId, card } = await listedWithSellerPhotos(s);
+    expect(sheetImages(bsc)).toEqual({
+      front: "/prod/card/undefined/product/undefined/photo-1.jpg",
+      back: "/prod/card/undefined/product/undefined/photo-2.jpg",
+    });
+    await shoot(s, copyId, "front", "tok-front-2");
+    await shoot(s, copyId, "back", "tok-back-2");
+    await flag(s, card, v.variantId);
+    const logs = vi.spyOn(console, "log");
+
+    await run(s);
+
+    expect(fetched.sort()).toEqual(["copy-photos/tok-back-2/image.jpg", "copy-photos/tok-front-2/image.jpg"]);
+    expect(att.uploads).toBe(4);
+    expect(bsc.puts).toHaveLength(1);
+    expect(bsc.puts[0].listings).toEqual([
+      expect.objectContaining({ condition: "near_mint", availableQuantity: 1, sellerImgFront: "seller/photo-3.jpg", sellerImgBack: "seller/photo-4.jpg" }),
+    ]);
+    expect(sheetImages(bsc)).toEqual({
+      front: "/prod/card/undefined/product/undefined/photo-3.jpg",
+      back: "/prod/card/undefined/product/undefined/photo-4.jpg",
+    });
+    expect(await outbox(s)).toEqual([]);
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { pushed: 1 } });
+    // R2's evidence line: both sides went over a seller photo, and the read-back shows them.
+    const confirm = logs.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes('"bsc_photo_confirm"'))
+      .map((line) => JSON.parse(line));
+    expect(confirm).toEqual([
+      { msg: "bsc_photo_confirm", platform: "bsc", operation: "photoConfirm", sent: 2, shown: 2, replaced: 2, replacedShown: 2 },
+    ]);
+    logs.mockRestore();
+  });
+
+  test("a queued card with no flag (a count or price change) leaves the seller photo alone, new photo or not", async () => {
+    const s = await setup();
+    const { v, bsc, att, copyId, card } = await listedWithSellerPhotos(s);
+    await shoot(s, copyId, "front", "tok-front-2");
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await run(s);
+
+    expect(att.uploads).toBe(2);
+    expect(fetched).toEqual([]);
+    expect(bsc.puts).toEqual([]);
+    expect(sheetImages(bsc).front).toBe("/prod/card/undefined/product/undefined/photo-1.jpg");
+    expect(await outbox(s)).toEqual([]);
+  });
+
+  test("an upload BSC fails keeps the flagged row queued, flag and seq as they were; the next run sends it", async () => {
+    const s = await setup();
+    const { v, bsc, att, copyId, card } = await listedWithSellerPhotos(s, ["front"]);
+    await shoot(s, copyId, "front", "tok-front-2");
+    await flag(s, card, v.variantId);
+    att.failing = 1;
+
+    await run(s);
+
+    expect(att.uploads).toBe(1);
+    expect(bsc.puts).toEqual([]);
+    // The first run cleared its row, so the flag's row starts again at seq 1.
+    expect(await outbox(s)).toEqual([expect.objectContaining({ cardId: card, seq: 1, refreshPhotos: true })]);
+    expect((await record(s, v.variantId))?.status).toBe("idle");
+
+    await run(s);
+
+    expect(att.uploads).toBe(2);
+    expect(bsc.puts[0].listings[0]).toMatchObject({ sellerImgFront: "seller/photo-2.jpg" });
+    expect(await outbox(s)).toEqual([]);
+  });
+
+  test("a photo NB cannot fetch keeps the flagged row queued too", async () => {
+    const s = await setup();
+    const { v, bsc, att, copyId, card } = await listedWithSellerPhotos(s, ["front"]);
+    await shoot(s, copyId, "front", "tok-front-2");
+    await flag(s, card, v.variantId);
+
+    await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, { fetchPhoto: async () => null });
+
+    expect(att.uploads).toBe(1);
+    expect(bsc.puts).toEqual([]);
+    expect(await outbox(s)).toEqual([expect.objectContaining({ cardId: card, refreshPhotos: true })]);
+  });
+
+  test("a change landing during the push bumps seq: the row stays, still flagged, for the next run", async () => {
+    const s = await setup();
+    const { v, bsc, copyId, card } = await listedWithSellerPhotos(s, ["front"]);
+    await shoot(s, copyId, "front", "tok-front-2");
+    await flag(s, card, v.variantId);
+    bsc.onPut = async () => {
+      await s.t.run(async (ctx) => {
+        const row = (await ctx.db.query("listingOutbox").collect())[0];
+        await ctx.db.patch(row._id, { seq: row.seq + 1 });
+      });
+    };
+
+    await run(s);
+
+    expect(bsc.puts).toHaveLength(1);
+    expect(await outbox(s)).toEqual([expect.objectContaining({ cardId: card, seq: 2, refreshPhotos: true })]);
+  });
+
+  test("a side the photo copy has no photo for is not pending: the other side goes and the row clears", async () => {
+    const s = await setup();
+    const { v, bsc, att, copyId, card } = await listedWithSellerPhotos(s, ["front"]);
+    await shoot(s, copyId, "front", "tok-front-2");
+    await flag(s, card, v.variantId);
+
+    await run(s);
+
+    expect(fetched).toEqual(["copy-photos/tok-front-2/image.jpg"]);
+    expect(att.uploads).toBe(2);
+    expect(bsc.puts[0].listings[0].sellerImgFront).toBe("seller/photo-2.jpg");
+    expect(bsc.puts[0].listings[0]).not.toHaveProperty("sellerImgBack");
+    expect(await outbox(s)).toEqual([]);
+  });
+
+  test("BSC shows the oldest copy with photos: a flag sends that copy's photo, whichever copy changed", async () => {
+    const s = await setup();
+    const { v, card, copyId } = await listedWithSellerPhotos(s, ["front"]);
+    const newer = (await add(s, card, { homeId: s.box, condition: "Near Mint", minPriceCents: 50, notes: "second" }))
+      .copyId as Id<"collectionCopies">;
+    expect(newer).not.toBe(copyId);
+    await shoot(s, newer, "front", "tok-newer");
+    await flag(s, card, v.variantId);
+
+    await run(s);
+
+    expect(fetched).toEqual(["copy-photos/tok-front-1/image.jpg"]);
+  });
+
+  test("past the per-variant upload cap, the flagged rows not reached stay queued and the rest clear", async () => {
+    const s = await setup();
+    const n = MAX_PHOTO_UPLOADS_PER_VARIANT / 2 + 1; // two sides each: one card over the cap
+    const v = await seedVariant(s.t, {
+      cards: Array.from({ length: n }, (_, i) => ({ number: String(i + 1), ref: `bsc-${i + 1}` })),
+    });
+    const bsc = new FakeBsc(
+      Array.from({ length: n }, (_, i) => ({ bscCardId: `bsc-${i + 1}`, cardNo: String(i + 1) })),
+      MODERN,
+    );
+    const att = withAttachments(bsc);
+    for (const [i, cardId] of v.cardIds.entries()) {
+      const copyId = (await add(s, cardId, { homeId: s.box, condition: "Near Mint", minPriceCents: 50 }))
+        .copyId as Id<"collectionCopies">;
+      await shoot(s, copyId, "front", `tok-f${i}`);
+      await shoot(s, copyId, "back", `tok-b${i}`);
+    }
+    await listOnBsc(s);
+    for (const cardId of v.cardIds) await flag(s, cardId, v.variantId);
+
+    await run(s);
+
+    expect(att.uploads).toBe(MAX_PHOTO_UPLOADS_PER_VARIANT);
+    const left = await outbox(s);
+    expect(left).toEqual([expect.objectContaining({ cardId: v.cardIds[n - 1], refreshPhotos: true })]);
   });
 });

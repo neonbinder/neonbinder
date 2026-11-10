@@ -452,6 +452,11 @@ export const retryPlaceholderImage = mutation({
       escalatedAt: undefined,
       settledAt: undefined,
       heavyStartedAt: undefined,
+      // NEO-481: the photo is read afresh, so a hand edit (and the box it
+      // started from) goes with the read it described. `edits` stays.
+      edit: undefined,
+      autoCrop: undefined,
+      pendingEdit: undefined,
     });
     await ctx.db.patch(job._id, {
       failedImages: Math.max(0, (job.failedImages ?? 0) - 1),

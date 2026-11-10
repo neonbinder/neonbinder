@@ -1857,3 +1857,94 @@ describe("NEO-370 — the listing gate on photo intake saves", () => {
     await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
   });
 });
+
+describe("NEO-481 — a box run tile's own price", () => {
+  const priceOf = async (w: Awaited<ReturnType<typeof world>>, runId: Id<"intakeRuns">, pairId: Id<"placeholderPairs">) =>
+    (await byPair(w, runId)).get(pairId)?.minPriceCents;
+  const copyOf = (w: Awaited<ReturnType<typeof world>>, cardId: Id<"cardChecklist">) =>
+    w.t.run(async (ctx) => (await ctx.db.query("collectionCopies").collect()).find((c) => c.cardId === cardId));
+
+  test("a typed price is kept on the tile; blank, or the prefill, goes back to the default", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    await w.t.run((ctx) => ctx.db.patch(runId, { defaults: { minPriceCents: 150 } }));
+    const pairId = w.pairIds[0];
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 400 });
+    expect(await priceOf(w, runId, pairId)).toBe(400);
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: null });
+    expect(await priceOf(w, runId, pairId)).toBeUndefined();
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 400 });
+    // Typing the run's Min price back in is the default again, not a frozen copy of it.
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 150 });
+    expect(await priceOf(w, runId, pairId)).toBeUndefined();
+  });
+
+  test("with no run price, the prefill is the common price, which is only ever read", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    await priceEveryVariant(w.t, ME.subject, 75);
+    const commons = () => w.t.run((ctx) => ctx.db.query("variantCommonPrices").collect());
+    const before = await commons();
+    const pairId = w.pairIds[0];
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 75 });
+    expect(await priceOf(w, runId, pairId)).toBeUndefined();
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 90 });
+    expect(await priceOf(w, runId, pairId)).toBe(90);
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
+    expect(await commons()).toEqual(before);
+  });
+
+  test("the save puts the tile's price on the copy; the details beat it, and it beats the run's", async () => {
+    const w = await world([
+      { number: "1", players: ["Doc Gooden"] },
+      { number: "2", players: ["Darryl Strawberry"] },
+    ]);
+    const runId = await startRun(w, w.fx.baseId);
+    await w.t.run((ctx) => ctx.db.patch(runId, { defaults: { minPriceCents: 150 } }));
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId: w.pairIds[0], priceCents: 400 });
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId: w.pairIds[1], priceCents: 500 });
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId: w.pairIds[0], quantity: 1 });
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, {
+      runId,
+      pairId: w.pairIds[1],
+      quantity: 1,
+      details: { minPriceCents: 650 },
+    });
+    expect((await copyOf(w, w.fx.gooden1))?.minPriceCents).toBe(400);
+    expect((await copyOf(w, w.fx.strawberry2))?.minPriceCents).toBe(650);
+  });
+
+  test("a different card clears the tile's price; the same card keeps it", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const pairId = w.pairIds[0];
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 400 });
+    const matched = (await byPair(w, runId)).get(pairId)?.card?._id;
+    await w.me.mutation(api.intakeRuns.pickIntakeCard, { runId, pairId, cardId: matched! });
+    expect(await priceOf(w, runId, pairId)).toBe(400);
+    await w.me.mutation(api.intakeRuns.pickIntakeCard, { runId, pairId, cardId: w.fx.strawberry2 });
+    expect(await priceOf(w, runId, pairId)).toBeUndefined();
+    await w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 400 });
+    await w.me.mutation(api.intakeRuns.pickIntakeCard, { runId, pairId, cardId: null });
+    await drainScheduled(w.t);
+    expect(await priceOf(w, runId, pairId)).toBeUndefined();
+  });
+
+  test("a saved tile, a bad price, and another collector's run are refused", async () => {
+    const w = await world([{ number: "1", players: ["Doc Gooden"] }]);
+    const runId = await startRun(w, w.fx.baseId);
+    const pairId = w.pairIds[0];
+    for (const priceCents of [-1, 1.5, Number.NaN]) {
+      await expect(w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents })).rejects.toThrow(
+        /dollar amount/,
+      );
+    }
+    await expect(w.them.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 400 })).rejects.toThrow(
+      /not found/,
+    );
+    await w.me.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 });
+    await expect(w.me.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 400 })).rejects.toThrow(
+      /already saved/,
+    );
+  });
+});

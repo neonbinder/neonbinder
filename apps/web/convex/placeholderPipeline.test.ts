@@ -1126,6 +1126,42 @@ describe("recordImageOutcomeImpl", () => {
     expect(image?.status).toBe("done");
   });
 
+  test.each([
+    ["camelCase, as the service sends it", { cx: 50, cy: 70, w: 80, h: 120, angle: 1.5, srcW: 100, srcH: 140 }, true],
+    ["snake_case", { cx: 50, cy: 70, w: 80, h: 120, angle: 1.5, src_w: 100, src_h: 140 }, true],
+    ["the whole frame, exactly on its edges", { cx: 50, cy: 70, w: 100, h: 140, angle: 0, srcW: 100, srcH: 140 }, true],
+    ["null (a FAST decline or a client crop)", null, false],
+    ["past the frame", { cx: 90, cy: 70, w: 80, h: 120, angle: 0, srcW: 100, srcH: 140 }, false],
+    ["missing a field", { cx: 50, cy: 70, w: 80, h: 120, srcW: 100, srcH: 140 }, false],
+  ])("NEO-481: crop_box %s is stored as autoCrop only when whole and in frame", async (_label, cropBox, kept) => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(
+        ctx,
+        { jobId: JOB_A, imageId },
+        { kind: "success", returnValue: { ...SUCCESS_BODY, crop_box: cropBox } },
+      ),
+    );
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("done");
+    if (kept) {
+      const box = cropBox as Record<string, number>;
+      expect(image?.autoCrop).toEqual({
+        cx: box.cx,
+        cy: box.cy,
+        w: box.w,
+        h: box.h,
+        angle: box.angle,
+        srcW: box.srcW ?? box.src_w,
+        srcH: box.srcH ?? box.src_h,
+      });
+    } else {
+      expect(image?.autoCrop).toBeUndefined();
+    }
+  });
+
   test("oversized classifier strings are capped instead of stored whole", async () => {
     // These values are a model's reading of a user-supplied image, so their
     // length is attacker-influenced. Uncapped, one of them pushes the row past

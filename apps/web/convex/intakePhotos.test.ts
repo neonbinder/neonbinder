@@ -1365,3 +1365,65 @@ describe("reattachIntakeRunPhotos on rows with hand photos, and its continuation
     expect((await w.t.run((ctx) => ctx.db.get(late.matchId)))?.photos).toBe("attached");
   });
 });
+
+describe("NEO-481 — attaching a hand-edited scan", () => {
+  const editSizeKey = (entryIndex: number, version: number, size: "image" | "thumb") =>
+    `${OUTPUT_DIR}/edits/${padded(entryIndex)}/${version}/${size}.jpg`;
+  const EDIT = { turns: 1 as const, crop: null, version: 2, editedAt: 1 };
+
+  async function editedFront(w: Awaited<ReturnType<typeof world>>) {
+    await w.t.run(async (ctx) => {
+      for (const [entryIndex, side] of [
+        [FRONT, "front"],
+        [BACK, "back"],
+      ] as const) {
+        await ctx.db.insert("placeholderImages", {
+          jobId: JOB,
+          userId: OWNER,
+          entryIndex,
+          originalName: `${side}.jpg`,
+          status: "done",
+          side,
+          ...(entryIndex === FRONT ? { edit: EDIT, edits: 2 } : {}),
+        });
+      }
+    });
+  }
+
+  test("an edited side attaches the edit's own sizes and remembers its scan; the other side is unchanged", async () => {
+    const w = await world({ photos: "pending" });
+    await editedFront(w);
+    storeSizes(FRONT);
+    storeSizes(BACK);
+    scans.set(editSizeKey(FRONT, 2, "image"), storedBytes("edit-image"));
+    scans.set(editSizeKey(FRONT, 2, "thumb"), storedBytes("edit-thumb"));
+    await w.attach();
+
+    expect(derives).toEqual([]);
+    const [back, front] = await w.photos();
+    expect(front).toMatchObject({ status: "live", source: "intake", scan: { jobId: JOB, entryIndex: FRONT } });
+    expect(back).toMatchObject({ status: "live", scan: { jobId: JOB, entryIndex: BACK } });
+    expect(puts).toContainEqual({
+      key: `copy-photos/${front.token}/image.jpg`,
+      body: putBody("edit-image"),
+      contentType: "image/jpeg",
+    });
+    expect(puts).toContainEqual({
+      key: `copy-photos/${back.token}/image.jpg`,
+      body: putBody(`stored-image-${BACK}`),
+      contentType: "image/jpeg",
+    });
+    expect(puts.some((p) => p.body === putBody(`stored-image-${FRONT}`))).toBe(false);
+    expect(await w.row()).toMatchObject({ photos: "attached" });
+  });
+
+  test("an edit's sizes gone: never the unedited derive, the side is a gone scan", async () => {
+    const w = await world({ photos: "pending" });
+    await editedFront(w);
+    storeSizes(BACK);
+    await w.attach();
+    expect(derives).toEqual([]);
+    expect(puts.some((p) => p.key.includes("image.jpg") && p.body === putBody(`image-${FRONT}`))).toBe(false);
+    expect((await w.photos()).map((p) => p.side)).toEqual(["back"]);
+  });
+});

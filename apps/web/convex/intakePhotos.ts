@@ -59,6 +59,7 @@ import {
   PLACEHOLDER_MAX_ENTRY_INDEX,
   PLACEHOLDER_OUTPUT_EXTENSIONS,
   placeholderCopyPhotoObject,
+  placeholderEditCopyPhotoObject,
   placeholderOutputImageObject,
 } from "./lib/placeholderObjects";
 import { putObject, r2Config, type R2Config } from "./lib/r2";
@@ -103,6 +104,9 @@ type Work = {
   frontIndex: number;
   backIndex: number;
   photoSidesAttached?: Side[];
+  /** NEO-481: each side's hand edit version when the attach started, if any. */
+  frontEditVersion?: number;
+  backEditVersion?: number;
 };
 type PhotoFailure = "scanGone" | "unusable" | "error";
 type AttachOutcome = { photos: "attached" } | { photos: "failed"; photoFailure: PhotoFailure };
@@ -174,7 +178,7 @@ function startsLikeJpeg(bytes: Uint8Array): boolean {
  * each part is checked before it becomes a path segment. A value that fails throws,
  * so the service answers for it (`INVALID_IDENTIFIER`).
  */
-async function lookInBucket(work: Work, entryIndex: number): Promise<StoredEntry> {
+async function lookInBucket(work: Work, entryIndex: number, editVersion?: number): Promise<StoredEntry> {
   if (
     !CLERK_USER_ID_RE.test(work.ownerId) ||
     !PLACEHOLDER_JOB_ID_RE.test(work.jobId) ||
@@ -186,6 +190,28 @@ async function lookInBucket(work: Work, entryIndex: number): Promise<StoredEntry
   }
   const bucket = process.env.GCS_PLACEHOLDER_BUCKET;
   if (!bucket) throw new Error("GCS_PLACEHOLDER_BUCKET not set");
+  if (editVersion !== undefined) {
+    // NEO-481: a hand edit's sizes are the photo now. There is no fallback:
+    // `/derive-copy-photos` reads the pipeline's output, which the edit
+    // replaced (and a rescued failed photo never had), so missing sizes mean
+    // the scan has aged out.
+    const [image, thumb] = await Promise.all([
+      readObjectWithin(
+        bucket,
+        placeholderEditCopyPhotoObject(work.ownerId, work.jobId, entryIndex, editVersion, "image"),
+        MAX_COPY_PHOTO_BYTES,
+      ),
+      readObjectWithin(
+        bucket,
+        placeholderEditCopyPhotoObject(work.ownerId, work.jobId, entryIndex, editVersion, "thumb"),
+        MAX_COPY_THUMB_BYTES,
+      ),
+    ]);
+    if (image && thumb && startsLikeJpeg(image) && startsLikeJpeg(thumb)) {
+      return { sizes: { image, thumb, contentType: "image/jpeg" } };
+    }
+    return "nothing";
+  }
   const [image, thumb] = await Promise.all([
     readObjectWithin(
       bucket,
@@ -235,11 +261,15 @@ async function copyPhotosOf(
   work: Work,
   entryIndex: number,
   serviceLane: Lane,
+  editVersion?: number,
 ): Promise<DerivedCopyPhotos> {
   let stored: StoredEntry = "outputOnly";
   try {
-    stored = await within(lookInBucket(work, entryIndex), STORAGE_LOOK_TIMEOUT_MS);
+    stored = await within(lookInBucket(work, entryIndex, editVersion), STORAGE_LOOK_TIMEOUT_MS);
   } catch (err) {
+    // NEO-481: an edited side has no service fallback (it would derive from the
+    // pre-edit output), so a failed look is an error Try again can retry.
+    if (editVersion !== undefined) throw err;
     console.warn(`[attachIntakePhotos] could not read stored sizes, asking the service (code ${codeOf(err)})`);
   }
   if (stored === "nothing") throw new ScanGoneError();
@@ -256,7 +286,8 @@ async function attachSide(
   entryIndex: number,
   serviceLane: Lane,
 ): Promise<void> {
-  const sizes = await copyPhotosOf(ctx, work, entryIndex, serviceLane);
+  const editVersion = side === "front" ? work.frontEditVersion : work.backEditVersion;
+  const sizes = await copyPhotosOf(ctx, work, entryIndex, serviceLane, editVersion);
   const { photoId, token }: { photoId: Id<"collectionCopyPhotos">; token: string } = await ctx.runMutation(
     internal.copyPhotos.reserveUpload,
     {
@@ -267,6 +298,8 @@ async function attachSide(
       imageBytes: sizes.image.byteLength,
       thumbBytes: sizes.thumb.byteLength,
       source: "intake",
+      // NEO-481: the link an edit of the saved photo follows back to this scan.
+      scan: { jobId: work.jobId, entryIndex },
     },
   );
   // Settled rather than `Promise.all`, so a failed PUT doesn't leave the other one

@@ -738,6 +738,8 @@ describe("NEO-432: a photo change queues the card only when the copy's home list
     const rows = await outboxRows(s);
     expect(rows.map((r) => r.platform).sort()).toEqual(["bsc", "ebay"]);
     expect(rows.every((r) => r.cardId === s.fx.gooden1 && r.ownerId === ME.subject)).toBe(true);
+    // NEO-481: a photo change asks the drains to send the photo again, over a seller photo too.
+    expect(rows.every((r) => r.refreshPhotos === true)).toBe(true);
   });
 
   test("a copy pointing at another collector's listed box queues nothing", async () => {
