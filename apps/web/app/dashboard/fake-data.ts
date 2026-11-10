@@ -23,11 +23,11 @@
  *   `statusText` is the marketplace's own word, shown as it is.
  * - Sets on the board rank by FEWEST cards needed (base checklist).
  * - A smart binder carries a percent only when its rule names a checklist.
- * - Persona "collector" has no sales and no boxes: `sales` is null and
- *   `unlistedBoxes` is empty. Draw nothing for them, not an empty box.
+ * - One fake collector who has a bit of everything (sales, boxes, binders,
+ *   boards, scans), so the one dashboard screen draws every section. The
+ *   screen shows a section only when the data has something for it.
  *
- * Entry point: `getDashboard(persona)` (or `useDashboard()` from
- * `./persona`, which reads the persona from the URL).
+ * Entry point: `getDashboard()`.
  */
 
 import { demoCard } from "@/app/collection/final/data/demoStore";
@@ -52,30 +52,6 @@ import {
 } from "@/app/collection/prototypes/_shared/data";
 
 export type { DashCard } from "./dash-card";
-
-// ---------------------------------------------------------------------------
-// Persona
-// ---------------------------------------------------------------------------
-
-/**
- * Who is looking. "collector" never connected a marketplace: no sales, no
- * boxes. "dealer" sells on BuySportsCards, SportLots and eBay. The default is
- * "dealer" (the fuller page).
- */
-export type Persona = "collector" | "dealer";
-
-export const DEFAULT_PERSONA: Persona = "dealer";
-
-/** The persona toggle's choices, in the order the toggle shows them. */
-export const PERSONAS: ReadonlyArray<{ value: Persona; label: string }> = [
-  { value: "collector", label: "Collector (no sales)" },
-  { value: "dealer", label: "Dealer (sales)" },
-];
-
-/** The URL's `?as=` value as a persona; anything else is the default. */
-export function parsePersona(value: string | null | undefined): Persona {
-  return value === "collector" || value === "dealer" ? value : DEFAULT_PERSONA;
-}
 
 // ---------------------------------------------------------------------------
 // Cards
@@ -227,7 +203,7 @@ const UNSHIPPED_AS_BUILT: UnshippedSale[] = [
 
 /** Oldest first: the order every sales list shows. */
 const UNSHIPPED = [...UNSHIPPED_AS_BUILT].sort((a, b) => b.daysSinceSold - a.daysSinceSold);
-const DEALER_SALES: SalesData = { unshipped: UNSHIPPED };
+const SALES: SalesData = { unshipped: UNSHIPPED };
 
 // ---------------------------------------------------------------------------
 // Newest additions
@@ -526,6 +502,19 @@ export interface IntakeScan {
   guess: DashCard | null;
 }
 
+/** One upload still in intake, and where to finish it. */
+export interface IntakeUpload {
+  id: string;
+  /** "Garage shoebox"; signed in, the name of the binder or box it is going to. */
+  name: string;
+  scans: number;
+  done: number;
+  /** Where the run is finished: Collection for a binder's, Inventory for a box's. */
+  side: "collection" | "inventory";
+  /** The Add cards tab on that screen, opened on this run. */
+  href: string;
+}
+
 /** Scans uploaded and not yet in a binder. */
 export interface IntakeInProgress {
   /** Every scan still in intake (waiting + needsYou). */
@@ -535,7 +524,7 @@ export interface IntakeInProgress {
   /** Matched, waiting on the collector to say yes. */
   needsYou: number;
   /** The uploads they came from: "Garage shoebox, 24 scans, 6 done". */
-  uploads: { id: string; name: string; scans: number; done: number }[];
+  uploads: IntakeUpload[];
   /** A few scans for thumbnails: the needs-you ones first, then the waiting. */
   preview: IntakeScan[];
 }
@@ -545,9 +534,10 @@ const INTAKE: IntakeInProgress = {
   total: 20,
   waiting: 18,
   needsYou: 2,
+  // The demo's runs are pretend, so each opens the demo's Add cards tab on its side.
   uploads: [
-    { id: "upload-shoebox", name: "Garage shoebox", scans: 24, done: 6 },
-    { id: "upload-show", name: "Show pickups", scans: 2, done: 0 },
+    { id: "upload-shoebox", name: "Garage shoebox", scans: 24, done: 6, side: "collection", href: "/demo/collection?tab=add" },
+    { id: "upload-show", name: "Show pickups", scans: 2, done: 0, side: "inventory", href: "/demo/inventory?side=inventory&tab=add" },
   ],
   preview: [
     { id: "scan-1", guess: pick(SET.udHockey, "Legends", 4) },
@@ -557,7 +547,7 @@ const INTAKE: IntakeInProgress = {
   ],
 };
 
-/** A box (inventory for sale) holding cards not listed anywhere yet. Dealer only. */
+/** A box (inventory for sale) holding cards not listed anywhere yet. */
 export interface UnlistedBox {
   id: string;
   name: string;
@@ -593,8 +583,7 @@ const TRADE_PILE: TradePile = (() => {
 // ---------------------------------------------------------------------------
 
 export interface DashboardData {
-  persona: Persona;
-  /** null for "collector" (no marketplace connected): show no sales panel at all. */
+  /** null when the account does not sell (no listing platform, no order): no sales section at all. */
   sales: SalesData | null;
   /** Newest batch first. */
   additions: AdditionBatch[];
@@ -609,7 +598,7 @@ export interface DashboardData {
    */
   wantList: WantCard[];
   intake: IntakeInProgress;
-  /** Empty for "collector". */
+  /** Boxes with cards held off the marketplaces; empty draws nothing. */
   unlistedBoxes: UnlistedBox[];
   tradePile: TradePile;
   /**
@@ -631,22 +620,22 @@ const CARD_COUNT = myCopies.reduce((n, c) => n + c.quantity, 0);
 
 const SMART = smartBinders();
 
-/** The dashboard as `persona` sees it. Pure and cheap: built once at load, the same objects every call. */
-export function getDashboard(persona: Persona): DashboardData {
-  const dealer = persona === "dealer";
-  return {
-    persona,
-    sales: dealer ? DEALER_SALES : null,
-    additions: ADDITIONS,
-    building: BUILDING,
-    justCompleted: JUST_COMPLETED,
-    smartBinders: SMART,
-    wantList: WANTS,
-    intake: INTAKE,
-    unlistedBoxes: dealer ? UNLISTED_BOXES : [],
-    tradePile: TRADE_PILE,
-    totals: { cards: CARD_COUNT, binders: BINDER_COUNT },
-  };
+const DASHBOARD: DashboardData = {
+  sales: SALES,
+  additions: ADDITIONS,
+  building: BUILDING,
+  justCompleted: JUST_COMPLETED,
+  smartBinders: SMART,
+  wantList: WANTS,
+  intake: INTAKE,
+  unlistedBoxes: UNLISTED_BOXES,
+  tradePile: TRADE_PILE,
+  totals: { cards: CARD_COUNT, binders: BINDER_COUNT },
+};
+
+/** The fake collector's dashboard, every section filled. Built once at load: the same object every call. */
+export function getDashboard(): DashboardData {
+  return DASHBOARD;
 }
 
 // ---------------------------------------------------------------------------

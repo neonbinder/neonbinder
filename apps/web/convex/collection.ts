@@ -1638,6 +1638,9 @@ export async function moveCopyCore(
     : await foldTargetOf(ctx, lines, (other) => other._id !== row._id && foldsInto(foldShape(other), { ...moving, ...next }));
   await assertPocketFree(ctx, ownerId, home, slot, [row._id, ...(into ? [into._id] : [])]);
   const now = Date.now();
+  // NEO-464: cards arriving in another home were filed or moved (the
+  // dashboard's "since your last visit"); a pocket shuffle in the same home was not.
+  const filed = home._id !== row.homeId ? { filedAt: now } : {};
   const changes: CountChange[] = [];
   let copyId: Id<"collectionCopies">;
   if (into) {
@@ -1645,7 +1648,7 @@ export async function moveCopyCore(
     if (total > MAX_COPY_QUANTITY) {
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Move fewer, or start a new line.`);
     }
-    await ctx.db.patch(into._id, { quantity: total, lastUpdated: now });
+    await ctx.db.patch(into._id, { quantity: total, lastUpdated: now, ...filed });
     changes.push(changeOf(into, counted(into), counted({ ...into, quantity: total })));
     if (whole) {
       await ctx.db.delete(row._id);
@@ -1656,7 +1659,7 @@ export async function moveCopyCore(
     }
     copyId = into._id;
   } else if (whole) {
-    await ctx.db.patch(row._id, { homeId: home._id, slot, lastUpdated: now });
+    await ctx.db.patch(row._id, { homeId: home._id, slot, lastUpdated: now, ...filed });
     changes.push(changeOf(row, counted(row), counted({ ...row, homeId: home._id })));
     copyId = row._id;
   } else {
@@ -1671,6 +1674,7 @@ export async function moveCopyCore(
       ...placeFields(row),
       ...next,
       lastUpdated: now,
+      ...filed,
     });
     changes.push(changeOf(row, null, counted(next)));
   }
@@ -2480,6 +2484,8 @@ export const updateCopy = mutation({
       homeId: row.homeId,
       // NEO-377 — an edit never touches the line's photos.
       ...(row.hasPhotos ? { hasPhotos: true as const } : {}),
+      // NEO-464 — nor when it was last filed: an edit is not a move.
+      ...(row.filedAt !== undefined ? { filedAt: row.filedAt } : {}),
       lastUpdated: Date.now(),
     });
     await applyCopyChanges(ctx, ownerId, [

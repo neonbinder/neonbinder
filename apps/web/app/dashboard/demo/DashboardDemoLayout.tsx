@@ -1,10 +1,9 @@
 import { useMemo } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link } from "react-router";
 import { ArrowUturnLeftIcon, UserPlusIcon } from "@heroicons/react/24/outline";
 import BinderLayout from "@/src/layouts/binder-layout";
 import NeonButton from "@/components/modules/NeonButton";
 import { NAV_ITEMS, type NavItem } from "@/components/modules/binder-tabs";
-import { PERSONA_PARAM } from "./persona";
 
 /**
  * NEO-464 — the dashboard demo is one app, the signed-in shell (header,
@@ -25,20 +24,17 @@ function shellTab(label: string, path: string, end?: boolean): NavItem {
   return { label, path, icon: item.icon, hueClass: item.hueClass, end };
 }
 
-/** The demo's tabs. `?as=` (the persona) rides on the Dashboard tab so switching persona and back keeps it. */
+/** The demo's tabs. */
 export function useDemoNavItems(): NavItem[] {
-  const [params] = useSearchParams();
-  const as = params.get(PERSONA_PARAM);
   return useMemo<NavItem[]>(() => {
-    const dashboard = as ? `${BASE}?${new URLSearchParams({ [PERSONA_PARAM]: as })}` : BASE;
     return [
-      shellTab("Dashboard", dashboard, true),
+      shellTab("Dashboard", BASE, true),
       shellTab("Collection", `${BASE}/collection`),
       shellTab("Inventory", `${BASE}/inventory?side=inventory`),
       { label: "Sign up free", path: "/sign-up", icon: UserPlusIcon, hueClass: "tab-hue-green" },
       { label: "Back to the tour", path: "/", icon: ArrowUturnLeftIcon, hueClass: "tab-hue-purple" },
     ];
-  }, [as]);
+  }, []);
 }
 
 export default function DashboardDemoLayout() {

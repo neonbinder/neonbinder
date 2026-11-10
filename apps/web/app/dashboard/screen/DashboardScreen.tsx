@@ -9,26 +9,31 @@ import PocketPage, { PocketTitle, WaitingPage, WaitingTitle } from "./PocketPage
 import { Chase, FreshPulls } from "./Pulls";
 import { FillingUp, OddsAndEnds } from "./Rail";
 import Shelf from "./Shelf";
-import { pageCount, shelfOrder } from "./shelf-model";
-import ToDo from "./ToDo";
+import { pageCount, shelfOrder, type ShelfBinder } from "./shelf-model";
+import { NeedsALook, needsALook, OutTheDoor } from "./ToDo";
 import "./combined.css";
 
 /**
- * The dashboard, one screen, in the order Jason set (2026-11-08) (NEO-464).
+ * The dashboard: ONE screen for everyone (Jason, 2026-11-10: "We should not
+ * build two different dashboards. We should just build one that shows every
+ * piece that is relevant to that user's data."). Every section draws only
+ * when the account's data has something for it; nothing at all draws nothing.
  *
  *   1. Greeting and one summary line (the page's one <h1>).
- *   2. Dealer: to-do first (Out the Door, Needs a Look, In the Hopper beside
- *      them), then On the Bubble. Collector: On the Bubble first, In the
- *      Hopper beside it, then anything left to do.
- *      On the Bubble is the top 5 by fewest cards needed, sets and checklist
- *      smart binders together, compact; only when there is one. The hopper
- *      shows for anyone with scans.
+ *   2. The top band: a lead section with a side column beside it.
+ *      - Side: In the Hopper (any scans in intake), then Needs a Look (a
+ *        problem order, or a box with cards not listed).
+ *      - Lead, by one rule: an order waiting to ship puts Out the Door first
+ *        (the boards follow the band); otherwise On the Bubble, the set
+ *        boards, leads (Out the Door's "all shipped" line follows it).
+ *        Out the Door shows only for an account that sells; the boards only
+ *        when a set is being built.
  *   3. Your binders: three shelves of eight (24, "Show all N binders" past
  *      that) on the left, the open pocket page on the right, one height.
- *   4. Could fit your smart binders (placeholder heading).
+ *   4. Could fit your smart binders.
  *   5. The Chase and Fresh Pulls; a rail of Binders Filling Up and Odds and Ends.
  *
- * View state lives in the URL, set functionally so `?as=` survives:
+ * View state lives in the URL, set functionally so other params survive:
  * - `binder=<id>`: the open binder. Opening and closing one is going
  *   somewhere, so it PUSHES: Back closes it again.
  * - `pg=<n>`: its page (1-based). A page turn REPLACES.
@@ -46,16 +51,23 @@ function focusPocket(heading: HTMLHeadingElement | null): void {
   document.getElementById(POCKET_ID)?.scrollIntoView({ block: "nearest", behavior: still ? "auto" : "smooth" });
 }
 
-/** One line under the greeting: what is waiting, then the closest finish. */
-function summary(data: DashboardData, closest: { label: string; need: number } | null): string {
+/**
+ * One line under the greeting: orders to ship (only for an account that
+ * sells), the cards filed or moved since the last visit (only filing and
+ * moving count: never an add, a sale or an edit), then the closest finish.
+ */
+export function summary(
+  data: Pick<DashboardData, "sales">,
+  binders: readonly Pick<ShelfBinder, "newCards">[],
+  closest: { label: string; need: number } | null,
+): string {
   const parts: string[] = [];
   if (data.sales) {
     const n = data.sales.unshipped.length;
     parts.push(n === 0 ? "Nothing to ship." : `${count(n, "order")} to ship.`);
-  } else {
-    const fresh = data.additions.filter((b) => b.sinceLastVisit).reduce((n, b) => n + b.cards.length, 0);
-    if (fresh > 0) parts.push(`${count(fresh, "new card")} since your last visit.`);
   }
+  const filed = binders.reduce((n, b) => n + b.newCards.length, 0);
+  if (filed > 0) parts.push(`${count(filed, "card")} filed since your last visit.`);
   if (closest) parts.push(`${closest.label} is ${count(closest.need, "card")} from done.`);
   return parts.length > 0 ? parts.join(" ") : "Your binders are right where you left them.";
 }
@@ -68,9 +80,8 @@ function wantIds(data: DashboardData): Set<string> {
 /**
  * The dashboard screen. Pure of its source: the caller passes the data (fake,
  * from `demo/`; or the signed-in account's, from `real/`), and the screen
- * takes the dealer or collector layout from `data.sales`. The shelf is
- * `data.binders` when the caller lays it out; the demo leaves it to
- * `bindersOf`.
+ * draws the sections that data fills. The shelf is `data.binders` when the
+ * caller lays it out; the demo leaves it to `bindersOf`.
  */
 export default function DashboardScreen({ data }: { data: DashboardData }) {
   const [params, setParams] = useSearchParams();
@@ -157,43 +168,43 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
     }
   }, [openId, page]);
 
-  // Block 2's gate: sales, or any inventory saved. The hopper has its own (any scans).
-  const dealer = data.sales !== null;
-  const todo = dealer || data.totals.cards > 0;
+  // Each section only when the data fills it.
   const scoreboard =
     boards.length > 0 ? (
       <Boards items={boards} wanted={wanted} justCompleted={data.justCompleted} onOpenBinder={openBinder} />
     ) : null;
+  const ship = data.sales ? <OutTheDoor sales={data.sales} /> : null;
   const hopper = data.intake.total > 0 ? <Hopper intake={data.intake} wanted={wanted} /> : null;
+  const look = needsALook(data) ? <NeedsALook data={data} /> : null;
   const closest = boards[0] ? { label: boards[0].label, need: boards[0].need } : null;
+
+  // The one ordering rule: an order waiting to ship leads; else the boards do.
+  const shipLeads = (data.sales?.unshipped.length ?? 0) > 0 || !scoreboard;
+  const lead = shipLeads ? ship : scoreboard;
+  const after = shipLeads ? scoreboard : ship;
+  const side =
+    hopper || look ? (
+      <div className="flex min-w-0 flex-col gap-8">
+        {hopper}
+        {look}
+      </div>
+    ) : null;
+  const band = lead && side ? (shipLeads ? "lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]" : "lg:grid-cols-[minmax(0,1fr)_22rem]") : "";
 
   return (
     <div ref={rootRef} className="space-y-12">
       <header>
         <h1 className="text-3xl font-extrabold tracking-tight text-ink sm:text-4xl">Welcome back, slugger.</h1>
-        <p className="mt-2 max-w-prose text-base text-ink-2">{summary(data, closest)}</p>
+        <p className="mt-2 max-w-prose text-base text-ink-2">{summary(data, binders, closest)}</p>
       </header>
 
-      {dealer ? (
-        <>
-          <ToDo data={data} todo={todo} withHopper wanted={wanted} />
-          {scoreboard}
-        </>
-      ) : (
-        <>
-          {(scoreboard || hopper) && (
-            <div
-              className={
-                scoreboard && hopper ? "grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start" : hopper ? "max-w-2xl" : ""
-              }
-            >
-              {scoreboard}
-              {hopper}
-            </div>
-          )}
-          <ToDo data={data} todo={todo} withHopper={false} wanted={wanted} />
-        </>
+      {(lead || side) && (
+        <div className={lead ? `grid gap-8 lg:items-start ${band}` : "max-w-2xl"}>
+          {lead}
+          {side}
+        </div>
       )}
+      {after}
 
       {binders.length > 0 && (
         <section aria-labelledby="cb-binders-heading">

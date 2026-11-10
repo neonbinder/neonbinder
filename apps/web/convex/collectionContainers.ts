@@ -528,14 +528,15 @@ export const empty = mutation({
       const before = counted(line);
       if (into) {
         const quantity = into.quantity + line.quantity;
-        await ctx.db.patch(into._id, { quantity, lastUpdated: now });
+        await ctx.db.patch(into._id, { quantity, lastUpdated: now, filedAt: now });
         await ctx.db.delete(line._id);
         changes.push(
           changeOf(into, counted(into), counted({ ...into, quantity })),
           changeOf(line, before, null),
         );
       } else {
-        await ctx.db.patch(line._id, { homeId: targetId, slot: next.slot, lastUpdated: now });
+        // NEO-464: a move, so it counts as filed (the dashboard's "since your last visit").
+        await ctx.db.patch(line._id, { homeId: targetId, slot: next.slot, lastUpdated: now, filedAt: now });
         changes.push(changeOf(line, before, { ...before, homeId: targetId }));
       }
       moved += line.quantity;

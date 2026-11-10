@@ -1,9 +1,8 @@
 import { useMemo } from "react";
-import { dashCard, type AddedCard, type DashboardData, type DashCard } from "../fake-data";
-import { useDashboard } from "./persona";
+import { dashCard, getDashboard, type AddedCard, type DashboardData, type DashCard } from "../fake-data";
 
 /**
- * The demo's fake dashboard: the persona's fake data (`../fake-data`) plus
+ * The demo's fake dashboard: the fake collector's data (`../fake-data`) plus
  * two demo-only extras, so the Want List highlight has something to show.
  * The shared fake data has no pull and no scan that is on the Want List:
  *
@@ -54,8 +53,7 @@ function withWantMatches(data: DashboardData): DashboardData {
   return { ...data, intake, additions };
 }
 
-/** The demo dashboard for the persona in the URL. */
+/** The demo dashboard: every section filled. */
 export function useDemoDashboard(): DashboardData {
-  const base = useDashboard();
-  return useMemo(() => withWantMatches(base), [base]);
+  return useMemo(() => withWantMatches(getDashboard()), []);
 }

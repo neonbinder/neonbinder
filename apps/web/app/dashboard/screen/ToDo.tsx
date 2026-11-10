@@ -11,51 +11,19 @@ import {
   type UnshippedSale,
 } from "../fake-data";
 import { CardTitle, count, MarketBadge, orderAnchor, Thumb } from "./bits";
-import Hopper from "./Hopper";
 
 /**
- * NEO-464 combined dashboard, block 2 — the to-do, first after the greeting
- * (from prototype 1). Out the Door (dealer only: every unshipped order,
- * oldest first) beside a column of In the Hopper (scans waiting on a yes and
- * scans still being identified) and Needs a Look (problem lines, boxed cards
- * not listed).
- *
- * Two gates. Out the Door and Needs a Look show only for a collector with
- * sales or saved inventory (`todo`). In the Hopper shows for anyone with
- * scans, gate or no gate (Jason, review item 1); the page puts it here for a
- * dealer and beside the scoreboard for a collector (`withHopper`). Each part
- * draws only when it has something in it; nothing at all draws nothing.
+ * NEO-464 combined dashboard — the to-do: Out the Door (every order still to
+ * ship, oldest first) and Needs a Look (problem lines, boxed cards not
+ * listed). The screen places them (`DashboardScreen`); each shows only when
+ * the account's data has something for it: Out the Door when the account
+ * sells (`data.sales`), Needs a Look when there is a problem order or a box
+ * with cards not listed (`needsALook`). No persona, no layout of its own.
  */
-export default function ToDo({
-  data,
-  todo,
-  withHopper,
-  wanted,
-}: {
-  data: DashboardData;
-  todo: boolean;
-  withHopper: boolean;
-  wanted: Set<string>;
-}) {
-  const ship = todo && data.sales !== null;
-  const look = todo && lookItems(data) > 0;
-  const hopper = withHopper && data.intake.total > 0;
-  if (!ship && !look && !hopper) return null;
 
-  const side = (hopper || look) && (
-    <div className="flex min-w-0 flex-col gap-8">
-      {hopper && <Hopper intake={data.intake} wanted={wanted} />}
-      {look && <NeedsALook data={data} />}
-    </div>
-  );
-
-  if (!ship) return <div className="max-w-2xl">{side}</div>;
-  return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] lg:items-start">
-      {data.sales && <OutTheDoor sales={data.sales} />}
-      {side}
-    </div>
-  );
+/** Whether Needs a Look has anything in it. */
+export function needsALook(data: DashboardData): boolean {
+  return lookItems(data) > 0;
 }
 
 function problemOrders(data: DashboardData): UnshippedSale[] {
@@ -70,7 +38,7 @@ function lookItems(data: DashboardData): number {
 
 // ------------------------------------------------------------- Out the Door
 
-function OutTheDoor({ sales }: { sales: SalesData }) {
+export function OutTheDoor({ sales }: { sales: SalesData }) {
   const orders = sales.unshipped;
 
   if (orders.length === 0) {
@@ -259,7 +227,7 @@ function problemText(line: SaleLine & { problem: SaleProblem }): string {
 
 // ------------------------------------------------------------- Needs a Look
 
-function NeedsALook({ data }: { data: DashboardData }) {
+export function NeedsALook({ data }: { data: DashboardData }) {
   const orders = problemOrders(data);
   const unlisted = data.unlistedBoxes.reduce((n, b) => n + b.unlisted, 0);
 

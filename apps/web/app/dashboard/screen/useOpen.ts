@@ -6,7 +6,7 @@ import { useSearchParams } from "react-router";
  * need list, a batch's every card, the whole shelf), kept in the URL as
  * `?open=a,b` so a refresh or a shared link shows the same page. Opening one
  * is an in-view tweak: it REPLACES the entry, so Back never steps through
- * show / hide. Updated functionally, so the persona (`as`) survives.
+ * show / hide. Updated functionally, so the screen's other params survive.
  */
 
 const OPEN_PARAM = "open";

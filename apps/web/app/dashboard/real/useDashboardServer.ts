@@ -8,7 +8,7 @@
  * - read ONCE on mount (`useConvex().query`): the completions, each set
  *   board's base checklist, each smart binder's checklist count and the
  *   cards that could fit it, what is still in intake, and the sales (the
- *   dealer gate and the orders to ship). Each walks a checklist, a binder's
+ *   sales section's gate and the orders to ship). Each walks a checklist, a binder's
  *   fits, a run's match rows or the order history, so none is ever
  *   subscribed. They refresh
  *   when the dashboard is opened again, or when the sets or binders asked
@@ -150,7 +150,7 @@ export function useIntakeRaw(): IntakeRaw | undefined {
 
 const NO_SALES_RAW: SalesRaw = { dealer: false, orders: [], more: false };
 
-/** The dealer gate and the orders still to ship, read once on mount. A failed read is the collector layout. */
+/** The sales gate and the orders still to ship, read once on mount. A failed read shows no sales section. */
 export function useSalesRaw(): SalesRaw | undefined {
   const convex = useConvex();
   return useReadOnce("sales", () => convex.query(api.dashboard.sales, {}), NO_SALES_RAW);

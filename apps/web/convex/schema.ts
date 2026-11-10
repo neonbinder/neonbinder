@@ -4316,12 +4316,27 @@ export default defineSchema({
      */
     hasPhotos: v.optional(v.literal(true)),
     lastUpdated: v.number(),
+    /**
+     * NEO-464 — when cards last arrived in this line's home by a MOVE: filed
+     * out of Main into a binder, moved between binders or boxes, or sent back
+     * by emptying a container (`collection.moveCopyCore`,
+     * `collectionContainers.empty`). A line that folds a move into itself
+     * takes the stamp too. Never set by an add, an edit, a sale, a pocket
+     * shuffle inside the same home, or a trade flag. The dashboard's "since
+     * your last visit" reads only this (`dashboard.newSince`). Optional, no
+     * backfill: absent is "not moved since it was added".
+     */
+    filedAt: v.optional(v.number()),
   })
     // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
     .index("by_owner_and_card", ["ownerId", "cardId"])
     // "Everything I own", most recently touched first, paged
     // (`collection.ownedCards`). Every write to a row stamps `lastUpdated`.
     .index("by_owner_and_lastUpdated", ["ownerId", "lastUpdated"])
+    // NEO-464 — the dashboard's "since your last visit": the lines filed or
+    // moved after a stamp, newest first (`dashboard.newSince`, a bounded
+    // range). A line never moved has no `filedAt` and sorts below every stamp.
+    .index("by_owner_and_filedAt", ["ownerId", "filedAt"])
     // copiesInVariant and variantCompletion (all three), set completion
     // (prefix: ownerId + setId).
     .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])

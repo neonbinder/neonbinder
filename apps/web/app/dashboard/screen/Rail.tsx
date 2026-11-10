@@ -6,7 +6,7 @@ import type { ShelfBinder } from "./shelf-model";
 /**
  * NEO-464 combined dashboard, block 6 right rail (from prototype 2): Binders
  * Filling Up (the binders cards were filed in since the last visit), then
- * Odds and Ends (unlisted boxes, dealer only, and the trade pile). Quiet
+ * Odds and Ends (boxes with cards not listed, and the trade pile). Quiet
  * panels. In the Hopper moved to the top of the page (review item 1); Out
  * the Door lives only in the to-do.
  */

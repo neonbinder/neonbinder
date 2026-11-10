@@ -23,11 +23,13 @@
  *   rule takes in, from its stored fits (at most 20 a binder, for the first
  *   `SMART_CHECKLISTS` smart binders; only the strip's preview is hydrated);
  * - the hopper: what is still in intake across the recent runs
- *   (`dashboard.intake`; photos still being processed are not counted);
- * - the dealer layout: the account sells (a listing platform connected, or
+ *   (`dashboard.intake`; photos still being processed are not counted),
+ *   each run linking to the Add cards tab that finishes it;
+ * - the sales section: the account sells (a listing platform connected, or
  *   any order), and its newest orders still to ship (`dashboard.sales`, at
  *   most 10), shown oldest first. "Shipped" is the platform's own status:
- *   NB keeps no shipped state.
+ *   NB keeps no shipped state; an unpaid order, or one in a status NB does
+ *   not know, is never one to ship.
  * Still empty, never faked: Fresh Pulls.
  *
  * Shelf rows are the collector's binders: Main and their own, never a box,
@@ -62,6 +64,7 @@ import {
   type DashboardData,
   type IntakeInProgress,
   type IntakeScan,
+  type IntakeUpload,
   type SaleLine,
   type SalesData,
   type SmartBinderSummary,
@@ -431,6 +434,18 @@ export function couldFitByBinder(
 }
 
 /**
+ * The Add cards tab's `?run=` (`RUN_PARAM` in
+ * `app/collection/final/intake/RealAddCardsTab.tsx`), spelled here so the
+ * dashboard does not pull the whole tab into its bundle. A test keeps the two equal.
+ */
+export const ADD_CARDS_RUN_PARAM = "run";
+
+/** Where a run is finished: the Add cards tab on its side's screen, opened on the run. */
+export function runHrefOf(side: IntakeUpload["side"], runId: string): string {
+  return `/${side}?${new URLSearchParams({ tab: "add", [ADD_CARDS_RUN_PARAM]: runId })}`;
+}
+
+/**
  * The hopper from `dashboard.intake`: every open scan is in intake (a best
  * guess waiting on a yes, or one not identified yet). The preview leads with
  * the guesses whose card is hydrated, then the ones with none. Nothing open:
@@ -448,7 +463,14 @@ export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefine
     total,
     waiting: raw.unidentified,
     needsYou: raw.needsYou,
-    uploads: raw.runs.map((r) => ({ id: r.runId, name: r.homeName, scans: r.scans, done: r.done })),
+    uploads: raw.runs.map((r) => ({
+      id: r.runId,
+      name: r.homeName,
+      scans: r.scans,
+      done: r.done,
+      side: r.side,
+      href: runHrefOf(r.side, r.runId),
+    })),
     preview: [...guesses, ...raw.unknown.map((id): IntakeScan => ({ id, guess: null }))],
   };
 }
@@ -501,7 +523,7 @@ export function unshippedSaleOf(order: SaleRaw, cards: CardsById, now: number): 
   };
 }
 
-/** The sales panel: null for an account that does not sell (the collector layout); else its orders to ship, oldest first. */
+/** The sales panel: null for an account that does not sell (no sales section); else its orders to ship, oldest first. */
 export function salesDataOf(raw: SalesRaw, cards: CardsById | undefined, now: number): SalesData | null {
   if (!raw.dealer) return null;
   const orders = [...raw.orders].sort((a, b) => a.orderDate - b.orderDate);
@@ -522,7 +544,7 @@ export interface DashboardExtras {
   justCompleted?: CompletedSet | null;
   building?: BuildingSet[];
   smartBinders?: SmartBinderSummary[];
-  /** Null or absent: the collector layout. */
+  /** Null or absent: the account does not sell, so no sales section. */
   sales?: SalesData | null;
   intake?: IntakeInProgress;
 }
@@ -531,7 +553,6 @@ export interface DashboardExtras {
 export function realDashboardData(input: { binders: ShelfBinder[]; summary: CollectionSummary } & DashboardExtras): DashboardData {
   const { binders, summary } = input;
   return {
-    persona: input.sales ? "dealer" : "collector",
     sales: input.sales ?? null,
     additions: [],
     building: input.building ?? [],
@@ -550,8 +571,8 @@ export function realDashboardData(input: { binders: ShelfBinder[]; summary: Coll
  * The signed-in dashboard. `undefined` while the shelf, the summary or the
  * chase (the newest wants and their cards) loads, so the Want List never
  * reads as empty while it is only loading; and until the sales read answers
- * (with the cards its orders name), so the page never jumps from the
- * collector layout to the dealer's, nor says "All shipped" while loading. The open binder's pockets fill in
+ * (with the cards its orders name), so the sales section never pops in late
+ * nor says "All shipped" while loading. The open binder's pockets fill in
  * when its copies and cards arrive; until then its page stands empty. The
  * trade pile's count is on the shelf; its few cards fill in when they arrive.
  * The boards, the cheer, the smart binders' percents and the news since the
@@ -618,7 +639,7 @@ export function useRealDashboard(): DashboardData | undefined {
   const couldFitRaw = useCouldFit(smartIds);
   const intakeRaw = useIntakeRaw();
 
-  // The layout's gate, and the cards its orders name (their own hydration, so it settles once).
+  // The sales section's gate, and the cards its orders name (their own hydration, so it settles once).
   const salesRaw = useSalesRaw();
   const saleIds = useMemo(() => saleCardIdsOf(salesRaw), [salesRaw]);
   const saleCards = useCardMap(saleIds);

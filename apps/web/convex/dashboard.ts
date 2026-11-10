@@ -14,19 +14,21 @@
  * - `smartChecklist` (read once, one binder per call): how much of a smart
  *   binder's checklist is filed in it, from its stored fits.
  * - `newSince` (subscribed, at most `NEW_SINCE_LINES` + 1 lines): the
- *   collection lines touched since the last visit.
+ *   collection lines filed or moved since the last visit (never an add or
+ *   an edit).
  * - `markVisit` (mutation): reads the last visit, then stamps this one.
  * - `couldFit` (read once, one smart binder per call): the cards the
  *   collector holds in another binder that the binder's rule takes in, at
  *   most `COULD_FIT_CARDS`, from its stored fits' `held` mark.
  * - `intake` (read once): what is still in intake across the collector's
- *   recent runs, counted from their match rows.
- * - `sales` (read once): whether the account sells (the dealer layout), and
+ *   recent runs, counted from their match rows, each run with the side its
+ *   home is on (a binder's run finishes on Collection, a box's on Inventory).
+ * - `sales` (read once): whether the account sells (the sales section shows), and
  *   its newest orders still to ship, at most `SALES_SHOWN`.
  *
  * NB data only, except `sales`: an order's status is the platform's own word
  * (NB keeps no shipped state), read through `listingSales.awaitingShipment`.
- * The dealer gate never names a platform: any listing platform connected,
+ * The sales gate never names a platform: any listing platform connected,
  * or any order stored.
  */
 
@@ -36,7 +38,7 @@ import type { QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 import { requireSignedIn } from "./auth";
 import { MAX_CANDIDATES, parallelReader } from "./binderRules";
-import { HomeSides, MAX_VARIANT_COPIES, copyCardIdValidator } from "./collection";
+import { HomeSides, MAX_VARIANT_COPIES, copyCardIdValidator, sideOfContainer, sideValidator, type Side } from "./collection";
 import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS } from "./collectionCatalog";
 import { CatalogReader } from "./lib/catalogView";
 import { awaitingShipment } from "./listingSales";
@@ -285,7 +287,7 @@ export function intakeRunShows(tally: Pick<IntakeRunTally, "scans" | "done">, la
 }
 
 /**
- * The dealer layout's gate: the account sells when it has a listing
+ * The sales section's gate: the account sells when it has a listing
  * platform connected or any order stored. Which platform never matters.
  */
 export function isDealer(connected: readonly boolean[], anyOrder: boolean): boolean {
@@ -549,18 +551,19 @@ export const smartChecklist = query({
 });
 
 /**
- * The caller's collection lines (never a box's) written after `sinceMs`,
- * newest first, at most `NEW_SINCE_LINES`: what "since your last visit"
- * shows per binder. Subscribed, so it stays small: one indexed range of at
- * most `NEW_SINCE_LINES` + 1 lines and their homes. A line counts as new
- * when anything about it changed after the stamp (filed, moved, edited).
- * `truncated`: more lines changed than are listed.
+ * The caller's collection lines (never a box's) filed or moved after
+ * `sinceMs`, newest first, at most `NEW_SINCE_LINES`: what "since your last
+ * visit" shows per binder. Only filing and moving count (Jason, 2026-11-10):
+ * a line's `filedAt`, stamped when cards arrive in its home by a move. An
+ * add, an edit, a sale or a trade flag is not news here. Subscribed, so it
+ * stays small: one indexed range of at most `NEW_SINCE_LINES` + 1 lines and
+ * their homes. `truncated`: more lines moved than are listed.
  */
 export const newSince = query({
   args: { sinceMs: v.number() },
   returns: v.object({
     lines: v.array(
-      v.object({ homeId: v.id("collectionContainers"), cardId: copyCardIdValidator, lastUpdated: v.number() }),
+      v.object({ homeId: v.id("collectionContainers"), cardId: copyCardIdValidator, filedAt: v.number() }),
     ),
     truncated: v.boolean(),
   }),
@@ -568,13 +571,13 @@ export const newSince = query({
     const ownerId = await requireSignedIn(ctx);
     const rows = await ctx.db
       .query("collectionCopies")
-      .withIndex("by_owner_and_lastUpdated", (q) => q.eq("ownerId", ownerId).gt("lastUpdated", args.sinceMs))
+      .withIndex("by_owner_and_filedAt", (q) => q.eq("ownerId", ownerId).gt("filedAt", args.sinceMs))
       .order("desc")
       .take(NEW_SINCE_LINES + 1);
     const truncated = rows.length > NEW_SINCE_LINES;
     const kept = await new HomeSides(ctx, ownerId).keep(rows.slice(0, NEW_SINCE_LINES), "collection");
     return {
-      lines: kept.map((r) => ({ homeId: r.homeId, cardId: r.cardId, lastUpdated: r.lastUpdated })),
+      lines: kept.flatMap((r) => (r.filedAt === undefined ? [] : [{ homeId: r.homeId, cardId: r.cardId, filedAt: r.filedAt }])),
       truncated,
     };
   },
@@ -655,7 +658,16 @@ export const intake = query({
   returns: v.object({
     needsYou: v.number(),
     unidentified: v.number(),
-    runs: v.array(v.object({ runId: v.id("intakeRuns"), homeName: v.string(), scans: v.number(), done: v.number() })),
+    runs: v.array(
+      v.object({
+        runId: v.id("intakeRuns"),
+        homeName: v.string(),
+        /** Where the run's cards are going, so the hopper links to the screen that finishes it. */
+        side: sideValidator,
+        scans: v.number(),
+        done: v.number(),
+      }),
+    ),
     guesses: v.array(v.object({ id: v.id("intakeMatches"), cardId: v.id("cardChecklist") })),
     unknown: v.array(v.id("intakeMatches")),
     truncated: v.boolean(),
@@ -671,7 +683,7 @@ export const intake = query({
     const out = {
       needsYou: 0,
       unidentified: 0,
-      runs: [] as Array<{ runId: Id<"intakeRuns">; homeName: string; scans: number; done: number }>,
+      runs: [] as Array<{ runId: Id<"intakeRuns">; homeName: string; side: Side; scans: number; done: number }>,
       guesses: [] as Array<{ id: Id<"intakeMatches">; cardId: Id<"cardChecklist"> }>,
       unknown: [] as Array<Id<"intakeMatches">>,
       truncated: false,
@@ -695,7 +707,7 @@ export const intake = query({
       if (!intakeRunShows(tally, run.lastActivityAt, now)) continue;
       out.needsYou += tally.needsYou;
       out.unidentified += tally.unidentified;
-      out.runs.push({ runId: run._id, homeName: home.name, scans: tally.scans, done: tally.done });
+      out.runs.push({ runId: run._id, homeName: home.name, side: sideOfContainer(home), scans: tally.scans, done: tally.done });
       for (const g of tally.guesses) {
         if (out.guesses.length < INTAKE_PREVIEW_GUESSES) {
           out.guesses.push({ id: g.id as Id<"intakeMatches">, cardId: g.cardId as Id<"cardChecklist"> });
@@ -722,7 +734,7 @@ const saleLineValidator = v.object({
  * Whether the caller sells, and the newest of their orders still to ship.
  * Read once on mount.
  *
- * `dealer` (the dealer layout): a listing platform connected (any of
+ * `dealer` (the sales section shows): a listing platform connected (any of
  * `LISTING_PLATFORMS`, which one never matters) or any order stored. Still
  * to ship: `listingSales.awaitingShipment`, the platform's own status word,
  * since NB keeps no shipped state of its own. Bounded: the newest

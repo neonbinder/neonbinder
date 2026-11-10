@@ -6,6 +6,7 @@ import { cards as fixtureCards } from "@/app/collection/prototypes/_shared/data"
 import { binderPages } from "@/app/collection/final/binders/model";
 import { demoCard } from "@/app/collection/final/data/demoStore";
 import type { Card, CollectionSummary, Container, ContainerCopies, Copy, SetRef, Want } from "@/app/collection/final/data/types";
+import { RUN_PARAM } from "@/app/collection/final/intake/RealAddCardsTab";
 import { toDash } from "../dash-card";
 import { bindersOf as demoBindersOf, getDashboard } from "../fake-data";
 import DashboardScreen from "../screen/DashboardScreen";
@@ -14,6 +15,7 @@ import { SHELF_CAP } from "../screen/Shelf";
 import { NEED_NAMED } from "../screen/Boards";
 import type { CompletionRaw, CouldFitRaw, IntakeRaw, NewSinceRaw, SalesRaw, SetBoardRaw } from "./useDashboardServer";
 import {
+  ADD_CARDS_RUN_PARAM,
   BOARD_SETS,
   buildingSetOf,
   CHASE_CAP,
@@ -33,6 +35,7 @@ import {
   pocketsOfPages,
   realDashboardData,
   recentCompletions,
+  runHrefOf,
   saleCardIdsOf,
   saleLineOf,
   salesDataOf,
@@ -274,7 +277,6 @@ describe("useRealDashboard", () => {
     expect(data.binders?.map((b) => b.id)).toEqual(["main", "binder-1"]);
     expect(data.totals).toEqual({ cards: 2, binders: 2, exact: true });
     expect(data.sales).toBeNull();
-    expect(data.persona).toBe("collector");
     // Nothing open: no copies read.
     expect(store.copiesAsked.every((id) => id === null)).toBe(true);
   });
@@ -502,14 +504,12 @@ describe("the empty shelf", () => {
 
 describe("the demo's shelf", () => {
   it("still stands its nine binders, every one laid out, within the shelf's cap", () => {
-    for (const persona of ["dealer", "collector"] as const) {
-      const binders = demoBindersOf(getDashboard(persona));
-      expect(binders.length).toBe(9);
-      expect(binders.length).toBeLessThanOrEqual(SHELF_CAP);
-      expect(binders.every((b) => b.pockets.length > 0)).toBe(true);
-      // The demo hands the screen no shelf of its own: it is derived.
-      expect(getDashboard(persona).binders).toBeUndefined();
-    }
+    const binders = demoBindersOf(getDashboard());
+    expect(binders.length).toBe(9);
+    expect(binders.length).toBeLessThanOrEqual(SHELF_CAP);
+    expect(binders.every((b) => b.pockets.length > 0)).toBe(true);
+    // The demo hands the screen no shelf of its own: it is derived.
+    expect(getDashboard().binders).toBeUndefined();
   });
 });
 
@@ -611,10 +611,10 @@ describe("just completed, from the server's completions", () => {
 describe("since the last visit", () => {
   it("groups the lines by binder, newest first, each card once", () => {
     const lines = [
-      { homeId: "b1", cardId: cardB.id, lastUpdated: 3 },
-      { homeId: "b2", cardId: cardA.id, lastUpdated: 2 },
-      { homeId: "b1", cardId: cardB.id, lastUpdated: 2 },
-      { homeId: "b1", cardId: cardA.id, lastUpdated: 1 },
+      { homeId: "b1", cardId: cardB.id, filedAt: 3 },
+      { homeId: "b2", cardId: cardA.id, filedAt: 2 },
+      { homeId: "b1", cardId: cardB.id, filedAt: 2 },
+      { homeId: "b1", cardId: cardA.id, filedAt: 1 },
     ] as unknown as NewSinceRaw["lines"];
     const byHome = newCardsByHome(lines, cardsById);
     expect(byHome.get("b1")?.map((c) => c.id)).toEqual([cardB.id, cardA.id]);
@@ -671,7 +671,7 @@ describe("useRealDashboard: slice 3 sections", () => {
     server.smart = new Map([["smart", { have: 3, total: 4 }]]);
     server.completions = [completion()];
     server.since = 1;
-    server.fresh = { lines: [{ homeId: "main", cardId: cardA.id, lastUpdated: 2 }], truncated: false } as unknown as NewSinceRaw;
+    server.fresh = { lines: [{ homeId: "main", cardId: cardA.id, filedAt: 2 }], truncated: false } as unknown as NewSinceRaw;
 
     const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
     const data = result.current!;
@@ -690,7 +690,7 @@ describe("useRealDashboard: slice 3 sections", () => {
     store.summary = SUMMARY;
     store.copies.set("main", { copies: [copy(cardA, { homeId: "main", slot: 0 }), copy(cardB, { homeId: "main", slot: 1 })], truncated: false });
     server.since = 1;
-    server.fresh = { lines: [{ homeId: "main", cardId: cardA.id, lastUpdated: 2 }], truncated: false } as unknown as NewSinceRaw;
+    server.fresh = { lines: [{ homeId: "main", cardId: cardA.id, filedAt: 2 }], truncated: false } as unknown as NewSinceRaw;
     const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard?binder=main") });
     const main = result.current!.binders!.find((b) => b.id === "main")!;
     expect(main.pockets.slice(0, 2).map((p) => (p.kind === "card" ? p.isNew : null))).toEqual([true, false]);
@@ -841,7 +841,7 @@ describe("the hopper: intakeOf", () => {
   const raw = (over: Partial<IntakeRaw> = {}): IntakeRaw => ({
     needsYou: 2,
     unidentified: 3,
-    runs: [{ runId: "run-1" as never, homeName: "Main", scans: 9, done: 4 }],
+    runs: [{ runId: "run-1" as never, homeName: "Main", side: "collection", scans: 9, done: 4 }],
     guesses: [
       { id: "m1" as never, cardId: cardA.id as never },
       { id: "m2" as never, cardId: "gone" as never },
@@ -853,11 +853,27 @@ describe("the hopper: intakeOf", () => {
 
   it("counts every open scan: guesses waiting on a yes, the rest not identified; the preview leads with hydrated guesses", () => {
     const intake = intakeOf(raw(), cardsAB());
-    expect(intake).toMatchObject({ total: 5, needsYou: 2, waiting: 3, uploads: [{ id: "run-1", name: "Main", scans: 9, done: 4 }] });
+    expect(intake).toMatchObject({
+      total: 5,
+      needsYou: 2,
+      waiting: 3,
+      uploads: [{ id: "run-1", name: "Main", scans: 9, done: 4, side: "collection", href: "/collection?tab=add&run=run-1" }],
+    });
     expect(intake.preview.map((p) => [p.id, p.guess?.id ?? null])).toEqual([
       ["m1", cardA.id],
       ["m3", null],
     ]);
+  });
+
+  it("a run finishes where its cards go: a binder's on Collection, a box's on Inventory, on the Add cards tab's own run param", () => {
+    expect(ADD_CARDS_RUN_PARAM).toBe(RUN_PARAM);
+    expect(runHrefOf("collection", "abc")).toBe("/collection?tab=add&run=abc");
+    expect(runHrefOf("inventory", "abc")).toBe("/inventory?tab=add&run=abc");
+    const intake = intakeOf(
+      raw({ runs: [{ runId: "run-2" as never, homeName: "Show box", side: "inventory", scans: 3, done: 0 }] }),
+      cardsAB(),
+    );
+    expect(intake.uploads.map((u) => [u.side, u.href])).toEqual([["inventory", "/inventory?tab=add&run=run-2"]]);
   });
 
   it("nothing open, or not read yet: empty, so the hopper stays hidden", () => {
@@ -939,7 +955,7 @@ describe("useRealDashboard: slice 4 sections", () => {
     server.intake = {
       needsYou: 1,
       unidentified: 2,
-      runs: [{ runId: "run-1" as never, homeName: "Show box", scans: 5, done: 2 }],
+      runs: [{ runId: "run-1" as never, homeName: "Show box", side: "inventory", scans: 5, done: 2 }],
       guesses: [{ id: "m1" as never, cardId: cardA.id as never }],
       unknown: ["m2" as never, "m3" as never],
       truncated: false,
@@ -950,17 +966,18 @@ describe("useRealDashboard: slice 4 sections", () => {
     render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
     expect(screen.getByRole("heading", { name: "In the Hopper" })).toBeTruthy();
     expect(screen.getByText("1 scan needs your yes")).toBeTruthy();
-    expect(screen.getByText("2 scans still being identified")).toBeTruthy();
-    expect(screen.getByText("2 of 5 scans done")).toBeTruthy();
+    expect(screen.getByText("2 scans processing")).toBeTruthy();
+    expect(screen.queryByText(/still being identified/)).toBeNull();
+    const run = screen.getByRole("link", { name: "Show box, 2 of 5 scans done. Finish on Inventory" });
+    expect(run.getAttribute("href")).toBe("/inventory?tab=add&run=run-1");
   });
 
-  it("a dealer with nothing to ship: the dealer layout, All shipped", () => {
+  it("an account that sells with nothing to ship: the sales section says All shipped", () => {
     store.containers = smartShelf();
     store.summary = SUMMARY;
     server.sales = { dealer: true, orders: [], more: false };
     const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
     const data = result.current!;
-    expect(data.persona).toBe("dealer");
     expect(data.sales).toEqual({ unshipped: [] });
     render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
     expect(screen.getByText("All shipped. Nice.")).toBeTruthy();
@@ -968,7 +985,7 @@ describe("useRealDashboard: slice 4 sections", () => {
     expect(screen.queryByRole("heading", { name: "Needs a Look" })).toBeNull();
   });
 
-  it("a dealer's orders: Out the Door oldest first, and an unmatched order in Needs a Look", () => {
+  it("orders to ship: Out the Door oldest first, and an unmatched order in Needs a Look", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 10, 9, 12));
     store.containers = smartShelf();
@@ -1009,7 +1026,6 @@ describe("useRealDashboard: slice 4 sections", () => {
     const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
     const data = result.current!;
     expect(data.sales).toBeNull();
-    expect(data.persona).toBe("collector");
     expect(data.intake.total).toBe(0);
     expect(data).toEqual(realDashboardData({ binders: data.binders!, summary: SUMMARY, wantList: [], unlistedBoxes: [] }));
     render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });

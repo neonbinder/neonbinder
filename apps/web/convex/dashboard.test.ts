@@ -238,6 +238,8 @@ describe("awaitingShipment", () => {
     expect(awaitingShipment("ebay", "CANCELED")).toBe(false);
     expect(awaitingShipment("ebay", "FULLY_REFUNDED")).toBe(false);
     expect(awaitingShipment("ebay", "PENDING")).toBe(false);
+    expect(awaitingShipment("ebay", "FAILED")).toBe(false);
+    expect(awaitingShipment("ebay", "SOMETHING_NEW")).toBe(false);
   });
 });
 
@@ -301,7 +303,7 @@ function line(
   s: S,
   cardId: Id<"cardChecklist">,
   variantId: Id<"selectorOptions">,
-  opts: { homeId?: Id<"collectionContainers">; ownerId?: string; acquiredOn?: string; lastUpdated: number },
+  opts: { homeId?: Id<"collectionContainers">; ownerId?: string; acquiredOn?: string; lastUpdated: number; filedAt?: number },
 ) {
   return s.t.run((ctx) =>
     ctx.db.insert("collectionCopies", {
@@ -313,6 +315,7 @@ function line(
       quantity: 1,
       ...(opts.acquiredOn ? { acquiredOn: opts.acquiredOn } : {}),
       lastUpdated: opts.lastUpdated,
+      ...(opts.filedAt !== undefined ? { filedAt: opts.filedAt } : {}),
     }),
   );
 }
@@ -465,21 +468,70 @@ describe("smartChecklist", () => {
 });
 
 describe("newSince", () => {
-  test("the collection lines written after the stamp, newest first; never a box's, never another collector's", async () => {
+  test("the collection lines filed or moved after the stamp, newest first; never a box's, never another collector's", async () => {
     const s = await setup();
-    await line(s, s.fx.gooden1, s.fx.baseId, { lastUpdated: NOW - 3 * DAY });
-    await line(s, s.fx.strawberry2, s.fx.baseId, { lastUpdated: NOW - DAY });
-    await line(s, s.fx.gold1, s.fx.goldId, { lastUpdated: NOW });
-    await line(s, s.fx.gooden1, s.fx.baseId, { homeId: s.homes.box, lastUpdated: NOW });
-    await line(s, s.fx.gooden1, s.fx.baseId, { homeId: s.homes.theirMain, ownerId: THEM.subject, lastUpdated: NOW });
+    await line(s, s.fx.gooden1, s.fx.baseId, { lastUpdated: NOW - 3 * DAY, filedAt: NOW - 3 * DAY });
+    await line(s, s.fx.strawberry2, s.fx.baseId, { lastUpdated: NOW - DAY, filedAt: NOW - DAY });
+    await line(s, s.fx.gold1, s.fx.goldId, { lastUpdated: NOW, filedAt: NOW });
+    await line(s, s.fx.gooden1, s.fx.baseId, { homeId: s.homes.box, lastUpdated: NOW, filedAt: NOW });
+    await line(s, s.fx.gooden1, s.fx.baseId, { homeId: s.homes.theirMain, ownerId: THEM.subject, lastUpdated: NOW, filedAt: NOW });
     const result = await s.me.query(api.dashboard.newSince, { sinceMs: NOW - 2 * DAY });
     expect(result).toEqual({
       lines: [
-        { homeId: s.homes.main, cardId: s.fx.gold1, lastUpdated: NOW },
-        { homeId: s.homes.main, cardId: s.fx.strawberry2, lastUpdated: NOW - DAY },
+        { homeId: s.homes.main, cardId: s.fx.gold1, filedAt: NOW },
+        { homeId: s.homes.main, cardId: s.fx.strawberry2, filedAt: NOW - DAY },
       ],
       truncated: false,
     });
+  });
+
+  test("a line written after the stamp but never moved (an add, an edit, a sale) is not news", async () => {
+    const s = await setup();
+    await line(s, s.fx.gooden1, s.fx.baseId, { lastUpdated: NOW });
+    await line(s, s.fx.strawberry2, s.fx.baseId, { lastUpdated: NOW, filedAt: NOW - 3 * DAY });
+    expect(await s.me.query(api.dashboard.newSince, { sinceMs: NOW - 2 * DAY })).toEqual({ lines: [], truncated: false });
+  });
+
+  test("through the real writes: only filing and moving count, never an add, an edit or a pocket shuffle", async () => {
+    const s = await setup();
+    const mets = await s.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Mets", lastUpdated: 0 }),
+    );
+    const since = Date.now() - 1;
+    const news = () => s.me.query(api.dashboard.newSince, { sinceMs: since });
+
+    // Adds: one into Main, one straight into a binder. Neither is news.
+    const gooden = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    const straw = await s.me.mutation(api.collection.addHave, { cardId: s.fx.strawberry2, homeId: mets });
+    expect((await news()).lines).toEqual([]);
+
+    // An edit, and a pocket shuffle inside the same binder: still nothing.
+    await s.me.mutation(api.collection.updateCopy, { copyId: straw.copyId, details: { quantity: 1, notes: "corner ding" } });
+    await s.me.mutation(api.collection.placeCopy, { copyId: straw.copyId, slot: 5 });
+    expect((await news()).lines).toEqual([]);
+
+    // Filing Gooden out of Main into the Mets binder is news, in the binder it went to.
+    await s.me.mutation(api.collection.moveCopy, { copyId: gooden.copyId, toHomeId: mets });
+    const after = await news();
+    expect(after.lines.map((l) => [l.homeId, l.cardId])).toEqual([[mets, s.fx.gooden1]]);
+
+    // A later edit keeps the stamp: the card stays news, and nothing else joins it.
+    await s.me.mutation(api.collection.updateCopy, { copyId: gooden.copyId, details: { quantity: 1, notes: "signed" } });
+    expect((await news()).lines.map((l) => [l.homeId, l.cardId])).toEqual([[mets, s.fx.gooden1]]);
+  });
+
+  test("emptying a binder back to Main moves its cards, so they are news in Main", async () => {
+    const s = await setup();
+    const mets = await s.t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Mets", lastUpdated: 0 }),
+    );
+    const straw = await s.me.mutation(api.collection.addHave, { cardId: s.fx.strawberry2, homeId: mets });
+    const since = Date.now() - 1;
+    expect((await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines).toEqual([]);
+    await s.me.mutation(api.collectionContainers.empty, { containerId: mets });
+    const lines = (await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines;
+    expect(lines.map((l) => [l.homeId, l.cardId])).toEqual([[s.homes.main, s.fx.strawberry2]]);
+    expect(straw.copyId).toBeDefined();
   });
 });
 
@@ -667,8 +719,8 @@ describe("intake", () => {
     expect(out.truncated).toBe(false);
     expect(out.runs).toEqual(
       expect.arrayContaining([
-        { runId: a.runId, homeName: "Main", scans: 4, done: 2 },
-        { runId: b.runId, homeName: "Unsorted", scans: 1, done: 0 },
+        { runId: a.runId, homeName: "Main", side: "collection", scans: 4, done: 2 },
+        { runId: b.runId, homeName: "Unsorted", side: "inventory", scans: 1, done: 0 },
       ]),
     );
     expect(out.guesses.map((g) => g.cardId).sort()).toEqual([s.fx.gooden1, s.fx.strawberry2].sort());
@@ -736,7 +788,7 @@ describe("sales", () => {
     await expect(s.t.query(api.dashboard.sales, {})).rejects.toThrow(/Not authenticated/);
   });
 
-  test("no listing platform connected and no order: not a dealer (the collector layout)", async () => {
+  test("no listing platform connected and no order: does not sell, so no sales section", async () => {
     const s = await setup();
     await s.t.run((ctx) => ctx.db.insert("userProfiles", { userId: ME.subject, siteCredentials: [{ site: "sportlots", hasCredentials: true }] }));
     await order(s, { orderNo: "THEIRS", status: "READY_TO_SHIP", orderDate: NOW, ownerId: THEM.subject });
@@ -777,6 +829,19 @@ describe("sales", () => {
         { quantity: 1, problem: "unmatched" },
       ],
     });
+  });
+
+  test("an unpaid order, or one whose status NB does not know, stays hidden: never to ship", async () => {
+    const s = await setup();
+    await order(s, { platform: "ebay", orderNo: "E-UNPAID", status: "PENDING", orderDate: NOW - DAY });
+    await order(s, { platform: "ebay", orderNo: "E-FAILED", status: "FAILED", orderDate: NOW - DAY });
+    await order(s, { platform: "ebay", orderNo: "E-NEW", status: "SOMETHING_NEW", orderDate: NOW });
+    await order(s, { orderNo: "B-NEW", status: "AWAITING_PAYMENT", orderDate: NOW });
+    const paid = await order(s, { orderNo: "B-PAID", status: "READY_TO_SHIP", orderDate: NOW - 2 * DAY });
+    const out = await s.me.query(api.dashboard.sales, {});
+    expect(out.dealer).toBe(true);
+    expect(out.orders.map((o) => o.id)).toEqual([paid]);
+    expect(out.more).toBe(false);
   });
 
   test(`at most SALES_SHOWN (${SALES_SHOWN}) orders, the newest, with more said`, async () => {
