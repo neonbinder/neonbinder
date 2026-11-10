@@ -164,12 +164,14 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
     journal: real?.journal ?? null,
   });
 
-  /** A no-op-version Transition (see the header): new values, same version. */
+  /**
+   * A no-op-version Transition (see the header): new values, same version.
+   * A socket that has applied no Transition yet has no version to inject at,
+   * so it is skipped (it also holds no value to replace); `failStatus` is the
+   * one caller that treats that as an error.
+   */
   const inject = (s: Socket, modifications: Modification[]): void => {
-    if (modifications.length === 0) return;
-    if (!s.version) {
-      throw new Error("column-sync-fault: no Transition seen on this socket yet, so there is no version to inject at");
-    }
+    if (modifications.length === 0 || !s.version) return;
     s.page.send(
       JSON.stringify({ type: "Transition", startVersion: s.version, endVersion: s.version, modifications }),
     );
@@ -249,7 +251,10 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
         }
       } else if (msg?.type === "ActionResponse" && s.retries.delete(msg.requestId as number)) {
         // The server has run the column's retry, which replaces a real error
-        // row. End the fake everywhere and hand back the server's own value.
+        // row. Forward its answer first, so nothing below can withhold it from
+        // the page; then end the fake everywhere and hand back the server's
+        // own value.
+        ws.send(frame);
         const was = target;
         target = null;
         answered += 1;
@@ -261,7 +266,6 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
           }
           inject(each, real);
         }
-        ws.send(frame);
       } else {
         ws.send(frame);
       }
@@ -270,16 +274,31 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
     // Closing either side closes the other (the default this replaces), and
     // the socket stops being a target.
     // A WebSocket may only be closed with 1000 or 3000-4999; any other code
-    // (1006 for a dropped line) closes without one.
-    const closeOptions = (code: number | undefined, reason: string | undefined) =>
-      code === 1000 || (code !== undefined && code >= 3000 && code <= 4999) ? { code, reason } : {};
+    // (1006 for a dropped line) closes without one. When the SERVER drops the
+    // socket that way the original code and reason are logged, so a reconnect
+    // mid-spec is not silent; a page-side close (a navigation, the page
+    // closing) has no code by nature and is not. Never a frame.
+    const reusable = (code: number | undefined): code is number =>
+      code === 1000 || (code !== undefined && code >= 3000 && code <= 4999);
+    // Whichever side closes first is the real close; the other side's close
+    // event is then the echo of the one forwarded here, and is ignored.
+    let closed = false;
     ws.onClose((code, reason) => {
+      if (closed) return;
+      closed = true;
       sockets.delete(s);
-      void server.close(closeOptions(code, reason)).catch(() => {});
+      void server.close(reusable(code) ? { code, reason } : {}).catch(() => {});
     });
     server.onClose((code, reason) => {
+      if (closed) return;
+      closed = true;
       sockets.delete(s);
-      void ws.close(closeOptions(code, reason)).catch(() => {});
+      if (!reusable(code)) {
+        console.warn(
+          `column-sync-fault: the Convex server closed the sync socket with code ${code ?? "none"} (${reason || "no reason"}); closing the page side without a code`,
+        );
+      }
+      void ws.close(reusable(code) ? { code, reason } : {}).catch(() => {});
     });
   });
 
@@ -294,6 +313,9 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
           found += 1;
           const last = s.lastReal.get(queryId);
           if (last) fakes.push(fake(queryId, last));
+        }
+        if (fakes.length > 0 && !s.version) {
+          throw new Error("column-sync-fault: no Transition seen on this socket yet, so there is no version to inject at");
         }
         inject(s, fakes);
       }
