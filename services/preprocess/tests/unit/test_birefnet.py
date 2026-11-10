@@ -290,13 +290,23 @@ def test_session_options_spec(monkeypatch):
     assert birefnet.session_options_spec() == {
         "enable_cpu_mem_arena": False,
         "graph_optimization_level": "ORT_ENABLE_ALL",
-        "intra_op_num_threads": 0,
+        "intra_op_num_threads": 4,
         "inter_op_num_threads": 0,
         "logger_severity": 3,
     }
+
+
+def test_intra_op_threads_are_pinned_to_four():
+    # Jason, 2026-11-10: measured bit-identical and 14-15% faster on gen2.
+    assert birefnet.INTRA_OP_NUM_THREADS == 4
+
+
+def test_omp_num_threads_sets_inter_op_only(monkeypatch):
+    # rembg's rule survives for inter-op; intra-op stays at the measured cap.
     monkeypatch.setenv("OMP_NUM_THREADS", "3")
     spec = birefnet.session_options_spec()
-    assert spec["intra_op_num_threads"] == 3 and spec["inter_op_num_threads"] == 3
+    assert spec["intra_op_num_threads"] == 4
+    assert spec["inter_op_num_threads"] == 3
 
 
 def test_built_options_match_the_spec(monkeypatch):
@@ -305,7 +315,7 @@ def test_built_options_match_the_spec(monkeypatch):
     opts = birefnet._build_session_options(ort)
     assert opts.enable_cpu_mem_arena is False
     assert opts.graph_optimization_level == ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    assert opts.intra_op_num_threads == 2
+    assert opts.intra_op_num_threads == 4
     assert opts.inter_op_num_threads == 2
     assert opts.optimized_model_filepath == ""  # never re-saved at runtime
 

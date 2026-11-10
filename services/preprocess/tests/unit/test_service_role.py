@@ -5,18 +5,37 @@ HEAVY (default) loads the local model at startup and runs the full cascade;
 FAST runs classical-only and must NEVER load a local model — it skips the
 startup session load so it cold-starts in seconds. These tests pin the role
 resolver's defaulting, the startup hook's role gate, and (NEO-484) the one
-`cold_start` line the hook writes on every boot.
+`cold_start` line the hook writes on every boot, and that the hook starts the
+SDK prewarm thread (C6) on every role and path.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 
 import pytest
 
-from app import main, timing
+from app import main, prewarm, timing
 from app.main import ROLE_FAST, ROLE_HEAVY, _preprocess_role, _verify_baked_weights
+from tests.unit._prewarm_gate import hold_prewarm, returns_within
+
+
+@pytest.fixture(autouse=True)
+def prewarm_asked(monkeypatch):
+    """Every hook call here starts a held prewarm run (see `_prewarm_gate`)."""
+    yield from hold_prewarm(monkeypatch)
+
+
+def _wait_for(predicate, timeout_s: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 class TestRoleResolver:
@@ -164,7 +183,11 @@ class TestColdStartLine:
         assert set(body) == COLD_START_KEYS
         assert body["role"] == "heavy"
         assert body["session_load_s"] == 3.25
-        assert body["prewarm"] is None
+        # The held prewarm run has imported nothing yet: a fixed snapshot.
+        assert body["prewarm"]["state"] == "running"
+        assert body["prewarm"]["imported_s"] == {}
+        assert body["prewarm"]["failed"] == []
+        assert body["prewarm"]["elapsed_s"] >= 0
         assert body["exec_env"] in {"gen1", "gen2", "local"}
         assert isinstance(body["isa"], str) and body["isa"]
         assert isinstance(body["cpu_model"], str) and body["cpu_model"]
@@ -265,3 +288,72 @@ class TestHostFacts:
 
     def test_cpu_facts_without_cpuinfo(self):
         assert main._cpu_facts("", "arm64") == ("arm64", "unknown")
+
+
+class TestStartupHookStartsPrewarm:
+    """C6: the hook starts the SDK prewarm thread first, on every role and path."""
+
+    @pytest.mark.parametrize(
+        ("role", "require"),
+        [(None, "1"), ("fast", "1"), (None, None)],
+        ids=["heavy-loads-session", "fast", "heavy-no-flag"],
+    )
+    def test_every_boot_starts_the_sdk_imports_in_order(
+        self, monkeypatch, tmp_path, load_calls, prewarm_asked, role, require
+    ):
+        if role is None:
+            monkeypatch.delenv("PREPROCESS_ROLE", raising=False)
+        else:
+            monkeypatch.setenv("PREPROCESS_ROLE", role)
+        if require is None:
+            monkeypatch.delenv("REQUIRE_BAKED_WEIGHTS", raising=False)
+        else:
+            monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", require)
+        monkeypatch.setenv("BIREFNET_HOME", str(tmp_path))
+        monkeypatch.delenv("BIREFNET_MODEL", raising=False)
+        (tmp_path / "birefnet-general.onnx").write_bytes(b"stub")
+
+        _verify_baked_weights()
+
+        # Held on its first import: storage is asked for first.
+        assert _wait_for(lambda: prewarm_asked != [])
+        assert prewarm_asked == ["google.cloud.storage"]
+        assert [t for t in threading.enumerate() if t.name == prewarm.THREAD_NAME]
+
+    def test_prewarm_is_running_before_the_session_load(self, monkeypatch, tmp_path, prewarm_asked):
+        # The imports overlap the ORT session load rather than following it.
+        monkeypatch.delenv("PREPROCESS_ROLE", raising=False)
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        monkeypatch.setenv("BIREFNET_HOME", str(tmp_path))
+        monkeypatch.delenv("BIREFNET_MODEL", raising=False)
+        (tmp_path / "birefnet-general.onnx").write_bytes(b"stub")
+        seen_at_load: list[object] = []
+
+        def _load():
+            seen_at_load.append(prewarm.snapshot())
+            return {"session_load_s": 1.0, "model": "birefnet-general", "ort": "x"}
+
+        monkeypatch.setattr("app.cropper.birefnet.load_session", _load)
+
+        _verify_baked_weights()
+
+        (snap,) = seen_at_load
+        assert snap is not None and snap["state"] == "running"
+
+    def test_a_second_hook_call_starts_no_second_thread(self, monkeypatch, load_calls):
+        monkeypatch.delenv("REQUIRE_BAKED_WEIGHTS", raising=False)
+
+        _verify_baked_weights()
+        _verify_baked_weights()
+
+        assert len([t for t in threading.enumerate() if t.name == prewarm.THREAD_NAME]) == 1
+
+    def test_the_hook_returns_while_the_imports_are_still_held(self, monkeypatch, load_calls):
+        # Nothing on the boot path waits for the thread: the held importer
+        # never returns during this test, and the hook still does.
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+
+        returned, _ = returns_within(_verify_baked_weights, 5.0)
+
+        assert returned, "the startup hook waited for the prewarm thread"
+        assert prewarm.snapshot()["state"] == "running"

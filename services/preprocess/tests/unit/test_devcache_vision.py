@@ -214,7 +214,7 @@ class TestDetectOrientationCached:
             raise AssertionError("hit must not build a Vision client")
 
         monkeypatch.setattr(orient, "_client", None)
-        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _refuse)
+        monkeypatch.setattr(orient.vision_sdk(), "ImageAnnotatorClient", _refuse)
         with cache_on():
             assert detect_orientation(IMAGE).text_count == 3
 

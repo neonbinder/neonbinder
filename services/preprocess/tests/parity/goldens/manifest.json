@@ -1,5 +1,23 @@
 {
   "fingerprints": {
+    "0247589b76fdb227": {
+      "cpu_flags": "5fe5c6bfd53e",
+      "cpu_model": "Intel(R) Xeon(R) CPU @ 2.20GHz",
+      "exec_env": "gen2",
+      "isa": "x86_64+sse4_1+avx+f16c+fma+avx2+avx512f+avx512bw+avx512dq+avx512vl+avx512_vnni",
+      "model": {
+        "md5": "7a35a0141cbbc80de11d9c9a28f52697",
+        "name": "birefnet-general",
+        "sha256": "58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c"
+      },
+      "omp_num_threads": null,
+      "versions": {
+        "Pillow": "12.3.0",
+        "numpy": "2.5.4",
+        "onnxruntime": "1.31.0",
+        "opencv-python-headless": "4.10.0.84"
+      }
+    },
     "7a7df4144719065a": {
       "cpu_flags": "411b382141e0",
       "cpu_model": "unknown",
@@ -94,6 +112,7 @@
   "fixtures": {
     "bed-multi-card.jpg": {
       "alpha": {
+        "0247589b76fdb227": "3064c505ddaba73bf1dbbb2058c5f612aea32b0061eea09e5fdf424513809ecb",
         "7a7df4144719065a": "3064c505ddaba73bf1dbbb2058c5f612aea32b0061eea09e5fdf424513809ecb",
         "8238d26141caa77b": "3064c505ddaba73bf1dbbb2058c5f612aea32b0061eea09e5fdf424513809ecb",
         "89eb4d4acb229f3e": "3064c505ddaba73bf1dbbb2058c5f612aea32b0061eea09e5fdf424513809ecb",
@@ -115,6 +134,7 @@
     },
     "bed-single-card-skewed.jpg": {
       "alpha": {
+        "0247589b76fdb227": "5e4bde5d8961cd41990900489a8ed27429ad0c17eea1654da3260ef8c85d26d9",
         "7a7df4144719065a": "5e4bde5d8961cd41990900489a8ed27429ad0c17eea1654da3260ef8c85d26d9",
         "8238d26141caa77b": "5e4bde5d8961cd41990900489a8ed27429ad0c17eea1654da3260ef8c85d26d9",
         "89eb4d4acb229f3e": "5e4bde5d8961cd41990900489a8ed27429ad0c17eea1654da3260ef8c85d26d9",
@@ -136,6 +156,7 @@
     },
     "phone-photo-no-metadata.jpg": {
       "alpha": {
+        "0247589b76fdb227": "0dbdbc65b4f886b62b0a2dd15117a5e70f13f52ff6286a25ae04d72b853cc99c",
         "7a7df4144719065a": "0dbdbc65b4f886b62b0a2dd15117a5e70f13f52ff6286a25ae04d72b853cc99c",
         "8238d26141caa77b": "e09d8e897d36b9b8c080d8711540549a2adf724508d51a4b9248a68ed96534ad",
         "89eb4d4acb229f3e": "0dbdbc65b4f886b62b0a2dd15117a5e70f13f52ff6286a25ae04d72b853cc99c",
@@ -157,6 +178,7 @@
     },
     "scan-chrome-mojo-back.jpg": {
       "alpha": {
+        "0247589b76fdb227": "53202bee8340cb7986e3ab9ccabb0f393395e6d7372bedfc60b1cac365da01f9",
         "7a7df4144719065a": "53202bee8340cb7986e3ab9ccabb0f393395e6d7372bedfc60b1cac365da01f9",
         "8238d26141caa77b": "db0b523b5792525ba0d7c5527b12407289c6d293eb73bc699c04246966608468",
         "89eb4d4acb229f3e": "53202bee8340cb7986e3ab9ccabb0f393395e6d7372bedfc60b1cac365da01f9",
@@ -178,6 +200,7 @@
     },
     "scan-chrome-mojo-front.jpg": {
       "alpha": {
+        "0247589b76fdb227": "8beb34ea26ab16e12c3ef913ce88b9b73c1172673679e4b4b1d008ffa7ad0b33",
         "7a7df4144719065a": "8beb34ea26ab16e12c3ef913ce88b9b73c1172673679e4b4b1d008ffa7ad0b33",
         "8238d26141caa77b": "5f30e84b7169b693fea4b62ce0d03b8b51bfdb39cd6ea718251335ba134fb4da",
         "89eb4d4acb229f3e": "8beb34ea26ab16e12c3ef913ce88b9b73c1172673679e4b4b1d008ffa7ad0b33",
@@ -199,6 +222,7 @@
     },
     "scan-chrome-refractor-front.jpg": {
       "alpha": {
+        "0247589b76fdb227": "afb472827324f74071f7166c583f87967c53c243257fbee9803d1c5e91f59fc3",
         "7a7df4144719065a": "afb472827324f74071f7166c583f87967c53c243257fbee9803d1c5e91f59fc3",
         "8238d26141caa77b": "d4b314b6ad993de5adf2f11c92c2b2758d1f2817f30a10ee615c7a45ca6b5be4",
         "89eb4d4acb229f3e": "afb472827324f74071f7166c583f87967c53c243257fbee9803d1c5e91f59fc3",
@@ -220,6 +244,7 @@
     },
     "scan-dark-border-back.jpg": {
       "alpha": {
+        "0247589b76fdb227": "275007bfde972e3a0a7980acbf6f4116c22f8958ccbf3b2ef9dcecbce5b09661",
         "7a7df4144719065a": "275007bfde972e3a0a7980acbf6f4116c22f8958ccbf3b2ef9dcecbce5b09661",
         "8238d26141caa77b": "5ee966b5e39e7cd1db4fbbf2ce00dff4f4d52d6922bcae59ac386c6deec2b11c",
         "89eb4d4acb229f3e": "275007bfde972e3a0a7980acbf6f4116c22f8958ccbf3b2ef9dcecbce5b09661",
@@ -241,6 +266,7 @@
     },
     "scan-dark-textured-front.jpg": {
       "alpha": {
+        "0247589b76fdb227": "28653acfa9e9817a0ad21dee7764665ee73b0d1fa885a51bb6c7f65af06cf5f5",
         "7a7df4144719065a": "28653acfa9e9817a0ad21dee7764665ee73b0d1fa885a51bb6c7f65af06cf5f5",
         "8238d26141caa77b": "340f42f808c4795bd5406b1d81636d194cef020b34d46aec0fcd261ba703341b",
         "89eb4d4acb229f3e": "28653acfa9e9817a0ad21dee7764665ee73b0d1fa885a51bb6c7f65af06cf5f5",
@@ -262,6 +288,7 @@
     },
     "scan-white-border-back.jpg": {
       "alpha": {
+        "0247589b76fdb227": "8744ca758eb016a9827843bdd9b2af524b281dc3b2fb48bbfe67e63d6614d096",
         "7a7df4144719065a": "8744ca758eb016a9827843bdd9b2af524b281dc3b2fb48bbfe67e63d6614d096",
         "8238d26141caa77b": "0b3968e37fcb4ea70b2a496ca3769e3421efd96dc5cb117cc6801eb3b9695a7a",
         "89eb4d4acb229f3e": "8744ca758eb016a9827843bdd9b2af524b281dc3b2fb48bbfe67e63d6614d096",
@@ -283,6 +310,7 @@
     },
     "scan-white-border-front.jpg": {
       "alpha": {
+        "0247589b76fdb227": "a9a069af27dba745657c83ae8123c56f4ee89c9b1b24c493dea4abd447b244bb",
         "7a7df4144719065a": "a9a069af27dba745657c83ae8123c56f4ee89c9b1b24c493dea4abd447b244bb",
         "8238d26141caa77b": "65ee58665db4558b19b7ab4fe466897b1e4e49982a8c63982879e00046f99a4b",
         "89eb4d4acb229f3e": "a9a069af27dba745657c83ae8123c56f4ee89c9b1b24c493dea4abd447b244bb",
@@ -304,6 +332,7 @@
     },
     "scan-white-border-rookie-front.jpg": {
       "alpha": {
+        "0247589b76fdb227": "543bc41af30532f5ad92a035f325ccd32b9917b8a29ff8d9d4c5c9be39160222",
         "7a7df4144719065a": "543bc41af30532f5ad92a035f325ccd32b9917b8a29ff8d9d4c5c9be39160222",
         "8238d26141caa77b": "cb8aa3c09566eb8239639f344ef7dff9cb4d3deafbb93fd7b2b865b4e706dba3",
         "89eb4d4acb229f3e": "543bc41af30532f5ad92a035f325ccd32b9917b8a29ff8d9d4c5c9be39160222",
@@ -325,6 +354,7 @@
     },
     "tight-scan-no-dpi-bell-back.jpg": {
       "alpha": {
+        "0247589b76fdb227": "4c19543526d3e3ce9baac20b5c09ec7690a313ceda6ba96542c718646c3c53bb",
         "7a7df4144719065a": "4c19543526d3e3ce9baac20b5c09ec7690a313ceda6ba96542c718646c3c53bb",
         "8238d26141caa77b": "4c19543526d3e3ce9baac20b5c09ec7690a313ceda6ba96542c718646c3c53bb",
         "89eb4d4acb229f3e": "4c19543526d3e3ce9baac20b5c09ec7690a313ceda6ba96542c718646c3c53bb",
@@ -346,6 +376,7 @@
     },
     "tight-scan-no-dpi-bell-front.jpg": {
       "alpha": {
+        "0247589b76fdb227": "995af484a7445bf9230848b199bed9ef9fd085124b8bfe03ead5a048d974eac2",
         "7a7df4144719065a": "995af484a7445bf9230848b199bed9ef9fd085124b8bfe03ead5a048d974eac2",
         "8238d26141caa77b": "995af484a7445bf9230848b199bed9ef9fd085124b8bfe03ead5a048d974eac2",
         "89eb4d4acb229f3e": "995af484a7445bf9230848b199bed9ef9fd085124b8bfe03ead5a048d974eac2",
@@ -367,6 +398,7 @@
     },
     "tight-scan-no-dpi-bowe-again-back.jpg": {
       "alpha": {
+        "0247589b76fdb227": "5f21723495c016cd1d6dc2cb4a9ad619f52f713d9936a824eaede69dbd779e6b",
         "7a7df4144719065a": "5f21723495c016cd1d6dc2cb4a9ad619f52f713d9936a824eaede69dbd779e6b",
         "8238d26141caa77b": "baba531dd22538c0e64f9da8651a19db803ade16881fbe55a35c88785991d355",
         "89eb4d4acb229f3e": "5f21723495c016cd1d6dc2cb4a9ad619f52f713d9936a824eaede69dbd779e6b",
@@ -388,6 +420,7 @@
     },
     "tight-scan-no-dpi-bowe-back.jpg": {
       "alpha": {
+        "0247589b76fdb227": "f60152e3c8a8ceb284fdd19935d3d06f20a3411aecc12ebb9415cccfa3727a63",
         "7a7df4144719065a": "f60152e3c8a8ceb284fdd19935d3d06f20a3411aecc12ebb9415cccfa3727a63",
         "8238d26141caa77b": "be40a874d9fa4054d62073da3156368aafcc948df92920d2d17826c382f5ddc5",
         "89eb4d4acb229f3e": "f60152e3c8a8ceb284fdd19935d3d06f20a3411aecc12ebb9415cccfa3727a63",
@@ -409,6 +442,7 @@
     },
     "tight-scan-no-dpi-mcfadden-back.jpg": {
       "alpha": {
+        "0247589b76fdb227": "460f26d700ee86dc0822298776a16f120054bae419bab1de5596146e440b94de",
         "7a7df4144719065a": "460f26d700ee86dc0822298776a16f120054bae419bab1de5596146e440b94de",
         "8238d26141caa77b": "460f26d700ee86dc0822298776a16f120054bae419bab1de5596146e440b94de",
         "89eb4d4acb229f3e": "460f26d700ee86dc0822298776a16f120054bae419bab1de5596146e440b94de",
@@ -2580,6 +2614,203 @@
         "graph_optimization_level": "default"
       },
       "started_at": "2026-11-10T16:34:28Z"
+    },
+    {
+      "elapsed_s": 346.5,
+      "fingerprint": "0247589b76fdb227",
+      "host": {
+        "cpu_flag_list": [
+          "3dnowprefetch",
+          "abm",
+          "adx",
+          "aes",
+          "apic",
+          "arat",
+          "arch_capabilities",
+          "avx",
+          "avx2",
+          "avx512_vnni",
+          "avx512bw",
+          "avx512cd",
+          "avx512dq",
+          "avx512f",
+          "avx512vl",
+          "bmi1",
+          "bmi2",
+          "clflush",
+          "clflushopt",
+          "clwb",
+          "cmov",
+          "constant_tsc",
+          "cpuid",
+          "cx16",
+          "cx8",
+          "de",
+          "erms",
+          "f16c",
+          "fma",
+          "fpu",
+          "fsgsbase",
+          "fxsr",
+          "hle",
+          "ht",
+          "hypervisor",
+          "ibpb",
+          "ibrs",
+          "ibrs_enhanced",
+          "invpcid",
+          "lahf_lm",
+          "lm",
+          "mca",
+          "mce",
+          "md_clear",
+          "mmx",
+          "movbe",
+          "mpx",
+          "msr",
+          "mtrr",
+          "nonstop_tsc",
+          "nopl",
+          "nx",
+          "pae",
+          "pat",
+          "pcid",
+          "pclmulqdq",
+          "pdpe1gb",
+          "pge",
+          "pni",
+          "popcnt",
+          "pse",
+          "pse36",
+          "rdrand",
+          "rdseed",
+          "rdtscp",
+          "rep_good",
+          "rtm",
+          "sep",
+          "smap",
+          "smep",
+          "ss",
+          "ssbd",
+          "sse",
+          "sse2",
+          "sse4_1",
+          "sse4_2",
+          "ssse3",
+          "stibp",
+          "syscall",
+          "tsc",
+          "tsc_adjust",
+          "tsc_known_freq",
+          "vme",
+          "x2apic",
+          "xgetbv1",
+          "xsave",
+          "xsavec",
+          "xsaveopt",
+          "xsaves",
+          "xtopology"
+        ],
+        "nproc": 5,
+        "proc_version": "Linux version 6.9.12 (root@google) (gcc-14 (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Wed Nov 4 05:11:59 UTC 2026"
+      },
+      "impl": "direct",
+      "inference_impl": "birefnet-direct-ort/rembg-2.0.78-predict/v1",
+      "md5_matches_rembg": true,
+      "model_file": {
+        "bytes": 1037756918,
+        "md5": "713efb3024948d5541de4f447b0335ad",
+        "path": "/opt/birefnet/birefnet-general.onnx",
+        "sha256": "654803ef247a8a93536a359cf091e3bf620153a6bd116bd4024a90ebffc0496e"
+      },
+      "packages": {
+        "Jinja2": "3.1.6",
+        "MarkupSafe": "3.0.4",
+        "PyYAML": "6.0.3",
+        "accelerate": "1.2.1",
+        "annotated-doc": "0.0.5",
+        "annotated-types": "0.8.0",
+        "anthropic": "1.15.0",
+        "anyio": "4.16.0",
+        "certifi": "2026.10.23",
+        "cffi": "2.1.1",
+        "charset-normalizer": "3.5.2",
+        "click": "8.5.1",
+        "cryptography": "50.0.2",
+        "docstring_parser": "0.18.0",
+        "fastapi": "0.143.3",
+        "filelock": "4.2.10",
+        "flatbuffers": "25.12.19",
+        "fsspec": "2026.9.0",
+        "google-api-core": "2.44.0",
+        "google-auth": "2.62.2",
+        "google-cloud-core": "2.8.0",
+        "google-cloud-storage": "3.17.1",
+        "google-cloud-vision": "3.16.0",
+        "google-crc32c": "1.9.0",
+        "google-resumable-media": "2.11.0",
+        "googleapis-common-protos": "1.76.0",
+        "grpcio": "1.85.1",
+        "grpcio-status": "1.85.1",
+        "h11": "0.16.0",
+        "hf-xet": "1.8.0",
+        "httpcore2": "2.16.0",
+        "httptools": "0.9.0",
+        "httpx2": "2.16.0",
+        "huggingface_hub": "0.36.2",
+        "idna": "3.20",
+        "jiter": "0.19.0",
+        "mpmath": "1.3.0",
+        "networkx": "3.7",
+        "numpy": "2.5.4",
+        "onnxruntime": "1.31.0",
+        "opencv-python-headless": "4.10.0.84",
+        "opentelemetry-api": "1.45.2",
+        "packaging": "26.3",
+        "pillow": "12.3.0",
+        "pip": "25.0.1",
+        "proto-plus": "1.29.0",
+        "protobuf": "7.36.2",
+        "psutil": "7.2.2",
+        "pyasn1": "0.6.5",
+        "pyasn1_modules": "0.4.2",
+        "pycparser": "3.12",
+        "pydantic": "2.14.1",
+        "pydantic_core": "2.50.1",
+        "python-dotenv": "1.2.4",
+        "python-multipart": "0.0.32",
+        "regex": "2026.11.9",
+        "requests": "2.34.2",
+        "safetensors": "0.8.0",
+        "setuptools": "84.2.1",
+        "sniffio": "1.3.1",
+        "starlette": "1.10.0",
+        "sympy": "1.13.1",
+        "tokenizers": "0.21.4",
+        "torch": "2.5.1+cpu",
+        "tqdm": "4.70.1",
+        "transformers": "4.47.1",
+        "truststore": "0.10.5",
+        "typing-inspection": "0.4.5",
+        "typing_extensions": "4.16.0",
+        "urllib3": "2.8.0",
+        "uvicorn": "0.54.0",
+        "uvloop": "0.23.0",
+        "watchfiles": "1.3.0",
+        "websockets": "17.4"
+      },
+      "pre_post_spec": "{\"alpha\":\"mask\",\"post\":{\"activation\":\"sigmoid\",\"cast\":\"uint8 truncate\",\"channel\":0,\"mode\":\"L\",\"normalize\":\"minmax\",\"resize\":\"LANCZOS to input size\",\"scale\":255},\"pre\":{\"arith\":\"float64\",\"cast\":\"float32\",\"convert\":\"RGB\",\"layout\":\"NCHW\",\"mean\":[0.485,0.456,0.406],\"resample\":\"LANCZOS\",\"resize\":[1024,1024],\"scale\":\"x / max(max(x), 1e-6)\",\"std\":[0.229,0.224,0.225]},\"source\":\"rembg==2.0.78 BaseSession.normalize + BiRefNetSessionGeneral.predict + naive_cutout alpha\",\"spec\":1}",
+      "providers": [
+        "CPUExecutionProvider"
+      ],
+      "session": {
+        "enable_cpu_mem_arena": false,
+        "graph_optimization_level": "ORT_ENABLE_ALL",
+        "inter_op_num_threads": 0,
+        "intra_op_num_threads": 0,
+        "logger_severity": 3
+      },
+      "started_at": "2026-11-10T18:52:46Z"
     }
   ],
   "tolerance": {

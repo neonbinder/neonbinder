@@ -21,16 +21,33 @@ import threading
 from collections import Counter
 from dataclasses import dataclass
 from io import BytesIO
+from types import ModuleType
+from typing import TYPE_CHECKING
 
-from google.api_core.exceptions import ServiceUnavailable
-from google.cloud import vision
 from PIL import Image
 
 from app.devcache import vision as devcache_vision
 from app.exif import EXIF_ORIENTATION_TAG
 from app.timing import increment_current
 
+if TYPE_CHECKING:
+    from google.cloud import vision
+
 logger = logging.getLogger(__name__)
+
+
+def vision_sdk() -> ModuleType:
+    """`google.cloud.vision`, imported on first use (NEO-484 C6).
+
+    The Vision SDK (and the gRPC stack under it) is a large part of a cold
+    `import app.main` on gen2, where image layers are read lazily, and nothing
+    at boot needs it. `app.prewarm` imports it in the background after the
+    startup hook, so a request usually finds it already loaded.
+    """
+    from google.cloud import vision
+
+    return vision
+
 
 # Vision documents a 20 MB image limit and a 10 MB JSON request limit, while an
 # entry here can reach 32 MiB, so a large photo is shrunk before it is sent.
@@ -77,7 +94,7 @@ def get_vision_client() -> vision.ImageAnnotatorClient:
     if _client is None:
         with _client_lock:
             if _client is None:
-                _client = vision.ImageAnnotatorClient()
+                _client = vision_sdk().ImageAnnotatorClient()
     return _client
 
 
@@ -95,7 +112,7 @@ def _replace_vision_client(stale: vision.ImageAnnotatorClient) -> vision.ImageAn
     global _client
     with _client_lock:
         if _client is stale or _client is None:
-            _client = vision.ImageAnnotatorClient()
+            _client = vision_sdk().ImageAnnotatorClient()
         return _client
 
 
@@ -166,7 +183,9 @@ def _shrink_for_vision(image_bytes: bytes) -> bytes:
 
 def _text_detection(image_bytes: bytes, client: vision.ImageAnnotatorClient | None):
     """The one Vision RPC, with the shared-client reconnect (module note)."""
-    image = vision.Image(content=image_bytes)
+    from google.api_core.exceptions import ServiceUnavailable
+
+    image = vision_sdk().Image(content=image_bytes)
     if client is not None:
         return client.text_detection(image=image)
 

@@ -19,6 +19,7 @@ from app import cropper
 from app.classify import ClassifyError, ClassifyResult
 from app.main import MAX_IMAGE_BYTES, _verify_baked_weights, app
 from app.orient import OrientationResult
+from tests.unit._prewarm_gate import hold_prewarm
 
 client = TestClient(app)
 
@@ -618,6 +619,12 @@ class TestStartupWeightsGate:
     loudly when the baked BiRefNet model is missing and load the ORT session
     when it is present (NEO-484: no warm-up inference). Unit runs never set
     the flag."""
+
+    @pytest.fixture(autouse=True)
+    def _held_prewarm(self, monkeypatch):
+        # The hook starts the SDK prewarm thread (C6); hold it so no real
+        # background import outlives the test (see `_prewarm_gate`).
+        yield from hold_prewarm(monkeypatch)
 
     @staticmethod
     def _counting_load(monkeypatch) -> list[bool]:

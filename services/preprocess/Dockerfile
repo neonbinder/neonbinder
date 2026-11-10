@@ -28,12 +28,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     REQUIRE_BAKED_WEIGHTS=1
 # REQUIRE_BAKED_WEIGHTS: the heavy role's startup fails loudly if the baked
 # model is gone. Nothing at runtime can download one (there is no rembg or
-# pooch in the image), so a missing model is a broken image. ORT threading is
-# left at its default (all vCPUs per inference): capping it to 1 thread pushed
-# a single BiRefNet pass past the smoke timeout, and under concurrency the
-# per-request latency converges to the same either way — oversubscription only
-# costs scheduler overhead, while the cap costs 4x on every lightly-loaded
-# request.
+# pooch in the image), so a missing model is a broken image. ORT intra-op
+# threads are pinned to 4 in code (`birefnet.INTRA_OP_NUM_THREADS`, NEO-484):
+# gen2 reports 5-6 CPUs against the 4-vCPU quota, and 4 measured bit-identical
+# masks and 14-15% faster inference than the default. (A cap of 1 thread, tried
+# earlier, pushed a single BiRefNet pass past the smoke timeout.)
 
 WORKDIR /app
 
@@ -52,6 +51,11 @@ RUN useradd --create-home --shell /bin/bash appuser
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# The service imports these SDKs on first use, not at boot (NEO-484 C6,
+# `app/prewarm.py`), so a boot no longer proves they import. Prove it here
+# instead: an SDK that installs but cannot import fails the build.
+RUN python -c "import anthropic, google.cloud.storage, google.cloud.vision"
 
 # Pre-download the SAM model (~375MB weights + processor config) into the
 # image at build time. Baking it in trades image size for deterministic
@@ -81,6 +85,13 @@ RUN python /tmp/bake_birefnet.py \
     && chmod -R a+rX-w "$BIREFNET_HOME"
 
 COPY --chown=appuser:appuser app ./app
+
+# Compile app/ to bytecode now, as root, so a cold start loads .pyc files
+# instead of compiling ~30 modules (PYTHONDONTWRITEBYTECODE only stops writes
+# at runtime; compileall still writes here). The __pycache__ directories are
+# root-owned and made read-only in the same RUN, like the model directories.
+RUN python -m compileall -q app \
+    && find app -type d -name __pycache__ -exec chmod -R a+rX-w {} +
 
 USER appuser
 

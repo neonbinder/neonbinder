@@ -107,6 +107,12 @@ STD: Final[tuple[float, float, float]] = (0.229, 0.224, 0.225)
 # rembg sets this once at import (`rembg/bg.py`): warnings and info off.
 ORT_LOGGER_SEVERITY: Final[int] = 3
 GRAPH_OPTIMIZATION_LEVEL: Final[str] = "ORT_ENABLE_ALL"
+# Intra-op threads per inference (NEO-484, Jason 2026-11-10). gen2 reports 5-6
+# CPUs against a 4-vCPU quota, so ORT's default (one thread per reported CPU)
+# oversubscribed. Measured on 16 gen2 tasks: masks bit-identical to the default
+# and to the parity goldens on every host class, and 14-15% faster on Intel
+# 2.0 GHz and Milan. Only intra-op was measured; inter-op keeps the rembg rule.
+INTRA_OP_NUM_THREADS: Final[int] = 4
 
 # A canonical description of what `preprocess`/`postprocess` do, for the cache
 # fingerprint. A string (canonical JSON) so it is immutable and hashes as-is.
@@ -185,8 +191,9 @@ def weights_sha256() -> str | None:
 def _omp_threads() -> int:
     """rembg's `new_session` OMP_NUM_THREADS rule: the value, else ORT's default (0).
 
-    rembg applies it to both thread pools when they are left at 0, which they
-    always are here. A malformed value raises, as it did in rembg.
+    rembg applied it to both thread pools; here it sets only inter-op, since
+    intra-op is pinned to `INTRA_OP_NUM_THREADS`. A malformed value raises, as
+    it did in rembg.
     """
     raw = os.environ.get("OMP_NUM_THREADS")
     return int(raw) if raw is not None else 0
@@ -201,14 +208,15 @@ def session_options_spec() -> dict[str, Any]:
     - The CPU memory arena is off: with it, ORT kept every inference's peak
       allocation for the process lifetime (~8 GB after one pass), which
       OOM-killed an 8Gi container on its first real request.
-    - Thread counts mirror rembg's OMP_NUM_THREADS handling.
+    - Intra-op threads are pinned to `INTRA_OP_NUM_THREADS` (4), whatever
+      OMP_NUM_THREADS says; inter-op keeps rembg's OMP_NUM_THREADS rule.
+      The dict feeds the B cache key, so a change here starts the cache over.
     """
-    threads = _omp_threads()
     return {
         "enable_cpu_mem_arena": False,
         "graph_optimization_level": GRAPH_OPTIMIZATION_LEVEL,
-        "intra_op_num_threads": threads,
-        "inter_op_num_threads": threads,
+        "intra_op_num_threads": INTRA_OP_NUM_THREADS,
+        "inter_op_num_threads": _omp_threads(),
         "logger_severity": ORT_LOGGER_SEVERITY,
     }
 

@@ -171,6 +171,11 @@ class TestKey:
         monkeypatch.setenv("OMP_NUM_THREADS", "2")
         assert db.cache_key(_padded()) != before
 
+    def test_intra_op_thread_change_misses(self, home, monkeypatch):
+        before = db.cache_key(_padded())
+        monkeypatch.setattr(birefnet, "INTRA_OP_NUM_THREADS", 1)
+        assert db.cache_key(_padded()) != before
+
     @pytest.mark.parametrize("dist", ["onnxruntime", "Pillow", "numpy"])
     def test_each_version_change_misses(self, home, monkeypatch, dist):
         before = db.cache_key(_padded())

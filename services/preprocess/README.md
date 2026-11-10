@@ -486,7 +486,14 @@ service never used.
    `<model>.onnx.sha256` (the B mask-cache key) and
    `<model>.onnx.provenance.json`.
 
-Runtime loads the file at `ORT_ENABLE_ALL` with the CPU arena off.
+Runtime loads the file at `ORT_ENABLE_ALL` with the CPU arena off and four
+intra-op threads (`INTRA_OP_NUM_THREADS`): gen2 reports 5-6 CPUs against a
+4-vCPU quota, and 4 threads gave bit-identical masks on every host class and
+14-15% faster inference than ORT's default. Inter-op keeps rembg's
+`OMP_NUM_THREADS` rule. The session options feed the B cache key, so a change
+to them starts that cache over; they are not part of the parity fingerprint
+key, so a thread change that moved a mask would fail L2's exact check on a
+recorded host rather than drop it to tolerance.
 `get_session` refuses a model whose provenance names another onnxruntime
 version or model, so an onnxruntime bump means rebuilding the image. The model
 directory is root-owned and read-only.
@@ -529,8 +536,54 @@ model, the transcription or the fixtures:
 3. Run `golden_masks.py hash <runs…> --goldens-from <a gen1 run> --out tests/parity/goldens --tolerance T,F,N`
    and commit the result.
 
+**Recording a new host.** When a run on a CPU type the manifest has not seen
+matches the goldens (M5 does this with the PR image), add its fingerprint
+without touching the PNGs: rerun step 3 with every run the manifest already
+lists plus the new one, keeping the same `--goldens-from` run and tolerance.
+The PNGs are copied from that run, so they come out byte-identical, and the
+manifest gains the new fingerprint and run. Check both before committing.
+
 Dependabot ignores the oracle-only packages; bump them by hand, together with
 the goldens.
+
+## Cold start: deferred SDK imports (NEO-484)
+
+The startup hook writes one `cold_start` JSON line per process through the
+bare-JSON `timing` logger: role, host facts (`exec_env`, `isa`, `cpu_model`,
+`nproc`), `main_module_import_s`, `session_load_s`, `startup_hook_s`,
+`process_age_at_ready_s` and `prewarm`. `scripts/cold-start-report.py` at the
+repo root joins it with Cloud Run's start and probe lines.
+
+On gen2, image layers are read lazily, so a cold import waits on disk. The
+Anthropic, Cloud Vision and Cloud Storage SDKs (with the gRPC stack under them)
+were about 2,800 of the ~3,400 modules `import app.main` loaded, and
+`anthropic` alone was the bulk of the slow starts. None is needed to pass the
+startup probe, so:
+
+- **Each consumer imports its SDK on first use** (`classify.anthropic_sdk`,
+  `orient.vision_sdk`, the storage client in `app.jobs.gcs`).
+  `tests/unit/test_import_contract.py` fails if `import app.main` brings any of
+  them back, or starts the prewarm thread.
+- **The startup hook imports them in the background.** Its first act, on
+  every role, is `app.prewarm.start()`: a daemon thread imports storage, then
+  Vision, then Anthropic, while the heavy role loads its ORT session. A request
+  that needs an SDK the thread is still importing waits on that module's
+  import lock and then gets the finished module. Nothing ever waits for the
+  thread itself; `tests/unit/test_prewarm.py` covers the lock hand-off and a
+  real concurrent import of all three in a fresh interpreter.
+- **Logs.** `cold_start.prewarm` is the thread's progress when the hook
+  returned (`state`, `elapsed_s`, `imported_s` per module, `failed`), and the
+  thread writes its own `{"msg":"prewarm",...}` line with the same fields when
+  it finishes.
+- **Bytecode.** The image compiles `app/` at build (`python -m compileall`,
+  root-owned, read-only), so a cold start loads `.pyc` files rather than
+  compiling the service's own modules. `PYTHONDONTWRITEBYTECODE` still stops
+  any write at runtime.
+- **A broken SDK no longer fails the boot.** Its ImportError would reach the
+  first request that needs it instead, and the prewarm line lists it under
+  `failed`. Two checks stand in front of that: the image build imports all
+  three SDKs (a `RUN` right after `pip install`), and the deploy smokes'
+  `/process` and `/crop` calls reach Vision and Anthropic before traffic moves.
 
 ## Local dev
 

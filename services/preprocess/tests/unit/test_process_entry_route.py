@@ -1325,7 +1325,7 @@ class TestTimingLine:
             return c
 
         monkeypatch.setattr(orient, "_client", None)
-        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _factory)
+        monkeypatch.setattr(orient.vision_sdk(), "ImageAnnotatorClient", _factory)
         monkeypatch.setattr("app.cropper.tiered.fast_tiered_verdict", lambda b: (b, "frame"))
         _tracking_classify(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")

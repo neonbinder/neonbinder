@@ -47,7 +47,7 @@ from fastapi.responses import JSONResponse
 from PIL import UnidentifiedImageError
 from pydantic import BaseModel, Field, ValidationError
 
-from app import cropper
+from app import cropper, prewarm
 from app.classify import ClassifyError
 from app.copy_photos import CopyPhotoTooLargeError, derive_copy_photos
 from app.cropper import (
@@ -314,8 +314,9 @@ def _emit_cold_start(*, role: str, session_load_s: float | None, hook_started: f
         body["session_load_s"] = session_load_s
         body["startup_hook_s"] = round(time.perf_counter() - hook_started, 3)
         body["process_age_at_ready_s"] = _process_age_s()
-        # C6 (deferred SDK imports) fills this in; null until it lands.
-        body["prewarm"] = None
+        # C6: how far the background SDK import (`app.prewarm`) had got when
+        # the hook returned; the thread writes its own `prewarm` line when done.
+        body["prewarm"] = prewarm.snapshot()
         timing_logger.info(json.dumps(body, separators=(",", ":")))
     except Exception:  # noqa: BLE001 - a log line must never take the container down
         logger.exception("startup: could not write the cold_start line")
@@ -353,6 +354,11 @@ def _verify_baked_weights() -> None:
     hook_started = time.perf_counter()
     role = _preprocess_role()
     session_load_s: float | None = None
+    # C6 (NEO-484): import the cloud SDKs on a daemon thread while the hook
+    # carries on, so they overlap the session load and the probe instead of
+    # sitting inside `main_module_import_s`. Started first, on every role and
+    # path: the fast role needs the SDKs as much as the heavy one does.
+    prewarm.start()
     if role != ROLE_HEAVY:
         logger.info(
             "startup: %s=%s — skipping baked-weight check and model load",

@@ -65,3 +65,5 @@
 - [Recording hits stage career teams by QID](reference_recording_hits_stage_career_teams_by_qid.md) — fixture hits stage dated clubs looked up with knownQid; null/other QID = refused miss; capture team+league by id
 - [--noconftest when a sibling breaks conftest](reference_noconftest_when_a_sibling_breaks_conftest.md) — a deleted attr in a shared autouse fixture errors every test; run your files with --noconftest, rerun the gate later
 - [Dry-run a live itest against fakes](reference_dry_run_a_live_itest_against_fakes.md) — patch storage.Client/RPC/loader in a scratch module, star-import the test, --noconftest; -rs shows no skips
+- [Preprocess cold import cost is module count](reference_preprocess_cold_import_cost_is_module_count.md) — gen2 lazy layers: count modules, not local ms; SDKs import on first use; hold prewarm threads in tests
+- [Agent Bash is zsh: no word split](reference_agent_bash_is_zsh_no_word_split.md) — unquoted $VAR of paths is one arg; wrap list/array commands in bash -c; perl alarm for timeouts

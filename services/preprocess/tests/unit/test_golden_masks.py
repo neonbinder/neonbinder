@@ -203,6 +203,20 @@ def test_host_fingerprint_keys_on_the_source_model():
     assert set(fp["versions"]) == {"onnxruntime", "Pillow", "numpy", "opencv-python-headless"}
 
 
+def test_fingerprint_key_ignores_the_session_thread_count(monkeypatch):
+    # The goldens record exact hashes per fingerprint key. If the key took in
+    # the session options, a thread-count change (NEO-484: intra-op pinned to
+    # 4) would give every recorded host a new key, and L2 would quietly drop
+    # from exact to tolerance mode. A thread change that moved the bits must
+    # instead show up as an exact-mode mismatch on a recorded host.
+    from app.cropper import birefnet
+
+    model = {"name": "birefnet-general", "source": {"sha256": "s" * 64, "md5": "m" * 32}}
+    before = gm.fingerprint_key(gm.host_fingerprint(model))
+    monkeypatch.setattr(birefnet, "INTRA_OP_NUM_THREADS", 1)
+    assert gm.fingerprint_key(gm.host_fingerprint(model)) == before
+
+
 GEN1_CPUINFO = """\
 processor\t: 0
 vendor_id\t: GenuineIntel

@@ -7,6 +7,15 @@ seconds; the HEAVY role creates its ORT session in the startup hook, where the
 `cold_start` line measures it as `session_load_s` rather than hiding it inside
 `main_module_import_s`.
 
+C6 adds the cloud SDKs. `anthropic`, `google.cloud.vision` and
+`google.cloud.storage` (with the gRPC stack and `google.api_core` under them)
+were most of a cold `import app.main` on gen2, where image layers are read
+lazily: about 2,800 of its 3,400 modules, `anthropic` alone ~2,300. Each
+consumer now imports its SDK on first use, and the startup hook imports them on
+the `app.prewarm` thread. The import must not start that thread either: a
+thread spawned during an import that then needs an import lock is the classic
+import deadlock.
+
 The check runs `import app.main` in a fresh interpreter, because this test
 process has long since imported whatever other tests touched.
 """
@@ -24,12 +33,23 @@ import pytest
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 
 # Never imported by `import app.main`, on either role.
-FORBIDDEN_AT_IMPORT = ("onnxruntime", "rembg", "pymatting", "numba")
+MODEL_RUNTIME = ("onnxruntime", "rembg", "pymatting", "numba")
+# Imported on first use or by the prewarm thread (C6), never by the import.
+CLOUD_SDKS = (
+    "anthropic",
+    "google.cloud.vision",
+    "google.cloud.storage",
+    "google.api_core",
+    "grpc",
+)
+FORBIDDEN_AT_IMPORT = MODEL_RUNTIME + CLOUD_SDKS
 
 _PROBE = """
-import json, sys
+import json, sys, threading
 import app.main
-print(json.dumps(sorted(m for m in {forbidden!r} if m in sys.modules)))
+found = sorted(m for m in {forbidden!r} if m in sys.modules)
+found += sorted("thread:" + t.name for t in threading.enumerate() if t.name == "sdk-prewarm")
+print(json.dumps(found))
 """
 
 
@@ -56,11 +76,20 @@ def test_importing_app_main_imports_no_model_runtime(role):
     assert _imported_after_main(role) == []
 
 
-def test_the_probe_can_see_an_import():
+@pytest.mark.parametrize(
+    ("module", "statement"),
+    [
+        ("onnxruntime", "import onnxruntime"),
+        ("anthropic", "from app.classify import anthropic_sdk; anthropic_sdk()"),
+        ("google.cloud.vision", "from app.orient import vision_sdk; vision_sdk()"),
+        ("google.cloud.storage", "import google.cloud.storage"),
+    ],
+)
+def test_the_probe_can_see_an_import(module, statement):
     # Guard against a probe that could never fail: the same subprocess shape
-    # does report onnxruntime once something imports it.
+    # does report each module once something imports it.
     env = {**os.environ, "PYTHONPATH": str(SERVICE_ROOT)}
-    probe = "import json, sys, onnxruntime; print(json.dumps('onnxruntime' in sys.modules))"
+    probe = f"import json, sys; {statement}; print(json.dumps({module!r} in sys.modules))"
     done = subprocess.run(
         [sys.executable, "-c", probe],
         cwd=SERVICE_ROOT,
@@ -70,6 +99,7 @@ def test_the_probe_can_see_an_import():
         timeout=120,
         check=False,
     )
-    if done.returncode != 0:
+    if done.returncode != 0 and module == "onnxruntime":
         pytest.skip("onnxruntime is not installed in this environment")
+    assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout.strip().splitlines()[-1]) is True
