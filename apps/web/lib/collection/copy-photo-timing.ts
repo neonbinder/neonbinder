@@ -18,6 +18,10 @@
  * Such a save carries the write's time (`addLineItemMs`), so the line covers
  * the whole wait from the press, and its `resize` phase is only what was left
  * of the resize once the write had answered.
+ *
+ * A photo picked on a line whose add is still in flight waits for that write's
+ * answer before it can be saved; that wait is the `line` phase, and the resize
+ * runs beside it.
  */
 
 import { e2eDiagnostic } from "@/lib/observability/e2e-diagnostics";
@@ -28,7 +32,7 @@ export const COPY_PHOTO_TIMING_EVENT = "copy_photo_save_timing";
 /** A save slower than this is reported even when it went through first time. */
 export const SLOW_SAVE_MS = 3_000;
 
-export type CopyPhotoPhase = "resize" | "startUpload" | "finishUpload";
+export type CopyPhotoPhase = "line" | "resize" | "startUpload" | "finishUpload";
 
 /** One file's PUT: how long it took in all, its size, and every try. */
 export interface CopyPhotoPutTiming {
@@ -85,6 +89,7 @@ export function flattenCopyPhotoTiming(
   const flat: Record<string, string | number | boolean | null> = {
     outcome: timing.outcome,
     total_ms: timing.totalMs,
+    line_ms: timing.phases.line ?? null,
     resize_ms: timing.phases.resize ?? null,
     start_upload_ms: timing.phases.startUpload ?? null,
     finish_upload_ms: timing.phases.finishUpload ?? null,

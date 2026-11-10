@@ -2791,16 +2791,22 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
       useCardImages,
       preparePhoto: prepareCopyPhoto,
       async addPhoto(copy, side, file, context) {
-        if (isOptimisticId(copy.id)) throw new Error("That copy is still saving. Try again in a moment.");
         // NEO-466: every phase is timed; a slow, retried or failed save logs one line.
         const timer = startCopyPhotoTimer(undefined, undefined, context?.addLineItemMs);
+        // The resize starts now, beside any wait for the line below. A resize
+        // `preparePhoto` started at the Add press is reused, so this waits only
+        // for what is left of it.
+        const resizing = takeResizedPhoto(file);
+        resizing.catch(() => undefined);
         try {
-          // A resize `preparePhoto` started at the Add press is reused, so this
-          // waits only for what is left of it.
-          const resized = await timer.phase("resize", () => takeResizedPhoto(file));
+          // A photo picked on a line whose add is still in flight waits for
+          // that write's answer, then goes to the real id (as every other
+          // write on the line does).
+          const line = isOptimisticId(copy.id) ? await timer.phase("line", () => landedCopy(copy)) : copy;
+          const resized = await timer.phase("resize", () => resizing);
           const started = await timer.phase("startUpload", () =>
             startUpload({
-              copyId: copy.id as RawCopy["_id"],
+              copyId: line.id as RawCopy["_id"],
               side,
               contentType: resized.contentType,
               imageBytes: resized.image.size,
@@ -2847,10 +2853,12 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
           throw error;
         }
       },
-      async removePhoto(copy, side) {
+      async removePhoto(drawn, side) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         await remove({ copyId: copy.id as RawCopy["_id"], side });
       },
-      async swapPhotos(copy) {
+      async swapPhotos(drawn) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         await swap({ copyId: copy.id as RawCopy["_id"] });
       },
     }),

@@ -631,7 +631,7 @@ describe("every write's undo is the inverse write", () => {
     expect(writes()[0].args).not.toHaveProperty("keepsOwnLine");
     const result = await a.addLineItem(CARD, { quantity: 1, acquiredAt: "2026-11-01", notes: "" }, { keepsOwnLine: true });
     expect(writes()[1].args).toMatchObject({ cardId: "card1", keepsOwnLine: true });
-    // The answer's id, never a placeholder: `addPhoto` refuses those.
+    // The answer's id, never a placeholder.
     expect(result.copyId).toBe("new1");
     await act(result.undo);
     expect(writes()[2]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
@@ -787,6 +787,151 @@ describe("a write on a line drawn ahead of the server waits for its real id", ()
     await expect(first).rejects.toThrow("refused");
     await expect(trade).rejects.toThrow(UNSAVED_LINE_MESSAGE);
     expect(writes().map((w) => w.name)).toEqual(["collection:moveCopy"]);
+  });
+
+  describe("a copy photo on a line drawn by an add (NEO-466)", () => {
+    const STARTED = {
+      photoId: "photo1",
+      imageUploadUrl: "https://r2.example/image?sig=a",
+      thumbUploadUrl: "https://r2.example/thumb?sig=b",
+    };
+    /** Presses addHave with its answer held, and reads the row it drew. */
+    function addDrawn() {
+      local.set("collection:copiesOf", { cardId: "card1" }, []);
+      let land!: (r: unknown) => void;
+      let refuse!: (e: Error) => void;
+      const answer = new Promise((resolve, reject) => {
+        land = resolve;
+        refuse = reject;
+      });
+      calls.answers.set("collection:addHave", () => answer);
+      const { result } = renderHook(() => ({ actions: useCollectionActions(), photos: useCopyPhotos()! }), { wrapper });
+      const pressed = result.current.actions.addHave(CARD);
+      const rows = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof RAW)[];
+      expect(rows).toHaveLength(1);
+      expect(isOptimisticId(rows[0]._id)).toBe(true);
+      const line: Copy = { ...COPY, id: rows[0]._id, quantity: 1 };
+      return { photos: result.current.photos, pressed, line, land, refuse };
+    }
+    const file = () => new File(["x"], "card.jpg", { type: "image/jpeg" });
+    const sent = (name: string) => calls.list.filter((c) => c.name === name);
+    const startCalls = () => {
+      const seen: unknown[] = [];
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => {
+        seen.push(a);
+        return STARTED;
+      });
+      actionAnswers.set("copyPhotos:finishUpload", () => null);
+      return seen;
+    };
+
+    it("holds startUpload until the add answers, then sends the real id; no placeholder reaches an action", async () => {
+      const seen = startCalls();
+      const xhrs = installFakeXhr();
+      const { photos, pressed, line, land } = addDrawn();
+      const saving = photos.addPhoto(line, "front", file());
+      await act(async () => {});
+      expect(seen).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+      });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(seen).toEqual([expect.objectContaining({ copyId: "new1", side: "front" })]);
+      expect(seen.some((a) => isOptimisticId(String((a as { copyId: string }).copyId)))).toBe(false);
+    });
+
+    it("when the add is refused, the save fails with the unsaved-line message, sends nothing, and leaves no unhandled rejection", async () => {
+      const seen = startCalls();
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { photos, pressed, line, refuse } = addDrawn();
+        const saving = photos.addPhoto(line, "front", file());
+        const failed = saving.catch((e: unknown) => e);
+        const refused = pressed.catch((e: unknown) => e);
+        refuse(new Error("refused"));
+        expect(await refused).toMatchObject({ message: "refused" });
+        expect(await failed).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(seen).toEqual([]);
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        warn.mockRestore();
+      }
+    });
+
+    it("starts the resize at once, beside the add's write, and the save reuses that one resize", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      const seen = startCalls();
+      const xhrs = installFakeXhr();
+      const { photos, pressed, line, land } = addDrawn();
+      const held = file();
+      photos.preparePhoto!(held);
+      const saving = photos.addPhoto(line, "front", held);
+      await act(async () => {});
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+      });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+    });
+
+    it("starts the resize before the add answers even when nothing prepared it", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      startCalls();
+      const { photos, pressed, line, refuse } = addDrawn();
+      const failed = photos.addPhoto(line, "front", file()).catch((e: unknown) => e);
+      await act(async () => {});
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      refuse(new Error("refused"));
+      await pressed.catch(() => {});
+      await failed;
+    });
+
+    it("removePhoto and swapPhotos wait for the add, then send the real id", async () => {
+      const { photos, pressed, line, land } = addDrawn();
+      const removing = photos.removePhoto!(line, "front");
+      const swapping = photos.swapPhotos!(line);
+      await act(async () => {});
+      expect(sent("copyPhotos:remove")).toEqual([]);
+      expect(sent("copyPhotos:swap")).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+        await removing;
+        await swapping;
+      });
+      expect(sent("copyPhotos:remove")).toEqual([{ name: "copyPhotos:remove", args: { copyId: "new1", side: "front" } }]);
+      expect(sent("copyPhotos:swap")).toEqual([{ name: "copyPhotos:swap", args: { copyId: "new1" } }]);
+    });
+
+    it("removePhoto and swapPhotos on an add that was refused send nothing and say so", async () => {
+      const { photos, pressed, line, refuse } = addDrawn();
+      const removing = photos.removePhoto!(line, "front").catch((e: unknown) => e);
+      const swapping = photos.swapPhotos!(line).catch((e: unknown) => e);
+      refuse(new Error("refused"));
+      await pressed.catch(() => {});
+      expect(await removing).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+      expect(await swapping).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+      expect(sent("copyPhotos:remove")).toEqual([]);
+      expect(sent("copyPhotos:swap")).toEqual([]);
+    });
   });
 
   it("gives a write's drawn line the same placeholder every time Convex replays its optimistic update", () => {

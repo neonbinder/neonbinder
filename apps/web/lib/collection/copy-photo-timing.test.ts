@@ -64,6 +64,14 @@ describe("copy photo timing (NEO-466)", () => {
       expect(shouldReportCopyPhotoTiming(timing({ outcome: "failed", totalMs: 5 }))).toBe(true);
     });
 
+    it("counts a long wait for the line toward slow, though no other phase was", () => {
+      const waited = timing({ totalMs: SLOW_SAVE_MS + 1, phases: { line: SLOW_SAVE_MS, resize: 1, startUpload: 1, finishUpload: 1 } });
+      expect(shouldReportCopyPhotoTiming(waited)).toBe(true);
+      reportCopyPhotoTiming(waited);
+      expect(JSON.parse(String(warn.mock.calls[0][0])).phases.line).toBe(SLOW_SAVE_MS);
+      expect(e2eDiagnostic).toHaveBeenCalledWith(COPY_PHOTO_TIMING_EVENT, expect.objectContaining({ line_ms: SLOW_SAVE_MS }));
+    });
+
     it("counts the add's write toward slow: a quick photo after a slow add is reported", () => {
       expect(shouldReportCopyPhotoTiming(timing({ totalMs: 1_000, addLineItemMs: SLOW_SAVE_MS - 1_000 }))).toBe(false);
       expect(shouldReportCopyPhotoTiming(timing({ totalMs: 1_000, addLineItemMs: SLOW_SAVE_MS - 999 }))).toBe(true);
@@ -107,6 +115,7 @@ describe("copy photo timing (NEO-466)", () => {
       expect(flattenCopyPhotoTiming(failed)).toEqual({
         outcome: "failed",
         total_ms: 500,
+        line_ms: null,
         resize_ms: 100,
         start_upload_ms: 100,
         finish_upload_ms: 100,
@@ -124,6 +133,11 @@ describe("copy photo timing (NEO-466)", () => {
     it("carries the add's write as add_line_item_ms, and leaves it out of a save that had none", () => {
       expect(flattenCopyPhotoTiming(timing({ addLineItemMs: 2300 })).add_line_item_ms).toBe(2300);
       expect(flattenCopyPhotoTiming(timing())).not.toHaveProperty("add_line_item_ms");
+    });
+
+    it("carries the line wait as line_ms, and leaves it null on a save that never waited", () => {
+      expect(flattenCopyPhotoTiming(timing({ phases: { line: 1800, resize: 5 } })).line_ms).toBe(1800);
+      expect(flattenCopyPhotoTiming(timing()).line_ms).toBeNull();
     });
 
     it("leaves a phase that never ran as null", () => {
@@ -158,6 +172,20 @@ describe("copy photo timing (NEO-466)", () => {
       expect(done.phases).toEqual({ resize: 40, startUpload: 70 });
       expect(done).toMatchObject({ totalMs: 110, failedAt: "startUpload", errorName: "Error" });
       expect(reports).toEqual([done]);
+    });
+
+    it("records the line phase beside the others, including a wait that ends in a refusal", async () => {
+      const { clock, tick } = makeClock();
+      const timer = startCopyPhotoTimer(clock, () => {});
+      await expect(
+        timer.phase("line", async () => {
+          tick(900);
+          throw new Error("That line didn't save");
+        }),
+      ).rejects.toThrow("didn't save");
+      const done = timer.finish("failed", new Error("x"));
+      expect(done.phases).toEqual({ line: 900 });
+      expect(done.failedAt).toBe("line");
     });
 
     it("hands each put an onAttempt that records its tries", async () => {
