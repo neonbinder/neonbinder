@@ -530,13 +530,6 @@
   outline: 2px solid var(--focus);
   outline-offset: 4px;
 }
-/* The top-loader's glint: lit in dark, a plain flash on paper. */
-[data-theme="dark"] .cb-starter-glint {
-  filter: drop-shadow(0 0 4px #00c2ff) drop-shadow(0 0 8px #ffffff);
-}
-[data-theme="light"] .cb-starter-glint path {
-  fill: #00c2ff;
-}
 @media (prefers-reduced-motion: reduce) {
   .cb-starter-art {
     transition: none;

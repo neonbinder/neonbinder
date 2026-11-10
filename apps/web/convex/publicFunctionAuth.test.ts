@@ -2227,6 +2227,7 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["dashboard.setBoard", (t) => t.query(api.dashboard.setBoard, { setId: NOT_AN_ID })],
     ["dashboard.smartChecklist", (t) => t.query(api.dashboard.smartChecklist, { containerId: NOT_AN_ID })],
     ["dashboard.newSince", (t) => t.query(api.dashboard.newSince, { sinceMs: 0 })],
+    ["dashboard.freshPulls", (t) => t.query(api.dashboard.freshPulls, { sinceMs: 0 })],
     ["dashboard.markVisit", (t) => t.mutation(api.dashboard.markVisit, {})],
     ["dashboard.couldFit", (t) => t.query(api.dashboard.couldFit, { containerId: NOT_AN_ID })],
     ["dashboard.intake", (t) => t.query(api.dashboard.intake, {})],

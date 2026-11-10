@@ -1493,6 +1493,8 @@ async function moveCounts(
  * NEO-464: every add files cards into a home (Main included: it is a binder),
  * so the line it lands on takes `filedAt`, whether the add folds or starts a
  * line (Jason, 2026-11-10: "adding cards to a binder in any way is filed").
+ * An add into a binder also brings new cards into the collection, so that
+ * line takes `addedAt` too (Fresh Pulls); an add into a box does not.
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -1522,6 +1524,8 @@ export async function addOne(
   }
   const next: StoredDetails = { ...cleaned, homeId: home._id };
   const now = Date.now();
+  // NEO-464: new cards into a binder are Fresh Pulls; into a box they are stock.
+  const added = sideOfContainer(home) === "collection" ? { addedAt: now } : {};
   const into = keepsOwnLine ? undefined : await foldTargetOf(ctx, lines, (row) => foldsInto(foldShape(row), next));
   if (into) {
     const quantity = into.quantity + next.quantity;
@@ -1529,7 +1533,7 @@ export async function addOne(
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Start a new line for the rest.`);
     }
     const previous = detailsOf(into);
-    await ctx.db.patch(into._id, { quantity, lastUpdated: now, filedAt: now });
+    await ctx.db.patch(into._id, { quantity, lastUpdated: now, filedAt: now, ...added });
     return {
       result: { copyId: into._id, merged: true, previous },
       change: changeOf(into, counted(into), counted({ ...into, quantity })),
@@ -1546,11 +1550,26 @@ export async function addOne(
     ...next,
     lastUpdated: now,
     filedAt: now,
+    ...added,
   });
   return {
     result: { copyId, merged: false },
     change: changeOf({ cardId, setId: place.setId }, null, counted(next)),
   };
+}
+
+/**
+ * NEO-464 — when cards fold from `from` into `into`, the line keeps the newer
+ * `addedAt` of the two (it now holds the newer cards): as a patch, empty when
+ * `into`'s already stands. A merge never stamps one of its own.
+ */
+export function newerAdded(
+  into: Pick<CopyRow, "addedAt">,
+  from: Pick<CopyRow, "addedAt">,
+): { addedAt?: number } {
+  if (from.addedAt === undefined) return {};
+  if (into.addedAt !== undefined && into.addedAt >= from.addedAt) return {};
+  return { addedAt: from.addedAt };
 }
 
 /**
@@ -1705,6 +1724,10 @@ export async function moveCopyCore(
   const filed = home._id !== row.homeId ? { filedAt: now } : {};
   // A part split off in the same home keeps when its cards were filed there.
   const splitFiled = home._id !== row.homeId ? filed : row.filedAt !== undefined ? { filedAt: row.filedAt } : {};
+  // NEO-464: a move never makes a card new to the collection. A part split
+  // off keeps when its cards were added; cards folding into a line keep the
+  // newer of the two (the line now holds them).
+  const splitAdded = row.addedAt !== undefined ? { addedAt: row.addedAt } : {};
   const changes: CountChange[] = [];
   let copyId: Id<"collectionCopies">;
   if (into) {
@@ -1712,7 +1735,7 @@ export async function moveCopyCore(
     if (total > MAX_COPY_QUANTITY) {
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Move fewer, or start a new line.`);
     }
-    await ctx.db.patch(into._id, { quantity: total, lastUpdated: now, ...filed });
+    await ctx.db.patch(into._id, { quantity: total, lastUpdated: now, ...filed, ...newerAdded(into, row) });
     changes.push(changeOf(into, counted(into), counted({ ...into, quantity: total })));
     if (whole) {
       await ctx.db.delete(row._id);
@@ -1739,6 +1762,7 @@ export async function moveCopyCore(
       ...next,
       lastUpdated: now,
       ...splitFiled,
+      ...splitAdded,
     });
     changes.push(changeOf(row, null, counted(next)));
   }
@@ -2555,6 +2579,8 @@ export const updateCopy = mutation({
       ...(row.hasPhotos ? { hasPhotos: true as const } : {}),
       // NEO-464 — nor when it was last filed: an edit is not a move.
       ...(row.filedAt !== undefined ? { filedAt: row.filedAt } : {}),
+      // Nor when its cards were added (Fresh Pulls).
+      ...(row.addedAt !== undefined ? { addedAt: row.addedAt } : {}),
       lastUpdated: Date.now(),
     });
     await applyCopyChanges(ctx, ownerId, [

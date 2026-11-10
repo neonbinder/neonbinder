@@ -104,6 +104,20 @@ describe("New on NeonBinder", () => {
     expect(before(heading("New on NeonBinder")!, heading("Your binders")!)).toBe(true);
   });
 
+  it("a lone variant reads as the set, then the variant, and opens on that variant's checklist", () => {
+    const data = getDashboard();
+    const gold = {
+      ...data.newSets[0],
+      id: "x:gold",
+      variant: "Gold Refractor",
+      checklist: { tab: "checklists", set: "x", type: "pt", variant: "gold" },
+    };
+    draw({ ...data, newSets: [gold] });
+    const news = screen.getByRole("region", { name: "New on NeonBinder" });
+    const link = within(news).getByRole("link", { name: new RegExp(`^${gold.label} Gold Refractor`) });
+    expect(link.getAttribute("href")).toBe("/demo/collection?tab=checklists&set=x&type=pt&variant=gold");
+  });
+
   it("no new sets: no section", () => {
     draw({ ...getDashboard(), newSets: [] });
     expect(heading("New on NeonBinder")).toBeNull();
@@ -136,8 +150,8 @@ describe("the open binder's place", () => {
 
   it("the demo's shelf is full past the first shelf and it has boxes: no starter stands", () => {
     draw(getDashboard());
-    expect(screen.queryByRole("link", { name: "Add cards to your collection" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Add cards to your inventory" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "We all have a shoebox. Sort it into binders" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "That to-list pile won't list itself. Add cards to sell" })).toBeNull();
   });
 });
 

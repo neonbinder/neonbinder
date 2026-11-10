@@ -4,10 +4,13 @@ import type { NewSet } from "../fake-data";
 import { BlockHeading, count, sideHref } from "./bits";
 
 /**
- * NEO-464 combined dashboard — New on NeonBinder: the newest checklists in
- * the catalog, newest first, each drawn with its first Base card and opening
- * its checklist. Catalog news, the same for every collector, so it shows on
- * every account; on one with little else it leads the page.
+ * NEO-464 combined dashboard — New on NeonBinder: the newest checklist
+ * uploads in the catalog, newest first, each opening its checklist (Jason,
+ * 2026-11-10). A whole set's load is named for the set and opens on its Base;
+ * a variant uploaded on its own (a newly found parallel) is named for the set
+ * and the variant and opens on that variant. Each is drawn with the first
+ * card of what it opens. Catalog news, the same for every collector, so it
+ * shows on every account; on one with little else it leads the page.
  */
 
 /** "Baseball, 330 cards": what is known of it, in words. */
@@ -31,10 +34,7 @@ export default function NewOnNeonBinder({ sets }: { sets: NewSet[] }) {
           const line = newSetLine(set);
           return (
             <li key={set.id} className="min-w-0">
-              <Link
-                to={sideHref(pathname, "collection", { tab: "checklists", set: set.id })}
-                className="group block rounded-md focus-outline"
-              >
+              <Link to={sideHref(pathname, "collection", set.checklist)} className="group block rounded-md focus-outline">
                 <div aria-hidden="true" className="transition-transform group-hover:-translate-y-1 motion-reduce:transition-none">
                   {set.cover ? <CardFace model={set.cover.card} size="fill" /> : <span className="cb-newset-blank" />}
                 </div>
@@ -42,7 +42,19 @@ export default function NewOnNeonBinder({ sets }: { sets: NewSet[] }) {
                   <span className="line-clamp-2 break-words font-semibold text-ink group-hover:text-neon-blue-text">
                     {set.label}
                   </span>
-                  {line && <span className="block truncate text-ink-3">{line}</span>}
+                  {/* A lone variant: what is new in the set, under its name. Spaces keep the link's name in words. */}
+                  {set.variant && (
+                    <>
+                      {" "}
+                      <span className="line-clamp-2 break-words font-semibold text-neon-blue-text">{set.variant}</span>
+                    </>
+                  )}
+                  {line && (
+                    <>
+                      {" "}
+                      <span className="block break-words text-ink-3">{line}</span>
+                    </>
+                  )}
                 </span>
               </Link>
             </li>

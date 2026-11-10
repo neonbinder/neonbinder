@@ -13,8 +13,8 @@
  *   history or the catalog's newest cards, so none is ever subscribed. They refresh
  *   when the dashboard is opened again, or when the sets or binders asked
  *   for change.
- * - subscribed: "new since your last visit" and Fresh Pulls' last two weeks
- *   (the same read, at most 100 lines each).
+ * - subscribed: "new since your last visit" (lines filed or moved in) and
+ *   Fresh Pulls' last two weeks (lines added new), at most 100 lines each.
  * - the visit stamp: one mutation on mount, which answers the previous visit
  *   before it stamps this one.
  */
@@ -28,6 +28,7 @@ export type CompletionRaw = FunctionReturnType<typeof api.dashboard.justComplete
 export type SetBoardRaw = NonNullable<FunctionReturnType<typeof api.dashboard.setBoard>>;
 export type SmartChecklistRaw = NonNullable<FunctionReturnType<typeof api.dashboard.smartChecklist>>;
 export type NewSinceRaw = FunctionReturnType<typeof api.dashboard.newSince>;
+export type FreshPullsRaw = FunctionReturnType<typeof api.dashboard.freshPulls>;
 export type CouldFitRaw = NonNullable<FunctionReturnType<typeof api.dashboard.couldFit>>;
 export type IntakeRaw = FunctionReturnType<typeof api.dashboard.intake>;
 export type SalesRaw = FunctionReturnType<typeof api.dashboard.sales>;
@@ -88,18 +89,18 @@ export function useNewSince(sinceMs: number | null | undefined): NewSinceRaw | u
 }
 
 /**
- * Fresh Pulls: the collection lines filed since `sinceMs` (the start of its
- * window, not the visit), subscribed, so an add shows at once. The same read
- * as `useNewSince`, kept apart so each answers on its own.
+ * Fresh Pulls: the collection lines whose cards were added new since `sinceMs`
+ * (the start of its window, not the visit), subscribed, so an add shows at
+ * once. Never a move: that is `useNewSince`'s news, not a pull.
  */
-export function useFreshPullLines(sinceMs: number): NewSinceRaw | undefined {
-  return useQuery(api.dashboard.newSince, { sinceMs });
+export function useFreshPullLines(sinceMs: number): FreshPullsRaw | undefined {
+  return useQuery(api.dashboard.freshPulls, { sinceMs });
 }
 
 /**
- * New on NeonBinder: the sets whose cards landed last, read once. It walks
- * the newest cards, so a subscription would re-run on every card added
- * anywhere in the catalog.
+ * New on NeonBinder: the latest checklist uploads, grouped by set, read once.
+ * It walks the newest cards, so a subscription would re-run on every card
+ * added anywhere in the catalog.
  */
 export function useNewSets(): NewSetRaw[] | undefined {
   const convex = useConvex();

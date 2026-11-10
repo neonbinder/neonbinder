@@ -4331,6 +4331,20 @@ export default defineSchema({
      * filed since this shipped".
      */
     filedAt: v.optional(v.number()),
+    /**
+     * NEO-464 — when this line's cards were added straight into the
+     * collection (a binder, Main included), as new cards: what the
+     * dashboard's Fresh Pulls reads (`dashboard.freshPulls`; Jason,
+     * 2026-11-10: "only cards new to the collection, never moves"). Stamped
+     * only by an add (`collection.addOne`: Add cards, a pasted range, an
+     * intake save) into a binder, folded or a new line. A move, a split, a
+     * container emptied and a merge carry it (a split part keeps its
+     * source's; a merge keeps the newer of the two), never set it; a box
+     * add or raise, an edit and an undo's put-back never stamp it. Unlike
+     * `filedAt`, which every arrival in a home stamps. Optional, no
+     * backfill: absent is "not added since this shipped", never fresh.
+     */
+    addedAt: v.optional(v.number()),
   })
     // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
     .index("by_owner_and_card", ["ownerId", "cardId"])
@@ -4341,6 +4355,10 @@ export default defineSchema({
     // after a stamp, newest first (`dashboard.newSince`, a bounded range). A
     // line never stamped has no `filedAt` and sorts below every stamp.
     .index("by_owner_and_filedAt", ["ownerId", "filedAt"])
+    // NEO-464 — Fresh Pulls: the lines added into the collection after a
+    // stamp, newest first (`dashboard.freshPulls`, a bounded range). A line
+    // never stamped has no `addedAt` and sorts below every stamp.
+    .index("by_owner_and_addedAt", ["ownerId", "addedAt"])
     // copiesInVariant and variantCompletion (all three), set completion
     // (prefix: ownerId + setId).
     .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])

@@ -613,10 +613,14 @@ const TRADE_PILE: TradePile = (() => {
 
 /** A set new to NB's catalog. The same news for every collector. */
 export interface NewSet {
-  /** The set's id: its checklist opens on `?set=`. */
+  /** The entry's own key: the set's id, or the set's and the variant's for one variant. */
   id: string;
   /** Season, brand and name: "2024 Topps Chrome". */
   label: string;
+  /** One variant uploaded on its own ("Gold Refractor"); null for a whole set's load. */
+  variant: string | null;
+  /** Where its checklist opens on Collection: the Checklists tab's params. */
+  checklist: Record<string, string>;
   /** "Baseball"; null when the set sits under no sport. */
   sport: string | null;
   /** Every card in the set; null when never counted. */
@@ -634,6 +638,8 @@ function newSet(setId: SetId): NewSet {
   return {
     id: setId,
     label: cover?.setLabel ?? `${set.season} ${set.name}`,
+    variant: null,
+    checklist: { tab: "checklists", set: setId },
     sport: getFixtureSport(set.sportId).name,
     cardCount: inSet.length,
     cover,

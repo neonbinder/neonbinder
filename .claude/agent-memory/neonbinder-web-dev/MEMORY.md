@@ -189,3 +189,4 @@
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
 - [convex-test same-ms stamps](reference_convex_test_same_ms_stamps.md) — back-to-back mutations share a Date.now() ms; await a 3 ms setTimeout before a strict-gt stamp assertion
 - [Newest set rows are empty](reference_newest_set_rows_are_empty.md) — "newest sets" by set-row creation finds only empties; walk newest cards per variant, read once
+- [t.run turns undefined into null](reference_convex_test_run_turns_undefined_into_null.md) — absent optional field read via t.run is null; use `?? null` + toBeNull

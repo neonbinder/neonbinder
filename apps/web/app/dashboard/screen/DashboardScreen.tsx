@@ -11,7 +11,7 @@ import PocketPage, { PocketTitle, WaitingTitle } from "./PocketPage";
 import { Chase, FreshPulls } from "./Pulls";
 import { FillingUp, OddsAndEnds } from "./Rail";
 import Shelf from "./Shelf";
-import { CollectionStarter, InventoryStarter, starterKeyOf } from "./Starters";
+import { CollectionStarter, InventoryStarter } from "./Starters";
 import { pageCount, shelfOrder, type ShelfBinder } from "./shelf-model";
 import { NeedsALook, needsALook, OutTheDoor } from "./ToDo";
 import "./combined.css";
@@ -47,14 +47,10 @@ import "./combined.css";
  *   somewhere, so it PUSHES: Back closes it again.
  * - `pg=<n>`: its page (1-based). A page turn REPLACES.
  * - `open=…`: disclosures (see `useOpen`). They REPLACE.
- * - `starter=a|b|c`: which shelf-starter designs to draw (default a), for
- *   Jason's pick; removed once he has.
  */
 
 const BINDER_PARAM = "binder";
 const PAGE_PARAM = "pg";
-/** Which shelf-starter designs show, for Jason to pick (a, b or c); goes once he has. */
-const STARTER_PARAM = "starter";
 const POCKET_ID = "cb-pocket";
 
 /** Into the open pocket page: its heading takes focus, and the page scrolls to it (no glide when motion is reduced). */
@@ -208,11 +204,10 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
 
   // An empty shelf carries a way in: shelf 2 to Collection's Add cards while it holds no binder,
   // shelf 3 to Inventory's until the collector has a box.
-  const design = starterKeyOf(params.get(STARTER_PARAM));
   const hasBoxes = (data.totals.boxes ?? 0) > 0;
   const starter = (row: number) => {
-    if (row === 1) return <CollectionStarter design={design} />;
-    if (row === 2 && !hasBoxes) return <InventoryStarter design={design} />;
+    if (row === 1) return <CollectionStarter />;
+    if (row === 2 && !hasBoxes) return <InventoryStarter />;
     return null;
   };
   // An open binder with nothing in it stays shut: no pages to turn.

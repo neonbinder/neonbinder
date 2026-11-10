@@ -9,7 +9,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -18,13 +18,16 @@ import {
   INTAKE_RECENT_MS,
   NEW_SETS_SHOWN,
   SALE_LINES,
+  SET_LOAD_MS,
   SALES_SHOWN,
   STAMP_MIN_MS,
   VISIT_GAP_MS,
   arrivalOf,
   baseCompletion,
+  checklistLoads,
   intakeRunShows,
   intakeRunTally,
+  newSetsSettled,
   nextVisit,
   ruleNamesChecklist,
   saleLinesOf,
@@ -125,6 +128,49 @@ describe("nextVisit", () => {
     });
     // A clock that ran backwards is the same visit, unwritten.
     expect(nextVisit({ seenAt: T }, T - 10_000).write).toBe(false);
+  });
+});
+
+describe("checklistLoads (New on NeonBinder's grouping)", () => {
+  const T = 1_800_000_000_000;
+  const hop = (setId: string, name: string, at: number, isBase = false) => ({ variantId: `${setId}/${name}`, setId, name, at, isBase });
+  const read = (hops: ReturnType<typeof hop>[]) => checklistLoads(hops).map((e) => [e.kind, e.opens.name, e.at]);
+
+  test("a set loaded with its Base, inserts and parallels is one entry, the set, opening on its Base", () => {
+    expect(read([hop("s", "Gold", T), hop("s", "Base", T - 10, true), hop("s", "Future Stars", T - 20)])).toEqual([
+      ["set", "Base", T],
+    ]);
+  });
+
+  test("a lone variant is its own entry; several without the Base are one entry each, newest first", () => {
+    expect(read([hop("s", "Gold", T)])).toEqual([["variant", "Gold", T]]);
+    expect(read([hop("s", "Gold", T), hop("t", "Base", T - 5, true), hop("s", "Red", T - 10)])).toEqual([
+      ["variant", "Gold", T],
+      ["set", "Base", T - 5],
+      ["variant", "Red", T - 10],
+    ]);
+  });
+
+  test("a variant uploaded long after its set's load is news of its own; the set's old load stays a set entry", () => {
+    const later = T + SET_LOAD_MS + 1;
+    expect(read([hop("s", "Gold", later), hop("s", "Base", T, true), hop("s", "Red", T - 1)])).toEqual([
+      ["variant", "Gold", later],
+      ["set", "Base", T],
+    ]);
+  });
+
+  test("a checklist opens once: an older load of the same Base is dropped, and a repeat inside a load counts once", () => {
+    const later = T + SET_LOAD_MS + 1;
+    expect(read([hop("s", "Base", later, true), hop("s", "Gold", T), hop("s", "Base", T - 1, true)])).toEqual([["set", "Base", later]]);
+    expect(read([hop("s", "Gold", T), hop("s", "Gold", T - 5)])).toEqual([["variant", "Gold", T]]);
+  });
+
+  test("settled only once the walk is below every shown entry's load window", () => {
+    const entries = checklistLoads([hop("s", "Gold", T), hop("t", "Base", T - 5, true)]);
+    expect(newSetsSettled(entries, T - 100, 3)).toBe(false); // too few
+    expect(newSetsSettled(entries, T - 100, 2)).toBe(false); // a Base could still fold Gold into its set
+    expect(newSetsSettled(entries, T - SET_LOAD_MS, 2)).toBe(false); // t's load is still open
+    expect(newSetsSettled(entries, T - 5 - SET_LOAD_MS, 2)).toBe(true);
   });
 });
 
@@ -534,22 +580,6 @@ describe("newSince", () => {
     expect(await news(afterFold)).toEqual([`${mets}|${s.fx.gooden1}`]);
   });
 
-  test("Fresh Pulls' read: cards added on Collection (a full line, a pasted range) are in the window, newest first", async () => {
-    const s = await setup();
-    const windowStart = Date.now() - 14 * DAY;
-    const variations = await s.t.run((ctx) =>
-      ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name: "Variations", lastUpdated: 0 }),
-    );
-    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1 } });
-    await tick();
-    await s.me.mutation(api.collection.addHaves, { cardIds: [s.fx.strawberry2, s.fx.gold1], homeId: variations });
-    const { lines } = await s.me.query(api.dashboard.newSince, { sinceMs: windowStart });
-    const read = lines.map((l) => `${l.homeId}|${l.cardId}`);
-    // The pasted range came in last, so it leads (its two lines share a moment); the Main add follows.
-    expect(read.slice(0, 2).sort()).toEqual([`${variations}|${s.fx.gold1}`, `${variations}|${s.fx.strawberry2}`].sort());
-    expect(read.slice(2)).toEqual([`${s.homes.main}|${s.fx.gooden1}`]);
-  });
-
   test("a part split off inside the same binder keeps its source's stamp; split into another home, it is filed now", async () => {
     const s = await setup();
     const mets = await s.t.run((ctx) =>
@@ -613,34 +643,166 @@ describe("newSince", () => {
   });
 });
 
+describe("freshPulls", () => {
+  /** Let the wall clock pass a millisecond, so a later write's stamp is strictly later. */
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 3));
+  /** The line's `addedAt`, null when it has none (`t.run` answers a missing value as null). */
+  const addedAtOf = (s: S, id: Id<"collectionCopies">) => s.t.run(async (ctx) => (await ctx.db.get(id))?.addedAt ?? null);
+  const binder = (s: S, name: string) =>
+    s.t.run((ctx) => ctx.db.insert("collectionContainers", { ownerId: ME.subject, kind: "binder", name, lastUpdated: 0 }));
+  const pulls = async (s: S, sinceMs: number) =>
+    (await s.me.query(api.dashboard.freshPulls, { sinceMs })).lines.map((l) => `${l.homeId}|${l.cardId}`);
+
+  test("refuses a signed-out caller", async () => {
+    const s = await setup();
+    await expect(s.t.query(api.dashboard.freshPulls, { sinceMs: 0 })).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("cards added on Collection (a full line, a pasted range) are fresh, newest first; never a box's, never another collector's", async () => {
+    const s = await setup();
+    const windowStart = Date.now() - 14 * DAY;
+    const variations = await binder(s, "Variations");
+    await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details: { quantity: 1 } });
+    await tick();
+    await s.me.mutation(api.collection.addHaves, { cardIds: [s.fx.strawberry2, s.fx.gold1], homeId: variations });
+    // An add into a box is stock, not a pull; and another collector's adds are theirs.
+    await s.me.mutation(api.collection.addHave, { cardId: s.fx.futureStar, homeId: s.homes.box });
+    await s.them.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    const read = await pulls(s, windowStart);
+    // The pasted range came in last, so it leads (its two lines share a moment); the Main add follows.
+    expect(read.slice(0, 2).sort()).toEqual([`${variations}|${s.fx.gold1}`, `${variations}|${s.fx.strawberry2}`].sort());
+    expect(read.slice(2)).toEqual([`${s.homes.main}|${s.fx.gooden1}`]);
+  });
+
+  test("an add stamps `addedAt` (folded or a new line); a move, an edit, a split, a box raise and an empty never do", async () => {
+    const s = await setup();
+    const mets = await binder(s, "Mets");
+    const first = await s.me.mutation(api.collection.addHaves, { cardIds: [s.fx.gooden1, s.fx.gooden1, s.fx.gooden1], homeId: mets });
+    const copyId = first[0].copyId;
+    const stamp = (await addedAtOf(s, copyId))!;
+    expect(typeof stamp).toBe("number");
+
+    // An edit and a move into another binder keep it; the move is filed, not added.
+    await tick();
+    await s.me.mutation(api.collection.updateCopy, { copyId, details: { quantity: 3, notes: "sharp" } });
+    expect(await addedAtOf(s, copyId)).toBe(stamp);
+    const since = Date.now();
+    await tick();
+    const moved = await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.homes.main });
+    expect(moved.split).toBe(false);
+    expect(await addedAtOf(s, copyId)).toBe(stamp);
+    expect(await pulls(s, since)).toEqual([]);
+    const news = (await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines.map((l) => `${l.homeId}|${l.cardId}`);
+    expect(news).toEqual([`${s.homes.main}|${s.fx.gooden1}`]);
+
+    // A part split off, in the same binder or into another, inherits its source's.
+    await tick();
+    const split = await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: mets, quantity: 1 });
+    expect(split.split).toBe(true);
+    expect(await addedAtOf(s, split.copyId)).toBe(stamp);
+    const shuffled = await s.me.mutation(api.collection.moveCopy, { copyId, toHomeId: s.homes.main, quantity: 1, slot: 7 });
+    expect(shuffled.split).toBe(true);
+    expect(await addedAtOf(s, shuffled.copyId)).toBe(stamp);
+
+    // Emptying the binder back to Main moves its cards: never added again.
+    await tick();
+    await s.me.mutation(api.collectionContainers.empty, { containerId: mets });
+    const inMain = await s.t.run((ctx) =>
+      ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ME.subject).eq("cardId", s.fx.gooden1))
+        .collect(),
+    );
+    expect(inMain.length).toBeGreaterThan(0);
+    for (const row of inMain) expect(row.addedAt).toBe(stamp);
+    expect(await pulls(s, since)).toEqual([]);
+
+    // A box raise brings stock into a box: no `addedAt`, before or after a move into a binder.
+    const raised = await s.me.mutation(api.collectionInventory.setBoxQuantity, { cardId: s.fx.strawberry2, boxId: s.homes.box, quantity: 2 });
+    expect(raised.after).toBe(2);
+    const boxed = await s.t.run((ctx) =>
+      ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ME.subject).eq("cardId", s.fx.strawberry2))
+        .unique(),
+    );
+    expect(boxed!.addedAt).toBeUndefined();
+    await s.me.mutation(api.collection.moveCopy, { copyId: boxed!._id, toHomeId: s.homes.main });
+    expect(await addedAtOf(s, boxed!._id)).toBeNull();
+    expect(await pulls(s, since)).toEqual([]);
+
+    // A new add of the same card is a pull, on its own line.
+    await tick();
+    const again = await s.me.mutation(api.collection.addHave, { cardId: s.fx.strawberry2 });
+    expect(await addedAtOf(s, again.copyId)).toBeGreaterThan(stamp);
+    expect(await pulls(s, since)).toEqual([`${s.homes.main}|${s.fx.strawberry2}`]);
+  });
+
+  test("an add that folds stamps the line again; cards folding in by a move leave it the newer `addedAt` of the two", async () => {
+    const s = await setup();
+    const mets = await binder(s, "Mets");
+    const old = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    const firstStamp = (await addedAtOf(s, old.copyId))!;
+    await tick();
+    const folded1 = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    expect(folded1).toMatchObject({ copyId: old.copyId, merged: true });
+    const oldStamp = (await addedAtOf(s, old.copyId))!;
+    expect(oldStamp).toBeGreaterThan(firstStamp);
+    await tick();
+    await tick();
+    const fresh = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1, homeId: mets });
+    const freshStamp = (await addedAtOf(s, fresh.copyId))!;
+    expect(freshStamp).toBeGreaterThan(oldStamp);
+    // The fresh card moves onto Main's older line: the line now holds a fresh card.
+    const folded = await s.me.mutation(api.collection.moveCopy, { copyId: fresh.copyId, toHomeId: s.homes.main });
+    expect(folded).toMatchObject({ copyId: old.copyId, folded: true });
+    expect(await addedAtOf(s, old.copyId)).toBe(freshStamp);
+    // A part split back off carries the line's.
+    const back = await s.me.mutation(api.collection.moveCopy, { copyId: old.copyId, toHomeId: mets, quantity: 1 });
+    expect(await addedAtOf(s, back.copyId)).toBe(freshStamp);
+  });
+
+  test("an undo's put-back is not a pull", async () => {
+    const s = await setup();
+    const added = await s.me.mutation(api.collection.addHave, { cardId: s.fx.gooden1 });
+    const since = (await addedAtOf(s, added.copyId))! - 1;
+    const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId: added.copyId });
+    const back = await s.me.mutation(api.collection.restoreCopy, { cardId: removed.cardId, details: removed.details });
+    expect(await addedAtOf(s, back.copyId)).toBeNull();
+    expect(await pulls(s, since)).toEqual([]);
+  });
+});
+
 describe("newSets", () => {
-  /** A set under `parentId` with one Base of `n` cards, all written now (after everything before it). */
-  async function setWithCards(s: S, name: string, n: number, parentId = s.fx.topps86Id) {
+  // Driven on Date only (convex-test stamps `_creationTime` from it), from a
+  // moment after the real clock, so a later upload is truly later.
+  const BASE = Date.now() + 365 * DAY;
+  afterEach(() => vi.useRealTimers());
+
+  async function fakeSetup() {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(BASE);
+    return setup();
+  }
+
+  /** A row under `parentId`. */
+  function option(s: S, level: string, value: string, parentId: Id<"selectorOptions">) {
+    return s.t.run((ctx) =>
+      ctx.db.insert("selectorOptions", { level, value, parentId, platformData: {}, children: [], lastUpdated: 0 } as never),
+    );
+  }
+
+  /** `n` cards uploaded now onto `variantId`. */
+  function upload(s: S, variantId: Id<"selectorOptions">, n: number, title = "Card") {
     return s.t.run(async (ctx) => {
-      const setId = await ctx.db.insert("selectorOptions", {
-        level: "setName",
-        value: name,
-        parentId,
-        platformData: {},
-        children: [],
-        lastUpdated: 0,
-      } as never);
-      const baseId = await ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Base",
-        parentId: setId,
-        platformData: {},
-        children: [],
-        lastUpdated: 0,
-      } as never);
       const cards: Id<"cardChecklist">[] = [];
       for (let i = 0; i < n; i++) {
         cards.push(
           await ctx.db.insert("cardChecklist", {
-            selectorOptionId: baseId,
+            selectorOptionId: variantId,
             cardNumber: String(i + 1),
             cardName: `Player ${i + 1}`,
-            listingTitle: `${name} #${i + 1}`,
+            listingTitle: `${title} #${i + 1}`,
             sportId: s.fx.sportId,
             platformData: {},
             sortOrder: i,
@@ -648,50 +810,101 @@ describe("newSets", () => {
           } as never),
         );
       }
-      return { setId, baseId, cards };
+      return cards;
     });
   }
 
-  test("the sets whose cards landed last, newest first, one entry a set, each with its count and Base cover card", async () => {
-    const s = await setup();
+  /** A set under 1986 Topps with a Base of `n` cards, uploaded now. */
+  async function setWithBase(s: S, name: string, n: number) {
+    const setId = await option(s, "setName", name, s.fx.topps86Id);
+    const baseId = await option(s, "variantType", "Base", setId);
+    const cards = await upload(s, baseId, n, name);
+    return { setId, baseId, cards };
+  }
+
+  test("a full set load (Base, an insert, a parallel) is one entry: the set, opening on its Base, its count and Base cover", async () => {
+    const s = await fakeSetup();
     // A set row made after everything, with no card: a marketplace's list of sets. Never news.
-    await s.t.run((ctx) =>
-      ctx.db.insert("selectorOptions", {
-        level: "setName",
-        value: "Empty Set",
-        parentId: s.fx.toppsId,
-        platformData: {},
-        children: [],
-        lastUpdated: 0,
-      } as never),
-    );
+    await option(s, "setName", "Empty Set", s.fx.toppsId);
     await s.t.run((ctx) => ctx.db.patch(s.fx.setId, { subtreeCardCount: 5 }));
-    // Its cards land after Topps Chrome's, a whole checklist of them: one step, one entry.
-    const traded = await setWithCards(s, "Topps Traded Update", 30);
     const out = await s.me.query(api.dashboard.newSets, {});
-    expect(out.map((n) => n.set.name)).toEqual(["Topps Traded Update", "Topps Chrome"]);
-    // Never counted: null. Its Base's first card is the cover.
-    expect(out[0]).toMatchObject({ cardCount: null, coverCardId: traded.cards[0] });
-    expect(out[0].set).toMatchObject({ season: "1986", manufacturer: { name: "Topps" }, sport: { name: "Baseball" } });
-    // Topps Chrome: its inserts and parallel are the same set, so it comes once; its Base's first card is the cover.
-    expect(out[1]).toMatchObject({ cardCount: 5, coverCardId: s.fx.gooden1 });
-    expect(out[1].addedAt).toBeLessThan(out[0].addedAt);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      wholeSet: true,
+      cardCount: 5,
+      coverCardId: s.fx.gooden1,
+      set: { _id: s.fx.setId, name: "Topps Chrome", season: "2024", sport: { name: "Baseball" } },
+      opens: { _id: s.fx.baseId, level: "variantType", kind: "base" },
+    });
+  });
+
+  test("a parallel found after its set's load is news of its own, named for itself and opening on itself", async () => {
+    const s = await fakeSetup();
+    vi.setSystemTime(BASE + SET_LOAD_MS + DAY);
+    const red = await option(s, "insert", "Red Refractor", s.fx.parallelsTypeId);
+    const reds = await upload(s, red, 3, "Red");
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => [e.wholeSet, e.opens.name])).toEqual([
+      [false, "Red Refractor"],
+      [true, "Base"],
+    ]);
+    expect(out[0]).toMatchObject({
+      set: { _id: s.fx.setId },
+      opens: { _id: red, level: "insert", kind: "parallel", variantType: { _id: s.fx.parallelsTypeId } },
+      coverCardId: reds[0],
+    });
+    expect(out[0].addedAt).toBeGreaterThanOrEqual(BASE + SET_LOAD_MS + DAY);
+  });
+
+  test("several variants uploaded without the Base: one entry each, newest first", async () => {
+    const s = await fakeSetup();
+    vi.setSystemTime(BASE + SET_LOAD_MS + DAY);
+    const red = await option(s, "insert", "Red Refractor", s.fx.parallelsTypeId);
+    await upload(s, red, 2);
+    vi.setSystemTime(BASE + SET_LOAD_MS + 2 * DAY);
+    const blue = await option(s, "insert", "Blue Refractor", s.fx.parallelsTypeId);
+    await upload(s, blue, 2);
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => [e.wholeSet, e.opens.name])).toEqual([
+      [false, "Blue Refractor"],
+      [false, "Red Refractor"],
+      [true, "Base"],
+    ]);
+  });
+
+  test("a card added to an old checklist never carries the walk back past newer uploads", async () => {
+    const s = await fakeSetup();
+    vi.setSystemTime(BASE + 30 * DAY);
+    await setWithBase(s, "Topps Traded Update", 2);
+    vi.setSystemTime(BASE + 40 * DAY);
+    // One late card on Topps Chrome's Base: the set is news again (once), and the walk still finds the Traded load.
+    await upload(s, s.fx.baseId, 1, "Late");
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => [e.set.name, e.wholeSet])).toEqual([
+      ["Topps Chrome", true],
+      ["Topps Traded Update", true],
+    ]);
   });
 
   test("a set known to hold no cards is passed over", async () => {
-    const s = await setup();
-    const hidden = await setWithCards(s, "Pulled Set", 1);
+    const s = await fakeSetup();
+    vi.setSystemTime(BASE + DAY);
+    const hidden = await setWithBase(s, "Pulled Set", 1);
     await s.t.run((ctx) => ctx.db.patch(hidden.setId, { subtreeCardCount: 0 }));
     const out = await s.me.query(api.dashboard.newSets, {});
     expect(out.map((n) => n.set.name)).toEqual(["Topps Chrome"]);
   });
 
-  test("the same for every collector, and capped", async () => {
-    const s = await setup();
-    for (let i = 0; i < NEW_SETS_SHOWN + 2; i++) await setWithCards(s, `Set ${i}`, 2);
+  test("the same for every collector, and capped at NEW_SETS_SHOWN entries", async () => {
+    const s = await fakeSetup();
+    for (let i = 0; i < NEW_SETS_SHOWN + 2; i++) {
+      vi.setSystemTime(BASE + (i + 1) * DAY);
+      await setWithBase(s, `Set ${i}`, 2);
+    }
     const mine = await s.me.query(api.dashboard.newSets, {});
     expect(mine).toHaveLength(NEW_SETS_SHOWN);
     expect(mine[0].set.name).toBe(`Set ${NEW_SETS_SHOWN + 1}`);
+    expect(mine.every((e) => e.wholeSet)).toBe(true);
     expect(await s.them.query(api.dashboard.newSets, {})).toEqual(mine);
   });
 

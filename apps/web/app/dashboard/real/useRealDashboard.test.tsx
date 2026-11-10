@@ -14,7 +14,7 @@ import { pageCount, POCKETS_PER_PAGE, shelfOrder } from "../screen/shelf-model";
 import { labelOf, PLAIN_LABEL } from "@/app/collection/final/binders/label";
 import { SHELF_CAP } from "../screen/Shelf";
 import { NEED_NAMED } from "../screen/Boards";
-import type { CompletionRaw, CouldFitRaw, IntakeRaw, NewSetRaw, NewSinceRaw, SalesRaw, SetBoardRaw } from "./useDashboardServer";
+import type { CompletionRaw, CouldFitRaw, FreshPullsRaw, IntakeRaw, NewSetRaw, NewSinceRaw, SalesRaw, SetBoardRaw } from "./useDashboardServer";
 import {
   ADD_CARDS_RUN_PARAM,
   boxesInUseOf,
@@ -84,7 +84,7 @@ const server = vi.hoisted(() => ({
   couldFitAsked: [] as (readonly string[] | null)[],
   intake: undefined as IntakeRaw | undefined,
   sales: undefined as SalesRaw | undefined,
-  pulls: undefined as NewSinceRaw | undefined,
+  pulls: undefined as FreshPullsRaw | undefined,
   pullsAsked: [] as number[],
   newSets: undefined as NewSetRaw[] | undefined,
 }));
@@ -510,6 +510,8 @@ describe("boxesInUseOf: the boxes that end the Inventory starter", () => {
 });
 
 describe("the empty shelf", () => {
+  const COLLECTION_STARTER = "We all have a shoebox. Sort it into binders";
+  const INVENTORY_STARTER = "That to-list pile won't list itself. Add cards to sell";
   const main = shelfBinderOf(container({ id: "main", system: "main", name: "Main" }));
 
   it("with only Main and no box: shelf 2 leads into Collection's Add cards, shelf 3 into Inventory's", () => {
@@ -517,8 +519,8 @@ describe("the empty shelf", () => {
     render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
     expect(screen.getByRole("heading", { name: "Your binders" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^Main, 0 cards/ })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Add cards to your collection" }).getAttribute("href")).toBe("/collection?tab=add");
-    expect(screen.getByRole("link", { name: "Add cards to your inventory" }).getAttribute("href")).toBe("/inventory?tab=add");
+    expect(screen.getByRole("link", { name: COLLECTION_STARTER }).getAttribute("href")).toBe("/collection?tab=add");
+    expect(screen.getByRole("link", { name: INVENTORY_STARTER }).getAttribute("href")).toBe("/inventory?tab=add");
     // The starters say it now; the old line is gone.
     expect(screen.queryByRole("link", { name: "Add a card on Collection" })).toBeNull();
     // Each stands on its own shelf, read out (not the aria-hidden room left in the case).
@@ -526,36 +528,30 @@ describe("the empty shelf", () => {
     expect(shelves.querySelectorAll(":scope > li").length).toBe(3);
   });
 
-  it("draws the design `?starter=` asks for (a by default), under the same names", () => {
+  it("draws Jason's pick: the shoebox on Collection's shelf, the to-list pile on Inventory's, each named by its words", () => {
     const data = realDashboardData({ binders: [main], summary: SUMMARY });
-    const { unmount } = render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
-    expect(screen.getByText("Fresh pages. Zero cards.")).toBeTruthy();
-    expect(screen.getByText("Five rows. All empty.")).toBeTruthy();
-    unmount();
-    const b = render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard?starter=b") });
-    expect(screen.getByText("We all have a shoebox.")).toBeTruthy();
-    expect(screen.getByText("That to-list pile won't list itself.")).toBeTruthy();
-    b.unmount();
-    render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard?starter=c") });
-    expect(screen.getByText("Got a hit? Show it off.")).toBeTruthy();
-    expect(screen.getByText("Every dealer starts with a dollar box.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Add cards to your collection" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Add cards to your inventory" })).toBeTruthy();
+    render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
+    // WCAG 2.5.3: the name is the visible copy (the arrow is not read).
+    expect(screen.getByRole("link", { name: COLLECTION_STARTER }).textContent).toContain("We all have a shoebox.");
+    expect(screen.getByRole("link", { name: INVENTORY_STARTER }).textContent).toContain("That to-list pile won't list itself.");
+    // The losing designs are gone, and no `?starter=` brings them back.
+    expect(screen.queryByText("Fresh pages. Zero cards.")).toBeNull();
+    expect(screen.queryByText("Every dealer starts with a dollar box.")).toBeNull();
   });
 
   it("once there is a box, shelf 3 carries nothing", () => {
     render(<DashboardScreen data={realDashboardData({ binders: [main], summary: SUMMARY, boxes: 1 })} />, {
       wrapper: wrapper("/dashboard"),
     });
-    expect(screen.getByRole("link", { name: "Add cards to your collection" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Add cards to your inventory" })).toBeNull();
+    expect(screen.getByRole("link", { name: COLLECTION_STARTER })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
   });
 
   it("a full first shelf leaves shelf 2 holding binders, so no Collection starter", () => {
     const nine = [main, ...Array.from({ length: 8 }, (_, i) => shelfBinderOf(container({ id: `b${i}`, name: `Binder ${i}` })))];
     render(<DashboardScreen data={realDashboardData({ binders: nine, summary: SUMMARY })} />, { wrapper: wrapper("/dashboard") });
-    expect(screen.queryByRole("link", { name: "Add cards to your collection" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Add cards to your inventory" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: COLLECTION_STARTER })).toBeNull();
+    expect(screen.getByRole("link", { name: INVENTORY_STARTER })).toBeTruthy();
   });
 
   it("with no binder open, the first one stands shut beside the shelf, and opening it pushes `?binder=`", async () => {
@@ -943,7 +939,7 @@ describe("Fresh Pulls: freshPullsOf", () => {
     ["main", "Main"],
     ["var", "Variations"],
   ]);
-  const line = (homeId: string, cardId: string, filedAt: number) => ({ homeId, cardId, filedAt }) as never;
+  const line = (homeId: string, cardId: string, addedAt: number) => ({ homeId, cardId, addedAt }) as never;
 
   it("looks back two weeks from local midnight, today included", () => {
     expect(freshPullsWindowStart(NOW)).toBe(new Date(2026, 10, 11 - 13).getTime());
@@ -956,7 +952,7 @@ describe("Fresh Pulls: freshPullsOf", () => {
     expect(pullDayLabel(at(8), NOW)).toBe("Last Tuesday");
   });
 
-  it("one batch a day, newest first, each card once per binder, every way it came in; a home off the shelf is left out", () => {
+  it("one batch a day, newest first, each card once per binder, every way it was added; a home off the shelf is left out", () => {
     const batches = freshPullsOf(
       [
         line("var", cardB.id, at(0, 14)),
@@ -980,7 +976,7 @@ describe("Fresh Pulls: freshPullsOf", () => {
     ]);
   });
 
-  it("nothing filed, or cards not hydrated yet: no batches, so no section", () => {
+  it("nothing added, or cards not hydrated yet: no batches, so no section", () => {
     expect(freshPullsOf([], cards, homes, null, NOW)).toEqual([]);
     expect(freshPullsOf([line("main", cardA.id, at(0))], undefined, homes, null, NOW)).toEqual([]);
     expect(freshPullIds([])).toBeNull();
@@ -996,22 +992,78 @@ describe("Fresh Pulls: freshPullsOf", () => {
 });
 
 describe("New on NeonBinder: newSetsOf", () => {
-  it("labels each set the collector's way, with its sport and count; the cover once hydrated", () => {
+  const SET1 = { _id: "s1", name: "Topps Chrome", season: "2024", sport: { _id: "sp", name: "Baseball" }, year: null, manufacturer: null };
+  const ref = (over: Record<string, unknown>) => ({
+    kind: null,
+    variantType: null,
+    insert: null,
+    parallel: null,
+    cardCount: null,
+    baseCardCount: null,
+    ...over,
+  });
+
+  it("a whole set's load is named for the set and opens on its Base; its sport and count; the cover once hydrated", () => {
     const raw = [
       {
-        set: { _id: "s1", name: "Topps Chrome", season: "2024", sport: { _id: "sp", name: "Baseball" }, year: null, manufacturer: null },
+        set: SET1,
+        opens: ref({ _id: "base", level: "variantType", name: "Base", kind: "base", variantType: { _id: "base", name: "Base" } }),
+        wholeSet: true,
         cardCount: 220,
         coverCardId: cardA.id,
         addedAt: 2,
       },
-      { set: { _id: "s2", name: "Traded", season: "1986", sport: null, year: null, manufacturer: null }, cardCount: null, coverCardId: null, addedAt: 1 },
     ] as never;
-    expect(newSetsOf(raw, new Map([[cardA.id, cardA]]) as never).map((n) => [n.id, n.label, n.sport, n.cardCount, n.cover?.id ?? null])).toEqual([
-      ["s1", "2024 Topps Chrome", "Baseball", 220, cardA.id],
-      ["s2", "1986 Traded", null, null, null],
+    const [entry] = newSetsOf(raw, new Map([[cardA.id, cardA]]) as never);
+    expect([entry.id, entry.label, entry.variant, entry.sport, entry.cardCount, entry.cover?.id]).toEqual([
+      "s1",
+      "2024 Topps Chrome",
+      null,
+      "Baseball",
+      220,
+      cardA.id,
     ]);
+    expect(entry.checklist).toEqual({ tab: "checklists", set: "s1", type: "base" });
     expect(newSetsOf(raw, undefined)[0].cover).toBeNull();
     expect(newSetsOf(undefined, undefined)).toEqual([]);
+  });
+
+  it("a lone variant is named for the set and itself, and opens on its own checklist, however deep it sits", () => {
+    const parallels = { _id: "pt", name: "Parallels" };
+    const raw = [
+      // A parallel under the Parallels type: type, then the parallel.
+      {
+        set: SET1,
+        opens: ref({ _id: "gold", level: "insert", name: "Gold Refractor", kind: "parallel", variantType: parallels }),
+        wholeSet: false,
+        cardCount: 50,
+        coverCardId: null,
+        addedAt: 3,
+      },
+      // A parallel of an insert: type, then the insert, then the parallel.
+      {
+        set: SET1,
+        opens: ref({
+          _id: "fs-gold",
+          level: "parallel",
+          name: "Gold",
+          kind: "insert",
+          variantType: { _id: "it", name: "Inserts" },
+          insert: { _id: "fs", name: "Future Stars" },
+        }),
+        wholeSet: false,
+        cardCount: null,
+        coverCardId: null,
+        addedAt: 2,
+      },
+    ] as never;
+    const out = newSetsOf(raw, undefined);
+    expect(out.map((n) => [n.id, n.label, n.variant])).toEqual([
+      ["s1:gold", "2024 Topps Chrome", "Gold Refractor"],
+      ["s1:fs-gold", "2024 Topps Chrome", "Future Stars Gold"],
+    ]);
+    expect(out[0].checklist).toEqual({ tab: "checklists", set: "s1", type: "pt", variant: "gold" });
+    expect(out[1].checklist).toEqual({ tab: "checklists", set: "s1", type: "it", variant: "fs", sub: "fs-gold" });
   });
 });
 

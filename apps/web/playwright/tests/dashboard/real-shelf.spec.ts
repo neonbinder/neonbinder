@@ -6,7 +6,8 @@
 // In the Hopper while nothing is in intake, and no Out the Door: the worker's
 // account has a saved marketplace sign-in (the bootstrap's) but no order, and
 // only a stored order puts the sales section up (Jason, 2026-11-10). New on
-// NeonBinder, the catalog's news, shows for everyone.
+// NeonBinder, the catalog's news, shows for everyone, and its tiles open real
+// checklists.
 //
 // R7: the hopper's state is this account's own and other specs leave scans in
 // it (real-hopper-run-link seeds one), so this spec asks for the state it needs:
@@ -36,11 +37,20 @@ test("Dashboard shows the collector's own binder shelf", { tag: ["@smoke", "@das
   // With no binder open, the first one on the shelf stands shut beside it, one button to open it.
   await expect(page.getByRole("button", { name: /^Crack open / })).toBeVisible();
 
-  // New on NeonBinder shows every collector the sets whose cards landed last; the seed's
-  // 2024 Topps Chrome is one, and its tile opens its checklist.
+  // New on NeonBinder shows every collector the latest checklist uploads, grouped by set; the
+  // seed's 2024 Topps Chrome is one. Each tile opens a checklist a collector can read: the
+  // set's Base for a whole set, else the variant itself (Jason, round 2).
   const news = page.getByRole("region", { name: "New on NeonBinder" });
   await expect(news).toBeVisible();
-  await expect(news.getByRole("link", { name: /Topps Chrome/ }).first()).toHaveAttribute("href", /\/collection\?tab=checklists&set=/);
+  const chrome = news.getByRole("link", { name: /^2024 Topps Chrome\b/ }).first();
+  await expect(chrome).toHaveAttribute("href", /^\/collection\?tab=checklists&set=[^&]+&type=[^&]+/);
 
   await expectAccessible(page, { label: "Dashboard" });
+
+  // A real move: the checklist opens, and Back returns to the dashboard.
+  await chrome.click();
+  await expect(page).toHaveURL(/\/collection\?tab=checklists&set=[^&]+&type=/);
+  await expect(page.getByRole("heading", { level: 3, name: /^2024 Topps Chrome\b/ })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible();
 });

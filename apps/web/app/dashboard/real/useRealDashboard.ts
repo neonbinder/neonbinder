@@ -31,9 +31,10 @@
  *   most 10), shown oldest first. "Shipped" is the platform's own status:
  *   NB keeps no shipped state; an unpaid order, or one in a status NB does
  *   not know, is never one to ship.
- * - Fresh Pulls: the cards filed in the last two weeks, however they came in
- *   (the same read as the news, from the window's start; subscribed);
- * - New on NeonBinder: the sets whose cards landed last (read once).
+ * - Fresh Pulls: the cards added new to the collection in the last two
+ *   weeks (`dashboard.freshPulls`; never a move; subscribed);
+ * - New on NeonBinder: the latest checklist uploads, grouped by set, each
+ *   opening its checklist (read once).
  *
  * Shelf rows are the collector's binders: Main and their own, never a box,
  * the Want List or the trade pile (`bindersOf` in the store). Spines wear
@@ -108,6 +109,7 @@ import {
   type IntakeRaw,
   type NewSetRaw,
   type NewSinceRaw,
+  type FreshPullsRaw,
   type SalesRaw,
   type SetBoardRaw,
 } from "./useDashboardServer";
@@ -335,12 +337,12 @@ export function justCompletedOf(done: readonly CompletedChecklist[], today: stri
 }
 
 // ---------------------------------------------------------------------------
-// Fresh Pulls: the cards filed lately, however they came in
+// Fresh Pulls: the cards added new to the collection lately
 // ---------------------------------------------------------------------------
 
 /** Fresh Pulls looks back this many calendar days, today included. */
 export const FRESH_PULLS_DAYS = 14;
-/** At most this many of the newest filed lines are drawn (and hydrated). */
+/** At most this many of the newest added lines are drawn (and hydrated). */
 export const FRESH_PULLS_CARDS = 48;
 
 /** The first instant Fresh Pulls covers: local midnight, `FRESH_PULLS_DAYS - 1` days before `now`'s day. */
@@ -361,16 +363,17 @@ export function pullDayLabel(at: number, now: number): string {
 }
 
 /**
- * Fresh Pulls from the filed lines (newest first): one batch a day, newest
+ * Fresh Pulls from the added lines (newest first): one batch a day, newest
  * day first, each card once per binder, in the binders the shelf names (a
- * line whose home is not on it is left out). Every way a card arrives in a
- * binder counts (Jason, 2026-11-10: "adding cards to a binder in any way is
- * filed"): a scan, an add on Collection, a pasted range, a move. A card not
- * hydrated yet waits. `since`: the last visit (null on the first, so every
- * batch is new; undefined while it loads, so none is).
+ * line whose home is not on it is left out). Only cards new to the
+ * collection count (Jason, 2026-11-10: "never moves"): a scan saved into a
+ * binder, an add on Collection, a pasted range; a move, a split or an
+ * emptied binder never does (`dashboard.freshPulls`). A card not hydrated
+ * yet waits. `since`: the last visit (null on the first, so every batch is
+ * new; undefined while it loads, so none is).
  */
 export function freshPullsOf(
-  lines: NewSinceRaw["lines"],
+  lines: FreshPullsRaw["lines"],
   cards: CardsById | undefined,
   homeNames: ReadonlyMap<string, string>,
   since: number | null | undefined,
@@ -382,10 +385,10 @@ export function freshPullsOf(
     const binderName = homeNames.get(line.homeId);
     const card = cards.get(line.cardId);
     if (!binderName || !card) continue;
-    const day = localDay(line.filedAt);
+    const day = localDay(line.addedAt);
     let batch = byDay.get(day);
     if (!batch) {
-      batch = { at: line.filedAt, cards: [], seen: new Set(), binders: new Map(), fresh: false };
+      batch = { at: line.addedAt, cards: [], seen: new Set(), binders: new Map(), fresh: false };
       byDay.set(day, batch);
     }
     const key = `${line.cardId}@${line.homeId}`;
@@ -393,7 +396,7 @@ export function freshPullsOf(
     batch.seen.add(key);
     batch.cards.push({ ...toDash(card), binderName });
     batch.binders.set(binderName, (batch.binders.get(binderName) ?? 0) + 1);
-    if (since === null || (typeof since === "number" && line.filedAt > since)) batch.fresh = true;
+    if (since === null || (typeof since === "number" && line.addedAt > since)) batch.fresh = true;
   }
   return [...byDay.entries()].map(([day, b]) => ({
     id: `pulls-${day}`,
@@ -406,18 +409,51 @@ export function freshPullsOf(
 }
 
 /** The ids Fresh Pulls draws: the newest `FRESH_PULLS_CARDS` lines' cards. */
-export function freshPullIds(lines: NewSinceRaw["lines"] | undefined): CardId[] | null {
+export function freshPullIds(lines: FreshPullsRaw["lines"] | undefined): CardId[] | null {
   if (!lines || lines.length === 0) return null;
   return lines.slice(0, FRESH_PULLS_CARDS).map((l) => l.cardId as CardId);
 }
 
-/** New on NeonBinder from its read: each set, its cover card once hydrated (until then, none). */
+/**
+ * The Checklists tab's place for the checklist an entry opens
+ * (`app/collection/final/checklistParams.ts`): the set, then its variant type,
+ * then an insert or parallel under it, then a parallel under an insert. Ids
+ * only, the same path the collection store builds for a card's variant.
+ */
+export function checklistParamsOf(opens: NewSetRaw["opens"], setId: string): Record<string, string> {
+  const out: Record<string, string> = { tab: "checklists", set: setId };
+  if (opens.level === "variantType") {
+    out.type = opens._id;
+    return out;
+  }
+  out.type = opens.variantType?._id ?? opens._id;
+  if (opens.level === "parallel" && opens.insert) {
+    out.variant = opens.insert._id;
+    out.sub = opens._id;
+  } else {
+    out.variant = opens._id;
+  }
+  return out;
+}
+
+/** A variant's own name, a parallel under an insert after its insert's: "Future Stars Gold". */
+function variantNameOf(opens: NewSetRaw["opens"]): string {
+  return opens.level === "parallel" && opens.insert ? `${opens.insert.name} ${opens.name}` : opens.name;
+}
+
+/**
+ * New on NeonBinder from its read: a whole set's load named for the set, a
+ * lone variant for the set and itself, each opening its checklist, its cover
+ * card once hydrated (until then, none).
+ */
 export function newSetsOf(raw: readonly NewSetRaw[] | undefined, cards: CardsById | undefined): NewSet[] {
   return (raw ?? []).map((n) => {
     const cover = n.coverCardId ? cards?.get(n.coverCardId as CardId) : undefined;
     return {
-      id: n.set._id,
+      id: n.wholeSet ? n.set._id : `${n.set._id}:${n.opens._id}`,
       label: setLabel(n.set),
+      variant: n.wholeSet ? null : variantNameOf(n.opens),
+      checklist: checklistParamsOf(n.opens, n.set._id),
       sport: n.set.sport?.name ?? null,
       cardCount: n.cardCount,
       cover: cover ? toDash(cover) : null,

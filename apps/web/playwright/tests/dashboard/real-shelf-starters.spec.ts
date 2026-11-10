@@ -1,8 +1,9 @@
 // R1: an account with room on its shelves gets a way in on each empty one
-// (NEO-464): the second shelf, while it holds no binder, links to Add cards on
-// Collection; the third, until the collector has a box in use (one they made,
-// or Unsorted with a card in it), to Add cards on Inventory. Each is one link,
-// shown on phones too, and lands on the right Add cards tab.
+// (NEO-464): the second shelf, while it holds no binder, carries the shoebox,
+// a link to Add cards on Collection; the third, until the collector has a box
+// in use (one they made, or Unsorted with a card in it), the to-list pile, a
+// link to Add cards on Inventory. Each is one link named by its own words
+// (WCAG 2.5.3), shown on phones too, and lands on the right Add cards tab.
 //
 // R7: read-only. Whether each starter stands is this account's own state, and
 // other specs on this worker may have filled a shelf or a box first, so the
@@ -17,8 +18,8 @@ test("Dashboard: empty shelves lead into Add cards on Collection and on Inventor
   const shelf = page.getByRole("list", { name: "Binders on the shelf" });
   await expect(shelf.getByRole("button", { name: /^Main, \d+ cards?, / })).toBeVisible();
 
-  const toCollection = page.getByRole("link", { name: "Add cards to your collection", exact: true });
-  const toInventory = page.getByRole("link", { name: "Add cards to your inventory", exact: true });
+  const toCollection = page.getByRole("link", { name: "We all have a shoebox. Sort it into binders", exact: true });
+  const toInventory = page.getByRole("link", { name: "That to-list pile won't list itself. Add cards to sell", exact: true });
 
   // --- Shelf 2: Collection -------------------------------------------------
   const spines = await shelf.getByRole("button", { name: /^.+, \d+ cards?, / }).count();

@@ -16,6 +16,9 @@
  * - `newSince` (subscribed, at most `NEW_SINCE_LINES` + 1 lines): the
  *   collection lines filed since the last visit (an add or a move into a
  *   binder; never an edit).
+ * - `freshPulls` (subscribed, at most `FRESH_PULL_LINES` + 1 lines): the
+ *   collection lines whose cards were added new since a moment (Fresh Pulls;
+ *   an add into a binder, never a move).
  * - `markVisit` (mutation): reads the last visit, then stamps this one.
  * - `couldFit` (read once, one smart binder per call): the cards the
  *   collector holds in another binder that the binder's rule takes in, at
@@ -23,8 +26,8 @@
  * - `intake` (read once): what is still in intake across the collector's
  *   recent runs, counted from their match rows, each run with the side its
  *   home is on (a binder's run finishes on Collection, a box's on Inventory).
- * - `newSets` (subscribed, a few rows): the catalog's newest sets, the same
- *   for everyone (New on NeonBinder).
+ * - `newSets` (read once, a few entries): the catalog's newest checklist
+ *   uploads, grouped by set, the same for everyone (New on NeonBinder).
  * - `sales` (read once): whether the account sells (the sales section shows), and
  *   its newest orders still to ship, at most `SALES_SHOWN`.
  *
@@ -42,7 +45,7 @@ import { requireSignedIn } from "./auth";
 import { MAX_CANDIDATES, parallelReader } from "./binderRules";
 import { HomeSides, MAX_VARIANT_COPIES, copyCardIdValidator, sideOfContainer, sideValidator, type Side } from "./collection";
 import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS, hiddenAsEmpty } from "./collectionCatalog";
-import { CatalogReader, setRefValidator } from "./lib/catalogView";
+import { CatalogReader, setRefValidator, variantRefValidator, type SetRef, type VariantRef } from "./lib/catalogView";
 import { awaitingShipment } from "./listingSales";
 import { listingPlatformValidator, saleItemProblemValidator } from "./schema";
 import { variantTypeKind } from "./variantRole";
@@ -98,12 +101,21 @@ export const SALES_SCAN = 100;
 export const SALES_SHOWN = 10;
 /** Lines of one order returned (the rest are counted). */
 export const SALE_LINES = 12;
-/** New on NeonBinder: how many of the catalog's newest sets it shows. */
+/** Lines `freshPulls` returns, newest first. */
+export const FRESH_PULL_LINES = 100;
+/** New on NeonBinder: how many entries (a set, or one variant of it) it shows. */
 export const NEW_SETS_SHOWN = 6;
 /** How many variants' worth of newest cards it steps back through to find them. */
 export const NEW_SETS_HOPS = 100;
-/** A new set's variant types read to find its Base, for the cover card. */
-export const NEW_SET_TYPES = 25;
+/**
+ * One upload of a variant's checklist: its cards written within this of its
+ * newest one. The walk steps back past them in one go, and no further, so a
+ * card added to an old checklist never carries the walk back to that
+ * checklist's first upload.
+ */
+export const VARIANT_UPLOAD_MS = 86_400_000;
+/** One load of a set: its variants uploaded within this of the set's newest upload. */
+export const SET_LOAD_MS = 7 * 86_400_000;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure rules (tested in dashboard.test.ts)
@@ -322,6 +334,77 @@ export function saleLinesOf(items: readonly SaleItemFacts[]): {
     cardCount: items.reduce((n, item) => n + item.quantity, 0),
     problemPastCut: items.slice(SALE_LINES).some((item) => item.problem !== undefined || item.cardId === undefined),
   };
+}
+
+/** One upload the New on NeonBinder walk found: its variant and set, whether it is the set's Base, when its newest card landed. */
+export interface UploadHop {
+  variantId: string;
+  setId: string;
+  isBase: boolean;
+  at: number;
+}
+
+/** One New on NeonBinder entry: a whole set's load (opens on its Base), or one variant. */
+export type LoadEntry<H extends UploadHop> =
+  | { kind: "set"; opens: H; at: number; closesAt: number }
+  | { kind: "variant"; opens: H; at: number; closesAt: number };
+
+/**
+ * New on NeonBinder's rule (Jason, 2026-11-10): the variants uploaded lately
+ * (`hops`, newest first, each variant once), grouped by set into loads: a
+ * variant joins its set's newest load when it landed within `SET_LOAD_MS` of
+ * that load's newest upload, else starts an older load of the set.
+ *
+ * - A load with the Base in it is a set load: one entry, the set, opening
+ *   on its Base, whatever else came with it.
+ * - Without the Base, each variant is its own entry (one alone is "a newly
+ *   discovered parallel"; several without a Base are each named, a default
+ *   Jason can change).
+ *
+ * Newest first, by each entry's newest upload, and each checklist once: an
+ * older load that would open the same checklist again is dropped (a late card
+ * on an old Base makes the set news again, once). `closesAt`: the walk must
+ * have stepped below this before nothing more can join the entry's load
+ * (`newSetsSettled`).
+ */
+export function checklistLoads<H extends UploadHop>(hops: readonly H[]): Array<LoadEntry<H>> {
+  const loads: Array<{ setId: string; anchor: number; members: H[] }> = [];
+  const newestOf = new Map<string, (typeof loads)[number]>();
+  for (const hop of hops) {
+    const open = newestOf.get(hop.setId);
+    if (open && open.anchor - hop.at <= SET_LOAD_MS) {
+      if (!open.members.some((m) => m.variantId === hop.variantId)) open.members.push(hop);
+      continue;
+    }
+    const load = { setId: hop.setId, anchor: hop.at, members: [hop] };
+    loads.push(load);
+    newestOf.set(hop.setId, load);
+  }
+  const out: Array<LoadEntry<H>> = [];
+  for (const load of loads) {
+    const closesAt = load.anchor - SET_LOAD_MS;
+    const base = load.members.find((m) => m.isBase);
+    if (base) out.push({ kind: "set", opens: base, at: load.anchor, closesAt });
+    else for (const m of load.members) out.push({ kind: "variant", opens: m, at: m.at, closesAt });
+  }
+  const opened = new Set<string>();
+  return out
+    .sort((a, b) => b.at - a.at)
+    .filter((e) => {
+      if (opened.has(e.opens.variantId)) return false;
+      opened.add(e.opens.variantId);
+      return true;
+    });
+}
+
+/**
+ * Can the walk stop? Once it holds `shown` entries and has stepped below
+ * (`before`) every one of the top `shown` entries' loads, no older upload can
+ * join one of them (folding variants into a set) or outrank one.
+ */
+export function newSetsSettled<H extends UploadHop>(entries: ReadonlyArray<LoadEntry<H>>, before: number, shown: number): boolean {
+  if (entries.length < shown) return false;
+  return entries.slice(0, shown).every((e) => before <= e.closesAt);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -590,6 +673,39 @@ export const newSince = query({
 });
 
 /**
+ * Fresh Pulls: the caller's collection lines (never a box's) whose cards were
+ * added new after `sinceMs`, newest first, at most `FRESH_PULL_LINES`. Reads
+ * `addedAt`, which only an add into a binder stamps (Jason, 2026-11-10: "only
+ * cards new to the collection, never moves"): a move, a split, a container
+ * emptied or an undo's put-back never makes a card fresh. Subscribed, so it
+ * stays small: one indexed range of at most `FRESH_PULL_LINES` + 1 lines and
+ * their homes. `truncated`: more lines than are listed.
+ */
+export const freshPulls = query({
+  args: { sinceMs: v.number() },
+  returns: v.object({
+    lines: v.array(
+      v.object({ homeId: v.id("collectionContainers"), cardId: copyCardIdValidator, addedAt: v.number() }),
+    ),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    const rows = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_and_addedAt", (q) => q.eq("ownerId", ownerId).gt("addedAt", args.sinceMs))
+      .order("desc")
+      .take(FRESH_PULL_LINES + 1);
+    const truncated = rows.length > FRESH_PULL_LINES;
+    const kept = await new HomeSides(ctx, ownerId).keep(rows.slice(0, FRESH_PULL_LINES), "collection");
+    return {
+      lines: kept.flatMap((r) => (r.addedAt === undefined ? [] : [{ homeId: r.homeId, cardId: r.cardId, addedAt: r.addedAt }])),
+      truncated,
+    };
+  },
+});
+
+/**
  * The cards that could fit a smart binder: the collector holds a copy in
  * another binder (the fits row's `held` mark, kept by every copy write), the
  * rule takes it in, it is not filed here, and the collector never declined
@@ -803,29 +919,38 @@ export const sales = query({
 });
 
 /**
- * New on NeonBinder: the sets whose checklists landed in the catalog most
- * recently, newest first. Catalog news, the same for every collector, so it
- * shows for everyone (Jason, 2026-11-10). Each comes with its card count and
- * a cover card: the first card of its Base, when the set has exactly one.
+ * New on NeonBinder: the checklists uploaded to the catalog most recently,
+ * grouped by set (`checklistLoads`), newest first, at most `NEW_SETS_SHOWN`
+ * entries. Catalog news, the same for every collector (Jason, 2026-11-10:
+ * "collectors wouldn't be able to get to a set that doesn't have a
+ * checklist"). Each entry names the checklist it opens (`opens`): a whole
+ * set's load opens on its Base, a lone variant on itself. With its card count
+ * (the set's, or the variant's) and a cover card: the first card of what it
+ * opens.
  *
  * Read from the cards, not the set rows: most set rows are made long before
- * any card (a marketplace's list of sets), so the newest set rows are almost
- * all empty. The newest card names a variant, so its set; the walk then
- * steps past every card of that variant (back to the variant's oldest card,
- * found on `by_selector_option`, whose last key is `_creationTime`) and asks
- * again. A set known to hold no cards, or seen already, is passed over.
+ * any card (a marketplace's list of sets). The newest card names a variant;
+ * the walk then steps back past that variant's upload (its cards within
+ * `VARIANT_UPLOAD_MS` of that card, found on `by_selector_option`, whose last
+ * key is `_creationTime`) and asks again, never further: a late card on an
+ * old checklist never carries the walk back to that checklist's first upload.
+ * A variant in a set known to hold no cards is passed over.
  *
- * Bounded: at most `NEW_SETS_HOPS` steps of two cards and a set's chain, then
- * for each of the `NEW_SETS_SHOWN` kept its variant types and one card. The
- * dashboard reads it once on load, not subscribed: every card added anywhere
- * would re-run it.
+ * Bounded: at most `NEW_SETS_HOPS` steps of two cards and a variant's chain,
+ * stopping early once the top entries are settled (`newSetsSettled`), then
+ * one card for each entry's cover. The dashboard reads it once on load, not
+ * subscribed: every card added anywhere would re-run it.
  */
 export const newSets = query({
   args: {},
   returns: v.array(
     v.object({
       set: setRefValidator,
-      /** Every card in the set; null when it was never counted. */
+      /** The checklist the entry opens: the set's Base for a whole set's load, else the variant. */
+      opens: variantRefValidator,
+      /** A whole set's load (named for the set), or one variant (named for it). */
+      wholeSet: v.boolean(),
+      /** The set's cards for a whole set, the variant's for one; null when never counted. */
       cardCount: v.union(v.number(), v.null()),
       coverCardId: v.union(v.id("cardChecklist"), v.null()),
       /** When its newest card landed. */
@@ -835,10 +960,10 @@ export const newSets = query({
   handler: async (ctx) => {
     await requireSignedIn(ctx);
     const reader = new CatalogReader(ctx);
-    const out = [];
-    const seen = new Set<string>();
+    type Hop = UploadHop & { set: SetRef; variant: VariantRef; setRow: OptionRow };
+    const hops: Hop[] = [];
     let before: number | null = null;
-    for (let hop = 0; hop < NEW_SETS_HOPS && out.length < NEW_SETS_SHOWN; hop++) {
+    for (let hop = 0; hop < NEW_SETS_HOPS; hop++) {
       const below = before;
       const card = await ctx.db
         .query("cardChecklist")
@@ -846,31 +971,47 @@ export const newSets = query({
         .order("desc")
         .first();
       if (!card) break;
-      const oldest = await ctx.db
+      const uploadStart = await ctx.db
         .query("cardChecklist")
-        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", card.selectorOptionId))
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", card.selectorOptionId).gte("_creationTime", card._creationTime - VARIANT_UPLOAD_MS),
+        )
         .first();
-      before = Math.min(card._creationTime, oldest?._creationTime ?? card._creationTime);
+      before = Math.min(card._creationTime, uploadStart?._creationTime ?? card._creationTime);
 
-      const set = await reader.setRef(card.selectorOptionId);
-      if (!set || seen.has(set._id)) continue;
-      seen.add(set._id);
-      const row = await reader.row(set._id);
-      if (!row || hiddenAsEmpty(row)) continue;
-      const types = await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) => q.eq("level", "variantType").eq("parentId", set._id))
-        .take(NEW_SET_TYPES);
-      const bases = types.filter((t) => variantTypeKind(t) === "base");
-      const cover =
-        bases.length === 1
-          ? await ctx.db
-              .query("cardChecklist")
-              .withIndex("by_selector_option_and_sort", (q) => q.eq("selectorOptionId", bases[0]._id))
-              .first()
-          : null;
-      const count = typeof row.subtreeCardCount === "number" ? row.subtreeCardCount : null;
-      out.push({ set, cardCount: count, coverCardId: cover?._id ?? null, addedAt: card._creationTime });
+      const variant = await reader.variantRef(card.selectorOptionId);
+      const set = variant ? await reader.setRef(card.selectorOptionId) : null;
+      const setRow = set ? await reader.row(set._id) : null;
+      if (!variant || !set || !setRow || hiddenAsEmpty(setRow)) continue;
+      hops.push({
+        variantId: variant._id,
+        setId: set._id,
+        // The Base's cards sit on the Base type itself (`variantRole`).
+        isBase: variant.level === "variantType" && variant.kind === "base",
+        at: card._creationTime,
+        set,
+        variant,
+        setRow,
+      });
+      if (newSetsSettled(checklistLoads(hops), before, NEW_SETS_SHOWN)) break;
+    }
+    const out = [];
+    for (const entry of checklistLoads(hops).slice(0, NEW_SETS_SHOWN)) {
+      const { set, variant, setRow } = entry.opens;
+      const cover = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option_and_sort", (q) => q.eq("selectorOptionId", variant._id))
+        .first();
+      const whole = entry.kind === "set";
+      const count = whole ? setRow.subtreeCardCount : variant.cardCount;
+      out.push({
+        set,
+        opens: variant,
+        wholeSet: whole,
+        cardCount: typeof count === "number" ? count : null,
+        coverCardId: cover?._id ?? null,
+        addedAt: entry.at,
+      });
     }
     return out;
   },
