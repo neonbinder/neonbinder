@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import { cards } from "../../prototypes/_shared/catalog";
-import { getTeam, playerNames } from "../../prototypes/_shared/data";
+import { getTeam, leadPlayer, playerInitials } from "../../prototypes/_shared/data";
 import type { Item } from "./sim";
 import { demoScanUrl } from "./ui";
 
@@ -26,12 +26,15 @@ const item = (extra: Partial<Item> = {}): Item =>
   }) as Item;
 
 describe("demoScanUrl", () => {
-  it("draws the front at a card's 5 by 7, in the team's colour, with the player and the number", () => {
+  it("draws the front the way the tile's CardFace does: livery stripes, initials, number badge, nameplate", () => {
     const svg = svgOf(demoScanUrl(item(), "front"));
     expect(svg).toContain('width="500" height="700"');
-    expect(svg).toContain(getTeam(card.teamIds[0]).primary);
-    expect(svg).toContain(`#${card.cardNumber}`);
-    expect(svg).toContain(playerNames(card).replace(/&/g, "&amp;").replace(/'/g, "&apos;"));
+    const team = getTeam(card.teamIds[0]);
+    expect(svg).toContain(`patternTransform="rotate(45)"><rect width="35" height="45" fill="${team.primary}"/>`);
+    expect(svg).toContain(`fill="${team.secondary}"/>`);
+    expect(svg).toContain(`>${playerInitials(leadPlayer(card))}</text>`);
+    expect(svg).toContain(`>#${card.cardNumber}</text>`);
+    expect(svg).toContain(leadPlayer(card).name.replace(/&/g, "&amp;").replace(/'/g, "&apos;").slice(0, 8));
   });
 
   it("draws the back as a stats panel with the number", () => {
@@ -43,9 +46,8 @@ describe("demoScanUrl", () => {
     expect(demoScanUrl(item({ back: null }), "back")).toBeUndefined();
   });
 
-  it("names an unknown card by its file, escaped", () => {
-    const svg = svgOf(demoScanUrl(item({ truth: null, front: { file: "Tom & Jerry's <1>.jpg", rotation: 0, recropping: false, failed: false } }), "front"));
-    expect(svg).toContain("Tom &amp; Jerry&apos;s &lt;1&gt;.jpg");
-    expect(svg).toContain("#?");
+  it("an unknown card's front is drawn as a back with no number, as the tile draws it", () => {
+    const svg = svgOf(demoScanUrl(item({ truth: null }), "front"));
+    expect(svg).toContain(">#?</text>");
   });
 });

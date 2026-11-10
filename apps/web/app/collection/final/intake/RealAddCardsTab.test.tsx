@@ -3546,6 +3546,41 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     expect(viewerHeading(`Back of ${CARD}`)).toBeTruthy();
   });
 
+  describe("focus comes back when the tile moved lanes while the viewer was open", () => {
+    const saved = { savedCopyId: "copy1", savedQuantity: 1, savedAt: 5 };
+
+    it("to the same photo in its new lane", async () => {
+      const { runId, rerender } = showPair();
+      fireEvent.click(screen.getByRole("button", { name: `Open front of ${CARD}` }));
+      mocks.data.matches = [reviewRow(saved)];
+      rerender(<Tab runId={runId} />);
+      closeViewer();
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: `Open saved photo of ${CARD}` })),
+      );
+    });
+
+    it("to the card's front when the new lane shows only that", async () => {
+      const { runId, rerender } = showPair();
+      fireEvent.click(screen.getByRole("button", { name: `Open back of ${CARD}` }));
+      mocks.data.matches = [reviewRow(saved)];
+      rerender(<Tab runId={runId} />);
+      fireEvent.click(within(screen.getByRole("heading", { name: `Back of ${CARD}` }).closest<HTMLElement>("[data-card-photo-viewer]")!).getByRole("button", { name: "Close" }));
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: `Open saved photo of ${CARD}` })),
+      );
+    });
+
+    it("to the lane's heading when no tile shows it any more", async () => {
+      const { runId, rerender } = showPair();
+      fireEvent.click(screen.getByRole("button", { name: `Open front of ${CARD}` }));
+      mocks.data.matches = [reviewRow({ setAside: true })];
+      rerender(<Tab runId={runId} />);
+      closeViewer();
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Needs you" })));
+    });
+  });
+
   it("e on the selected card opens its front, and the tab's keys stop while the viewer is open", () => {
     showPair();
     const yes = screen.getByRole("button", { name: `Yes, save ${CARD}` });
@@ -3687,7 +3722,7 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       expect(screen.queryByRole("button", { name: /Try again: touch up/ })).toBeNull();
     });
 
-    it("a failed render says why, Try again saves the same edit again, and Keep the old one drops it", async () => {
+    it("a failed render says why, Try again saves the same edit again, and Keep the old photo drops it", async () => {
       const save = mocks.mutation("photoEdits.saveScanEdit");
       const dismiss = mocks.mutation("photoEdits.dismissPhotoEditFailure");
       const { runId, container, rerender } = showPair(
@@ -3701,7 +3736,7 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       );
       expect(screen.getByText(/The original scan just aged out/)).toBeTruthy();
       expect(screen.queryByText("ENTRY_NOT_FOUND")).toBeNull();
-      expect(screen.getByRole("button", { name: `Keep the old one: the front of ${CARD}` })).toBeTruthy();
+      expect(screen.getByRole("button", { name: `Keep the old photo: the front of ${CARD}` })).toBeTruthy();
       await expectAccessibleInBothModes(container, {
         label: "Intake, a tile whose touch-up failed",
         rerender: () => rerender(<Tab runId={runId} />),
@@ -3715,7 +3750,7 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
           expectVersion: 1,
         }),
       );
-      fireEvent.click(screen.getByRole("button", { name: `Keep the old one: the front of ${CARD}` }));
+      fireEvent.click(screen.getByRole("button", { name: `Keep the old photo: the front of ${CARD}` }));
       await waitFor(() =>
         expect(dismiss).toHaveBeenCalledWith({ ref: { kind: "scan", jobId: `job-${runId}`, entryIndex: 0 } }),
       );
@@ -3797,7 +3832,7 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       expect(save()).not.toHaveBeenCalled();
     });
 
-    it("Escape puts back what it showed; a price that doesn't parse says so and saves nothing", async () => {
+    it("Escape puts back what it showed; a price that doesn't parse says so under the field and saves nothing", async () => {
       const { container, rerender, runId } = boxWithMin(150);
       const field = priceField()!;
       fireEvent.change(field, { target: { value: "9" } });
@@ -3805,13 +3840,47 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
       expect(field.value).toBe("1.50");
       fireEvent.change(field, { target: { value: "1.2.3" } });
       fireEvent.keyDown(field, { key: "Enter" });
-      expect(notify).toHaveBeenCalledWith("That price doesn't look right. Try something like 1.50.");
+      const why = screen.getByText("That price doesn't look right. Try something like 1.50.");
+      expect(why.getAttribute("role")).toBe("alert");
+      // The field keeps what was typed, marked and described by the line under it.
+      expect(field.value).toBe("1.2.3");
+      expect(field.getAttribute("aria-invalid")).toBe("true");
+      expect(field.getAttribute("aria-describedby")?.split(" ")).toContain(why.id);
+      expect(notify).not.toHaveBeenCalled();
       expect(save()).not.toHaveBeenCalled();
+      expect(setPrice()).not.toHaveBeenCalled();
+      // Leaving the field keeps nothing either.
+      fireEvent.blur(field);
       expect(setPrice()).not.toHaveBeenCalled();
       await expectAccessibleInBothModes(container, {
         label: "Intake, a card price that doesn't parse",
         rerender: () => rerender(<Tab runId={runId} />),
       });
+    });
+
+    it("typing a price clears the line under the field", () => {
+      boxWithMin(150);
+      const field = priceField()!;
+      fireEvent.change(field, { target: { value: "1.2.3" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+      expect(field.getAttribute("aria-invalid")).toBe("true");
+      fireEvent.change(field, { target: { value: "1.25" } });
+      expect(screen.queryByText("That price doesn't look right. Try something like 1.50.")).toBeNull();
+      expect(field.getAttribute("aria-invalid")).toBeNull();
+    });
+
+    it("y in the price is Enter there: a bad price is refused under the field, a good one saves", async () => {
+      const { runId } = boxWithMin(150);
+      const field = priceField()!;
+      fireEvent.change(field, { target: { value: "1.2.3" } });
+      fireEvent.keyDown(field, { key: "y" });
+      expect(screen.getByText("That price doesn't look right. Try something like 1.50.")).toBeTruthy();
+      expect(save()).not.toHaveBeenCalled();
+      fireEvent.change(field, { target: { value: "2.75" } });
+      fireEvent.keyDown(field, { key: "y" });
+      await waitFor(() =>
+        expect(save()).toHaveBeenCalledWith({ runId, pairId: "pair1", quantity: 1, details: { minPriceCents: 275 } }),
+      );
     });
   });
 });

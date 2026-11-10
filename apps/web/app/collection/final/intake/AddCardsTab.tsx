@@ -15,9 +15,10 @@ import type { PhotoEdit } from "@/lib/photo-edit/geometry";
 import CardPhotoViewer from "@/components/modules/CardPhotoViewer/CardPhotoViewer";
 import { numbersOnlySide } from "@/components/modules/CardPhotoViewer/sources";
 import type { PhotoSideSource, PhotoSource } from "@/components/modules/CardPhotoViewer/types";
-import { usePhotoViewer } from "@/components/modules/CardPhotoViewer/usePhotoViewer";
+import { PHOTO_OPENER_ATTR, photoOpenerProps, usePhotoViewer } from "@/components/modules/CardPhotoViewer/usePhotoViewer";
 import { usePageApi } from "../pageApi";
 import LoosePile from "./loose";
+import { pressEnterIn } from "./realLanes";
 import SetButton, { type SetPick } from "./SetButton";
 import {
   STAGE_LABEL,
@@ -152,9 +153,19 @@ export default function AddCardsTab() {
   const viewer = usePhotoViewer();
   const [viewItemId, setViewItemId] = useState<string | null>(null);
   const viewing = viewer.side && viewItemId ? { itemId: viewItemId, side: viewer.side } : null;
+  /**
+   * A tile remounts when its card moves lanes, so each photo button carries a
+   * key (`demoOpenerKey`): on close focus goes to the button now showing that
+   * photo, else the card's front, else the heading of the lane it was opened from.
+   */
   const openPhoto = (itemId: string, side: "front" | "back", opener?: HTMLElement) => {
     setViewItemId(itemId);
-    viewer.open(side, opener);
+    const from = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const lane = from?.closest("section")?.querySelector<HTMLElement>("h2") ?? null;
+    viewer.open(side, opener, {
+      key: demoOpenerKey(itemId, side),
+      fallback: () => liveOpener(demoOpenerKey(itemId, side)) ?? liveOpener(demoOpenerKey(itemId, "front")) ?? lane,
+    });
   };
 
   const sim = useIntakeSim({ setChosen: setPick !== null, homeId, hadOf });
@@ -314,10 +325,10 @@ export default function AddCardsTab() {
     }
     if (!selected) return;
     if (key === "y" && inPrice) {
-      // y in a price keeps what was typed there, like Enter.
+      // y in a price is Enter there: the field checks the price (and says
+      // what's wrong under it), keeps it and saves the card.
       e.preventDefault();
-      const typed = (target as HTMLInputElement).value;
-      if (selected.stage === "review" && selected.match.cardId) savePriced(selected.id, typed ? Math.round(Number(typed) * 100) : null);
+      if (target) pressEnterIn(target);
       return;
     }
     if (key === "y") {
@@ -440,7 +451,10 @@ export default function AddCardsTab() {
               className={`flex min-h-[16rem] flex-col rounded-lg border p-2 ${isReview ? "border-notice-warn-rule bg-notice-warn-bg/40" : "border-rule bg-raised"}`}
             >
               <header className="mb-2 flex items-center justify-between px-1">
-                <h2 className="m-0 text-sm font-semibold text-ink">{lane.label}</h2>
+                {/* Takes programmatic focus: a photo's viewer falls back to its lane's heading. */}
+                <h2 tabIndex={-1} className={`m-0 text-sm font-semibold text-ink ${RING}`}>
+                  {lane.label}
+                </h2>
                 <span className="text-sm font-bold tabular-nums text-ink-2">{items.length}</span>
               </header>
               {isReview && (
@@ -579,6 +593,17 @@ function DemoPhotoViewer({
   return <CardPhotoViewer source={source} initialSide={side} onClose={onClose} />;
 }
 
+/** NEO-481 — the key a demo photo button carries in every lane (`photoOpenerProps`). */
+function demoOpenerKey(itemId: string, side: "front" | "back"): string {
+  return `demo:${itemId}:${side}`;
+}
+
+/** The photo button keyed `key` that can take focus (the drawer's shares keys with the inert tile under it). */
+function liveOpener(key: string): HTMLElement | null {
+  const all = document.querySelectorAll<HTMLElement>(`[${PHOTO_OPENER_ATTR}="${key}"]`);
+  return Array.from(all).find((el) => !el.closest("[inert]")) ?? null;
+}
+
 /** NEO-481 — a demo scan as a button that opens the viewer, drawn with the collector's edit. */
 function PhotoButton({
   item,
@@ -598,6 +623,7 @@ function PhotoButton({
     <button
       type="button"
       aria-label={`Open ${side} of ${card ?? "this scan"}`}
+      {...photoOpenerProps(demoOpenerKey(item.id, side))}
       onClick={(e) => onOpen(e.currentTarget)}
       className={`block shrink-0 cursor-zoom-in rounded-md ${RING}`}
     >

@@ -626,6 +626,15 @@ export function savedPhotoTarget(
 }
 
 
+/**
+ * NEO-481 — the key a scan's photo button carries in every lane
+ * (`photoOpenerProps`), so the viewer can put focus back on it after its tile
+ * moved lanes while the viewer was open.
+ */
+export function scanOpenerKey(entryIndex: number): string {
+  return `scan:${entryIndex}`;
+}
+
 /** Said on a tile while a saved edit renders in the background (the old photo stays up). */
 export const EDIT_RENDERING_LINE = "Touching it up…";
 /** Said when the render failed and the server gave no reason a collector can read. */
@@ -690,10 +699,26 @@ export const PRICE_TOO_HIGH_LINE = "Whoa, that's more than any card sells for. T
  * a common price is never written from a tile.
  */
 export function tilePrice(text: string, prefill: number | null): { ok: true; own: number | undefined } | { ok: false; line: string } {
-  const parsed = parseMinPrice(text);
-  if (parsed === "invalid") return { ok: false, line: PRICE_INVALID_LINE };
-  if (parsed !== undefined && parsed > MAX_PRICE_CENTS) return { ok: false, line: PRICE_TOO_HIGH_LINE };
+  const problem = priceProblem(text);
+  if (problem) return { ok: false, line: problem };
+  const parsed = parseMinPrice(text) as number | undefined;
   return { ok: true, own: parsed === undefined || parsed === prefill ? undefined : parsed };
+}
+
+/** Presses Enter in a field, as the keyboard would: its own handler decides what Enter does (y in a price). */
+export function pressEnterIn(field: Element): void {
+  field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+}
+
+/**
+ * NEO-481 — what's wrong with a typed card price, in the words shown under
+ * the field; null when it's a price (or blank, which is the default).
+ */
+export function priceProblem(text: string): string | null {
+  const parsed = parseMinPrice(text);
+  if (parsed === "invalid") return PRICE_INVALID_LINE;
+  if (parsed !== undefined && parsed > MAX_PRICE_CENTS) return PRICE_TOO_HIGH_LINE;
+  return null;
 }
 
 /** NEO-481 — a `copyPhotos.photosOf` row: a saved line's photos, with each side's edit in flight. */

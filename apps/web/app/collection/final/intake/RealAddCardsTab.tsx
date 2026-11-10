@@ -28,13 +28,13 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
 import { useLeaveGuard } from "@/src/hooks/useLeaveGuard";
 import { Dropzone } from "@/app/print/placeholders/dropzone";
 import { ScanImage } from "@/app/print/placeholders/scan-image";
-import CardPhotoViewer from "@/components/modules/CardPhotoViewer/CardPhotoViewer";
+import CardPhotoViewer, { VIEWER_WORDS } from "@/components/modules/CardPhotoViewer/CardPhotoViewer";
 import ScanPhotoViewer from "@/components/modules/CardPhotoViewer/ScanPhotoViewer";
 import { CardPhoto } from "@/components/modules/CardPhotoViewer/EditedPhoto";
 import { copyPreviewKey } from "@/components/modules/CardPhotoViewer/convexEdits";
 import { ON_THE_WAY_REASON, viewOnlySource } from "@/components/modules/CardPhotoViewer/sources";
 import type { PhotoSource } from "@/components/modules/CardPhotoViewer/types";
-import { usePhotoViewer } from "@/components/modules/CardPhotoViewer/usePhotoViewer";
+import { PHOTO_OPENER_ATTR, photoOpenerProps, usePhotoViewer } from "@/components/modules/CardPhotoViewer/usePhotoViewer";
 import { asPendingPhotoEdit } from "@/lib/photo-edit/geometry";
 import Overlay from "../../prototypes/p1/Overlay";
 import Cascade from "../catalog/Cascade";
@@ -64,12 +64,14 @@ import {
   parseMinPrice,
   LINE_VIEW_ONLY_LINE,
   lineRetryLine,
+  scanOpenerKey,
   linePhotosOf,
   loneTarget,
   STILL_READING_LINE,
   pairTarget,
   type PhotoSideName,
   type PhotoViewerTarget,
+  pressEnterIn,
   pricePrefill,
   savedPhotoTarget,
   tilePrice,
@@ -215,6 +217,17 @@ const DRAWER_TITLE_ID = "intake-drawer-title";
 const MAX_LINE_PHOTOS = 100;
 /** Marks "Done adding photos" for focus moves (a control carries no DOM id). */
 const DONE_ATTR = "data-intake-done";
+/** Marks a lane's section, so a photo's viewer can fall back to that lane's heading. */
+const LANE_ATTR = "data-intake-lane";
+
+/**
+ * NEO-481 — the photo button keyed `key` that can take focus (one in the card
+ * drawer can share a key with the tile under it, which is inert then).
+ */
+function liveOpener(key: string): HTMLElement | null {
+  const all = document.querySelectorAll<HTMLElement>(`[${PHOTO_OPENER_ATTR}="${key}"]`);
+  return Array.from(all).find((el) => !el.closest("[inert]")) ?? null;
+}
 
 /**
  * A stable place for focus that lost its own: "Done adding photos" when it is
@@ -1670,13 +1683,24 @@ function RunWorkspace({
   /**
    * NEO-481 — the photos open in the viewer (a dialog: in-view state, never
    * the URL). `viewer` puts focus back on the photo that opened it.
+   *
+   * A tile can change lanes while the viewer is open (a scan is read, a pair
+   * is saved), and its button goes with it. So every photo button carries its
+   * scan's key (`scanOpenerKey`), and on close focus goes to the button that
+   * now shows `shown` (the photo opened), else the one showing the tile's
+   * front (`tile`), else the heading of the lane it was opened from.
    */
   const viewer = usePhotoViewer();
   const [viewTarget, setViewTarget] = useState<PhotoViewerTarget | null>(null);
   const viewing = viewer.side && viewTarget ? viewTarget : null;
-  const openPhoto = (target: PhotoViewerTarget, opener?: HTMLElement) => {
+  const openPhoto = (target: PhotoViewerTarget, opener: HTMLElement | undefined, shown: number, tile = shown) => {
     setViewTarget(target);
-    viewer.open(target.side, opener);
+    const from = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const lane = from?.closest(`[${LANE_ATTR}]`)?.querySelector<HTMLElement>("h2") ?? null;
+    viewer.open(target.side, opener, {
+      key: scanOpenerKey(shown),
+      fallback: () => liveOpener(scanOpenerKey(shown)) ?? liveOpener(scanOpenerKey(tile)) ?? lane,
+    });
   };
   // NEO-481 — the saved lines' own photos, for the Saved tiles (a line with none is absent).
   const savedCopyIds = useMemo(
@@ -1751,13 +1775,14 @@ function RunWorkspace({
   };
   const readFor = (row: IntakeMatchRow) => readOf(byIndex, row.frontIndex, row.backIndex);
   const openFront = (row: IntakeMatchRow, opener?: HTMLElement) =>
-    openPhoto(pairTarget(row, tileLabel(row, readFor(row)), "front"), opener);
+    openPhoto(pairTarget(row, tileLabel(row, readFor(row)), "front"), opener, row.frontIndex);
 
   /**
    * NEO-481 — keep a tile's typed price on its row, so a refresh and "Save all
    * matched" keep it. Blank, or what the field started at, is the default:
-   * the row's own price is cleared, never set to the default. Null when the
-   * text isn't a price (and the collector is told why).
+   * the row's own price is cleared, never set to the default. The field
+   * itself refuses a text that isn't a price (under it); null here too, as a
+   * backstop.
    */
   const keepPrice = (row: IntakeMatchRow, text: string): { own: number | undefined } | null => {
     const typed = tilePrice(text, prefill);
@@ -1851,11 +1876,9 @@ function RunWorkspace({
     }
     if (key === "y") run1(() => {
       if (!canSave(row)) return notify(whyNotSave(row));
-      // y in a price keeps what was typed there, like Enter.
-      if (inPrice) {
-        if (savePriced(row, (target as HTMLInputElement).value)) focusTile(after(row.pairId), true);
-        return;
-      }
+      // y in a price is Enter there: the field checks the price (and says
+      // what's wrong under it), keeps it and saves the card.
+      if (inPrice && target) return void pressEnterIn(target);
       const typed = inQty ? Number.parseInt((target as HTMLInputElement).value, 10) : NaN;
       actions.save(row, Number.isFinite(typed) ? typed : undefined);
       focusTile(after(row.pairId), inQty);
@@ -1988,7 +2011,7 @@ function RunWorkspace({
                 image={i}
                 label={labels.get(i.entryIndex) ?? i.originalName}
                 onOpen={(url, opener) =>
-                  openPhoto({ kind: "local", url, label: labels.get(i.entryIndex) ?? i.originalName, side: "front" }, opener)
+                  openPhoto({ kind: "local", url, label: labels.get(i.entryIndex) ?? i.originalName, side: "front" }, opener, i.entryIndex)
                 }
               />
             </li>
@@ -2000,7 +2023,7 @@ function RunWorkspace({
             loose={lanes.loose}
             labels={labels}
             onOpen={(image, opener) =>
-              openPhoto(loneTarget(image.entryIndex, labels.get(image.entryIndex) ?? image.originalName), opener)
+              openPhoto(loneTarget(image.entryIndex, labels.get(image.entryIndex) ?? image.originalName), opener, image.entryIndex)
             }
             onSetAside={(image) => setPhotoAside(image, true)}
             onPair={(front, back) =>
@@ -2042,7 +2065,7 @@ function RunWorkspace({
                     name={`Open front of ${name}`}
                     alt={`Front of ${name}`}
                     className="h-14 w-auto rounded"
-                    onOpen={(opener) => openPhoto(pairTarget(p, name, "front"), opener)}
+                    onOpen={(opener) => openPhoto(pairTarget(p, name, "front"), opener, p.frontIndex)}
                   />
                   <span className={TILE_WORDS}>
                     <span className="block truncate font-medium text-ink-2">{p.player ?? "Matching…"}</span>
@@ -2092,7 +2115,14 @@ function RunWorkspace({
                 row={row}
                 jobId={run.jobId}
                 images={[byIndex.get(row.frontIndex), byIndex.get(row.backIndex)]}
-                onOpenPhoto={(side, opener) => openPhoto(pairTarget(row, tileLabel(row, readFor(row)), side), opener)}
+                onOpenPhoto={(side, opener) =>
+                  openPhoto(
+                    pairTarget(row, tileLabel(row, readFor(row)), side),
+                    opener,
+                    side === "back" ? row.backIndex : row.frontIndex,
+                    row.frontIndex,
+                  )
+                }
                 price={price}
                 read={readFor(row)}
                 selected={row.pairId === selected}
@@ -2114,7 +2144,7 @@ function RunWorkspace({
                   jobId={run.jobId}
                   image={byIndex.get(row.frontIndex)}
                   photos={row.savedCopyId ? linePhotos.get(row.savedCopyId) : undefined}
-                  onOpen={(target, opener) => openPhoto(target, opener)}
+                  onOpen={(target, opener) => openPhoto(target, opener, row.frontIndex)}
                 />
                 <span className={TILE_WORDS}>
                   <span className="block truncate font-medium text-ink-2">{cardLabel(row.card)}</span>
@@ -2172,7 +2202,14 @@ function RunWorkspace({
             row={open}
             run={run}
             images={[byIndex.get(open.frontIndex), byIndex.get(open.backIndex)]}
-            onOpenPhoto={(side, opener) => openPhoto(pairTarget(open, cardLabel(open.card), side), opener)}
+            onOpenPhoto={(side, opener) =>
+              openPhoto(
+                pairTarget(open, cardLabel(open.card), side),
+                opener,
+                side === "back" ? open.backIndex : open.frontIndex,
+                open.frontIndex,
+              )
+            }
             price={price}
             read={readFor(open)}
             actions={actions}
@@ -2450,8 +2487,14 @@ function ScanThumb({
   className: string;
   onOpen: (opener: HTMLElement) => void;
 }) {
+  // The shared `ScanImage` draws the button, so its viewer key goes on from here
+  // (`scanOpenerKey`): every render, as the picture inside can redraw it.
+  const wrap = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    wrap.current?.querySelector("button")?.setAttribute(PHOTO_OPENER_ATTR, scanOpenerKey(entryIndex));
+  });
   return (
-    <span {...{ [THUMB_ATTR]: entryIndex }} className="flex shrink-0">
+    <span ref={wrap} {...{ [THUMB_ATTR]: entryIndex }} className="flex shrink-0">
       <ScanImage
         jobId={jobId}
         entryIndex={entryIndex}
@@ -2558,6 +2601,7 @@ function SavedPhoto({
       <button
         type="button"
         aria-label={name}
+        {...photoOpenerProps(scanOpenerKey(row.frontIndex))}
         className="flex shrink-0 rounded focus-outline"
         onClick={(e) => onOpen({ ...target, side }, e.currentTarget)}
       >
@@ -2587,7 +2631,7 @@ function SavedPhoto({
 
 /**
  * NEO-481 — where a saved line's photo edit stands, under its Saved tile's
- * words. The viewer holds Try again and Keep the old one, so a failure here
+ * words. The viewer holds Try again and Keep the old photo, so a failure here
  * says to open it.
  */
 function LineEditLine({ photos }: { photos: CopyPhotos | undefined }) {
@@ -2618,7 +2662,7 @@ const THUMB_ATTR = "data-scan-thumb";
 
 /**
  * NEO-481 — a scan's failed hand edit, under its tile's words: what went
- * wrong, with Try again (the same save again) and Keep the old one (drop the
+ * wrong, with Try again (the same save again) and Keep the old photo (drop the
  * failed edit). The old photo stays up throughout; while an edit renders the
  * thumbnail says so itself. Either press takes its buttons away, so focus that fell
  * to the page lands on the photo itself.
@@ -2681,7 +2725,7 @@ function EditLine({ jobId, image, label }: { jobId: string; image: IntakeImage |
         <button
           type="button"
           className={PHOTO_ACTION}
-          aria-label={`Keep the old one: ${label}`}
+          aria-label={`${VIEWER_WORDS.keepOld}: ${label}`}
           aria-disabled={busy || undefined}
           onClick={(e) =>
             press(container(e.currentTarget), () =>
@@ -2689,7 +2733,7 @@ function EditLine({ jobId, image, label }: { jobId: string; image: IntakeImage |
             )
           }
         >
-          Keep the old one
+          {VIEWER_WORDS.keepOld}
         </button>
       </span>
     </>
@@ -2713,7 +2757,7 @@ function Lane({
   label: string;
   count: number;
   review?: boolean;
-  /** Makes the heading a focus target (programmatic only), under this id. */
+  /** The heading's id, for focus moves that name it (every lane heading takes programmatic focus). */
   headingId?: string;
   action?: ReactNode;
   children: ReactNode;
@@ -2726,14 +2770,16 @@ function Lane({
   const list = <ul className="m-0 list-none space-y-2 p-0">{children}</ul>;
   return (
     <section
+      {...{ [LANE_ATTR]: "" }}
       aria-label={`${label}, ${count}`}
       className={`flex min-h-[16rem] flex-col rounded-lg border p-2 ${review ? "border-notice-warn-rule bg-notice-warn-bg/40" : "border-rule bg-raised"}`}
     >
       <header className="mb-2 flex items-center justify-between px-1">
         <h2
           id={review ? REVIEW_HEADING_ID : headingId}
-          tabIndex={review || headingId ? -1 : undefined}
-          className={`m-0 text-sm font-semibold text-ink ${review || headingId ? RING : ""}`}
+          // Focusable in every lane: a photo's viewer falls back to its lane's heading.
+          tabIndex={-1}
+          className={`m-0 text-sm font-semibold text-ink ${RING}`}
         >
           {label}
         </h2>
@@ -2783,6 +2829,7 @@ function PhotoTile({
         <button
           type="button"
           aria-label={`Open photo ${label}`}
+          {...photoOpenerProps(scanOpenerKey(image.entryIndex))}
           onClick={(e) => onOpen(local, e.currentTarget)}
           className={`block shrink-0 cursor-zoom-in rounded ${RING}`}
         >
@@ -2879,6 +2926,7 @@ function LoosePile({
                 className="min-h-11 sm:min-h-8"
                 aria-label={`Crop by hand: ${labels.get(i.entryIndex) ?? i.originalName}`}
                 aria-describedby={`loose-why-${i.entryIndex}`}
+                {...photoOpenerProps(scanOpenerKey(i.entryIndex))}
                 onClick={(e) => onOpen(i, e.currentTarget)}
               >
                 Crop by hand
@@ -3197,7 +3245,7 @@ function CountField({
           if (Number.isFinite(n)) actions.setCount(row, n);
           setDraft(null);
         }}
-        className={`w-14 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink ${RING}`}
+        className={`w-14 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink max-sm:min-h-11 ${RING}`}
         aria-describedby={`${id}-hint`}
         aria-keyshortcuts="Enter"
       />
