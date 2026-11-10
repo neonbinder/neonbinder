@@ -54,6 +54,7 @@ import {
   laneOf,
   photoLabels,
   PHOTO_NEWS_QUIET_MS,
+  PHOTO_NOT_A_PHOTO_LINE,
   PHOTO_OUT_OF_TRIES_LINE,
   PHOTO_RUN_CLOSED_LINE,
   PHOTO_SET_ASIDE_LINE,
@@ -1880,6 +1881,8 @@ function RunWorkspace({
                           notify(PHOTO_RUN_CLOSED_LINE);
                         } else if (r.reason === "too big") {
                           notify(PHOTO_TOO_BIG_LINE);
+                        } else if (r.reason === "not an image") {
+                          notify(PHOTO_NOT_A_PHOTO_LINE);
                         } else if (r.reason === "set aside") {
                           notify(PHOTO_SET_ASIDE_LINE);
                         }

@@ -63,10 +63,9 @@ import { heavyPreprocessPool } from "./placeholderHeavyPool";
 import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
 import {
-  ENTRY_TOO_MANY_PIXELS,
-  isRasterTooLargeError,
   rejectedSummaryValidator,
   summarizeRejections,
+  terminalEntryErrorCode,
 } from "./lib/extractRejections";
 import { noteIntakeJobFinished, noteIntakePairsChanged } from "./intakeRuns";
 
@@ -1859,9 +1858,11 @@ async function settleImageOutcome(
         result.kind === "canceled"
           ? "CANCELED"
           : (failureCode ??
-            // NEO-446: a raster over the pixel ceiling is terminal, and the photo
-            // can say so rather than offering a Try again that cannot work.
-            (isRasterTooLargeError(result.error) ? ENTRY_TOO_MANY_PIXELS : "PROCESS_ENTRY_FAILED")),
+            // NEO-446 / NEO-484: a raster over the pixel ceiling, or an entry
+            // that is not a decodable image, is terminal, and the photo can say
+            // so rather than offering a Try again that cannot work.
+            terminalEntryErrorCode(result.error) ??
+            "PROCESS_ENTRY_FAILED"),
       errorDetail:
         result.kind === "failed"
           ? result.error.slice(0, 1000)

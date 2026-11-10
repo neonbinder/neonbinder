@@ -1,7 +1,12 @@
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@/convex/_generated/api";
 import type { IntakeReason } from "@/convex/lib/intakeMatch";
-import { ENTRY_TOO_MANY_PIXELS, type RejectedSummary, type RejectionKind } from "@/convex/lib/extractRejections";
+import {
+  ENTRY_TOO_MANY_PIXELS,
+  ENTRY_UNDECODABLE,
+  type RejectedSummary,
+  type RejectionKind,
+} from "@/convex/lib/extractRejections";
 
 /**
  * NEO-382 — the signed-in intake screen's lanes, worked out from the three
@@ -264,12 +269,14 @@ export const MAX_PHOTO_RETRIES = 3;
 
 /**
  * Whether a failed photo can still be sent again (the run must also be open).
- * Never one over the pixel ceiling: the same bytes can only fail the same way.
+ * Never one over the pixel ceiling or one that is not an image: the same bytes
+ * can only fail the same way.
  */
 export function canRetryPhoto(image: Pick<IntakeImage, "status" | "retries" | "errorCode">): boolean {
   return (
     image.status === "failed" &&
     image.errorCode !== ENTRY_TOO_MANY_PIXELS &&
+    image.errorCode !== ENTRY_UNDECODABLE &&
     (image.retries ?? 0) < MAX_PHOTO_RETRIES
   );
 }
@@ -304,12 +311,16 @@ export const PHOTO_SET_ASIDE_LINE = "That photo was set aside. Bring it back to 
 /** A photo over the limit: on its tile, and if a stale Try again is refused for it. */
 export const PHOTO_TOO_BIG_LINE = `Too big (over ${PHOTO_LIMIT}). Shrink it and send it again.`;
 
+/** NEO-484: a file that is not a decodable image: on its tile, and if a stale Try again is refused for it. */
+export const PHOTO_NOT_A_PHOTO_LINE = `That's not a photo we can open. ${SEND_FRESH_LINE}`;
+
 /**
  * Why a photo in the pile failed, in a collector's words. With no Try again on
  * offer (the run is closed, or the photo has had its tries), it says what to do.
  */
 export function failedText(image: Pick<IntakeImage, "errorCode">, retryOffered: boolean): string {
   if (image.errorCode === ENTRY_TOO_MANY_PIXELS) return PHOTO_TOO_BIG_LINE;
+  if (image.errorCode === ENTRY_UNDECODABLE) return PHOTO_NOT_A_PHOTO_LINE;
   const why = image.errorCode === "PHOTO_TIMED_OUT" ? "Took too long to read" : "Couldn't read it";
   return retryOffered ? why : `${why}. ${SEND_FRESH_LINE}`;
 }
