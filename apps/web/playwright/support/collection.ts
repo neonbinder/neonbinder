@@ -214,11 +214,16 @@ export async function countOf(control: Locator, re: RegExp): Promise<number> {
 }
 
 /**
- * Follow a link of the signed-in shell (the top tabs on a desktop, the Menu
- * dialog on a phone) to another screen: "Collection" or "Inventory". The tab
- * is a plain link named for the screen.
+ * Follow a link of the shell (the top tabs on a desktop, the Menu dialog on a
+ * phone) to another screen: "Collection" or "Inventory". The tab is a plain
+ * link named for the screen. The logged-out demo (/demo) wears the same shell,
+ * so its own "Back to the tour" tab goes through here too.
  */
-export async function goViaShell(page: Page, isMobile: boolean, name: "Collection" | "Inventory"): Promise<void> {
+export async function goViaShell(
+  page: Page,
+  isMobile: boolean,
+  name: "Collection" | "Inventory" | "Back to the tour",
+): Promise<void> {
   if (isMobile) {
     await page.getByRole("button", { name: "Open menu" }).click();
     const menu = page.getByRole("dialog", { name: "Menu" });

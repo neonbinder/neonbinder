@@ -2,12 +2,13 @@
 // links straight into the demo (/demo/collection). The demo's own depth is
 // covered by its own specs; this spec proves only the doorway from home and the
 // way back out.
+import { goViaShell } from "../../support/collection";
 import { test, expect, expectAccessible } from "../../support/fixtures";
 
 test(
   "Landing page: the Check it Out link opens the collection demo, and Back to the tour returns home",
   { tag: ["@smoke", "@home"] },
-  async ({ page }) => {
+  async ({ page, isMobile }) => {
     // Signed out: every test starts in a fresh browser context (R4).
     await page.goto("/");
 
@@ -21,8 +22,8 @@ test(
     await expect(page).toHaveURL(/\/demo\/collection$/);
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
 
-    // "Back to the tour" in the demo's tab bar goes back to the home page.
-    await page.getByRole("link", { name: "Back to the tour" }).click();
+    // "Back to the tour" in the demo's tab bar (the Menu on a phone) goes back to the home page.
+    await goViaShell(page, isMobile, "Back to the tour");
     await expect(page).toHaveURL(/\/$/);
     await expect(checkItOut).toBeVisible();
   },

@@ -1,15 +1,17 @@
-// NEO-356 (R1): a signed-out visitor flips the Binder Tracking demo to Light
+// NEO-356 / NEO-464 (R1): a signed-out visitor flips the demo (/demo) to Light
 // with the demo's own switch, it holds across the demo's tabs, and leaving the
-// demo puts the page back to the dark the visitor arrived in. Nothing is saved
-// (the visitor has no account). Modes are proven by painted colour
-// (support/theme.ts); the suite runs as a dark-OS user (playwright.config.ts).
+// demo (the shell's "Back to the tour") puts the page back to the dark the
+// visitor arrived in. Nothing is saved (the visitor has no account). Modes are
+// proven by painted colour (support/theme.ts); the suite runs as a dark-OS user
+// (playwright.config.ts).
+import { goViaShell } from "../../support/collection";
 import { test, expect, expectAccessible } from "../../support/fixtures";
 import { expectLook, expectPageLook } from "../../support/theme";
 
 test(
-  "Binder Tracking demo: the Light switch repaints the demo and leaving restores dark",
+  "Demo: the Light switch repaints the demo and going back to the tour restores dark",
   { tag: ["@smoke", "@home"] },
-  async ({ page }) => {
+  async ({ page, isMobile }) => {
     await page.goto("/collection-tracking");
     const tour = page.getByRole("region", { name: "Take it for a spin" });
     await expect(tour).toBeVisible();
@@ -39,19 +41,19 @@ test(
     // It holds across the demo's tabs and Back.
     const tabs = page.getByRole("navigation", { name: "Collection sections" });
     await tabs.getByRole("link", { name: "My Cards" }).click();
-    await expect(page).toHaveURL(/[?]tab=cards/);
+    await expect(page).toHaveURL(/[?&]tab=cards/);
     const building = page.getByRole("heading", { level: 2, name: "Sets I'm building" });
     await expect(building).toBeVisible();
     await expectPageLook(page, "light");
     await page.goBack();
-    await expect(page).not.toHaveURL(/[?]tab=cards/);
+    await expect(page).not.toHaveURL(/[?&]tab=cards/);
     await expect(light).toBeChecked();
     await expectLook(page, "light", title);
 
-    // Leaving the demo releases the switch: back on the tour, the page is dark again.
-    await page.getByRole("button", { name: "Back to the tour" }).click();
-    await expect(page).toHaveURL(/\/binder-tracking$/);
-    await expect(tour).toBeVisible();
+    // Leaving the demo releases the switch: back on the home page, the page is dark again.
+    await goViaShell(page, isMobile, "Back to the tour");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("region", { name: "Check it Out" })).toBeVisible();
     await expect(demoTheme).toBeHidden();
     await expectPageLook(page, "dark");
   },

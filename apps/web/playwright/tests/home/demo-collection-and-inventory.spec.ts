@@ -1,62 +1,77 @@
-// NEO-350 / NEO-364 (R1): the signed-out collection demo on the Binder Tracking
-// tour opens in place and shows BOTH sides of the product: the collection
+// NEO-350 / NEO-364 / NEO-464 (R1): the signed-out demo app (/demo) opens from the
+// Collection Tracking page and shows BOTH sides of the product: the collection
 // (binders I keep: My Cards, Checklists, My Binders) and the inventory (boxes I
-// sell: Inventory, My Boxes, Checklists), joined by the "Collection or
-// Inventory" switch in the demo bar. Each side has its own tabs and h1, a side
-// switch is a view like any other (browser Back returns across it), a card
-// taken off sale crosses to the collection and back, quick quantity entry on
-// the inventory's Checklists boxes a card with Undo, and "Back to the tour"
-// leaves in one step. Light by design: the demo is hard-coded marketing data;
-// its depth is covered by unit tests, and the signed-in inventory by
-// collection/inventory-*.
+// sell: Inventory, My Boxes, Checklists), joined by the shell's own Collection
+// and Inventory tabs (the Menu on a phone). Each side has its own tabs and h1,
+// a side change is a view like any other (browser Back returns across it), a
+// card taken off sale crosses to the collection and back, quick quantity entry
+// on the inventory's Checklists boxes a card with Undo, and the shell's "Back
+// to the tour" link leaves for the home page. Light by design: the demo is
+// hard-coded marketing data; its depth is covered by unit tests, and the
+// signed-in inventory by collection/inventory-*.
+import { goViaShell } from "../../support/collection";
 import { test, expect, expectAccessible } from "../../support/fixtures";
-import type { Locator } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 // A button's accessible name, read from its ARIA snapshot. The snapshot is
 // YAML, which writes an apostrophe as '' ("Artist''s Proof"); undo that.
 const buttonName = async (button: Locator) =>
   (/button "([^"]+)"/.exec(await button.ariaSnapshot())?.[1] ?? "").replace(/''/g, "'");
 
+// The shell tab that is "you are here" (aria-current). On a phone the tabs live in the
+// Menu dialog, so it is opened to look and closed again with Escape.
+async function expectShellOn(page: Page, isMobile: boolean, here: "Collection" | "Inventory") {
+  const other = here === "Collection" ? "Inventory" : "Collection";
+  const menu = page.getByRole("dialog", { name: "Menu" });
+  const tabs = isMobile ? menu : page.getByRole("navigation", { name: "Main" });
+  if (isMobile) {
+    await page.getByRole("button", { name: "Open menu" }).click();
+    await expect(menu).toBeVisible();
+  }
+  await expect(tabs.getByRole("link", { name: here, exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(tabs.getByRole("link", { name: other, exact: true })).not.toHaveAttribute("aria-current", "page");
+  if (isMobile) {
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
+  }
+}
+
 test(
-  "Binder Tracking tour: open the demo, flip between the collection and the inventory, take a box card off sale, box a card, leave",
+  "Demo: open it from Collection Tracking, flip between the collection and the inventory, take a box card off sale, box a card, go back to the tour",
   { tag: ["@smoke", "@home"] },
-  async ({ page }) => {
+  async ({ page, isMobile }) => {
     await page.goto("/collection-tracking");
     const tour = page.getByRole("region", { name: "Take it for a spin" });
     await expect(tour).toBeVisible();
-    await expectAccessible(page, { within: tour, label: "Binder Tracking tour, Take it for a spin" });
+    await expectAccessible(page, { within: tour, label: "Collection Tracking, Take it for a spin" });
 
-    // Opening the demo swaps the tour for it, in place, and lands focus on the demo notice.
+    // The link opens the demo app, and lands focus on the demo notice.
     await tour.getByRole("link", { name: "Open the demo binder" }).click();
     await expect(page).toHaveURL(/\/demo\/collection$/);
     const about = page.getByRole("region", { name: "About this demo" });
     await expect(about).toBeFocused();
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
 
-    // The side switch lives in the demo bar: the collection is on, the inventory one click away.
-    const sides = about.getByRole("group", { name: "Collection or Inventory" });
-    const toCollection = sides.getByRole("link", { name: "Binders I keep" });
-    const toInventory = sides.getByRole("link", { name: "Boxes I sell" });
-    await expect(toCollection).toHaveAttribute("aria-current", "page");
-    await expect(toInventory).not.toHaveAttribute("aria-current", "page");
+    // The shell's tabs are the two sides: the collection is on, the inventory one tab away.
+    await expectShellOn(page, isMobile, "Collection");
 
     // The collection's three tabs, each on its own view of the URL, plus
     // the demo's Add cards (NEO-369).
     const tabs = page.getByRole("navigation", { name: "Collection sections" });
     await expect(tabs.getByRole("link")).toHaveCount(4);
     await tabs.getByRole("link", { name: "My Cards" }).click();
-    await expect(page).toHaveURL(/[?]tab=cards/);
+    await expect(page).toHaveURL(/[?&]tab=cards/);
     await expect(page.getByRole("heading", { level: 2, name: "Sets I'm building" })).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, My Cards" });
 
     await tabs.getByRole("link", { name: "Checklists" }).click();
-    await expect(page).toHaveURL(/[?]tab=checklists/);
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(page.getByRole("searchbox", { name: "Search every card" })).toBeVisible();
     // The collection's Checklists have no box to add to: that is the inventory's.
     await expect(page.getByRole("combobox", { name: "Adding to" })).toHaveCount(0);
 
     await tabs.getByRole("link", { name: "My Binders" }).click();
-    await expect(page).toHaveURL(/[?]tab=binders/);
+    await expect(page).toHaveURL(/[?&]tab=binders/);
     const binders = page.getByRole("list", { name: "Your binders" });
     await expect(binders).toBeVisible();
 
@@ -83,13 +98,15 @@ test(
     const door = special.getByRole("link", { name: /^Inventory, \d+ cards? for sale$/ });
     await expect(door).toBeVisible();
     await door.click();
-    await expect(page).toHaveURL(/[?]side=inventory/);
-    await expect(page).toHaveURL(/[?]tab=cards/);
+    await expect(page).toHaveURL(/[?&]side=inventory/);
+    await expect(page).toHaveURL(/[?&]tab=cards/);
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
-    await expect(toInventory).toHaveAttribute("aria-current", "page");
-    await expect(toCollection).not.toHaveAttribute("aria-current", "page");
-    // Arriving from a side link puts the keyboard on the new page's h1.
-    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeFocused();
+    // Arriving from the door puts the keyboard at the start of the new page: the demo
+    // notice. (The side page's own h1 is what the app aims for, takeSideArrival; in the
+    // demo shell the side change remounts the page and the notice takes focus after it.)
+    // Read before the shell's Menu is opened on a phone: closing it hands focus to its toggle.
+    await expect(about).toBeFocused();
+    await expectShellOn(page, isMobile, "Inventory");
 
     // The inventory's three tabs, plus the demo's Add cards (NEO-369).
     const invTabs = page.getByRole("navigation", { name: "Inventory sections" });
@@ -113,7 +130,7 @@ test(
     // Unsorted first, then Up for Trade drawn as a box. No long box: the Inventory
     // tab is already the whole stock in one list.
     await invTabs.getByRole("link", { name: "My Boxes" }).click();
-    await expect(page).toHaveURL(/[?]tab=boxes/);
+    await expect(page).toHaveURL(/[?&]tab=boxes/);
     const boxes = page.getByRole("list", { name: "Your boxes" });
     await expect(boxes).toBeVisible();
     await expect(boxes.getByRole("button")).toHaveCount(2);
@@ -130,14 +147,14 @@ test(
 
     // Open the Show box: five rows, and the strip of cards not sorted into a row yet.
     await showBox.click();
-    await expect(page).toHaveURL(/[?]b=[^&]+/);
+    await expect(page).toHaveURL(/[?&]b=[^&]+/);
     await expect(page.getByRole("heading", { level: 2, name: "Show box", exact: true })).toBeVisible();
     const open = page.getByRole("region", { name: "Show box, open", exact: true });
     await expect(open.getByRole("group", { name: /^Row \d, \d+ cards?$/ })).toHaveCount(5);
     await expect(page.getByRole("group", { name: "Not sorted into a row yet", exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, an open box" });
 
-    // The pushed stack (binders, the switch, a tab, a box) unwinds one step at a time:
+    // The pushed stack (binders, the side change, a tab, a box) unwinds one step at a time:
     // box, shelf, list, then back ACROSS the side switch to the collection, with no
     // side= on the URL; forward replays it.
     await page.goBack();
@@ -145,10 +162,10 @@ test(
     await page.goBack();
     await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
     await page.goBack();
-    await expect(page).not.toHaveURL(/[?]side=/);
-    await expect(page).toHaveURL(/[?]tab=binders/);
+    await expect(page).not.toHaveURL(/[?&]side=/);
+    await expect(page).toHaveURL(/[?&]tab=binders/);
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
-    await expect(toCollection).toHaveAttribute("aria-current", "page");
+    await expectShellOn(page, isMobile, "Collection");
     await expect(binders).toBeVisible();
     await page.goForward();
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
@@ -181,20 +198,20 @@ test(
     await expect(drawer).toBeHidden();
     await expect(page.getByRole("heading", { level: 2, name: "Show box", exact: true })).toBeVisible();
 
-    // Across the switch, to the collection: My Binders, where All my cards now
+    // Across to the collection tab: My Binders, where All my cards now
     // counts the card, and shows it, with no sale chip and no sale pocket.
-    await toCollection.click();
-    await expect(page).not.toHaveURL(/[?]side=/);
+    await goViaShell(page, isMobile, "Collection");
+    await expect(page).not.toHaveURL(/[?&]side=/);
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
     await tabs.getByRole("link", { name: "My Binders" }).click();
-    await expect(page).toHaveURL(/[?]tab=binders/);
+    await expect(page).toHaveURL(/[?&]tab=binders/);
     const allNow = special.getByRole("button", {
       name: `All my cards, ${allBase + copiesTaken} ${allBase + copiesTaken === 1 ? "card" : "cards"}`,
       exact: true,
     });
     await expect(allNow).toBeVisible();
     await allNow.click();
-    await expect(page).toHaveURL(/[?]all=1/);
+    await expect(page).toHaveURL(/[?&]all=1/);
     await expect(page.getByRole("heading", { level: 2, name: "All my cards", exact: true })).toBeVisible();
     await expect(page.getByText("Every card in your binders, one pocket per copy.").first()).toBeVisible();
     const only = page.getByRole("group", { name: "Only show", exact: true });
@@ -232,8 +249,8 @@ test(
 
     // Back to the shelf: All my cards is back to where it started.
     await page.goBack();
-    await expect(page).toHaveURL(/[?]tab=binders/);
-    await expect(page).not.toHaveURL(/[?]all=1/);
+    await expect(page).toHaveURL(/[?&]tab=binders/);
+    await expect(page).not.toHaveURL(/[?&]all=1/);
     await expect(allSpine).toBeVisible();
     await expect(
       special.getByRole("button", { name: `All my cards, ${allBase} ${allBase === 1 ? "card" : "cards"}`, exact: true }),
@@ -241,10 +258,10 @@ test(
 
     // Tab 3, the inventory's Checklists: quick quantity entry. Pick a card from
     // the search, type how many, Tab on: the box takes them, with an Undo.
-    await toInventory.click();
+    await goViaShell(page, isMobile, "Inventory");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
     await invTabs.getByRole("link", { name: "Checklists" }).click();
-    await expect(page).toHaveURL(/[?]tab=checklists/);
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
     const adding = page.getByRole("combobox", { name: "Adding to" });
     await expect(adding.getByRole("option", { selected: true })).toHaveText("Unsorted");
     await page.getByRole("searchbox", { name: "Search every card" }).fill("ohtani");
@@ -260,19 +277,21 @@ test(
     await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
     await expect(field).toHaveValue("0");
 
-    // "Back to the tour" goes straight out, to the tour, in ONE step however many views
-    // were pushed (collection, tabs, the switch, a box, the drawer...).
-    await page.getByRole("button", { name: "Back to the tour" }).click();
-    await expect(page).toHaveURL(/\/binder-tracking$/);
-    await expect(tour).toBeVisible();
-    await expect(tour.getByRole("link", { name: "Open the demo binder" })).toBeFocused();
+    // The shell's "Back to the tour" tab is a link to the home page; the demo is gone
+    // from it, and browser Back steps into the demo again like any other view.
+    await goViaShell(page, isMobile, "Back to the tour");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("region", { name: "Check it Out" })).toBeVisible();
     await expect(about).toBeHidden();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/demo\/inventory[?].*tab=checklists/);
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
 
     // The old links still land: the retired for-sale view opens the Inventory list.
     await page.goto("/demo/collection?sale=1");
-    await expect(page).toHaveURL(/[?]side=inventory/);
-    await expect(page).toHaveURL(/[?]tab=cards/);
-    await expect(page).not.toHaveURL(/[?]sale=/);
+    await expect(page).toHaveURL(/[?&]side=inventory/);
+    await expect(page).toHaveURL(/[?&]tab=cards/);
+    await expect(page).not.toHaveURL(/[?&]sale=/);
     await expect(page.getByRole("heading", { level: 2, name: "Everything for sale" })).toBeVisible();
   },
 );

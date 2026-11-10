@@ -13,7 +13,7 @@ import { photoFile } from "../../support/collection";
 import { test, expect, expectAccessible } from "../../support/fixtures";
 
 test(
-  "Binder Tracking demo: a copy added with a photo is its own line beside a plain one, + and 0 count both, Undo brings the photo back",
+  "Demo inventory: a copy added with a photo is its own line beside a plain one, + and 0 count both, Undo brings the photo back",
   { tag: ["@home"] },
   async ({ page }) => {
     await page.goto("/demo/inventory?tab=checklists");
