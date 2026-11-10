@@ -626,13 +626,22 @@ function MiniTile({
   onOpenPhoto: (opener: HTMLElement) => void;
 }) {
   const title = item.stage === "saved" ? cardTitle(item.match.cardId) : (item.read.player ?? "Reading…");
-  // The scan opens the viewer; the words beside it select the card.
+  // The scan opens the viewer; the words beside it select the card. A narrow
+  // lane (three or more columns at desktop) has no room for both on a row, so
+  // the words wrap under the scan at full width rather than squeezing to a
+  // sliver (WCAG 2.5.8: the button stays at least 24px either way).
   return (
-    <div className={`flex w-full items-center gap-2 rounded-md border-2 bg-surface p-1.5 ${edge(item, selected)}`}>
+    <div
+      className={`flex w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-md border-2 bg-surface p-1.5 ${edge(item, selected)}`}
+    >
       <PhotoButton item={item} side="front" size="sm" edit={edit} onOpen={onOpenPhoto} />
-      <button type="button" aria-pressed={selected} className={`min-w-0 flex-1 self-stretch rounded-sm text-left text-xs ${RING}`}>
+      <button
+        type="button"
+        aria-pressed={selected}
+        className={`min-h-6 min-w-24 flex-1 self-stretch rounded-sm px-1 text-left text-xs ${RING}`}
+      >
         <span className="block truncate font-medium text-ink-2">{title}</span>
-        <span className="block text-ink-3">
+        <span className="block truncate text-ink-3">
           {item.stage === "saved"
             ? `qty ${item.qty}`
             : item.read.number
