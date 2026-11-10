@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useRef, useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Theme } from "@radix-ui/themes";
-import type { PhotoEdit } from "@/lib/photo-edit/geometry";
+import type { PhotoCrop, PhotoEdit } from "@/lib/photo-edit/geometry";
 import { expectAccessibleInBothModes } from "@/lib/testing/axe";
 import Overlay from "@/app/collection/prototypes/p1/Overlay";
 import CardPhotoViewer, { VIEWER_WORDS } from "./CardPhotoViewer";
@@ -9,7 +10,9 @@ import { CardPhoto } from "./EditedPhoto";
 import { rememberPreview, resetPreviewsForTest } from "./previewStore";
 import { heldPhotoSource, HELD_REASON } from "./sources";
 import type { EditableStart, PhotoSideSource, PhotoSource } from "./types";
-import { usePhotoViewer } from "./usePhotoViewer";
+import { photoOpenerProps, usePhotoViewer } from "./usePhotoViewer";
+import CropStage, { spinHandle } from "./CropStage";
+import { wholeFrame } from "@/lib/photo-edit/geometry";
 
 /**
  * NEO-481 — the card photo viewer, driven the way a collector drives it: the
@@ -152,7 +155,7 @@ describe("turning and saving", () => {
     await act(async () => fireEvent.click(save));
     expect(savedEdit(front)).toEqual({ turns: 1, crop: null });
     expect(front.save.mock.calls[0][1]).toMatchObject({ guard: "token-1", mode: "stored" });
-    expect(within(dialog).getByRole("status").textContent).toBe(VIEWER_WORDS.saved);
+    expect(dialog.querySelector("[data-viewer-said]")!.textContent).toBe(VIEWER_WORDS.saved);
     // Saved is the new baseline: nothing left to save.
     expect(save.getAttribute("aria-disabled")).toBe("true");
 
@@ -304,6 +307,18 @@ describe("the crop box", () => {
     fireEvent.keyDown(box, { key: "c" });
     expect(within(dialog).queryByRole("application", { name: "Crop box" })).toBeNull();
     expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Crop by hand" }));
+  });
+
+  it("on a phone, Width/Height and Tilt wait behind More steps", async () => {
+    const { dialog } = await cropping();
+    const more = within(dialog).getByRole("button", { name: "More steps" });
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    const extra = document.getElementById(more.getAttribute("aria-controls")!)!;
+    expect(extra.className).toMatch(/(^| )hidden /);
+    expect(within(extra).getByRole("group", { name: "Tilt steps" })).toBeTruthy();
+    fireEvent.click(more);
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    expect(extra.className).toMatch(/^flex /);
   });
 
   it("reads the box out once it holds still", async () => {
@@ -466,7 +481,7 @@ describe("pending, failure and Undo", () => {
     );
     const view = render(shown(make()));
     const dialog = screen.getByRole("dialog");
-    const statusLine = () => within(dialog).getByRole("status").textContent?.trim();
+    const statusLine = () => dialog.querySelector("[data-viewer-said]")!.textContent?.trim();
     fireEvent.click(await within(dialog).findByRole("button", { name: "Turn right" }));
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save photo" })));
     expect(statusLine()).toBe(VIEWER_WORDS.saved);
@@ -478,7 +493,9 @@ describe("pending, failure and Undo", () => {
 
     view.rerender(shown(make({ status: "failed", edit: sent, error: "We couldn't make that edit just now. Try again." })));
     expect(statusLine()).toBe("");
-    expect(within(dialog).getByText("We couldn't make that edit just now. Try again.")).toBeTruthy();
+    // Announced, not only shown: the words are in a live region that was on the page before they came.
+    const failure = within(dialog).getByText("We couldn't make that edit just now. Try again.");
+    expect(failure.closest('[role="status"], [role="alert"]')).toBeTruthy();
     expect(within(dialog).queryByRole("button", { name: "Undo" })).toBeNull();
     expect(within(dialog).queryByText(VIEWER_WORDS.landed)).toBeNull();
 
@@ -507,7 +524,7 @@ describe("pending, failure and Undo", () => {
         </Theme>,
       );
     }
-    expect(within(dialog).getByRole("status").textContent?.trim()).toBe("");
+    expect(dialog.querySelector("[data-viewer-said]")!.textContent?.trim()).toBe("");
   });
 
   it("a scan's Undo saves the edit it had before", async () => {
@@ -594,6 +611,117 @@ describe("closing", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(opener);
+  });
+
+  /** A tile that moves to another lane while the viewer is open: a new button, the same key. */
+  function MovingTile({ withKey }: { withKey: boolean }) {
+    const viewer = usePhotoViewer();
+    const [lane, setLane] = useState<"waiting" | "saved">("waiting");
+    const heading = useRef<HTMLHeadingElement>(null);
+    const tile = (
+      <button
+        type="button"
+        {...photoOpenerProps("pair-1")}
+        onClick={(e) =>
+          viewer.open("front", e.currentTarget, { ...(withKey ? { key: "pair-1" } : {}), fallback: () => heading.current })
+        }
+      >
+        Open front of a card
+      </button>
+    );
+    return (
+      <Theme>
+        <h2 ref={heading} tabIndex={-1}>
+          Saved
+        </h2>
+        <section key={lane}>{tile}</section>
+        <button type="button" onClick={() => setLane("saved")}>
+          Move it
+        </button>
+        {viewer.side && (
+          <CardPhotoViewer source={heldPhotoSource("a card", { front: "blob:x" })} initialSide={viewer.side} onClose={viewer.close} />
+        )}
+      </Theme>
+    );
+  }
+
+  it("a tile that moved while the viewer was open gets focus back by its key", async () => {
+    render(<MovingTile withKey />);
+    const before = screen.getByRole("button", { name: "Open front of a card" });
+    fireEvent.click(before);
+    // The lane changes under the viewer: the old button leaves the page.
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Move it", hidden: true })));
+    expect(before.isConnected).toBe(false);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const after = screen.getByRole("button", { name: "Open front of a card" });
+    expect(after).not.toBe(before);
+    expect(document.activeElement).toBe(after);
+  });
+
+  it("with no key to find it by, focus goes to the fallback", async () => {
+    render(<MovingTile withKey={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open front of a card" }));
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Move it", hidden: true })));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Saved" }));
+  });
+});
+
+describe("closing with an edit not saved", () => {
+  it("the first Escape or Close says so; the second closes; a new change asks again", async () => {
+    const onClose = vi.fn();
+    const { dialog } = open({ label: "a card", front: side() }, onClose);
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Turn right" }));
+    const panel = dialog.querySelector("[data-card-photo-viewer]")!;
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("alert").textContent?.trim()).toBe(VIEWER_WORDS.unsavedEdit);
+
+    // A further change re-arms the question.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Turn right" }));
+    expect(within(dialog).getByRole("alert").textContent).toBe("");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("alert").textContent?.trim()).toBe(VIEWER_WORDS.unsavedEdit);
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("with nothing unsaved, one Escape closes", async () => {
+    const onClose = vi.fn();
+    const { dialog } = open({ label: "a card", front: side() }, onClose);
+    await within(dialog).findByRole("button", { name: "Turn right" });
+    fireEvent.keyDown(dialog.querySelector("[data-card-photo-viewer]")!, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the spin handle", () => {
+  const SRC = { srcW: 1000, srcH: 1400 };
+  const onPicture = (p: { x: number; y: number }) => p.x >= 0 && p.y >= 0 && p.x <= SRC.srcW && p.y <= SRC.srcH;
+
+  it("sits above a box with room, below one at the top, and inside the top edge when the box fills the frame", () => {
+    const u = 2;
+    const middle: PhotoCrop = { cx: 500, cy: 700, w: 400, h: 600, angle: 0, ...SRC };
+    const atTop: PhotoCrop = { ...middle, cy: 300 };
+    expect(spinHandle(middle, SRC.srcW, SRC.srcH, u)).toMatchObject({ below: false, knob: { x: 500, y: 400 - 34 * u } });
+    expect(spinHandle(atTop, SRC.srcW, SRC.srcH, u)).toMatchObject({ below: true, knob: { x: 500, y: 600 + 34 * u } });
+    const full = spinHandle(wholeFrame(SRC.srcW, SRC.srcH), SRC.srcW, SRC.srcH, u);
+    expect(full.below).toBe(false);
+    expect(full.knob).toEqual({ x: 500, y: 34 * u });
+    // Tilted and filling the frame top to bottom, the knob is still on the picture.
+    const tilted = spinHandle({ cx: 500, cy: 700, w: 500, h: 1000, angle: 30, ...SRC }, SRC.srcW, SRC.srcH, u);
+    expect(onPicture(tilted.knob)).toBe(true);
+  });
+
+  it("on the stage, a box over the whole frame keeps a grabbable handle on the picture", () => {
+    render(<CropStage sourceUrl="blob:x" {...SRC} turns={0} crop={null} onChange={vi.fn()} instructionsId="h" />);
+    const knob = document.querySelector("[data-crop-spin]")!;
+    const at = { x: Number(knob.getAttribute("cx")), y: Number(knob.getAttribute("cy")) };
+    expect(onPicture(at)).toBe(true);
+    expect(at.y).toBeGreaterThan(0);
   });
 });
 

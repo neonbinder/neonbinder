@@ -10,7 +10,7 @@
 
 export { default as CardPhotoViewer, VIEWER_WORDS } from "./CardPhotoViewer";
 export { default as ScanPhotoViewer } from "./ScanPhotoViewer";
-export { usePhotoViewer } from "./usePhotoViewer";
+export { PHOTO_OPENER_ATTR, photoOpenerProps, usePhotoViewer, type PhotoOpenerReturn } from "./usePhotoViewer";
 export { CardPhoto, EditedImage, pendingWords } from "./EditedPhoto";
 export {
   HELD_REASON,

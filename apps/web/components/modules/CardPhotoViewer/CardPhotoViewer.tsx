@@ -64,6 +64,9 @@ export const VIEWER_WORDS = {
   nothingChanged: "Turn or crop the photo first.",
   outOfEdits: "This photo is out of hand edits.",
   noAutoCrop: "No auto crop here. Drag the box to fit the card.",
+  unsavedEdit: "Unsaved edit. Esc again to toss it, or Save photo.",
+  keepOld: "Keep the old photo",
+  keys: "Keys: [ and ] turn it, C crops it.",
 } as const;
 
 /** How long the box holds still before its size is read out. */
@@ -207,6 +210,7 @@ export default function CardPhotoViewer({
 
   const setDraft = (next: PhotoEdit) => {
     setError(null);
+    setCloseArmed(false);
     setDrafts((d) => ({ ...d, [side]: next }));
   };
   const crop: PhotoCrop | null = editable && draft ? effectiveCrop(draft, editable.srcW, editable.srcH) : null;
@@ -301,12 +305,29 @@ export default function CardPhotoViewer({
     current.dismissFailure().catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : "Couldn't clear that note."));
   };
 
+  // An edit not saved yet, on either side: the first Close or Escape says so, the second tosses it.
+  const unsaved = sides.some((s) => {
+    const d = drafts[s];
+    const l = loaded[s];
+    if (!d || l?.state !== "ready" || l.start.mode === "viewOnly") return false;
+    return !editsEqual(d, saves[s]?.after ?? l.start.opening);
+  });
+  const [closeArmed, setCloseArmed] = useState(false);
+  const requestClose = () => {
+    if (unsaved && !closeArmed && !busy) {
+      setCloseArmed(true);
+      setError(VIEWER_WORDS.unsavedEdit);
+      return;
+    }
+    onClose();
+  };
+
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Escape") {
       // Only this dialog: the card drawer under it stays open.
       e.preventDefault();
       e.stopPropagation();
-      onClose();
+      requestClose();
       return;
     }
     if (e.altKey || e.ctrlKey || e.metaKey || typing(e.target) || !editable) return;
@@ -344,9 +365,9 @@ export default function CardPhotoViewer({
   const blocked = blockedBy();
 
   return (
-    <Overlay labelledBy={headingId} onClose={onClose} variant="stage">
+    <Overlay labelledBy={headingId} onClose={requestClose} variant="stage">
       <div
-        className="pointer-events-auto absolute inset-0 flex flex-col overflow-y-auto bg-raised text-ink sm:inset-auto sm:left-1/2 sm:top-1/2 sm:h-[min(54rem,calc(100dvh-2rem))] sm:w-[min(60rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl"
+        className="pointer-events-auto absolute inset-0 flex flex-col overflow-y-auto bg-sheet text-ink sm:inset-auto sm:left-1/2 sm:top-1/2 sm:h-[min(54rem,calc(100dvh-2rem))] sm:w-[min(60rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl sm:shadow-offset"
         onKeyDown={onKeyDown}
         data-card-photo-viewer=""
       >
@@ -395,7 +416,9 @@ export default function CardPhotoViewer({
 
         <div
           // The stage takes whatever height the panel leaves; the picture fills it, letterboxed.
-          className="relative mx-4 my-3 min-h-[15rem] flex-1 overflow-hidden rounded-md bg-raised-deep"
+          // A tint that differs from the sheet in both modes (the page grey in light, the input well in dark), so a
+          // white-bordered card still shows its edge. No role is both yet: a token candidate.
+          className="relative mx-4 my-1 min-h-[15rem] flex-1 overflow-hidden rounded-md bg-[color:light-dark(var(--surface),var(--field))] sm:my-3"
         >
           {editable && draft && cropping ? (
             <div ref={parkOnCropButton} className="contents">
@@ -447,6 +470,7 @@ export default function CardPhotoViewer({
                 outline={!cropping}
                 aria-pressed={cropping}
                 aria-keyshortcuts="C"
+                title="Crop by hand (C)"
                 onClick={toggleCrop}
                 className="min-h-11"
               >
@@ -463,6 +487,7 @@ export default function CardPhotoViewer({
                 />
               )}
             </div>
+            <p className="-mt-1 text-xs text-ink-3 [@media(pointer:coarse)]:hidden">{VIEWER_WORDS.keys}</p>
 
             {cropping && crop && (
               <CropControls
@@ -480,10 +505,10 @@ export default function CardPhotoViewer({
         <div className="sr-only" aria-live="polite" aria-atomic="true">
           {heard}
         </div>
-        <p className="min-h-5 px-4 pt-2 text-sm text-ink-2" role="status">
+        <p className="min-h-5 px-4 pt-2 text-sm text-ink-2" role="status" data-viewer-said="">
           {said.text + (said.n % 2 ? "\u00a0" : "")}
         </p>
-        <p className="min-h-5 px-4 text-sm text-neon-pink-text" role="alert">
+        <p className="min-h-5 px-4 text-sm text-notice-warn-ink" role="alert">
           {error ? error.text + (error.n % 2 ? "\u00a0" : "") : ""}
         </p>
 
@@ -500,7 +525,7 @@ export default function CardPhotoViewer({
               {busy ? "Saving…" : "Save photo"}
             </NeonButton>
           )}
-          <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-11">
+          <NeonButton type="button" variant="negative" outline onClick={requestClose} className="min-h-11">
             Close
           </NeonButton>
         </div>
@@ -536,7 +561,7 @@ function Tool({
         if (disabledBecause === undefined) onClick();
       }}
       aria-disabled={disabledBecause !== undefined || undefined}
-      title={disabledBecause || undefined}
+      title={disabledBecause || (shortcut ? `${label} (${shortcut})` : undefined)}
       aria-keyshortcuts={shortcut}
       className="min-h-11"
     >
@@ -566,6 +591,9 @@ function CropControls({
   noAutoCrop: boolean;
 }) {
   const angleNoteId = useId();
+  const moreId = useId();
+  // On a phone the stage needs the height: Move and Size stay out, the rest waits behind "More steps".
+  const [more, setMore] = useState(false);
   const [angleText, setAngleText] = useState<string | null>(null);
   const shownAngle = angleText ?? String(Math.round(normalizeAngle(crop.angle) * 10) / 10);
   const typed = angleText === null || angleText.trim() === "" ? null : Number(angleText);
@@ -614,6 +642,18 @@ function CropControls({
           {step("Shrink crop", <MinusIcon />, () => resizeCrop(crop, 1 / RESIZE_STEP))}
           {step("Grow crop", <PlusIcon />, () => resizeCrop(crop, RESIZE_STEP))}
         </div>
+        <NeonButton
+          type="button"
+          variant="secondary"
+          outline
+          aria-expanded={more}
+          aria-controls={moreId}
+          onClick={() => setMore((m) => !m)}
+          className="min-h-11 sm:hidden"
+        >
+          More steps
+        </NeonButton>
+        <div id={moreId} className={`${more ? "flex" : "hidden"} flex-wrap items-center gap-2 sm:contents`}>
         <div role="group" aria-label="Width and height steps" className="flex items-center gap-1">
           <span aria-hidden="true" className="text-sm text-ink-2">
             Width
@@ -655,6 +695,7 @@ function CropControls({
             />
             <span aria-hidden="true">°</span>
           </label>
+        </div>
         </div>
       </div>
       <p id={angleNoteId} role="status" className="min-h-4 text-xs text-ink-2 empty:min-h-0">
@@ -710,11 +751,24 @@ function Notices({
       <p key="left">{editsLeft === 0 ? VIEWER_WORDS.outOfEdits : `${editsLeft} hand ${editsLeft === 1 ? "edit" : "edits"} left on this photo.`}</p>,
     );
   }
-  if (pending) {
-    lines.push(
-      <div key="pending" className="flex flex-wrap items-center gap-2" data-viewer-pending={pending.status}>
-        <p className={pending.status === "failed" ? "text-notice-danger-ink" : ""}>{pendingWords(pending)}</p>
-        {pending.status === "failed" && onTryAgain && (
+  const failed = pending?.status === "failed";
+  // Always on the page, so an edit that fails (or starts rendering) while the viewer is open is announced.
+  lines.push(
+    <div
+      key="pending"
+      className={
+        failed
+          ? "flex flex-wrap items-center gap-2 rounded-md border border-notice-warn-rule bg-notice-warn-bg px-3 py-2 text-notice-warn-ink"
+          : "flex flex-wrap items-center gap-2"
+      }
+      data-viewer-pending={pending?.status}
+    >
+      <p role="status" className="empty:hidden">
+        {pendingWords(pending)}
+      </p>
+      {pending && (
+        <>
+        {failed && onTryAgain && (
           <NeonButton
             ref={parkRef}
             type="button"
@@ -727,16 +781,17 @@ function Notices({
             Try again
           </NeonButton>
         )}
-        {pending.status === "failed" && onKeepOld && (
+        {failed && onKeepOld && (
           <NeonButton ref={parkRef} type="button" variant="secondary" outline onClick={onKeepOld} className="min-h-11">
-            Keep the old photo
+            {VIEWER_WORDS.keepOld}
           </NeonButton>
         )}
-      </div>,
-    );
-  }
-  if (lines.length === 0) return null;
-  return <div className="flex flex-col gap-1 px-4 pt-3 text-sm text-ink-2">{lines}</div>;
+        </>
+      )}
+    </div>,
+  );
+  const quiet = lines.length === 1 && !pending;
+  return <div className={`flex flex-col gap-1 px-4 text-sm text-ink-2 ${quiet ? "" : "pt-3"}`}>{lines}</div>;
 }
 
 /** Re-exported for a surface that only needs the words. */

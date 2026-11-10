@@ -405,7 +405,7 @@ function PhotosBox({
       <p className="mt-2 text-xs text-ink-3" role="status">
         {status}
         {PHOTO_SIDES.filter((side) => photos?.[side]?.pending?.status === "failed").map((side) => (
-          <span key={side} className="block text-notice-danger-ink">
+          <span key={side} className="block text-notice-warn-ink">
             The {side} edit didn&rsquo;t save. Open the {side} photo to try again.
           </span>
         ))}

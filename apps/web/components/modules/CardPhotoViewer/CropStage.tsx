@@ -80,6 +80,30 @@ const HIT = 22;
 /** How far the spin handle sits above the box's top edge, in screen pixels. */
 const STEM = 34;
 
+/**
+ * Where the spin handle goes, in source pixels (`u` = source pixels per screen
+ * pixel). Above the box's top edge; below its bottom edge when above would
+ * leave the picture; and when neither fits (a box that fills the frame), just
+ * inside the top edge. The knob, dot and all, always stays on the picture, so
+ * it can always be seen and grabbed. `below` says which way the handle points
+ * from the box's centre: a handle below turns the box half a turn round.
+ */
+export function spinHandle(box: PhotoCrop, srcW: number, srcH: number, u: number): { knob: Point; stemFrom: Point; below: boolean } {
+  const corners = cropCorners(box);
+  const up = rotatePoint({ x: 0, y: -1 }, box.angle);
+  const topMid = { x: (corners[0].x + corners[1].x) / 2, y: (corners[0].y + corners[1].y) / 2 };
+  const bottomMid = { x: (corners[2].x + corners[3].x) / 2, y: (corners[2].y + corners[3].y) / 2 };
+  const along = (from: Point, dir: number, by: number) => ({ x: from.x + up.x * dir * by, y: from.y + up.y * dir * by });
+  const margin = (DOT + 2) * u;
+  const fits = (p: Point) => p.x >= margin && p.y >= margin && p.x <= srcW - margin && p.y <= srcH - margin;
+  const above = along(topMid, 1, STEM * u);
+  if (fits(above)) return { knob: above, stemFrom: topMid, below: false };
+  const under = along(bottomMid, -1, STEM * u);
+  if (fits(under)) return { knob: under, stemFrom: bottomMid, below: true };
+  // Inside the top edge, short of the centre, so it still points "up" from the middle.
+  return { knob: along(topMid, -1, Math.min(STEM * u, box.h / 4)), stemFrom: topMid, below: false };
+}
+
 type Drag =
   | { kind: "move"; from: Point; start: PhotoCrop }
   | { kind: "corner"; corner: number }
@@ -211,15 +235,7 @@ export default function CropStage({
   const corners = cropCorners(box);
   const poly = corners.map((p) => `${p.x},${p.y}`).join(" ");
   const u = 1 / scale;
-  const up = rotatePoint({ x: 0, y: -1 }, box.angle);
-  const topMid = { x: (corners[0].x + corners[1].x) / 2, y: (corners[0].y + corners[1].y) / 2 };
-  const bottomMid = { x: (corners[2].x + corners[3].x) / 2, y: (corners[2].y + corners[3].y) / 2 };
-  // The spin handle sits above the box's top edge, or below its bottom when above would leave the picture.
-  const above = { x: topMid.x + up.x * STEM * u, y: topMid.y + up.y * STEM * u };
-  const inFrame = (p: Point) => p.x >= 0 && p.y >= 0 && p.x <= srcW && p.y <= srcH;
-  const below = !inFrame(above);
-  const stemFrom = below ? bottomMid : topMid;
-  const knob = below ? { x: bottomMid.x - up.x * STEM * u, y: bottomMid.y - up.y * STEM * u } : above;
+  const { knob, stemFrom, below } = spinHandle(box, srcW, srcH, u);
   const along = (t: number, a: Point, b: Point) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
   const thirds = [1 / 3, 2 / 3].flatMap((t) => [
     [along(t, corners[0], corners[1]), along(t, corners[3], corners[2])],

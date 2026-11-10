@@ -137,7 +137,7 @@ export function CardPhoto({
           {words}
         </span>
       ) : (
-        <span id={chipId} className={`${CHIP} bg-raised text-notice-danger-ink ring-1 ring-notice-danger-rule`}>
+        <span id={chipId} className={`${CHIP} bg-raised text-notice-warn-ink ring-1 ring-notice-warn-rule`}>
           {words}
         </span>
       )}
