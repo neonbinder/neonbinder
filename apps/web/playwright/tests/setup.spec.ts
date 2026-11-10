@@ -25,10 +25,10 @@
 // "A SYNC THAT HALF-WORKED IS A FAILED SEED": after every sync the partial-
 // failure banners must be absent (expectNoSyncFailure).
 import { test, expect } from "../support/fixtures";
-import { escapeRe } from "../support/cards";
 import { loginToSportLots, openBscCredentials } from "../support/credentials";
 import {
   addCustomManufacturer,
+  ANY_COLUMN_SYNC_FAILED,
   columnHeading,
   columnOption,
   columnSearch,
@@ -42,17 +42,12 @@ import {
 } from "../support/set-builder";
 import { addAsNewStep, advanceToSave, answerStepAsNew, confirmSaveButton, reviewWizard } from "../support/wizard";
 import type { Page } from "@playwright/test";
-import { columnSyncFailedMessage } from "../../components/SetSelector/column-sync-failed";
 
 const SL_PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
 
-// NEO-450: any column's failed-sync sentence ("Couldn't sync <column> —
-// please try again."), cut from the product's own builder around a marker, so
-// a copy change moves this with it instead of silently matching nothing.
-const COLUMN_MARKER = "\u0001";
-const [SYNC_FAILED_HEAD, SYNC_FAILED_TAIL] = columnSyncFailedMessage(COLUMN_MARKER).split(COLUMN_MARKER);
-const ANY_COLUMN_SYNC_FAILED = new RegExp(`${escapeRe(SYNC_FAILED_HEAD)}.+${escapeRe(SYNC_FAILED_TAIL)}`);
-
+// NEO-450: ANY_COLUMN_SYNC_FAILED (support/set-builder.ts) matches any
+// column's failed-sync sentence; column-sync-failed-shows-only-the-error
+// proves it matches the rendered one.
 async function expectNoSyncFailure(page: Page) {
   await expect(page.getByText(/could not be reached, so nothing from .* was changed/)).toBeHidden();
   // Count, not visibility: two failed columns would make `toBeHidden` a

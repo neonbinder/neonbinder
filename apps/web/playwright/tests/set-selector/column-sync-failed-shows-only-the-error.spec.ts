@@ -2,22 +2,23 @@
 //
 // R1 - ONE FEATURE: a Set Builder column whose sync failed says so, and only
 // so. The column shows "Couldn't sync sets — please try again." (naming its
-// column; role `status` here, since the error is one the server holds rather
-// than this session's own failed attempt, which would be an `alert`;
-// `columnSyncError` matches either), its idle "No sets available. Sync from
-// marketplaces to populate." line is hidden meanwhile (that line reads as an
-// answer from the marketplaces when nobody got one), and its `Sync Sets`
-// button is the retry: once a retry has run, the alert goes and the column's
-// real state is back.
+// column), its idle "No sets available. Sync from marketplaces to populate."
+// line is hidden meanwhile (that line reads as an answer from the
+// marketplaces when nobody got one), and its `Sync Sets` button is the retry,
+// described by that sentence while it stands. The sentence is a polite
+// `status` for a failure the server already held, and an `alert` once THIS
+// session's own retry has failed. A retry that works removes it and the
+// column's real state is back.
 //
 // THE FAILURE IS FAKED IN THE BROWSER (Jason, 2026-11-10: no product or test
 // hook in Convex). support/column-sync-fault.ts sits on the Convex sync
 // WebSocket and answers ONE subscription, the Sets column's
 // `getSelectorSyncStatus({ level: "setName", parentId: <brand> })`, with the
-// error row a failed sync stores; every other frame passes untouched. It ends
-// the fake only when the server has answered the column's own forced sync, so
-// the alert going away proves the `Sync Sets` press reached the server as a
-// retry of THIS column. The brand's id is read from the set builder's own
+// error row a failed sync stores; every other frame passes untouched. For the
+// failed retry it also rewrites that one forced sync's answer to the result a
+// failed sync returns (`failNextRetry`). It ends the fake only when the server
+// has answered a later forced sync of the column, so the error going away
+// proves the `Sync Sets` press reached the server as a retry of THIS column. The brand's id is read from the set builder's own
 // address (`?brand=<id>`, NEO-224), the one place the page shows it.
 //
 // Why the Sets column: it is on the ensure-sync path (`useEnsureSync`, the
@@ -36,7 +37,9 @@
 // R9: the drill goes through drillToCustom.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { faultColumnSyncStatus } from "../../support/column-sync-fault";
+import { columnSyncFailedMessage } from "../../../components/SetSelector/column-sync-failed";
 import {
+  ANY_COLUMN_SYNC_FAILED,
   columnHeading,
   columnSelection,
   columnSyncError,
@@ -60,8 +63,11 @@ test(
     await expect(columnSelection(page, "Manufacturers", brand)).toBeVisible();
     await expect(columnHeading(page, "Sets")).toBeVisible();
 
+    const sentence = columnSyncFailedMessage("Sets");
     const empty = page.getByText("No sets available. Sync from marketplaces to populate.", { exact: true });
     const failed = columnSyncError(page, "Sets");
+    const stored = page.getByRole("status").filter({ hasText: sentence });
+    const fresh = page.getByRole("alert").filter({ hasText: sentence });
     const retry = page.getByRole("button", { name: "Sync Sets", exact: true });
 
     // Before: an empty column with no failure. The Sync button renders only
@@ -70,21 +76,41 @@ test(
     await expect(empty).toBeVisible();
     await expect(retry).toBeVisible();
     await expect(failed).toBeHidden();
+    await expect(retry).toHaveAccessibleDescription("");
 
     // The column's sync fails.
     const brandId = new URL(page.url()).searchParams.get("brand") ?? "";
     expect(brandId, "the set builder's address names the picked brand (NEO-224)").not.toBe("");
     fault.failStatus({ level: "setName", parentId: brandId });
 
-    await expect(failed).toBeVisible();
+    // A failure the server holds: a polite status, not an alert, and the
+    // retry button is described by it.
+    await expect(stored).toBeVisible();
+    await expect(fresh).toHaveCount(0);
     await expect(empty).toBeHidden();
-    await expect(retry).toBeVisible();
-    await expectAccessible(page, { label: "Sets column, sync failed" });
+    await expect(retry).toHaveAccessibleDescription(sentence);
+    // setup.spec's page-wide "no column failed" check matches this sentence
+    // as rendered, and any column's (its Variant Types sync), so it cannot
+    // pass on copy it no longer recognises.
+    await expect(page.getByText(ANY_COLUMN_SYNC_FAILED)).toHaveCount(1);
+    expect(columnSyncFailedMessage("Variant Types")).toMatch(ANY_COLUMN_SYNC_FAILED);
+    await expectAccessible(page, { label: "Sets column, stored sync failure" });
 
-    // The retry: the alert goes and the column's real (empty) state is back.
+    // This session's own retry fails: the same sentence, now an alert.
+    fault.failNextRetry();
     await retry.click();
-    await expect(failed).toBeHidden();
+    await expect(fresh).toBeVisible();
+    await expect(stored).toHaveCount(0);
+    await expect(empty).toBeHidden();
+    await expect(retry).toHaveAccessibleDescription(sentence);
+    await expectAccessible(page, { label: "Sets column, this session's sync failed" });
+
+    // A retry that works: the error goes and the column's real (empty) state
+    // is back, with nothing describing the button any more.
+    await retry.click();
+    await expect(failed).toHaveCount(0);
     await expect(empty).toBeVisible();
-    expect(fault.retriesAnswered(), "one forced sync of the Sets column reached the server").toBe(1);
+    await expect(retry).toHaveAccessibleDescription("");
+    expect(fault.retriesAnswered(), "two forced syncs of the Sets column reached the server").toBe(2);
   },
 );

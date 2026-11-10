@@ -12,8 +12,14 @@
  * The fake ends the way a real error row does: the column's own retry (a
  * forced `selectorOptions:ensureSelectorOptions` for the same level and
  * parent) reaches the server, and once the server has answered it the column
- * is given the server's real status again. So a spec proves the alert, the
- * hidden empty line and that the column's `Sync <X>` button is the retry.
+ * is given the server's real status again. So a spec proves the error box,
+ * the hidden empty line and that the column's `Sync <X>` button is the retry.
+ *
+ * A faked status row reads as a STORED failure (role `status`). The column
+ * raises an `alert` only when this session's own attempt failed, which it
+ * learns from the action's answer (`reason: "error"`). `failNextRetry` fakes
+ * that too: the next forced sync of the armed column is answered with the
+ * result a failed sync returns, and the status stays faked as an error.
  *
  * ---------------------------------------------------------------------------
  * DEPENDS ON CONVEX'S INTERNAL SYNC PROTOCOL — written against convex 1.49.0
@@ -33,7 +39,8 @@
  *   journal }`, `QueryFailed` or `QueryRemoved`. A large transition may come
  *   as `TransitionChunk { chunk, partNumber, totalParts, transitionId }`
  *   frames whose `chunk` strings join into one Transition's JSON.
- *   `ActionResponse { requestId }` answers an Action.
+ *   `ActionResponse { requestId, success, result, logLines }` answers an
+ *   Action; `result` is the action's return value as JSON.
  * - The client accepts a Transition only when its `startVersion` equals the
  *   `endVersion` of the last one it applied (`RemoteQuerySet.transition`), and
  *   one with `startVersion === endVersion` changes no version, timestamp or
@@ -64,6 +71,13 @@ const ENSURE_ACTION = "selectorOptions:ensureSelectorOptions";
  * the server's generic one was not echoed.
  */
 const SERVER_ERROR_MESSAGE = "Couldn't sync options — please try again.";
+
+/**
+ * What `ensureSelectorOptions` returns when its sync failed (the `reason:
+ * "error"` returns in convex/selectorOptions.ts): the column's cue that THIS
+ * session's attempt failed.
+ */
+const FAILED_SYNC_RESULT = { ran: true, reason: "error", skippedSides: [], pausedSides: [] };
 
 /** The Convex client's sync socket: `${wsProtocol}://${origin}/api/${version}/sync`. */
 function isConvexSync(url: URL): boolean {
@@ -117,8 +131,11 @@ interface Socket {
   lastReal: Map<number, Modification>;
   /** endVersion of the last Transition forwarded to the page: the client's version. */
   version: Version | null;
-  /** requestIds of forced ensures for the armed target, awaiting their answer. */
-  retries: Set<number>;
+  /**
+   * requestIds of forced ensures for the armed target, awaiting their answer:
+   * true when that answer is to be rewritten as a failed sync.
+   */
+  retries: Map<number, boolean>;
   /** A chunked Transition being reassembled: its raw frames and parts. */
   chunked: { id: string; frames: string[]; parts: string[] } | null;
 }
@@ -131,7 +148,14 @@ export interface ColumnSyncFault {
    * is answered by the server. Throws when no live subscription matches.
    */
   failStatus(target: ColumnStatusTarget): void;
-  /** Forced syncs of the armed column the server has answered (each one ends the fake). */
+  /**
+   * The NEXT forced sync of the armed column fails too: its answer reaches
+   * the page as `reason: "error"` and the status stays faked, so the column
+   * shows the failure as this session's own (an alert). Throws when nothing
+   * is armed.
+   */
+  failNextRetry(): void;
+  /** Forced syncs of the armed column the server has answered, failed ones included. */
   retriesAnswered(): number;
 }
 
@@ -151,6 +175,7 @@ function parse(frame: string): JsonObject | null {
 export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault> {
   let target: ColumnStatusTarget | null = null;
   let answered = 0;
+  let failNext = false;
   const sockets = new Set<Socket>();
 
   const matches = (args: JsonObject | undefined, t: ColumnStatusTarget | null): boolean =>
@@ -203,7 +228,7 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
       statusArgs: new Map(),
       lastReal: new Map(),
       version: null,
-      retries: new Set(),
+      retries: new Map(),
       chunked: null,
     };
     sockets.add(s);
@@ -226,7 +251,10 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
         }
       } else if (msg?.type === "Action" && canonical(String(msg.udfPath)) === ENSURE_ACTION) {
         const args = ((msg.args as JsonObject[] | undefined) ?? [])[0];
-        if (matches(args, target) && args?.force === true) s.retries.add(msg.requestId as number);
+        if (matches(args, target) && args?.force === true) {
+          s.retries.set(msg.requestId as number, failNext);
+          failNext = false;
+        }
       }
     });
 
@@ -249,6 +277,12 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
           if (whole?.type === "Transition") deliver(s, whole as unknown as Transition, frames);
           else for (const raw of frames) ws.send(raw);
         }
+      } else if (msg?.type === "ActionResponse" && s.retries.get(msg.requestId as number) === true) {
+        // A retry `failNextRetry` asked to fail: the server ran it; the page
+        // is told it failed, and the faked error status stands.
+        s.retries.delete(msg.requestId as number);
+        answered += 1;
+        ws.send(JSON.stringify({ ...msg, success: true, result: FAILED_SYNC_RESULT }));
       } else if (msg?.type === "ActionResponse" && s.retries.delete(msg.requestId as number)) {
         // The server has run the column's retry, which replaces a real error
         // row. Forward its answer first, so nothing below can withhold it from
@@ -325,6 +359,10 @@ export async function faultColumnSyncStatus(page: Page): Promise<ColumnSyncFault
             "Is the column open? If it is, Convex's sync protocol may have changed (written against convex 1.49.0).",
         );
       }
+    },
+    failNextRetry() {
+      if (!target) throw new Error("column-sync-fault: failNextRetry needs failStatus first");
+      failNext = true;
     },
     retriesAnswered: () => answered,
   };

@@ -33,10 +33,17 @@ test(
     // ── STEP 2: sync Sports from the marketplaces ──
     await reload();
     await expect(columnOption(page, "Sports", "Baseball")).toBeVisible();
-    await page.getByRole("button", { name: "Sync Sports" }).click();
+    const syncSports = page.getByRole("button", { name: "Sync Sports" });
+    await syncSports.click();
     await expect(page.getByText("Syncing Sport Options")).toBeVisible();
+    // The panel stands in for the idle row: the pressed button is gone, so
+    // the focus check below proves focus was handed back, not kept.
+    await expect(syncSports).toHaveCount(0);
     // A live marketplace Sports sync (the flow's 55 s), not our own server.
     await expect(page.getByText("Syncing Sport Options")).toBeHidden({ timeout: 55_000 });
+    // NEO-450 (a11y): the panel replaced the button the operator pressed, so
+    // when the sync ends focus goes back to that button rather than <body>.
+    await expect(syncSports).toBeFocused();
     if (!env.SL_PAUSED) {
       await expect(page.getByText(PAUSE_NOTICE)).toBeHidden();
     } else {

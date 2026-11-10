@@ -25,6 +25,15 @@ Jason has ruled out a Convex test hook, fake it at the Convex sync socket:
 - End the fake on a REAL event, the server's `ActionResponse` to the
   column's own forced action, then re-inject the last real value. "Alert went
   away" then proves the button reached the server for that column.
+- A faked status row reads as a STORED failure (role `status`). The column's
+  `alert` needs this session's own attempt to fail, which it learns from the
+  action's answer: `failNextRetry` rewrites one forced ensure's
+  `ActionResponse.result` to `{ ran: true, reason: "error", ... }` and keeps
+  the status faked. A fake that only rewrites queries never reaches
+  answer-driven UI.
+- While the status is faked, its real "syncing" state is masked. Prove
+  syncing-panel behaviour (such as focus going back to Sync <X>) on a real
+  sync instead: custom-entry-survives-resync's Sync Sports.
 - Prove it bites: break the helper's locator text AND the retry hook, and
   check that each one goes red.
 

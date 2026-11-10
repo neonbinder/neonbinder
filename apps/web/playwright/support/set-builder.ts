@@ -31,6 +31,22 @@ export type Column =
   | "Inserts"
   | "Parallels";
 
+/** `s` as a literal inside a RegExp. */
+export function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * NEO-450: ANY column's failed-sync sentence ("Couldn't sync <column> —
+ * please try again."), cut from the product's own builder around a marker, so
+ * a copy change moves this with it instead of silently matching nothing. For
+ * page-wide "no column failed" checks (setup.spec's `expectNoSyncFailure`);
+ * `columnSyncError` is the one-column locator.
+ */
+const COLUMN_MARKER = "\u0001";
+const [SYNC_FAILED_HEAD, SYNC_FAILED_TAIL] = columnSyncFailedMessage(COLUMN_MARKER).split(COLUMN_MARKER);
+export const ANY_COLUMN_SYNC_FAILED = new RegExp(`${escapeRe(SYNC_FAILED_HEAD)}.+${escapeRe(SYNC_FAILED_TAIL)}`);
+
 /** The panel's subtitle: the signal that the Set Builder (not the nav) has mounted. */
 export function setBuilderReady(page: Page): Locator {
   return page.getByText("Build set parameters using marketplace APIs");
@@ -390,7 +406,11 @@ export async function drillToColdManufacturer(
     if (!env.SL_PAUSED) await expect(empty).toBeHidden({ timeout: 60_000 });
     // NEO-450: a failed sync hides the empty line too, so the line going is
     // no proof the brands landed; the column's failed-sync alert must be
-    // absent as well.
+    // absent as well. `Sync Manufacturers` renders only once the column's
+    // status read has landed (NEO-427), so wait for it first: before that the
+    // alert is absent whatever the status, and the check below would pass
+    // without having read anything.
+    await expect(page.getByRole("button", { name: "Sync Manufacturers", exact: true })).toBeVisible();
     await expect(
       columnSyncError(page, "Manufacturers"),
       "the Manufacturers sync failed under All Brands",
