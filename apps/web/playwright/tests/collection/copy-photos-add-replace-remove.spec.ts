@@ -56,22 +56,25 @@ test(
     const back = panel.getByLabel("Back photo file", { exact: true });
     await front.setInputFiles(photoFile("front.jpg"));
     await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
-    // While the form is open the line is the form, so the photo shows in the box.
-    const fullSize = panel.getByRole("link", { name: "Front of Raw, Excellent, full size (opens a new tab)", exact: true });
-    await expect(fullSize).toHaveAttribute("href", /\/copy-photo\/[0-9a-f]{32}\/image$/);
-    const firstHref = await fullSize.getAttribute("href");
+    // While the form is open the line is the form, so the photo shows in the box,
+    // on a tile that opens the card photo viewer (NEO-481).
+    const frontTile = panel.getByRole("button", { name: "Open front of Raw, Excellent", exact: true });
+    const frontPicture = frontTile.getByRole("img", { name: "Front of Raw, Excellent", exact: true });
+    await expect(frontPicture).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/thumb$/);
+    const firstSrc = await frontPicture.getAttribute("src");
     await expectAccessible(page, { within: drawer, label: "Card drawer, front photo on" });
 
     // --- Replace it: a new photo, a new address -------------------------------
     await panel.getByRole("button", { name: "Replace front", exact: true }).click();
     await front.setInputFiles(photoFile("front-2.jpg"));
-    await expect(fullSize).not.toHaveAttribute("href", firstHref ?? "");
+    await expect(frontPicture).not.toHaveAttribute("src", firstSrc ?? "");
+    await expect(frontPicture).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/thumb$/);
     await expect(panel.getByRole("status")).toHaveText("Front photo saved.");
 
     // --- A back, then off again ----------------------------------------------
     await back.setInputFiles(photoFile("back.jpg"));
     await expect(panel.getByRole("status")).toHaveText("Back photo saved.");
-    await expect(panel.getByRole("link", { name: "Back of Raw, Excellent, full size (opens a new tab)", exact: true })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Open back of Raw, Excellent", exact: true })).toBeVisible();
     await panel.getByRole("button", { name: "Remove back", exact: true }).click();
     await expect(panel.getByRole("status")).toHaveText("Back photo removed.");
     await expect(panel.getByText("No back photo yet")).toBeAttached();

@@ -253,6 +253,12 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`. The 15-minute sales poll runs the same drain as a press, so a stocked box can be listed before the spec presses Sync (NEO-433), and neither the set's row nor the "Nothing syncing right now." line proves THIS press ran: the poll leaves a row that looks like a press's own, and the page is idle between two runs. A seller spec therefore presses, then walks the set to rest with `followRunToRest(platform, run, queueSettled(platform, setLabel))` (one step per wait; `slow` gives a named step a signed-off longer ceiling), and only then reads the row and picks its branch. `queueSettled` is the evidence: the press queues the set's cards before its toast, and a run's finish clears them in the write that records its result, only if the run claimed them, so "no card of this set queued" plus idle means a run that started after the press has finished. A press that never claims leaves them queued and fails the walk. A run that sent nothing ends on "Gathering data, done" then "Nothing new to send" (`expectNothingSent`); a sending branch asserts `run.nothingNew()` absent.
 - `support/cross-list.ts`: cross-release import (`openCrossListForm`,
   `pickCrossListSource`, `crossListCards`).
+- `support/photo-viewer.ts`: the card photo viewer (NEO-481): `photoViewer`
+  (the dialog "Front of <label>"), `expectHeldPhotoViewOnly` (a picked,
+  unsaved photo opens view-only; runs the axe check), `servedPhotoSize` (a
+  photo's pixel size from the file the browser downloads: a tile keeps its 5:7
+  frame, so orientation is proven by the file), and `EDIT_LANDS`, the one
+  signed-off longer wait for an edited photo to land (Jason, 2026-11-10).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.

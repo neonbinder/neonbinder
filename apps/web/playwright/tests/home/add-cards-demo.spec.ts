@@ -47,13 +47,10 @@ test(
     await page.keyboard.type("5");
     await expect(qty).toHaveValue("5");
 
-    // p jumps to the card's price beside it, number selected, and a letter
-    // there is still a shortcut: y saves the card at the typed price.
-    const price = card.getByRole("textbox", { name: "Price $" });
-    await page.keyboard.press("p");
-    await expect(price).toBeFocused();
-    await page.keyboard.type("2.50");
-    await expect(price).toHaveValue("2.50");
+    // A binder card never has a price (NEO-481: only a card going into a box
+    // does); the count field beside it is there, so the absence means something.
+    await expect(card.getByRole("textbox", { name: /^Price, / })).toHaveCount(0);
+    // A letter in the count is still a shortcut: y saves the card.
     await page.keyboard.press("y");
     await expect(saved).toHaveAccessibleName("Saved, 2");
   },
@@ -108,19 +105,40 @@ test(
 );
 
 test(
-  "Add cards (inventory): files into a box and saves every matched card at once",
+  "Add cards (inventory): each card has its own price, p and a typed price save it, and Save all files the rest into a box",
   { tag: ["@home"] },
   async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/binder-tracking?demo=on&side=inventory&tab=add&speed=6");
     await expect(page.getByLabel("Put them in this box")).toHaveValue(/.+/);
+    const review = page.getByRole("region", { name: /^Needs you/ });
+    const saved = page.getByRole("region", { name: /^Saved/ });
+
+    // A card going into a box has its own price, named for the card (NEO-481).
+    // p jumps there from the selected card, and a letter typed there is still
+    // a shortcut: y saves the card at the typed price.
+    const card = review
+      .getByRole("listitem")
+      .filter({ hasText: /Matched \d+%/ })
+      .first();
+    const price = card.getByRole("textbox", { name: /^Price, / });
+    await expect(price).toBeVisible();
+    await card.getByText(/^Matched \d+%$/).click();
+    await expect(card.getByRole("textbox", { name: /^(Qty|Had \d+ →)$/ })).toBeFocused();
+    await page.keyboard.press("p");
+    await expect(price).toBeFocused();
+    await page.keyboard.type("2.50");
+    await expect(price).toHaveValue("2.50");
+    await page.keyboard.press("y");
+    await expect(saved).toHaveAccessibleName("Saved, 1");
+
     const saveAll = page.getByRole("button", {
       name: /^Save [1-9]\d* matched$/,
     });
     await expect(saveAll).toBeEnabled();
     await saveAll.click();
     await expect(
-      page.getByRole("region", { name: /^Saved, [1-9]/ }),
+      page.getByRole("region", { name: /^Saved, ([2-9]|\d\d)/ }),
     ).toBeVisible();
     await expectAccessible(page, { label: "Add cards, inventory" });
   },

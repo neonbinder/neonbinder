@@ -38,10 +38,11 @@ test(
     const pairing = page.getByRole("region", { name: /^Pairing, \d+$/ });
     // The pile's button, whichever of its three labels it wears.
     const pairButton = pairing.getByRole("button", { name: /^(Select 2 to Pair|Select Partner|Pair Images)$/ });
-    // The photo's tile, not its "Set aside loose-N.jpg" (NEO-446) or "Try again:" button,
-    // which name the photo too and count as not pressed.
+    // The photo's pick, not its "Set aside loose-N.jpg" (NEO-446), "Try again:", or
+    // NEO-481's "Open photo loose-N.jpg" (the thumbnail, which opens the viewer) and
+    // "Crop by hand: loose-N.jpg", which name the photo too and count as not pressed.
     const photo = (n: number, pressed?: boolean) =>
-      pairing.getByRole("button", { name: new RegExp(`^(?!Set aside |Try again: ).*loose-${n}\\.jpg`), pressed });
+      pairing.getByRole("button", { name: new RegExp(`^(?!Set aside |Try again: |Open photo |Crop by hand: |Keep the old one: ).*loose-${n}\\.jpg`), pressed });
     const matching = (n: number) => page.getByRole("region", { name: `Matching, ${n}`, exact: true });
     const needsYou = (n: number) => page.getByRole("region", { name: `Needs you, ${n}`, exact: true });
 

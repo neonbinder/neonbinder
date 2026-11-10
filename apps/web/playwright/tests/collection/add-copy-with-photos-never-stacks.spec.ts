@@ -6,7 +6,8 @@
 // none). They pick both again and press Add: the new line is its OWN line
 // beside the identical plain one (it never stacks, "Raw, Excellent ×2" is
 // never read) and shows its photo, which really loads; its Edit form shows the
-// front and the back. A second add with a photo, identical to that photo line,
+// front and the back. A held photo opens the card photo viewer view-only
+// (NEO-481). A second add with a photo, identical to that photo line,
 // makes a third line. Then every line is removed.
 //
 // The box itself (preview, Remove, Swap, status) is the one photo widget the
@@ -27,6 +28,7 @@
 import { escapeRe } from "../../support/cards";
 import { drillToCollectorBase, expectPhotoServed, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectHeldPhotoViewOnly } from "../../support/photo-viewer";
 
 test(
   "Collection: the Add form holds a front and back photo until Add, Cancel drops them, and an add with photos is always its own line",
@@ -89,18 +91,20 @@ test(
     await hold();
     // A good pick clears the refusal.
     await expect(refusal).toHaveText("");
-    // A held tile is a picture only: no link to a full-size view until the copy is saved.
     const heldFront = panel.getByRole("img", { name: "Front of your new copy", exact: true });
     const heldBack = panel.getByRole("img", { name: "Back of your new copy", exact: true });
     await expect(heldFront).toBeVisible();
     await expect(heldBack).toBeVisible();
-    await expect(panel.getByRole("link", { name: /full size/ })).toHaveCount(0);
     await expect(panel.getByRole("button", { name: "Remove front", exact: true })).toBeVisible();
     await expect(panel.getByRole("button", { name: "Remove back", exact: true })).toBeVisible();
     await expect(panel.getByText("Stashed here until you add the copy.")).toBeVisible();
     // Nothing saved yet: the one line has no photo.
     await expect(yourCopies.getByRole("img", { name: /^Front of Raw, Excellent/ })).toHaveCount(0);
     await expectAccessible(page, { within: drawer, label: "Card drawer, Add form holding a front and a back photo" });
+    // A held photo opens the card photo viewer view-only until the copy is added
+    // (NEO-481): it says why and offers no Save; Escape closes only the viewer.
+    await expectHeldPhotoViewOnly(page, panel, "front", "your new copy", "Card photo viewer, a held photo, view-only");
+    await expect(addForm).toBeVisible();
 
     // --- Cancel drops what was held --------------------------------------------------------
     await addForm.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -133,16 +137,16 @@ test(
     await expectPhotoServed(page, thumbs, "src");
     await expectAccessible(page, { within: drawer, label: "Card drawer, a new line with its photos beside a plain one" });
 
-    // Its Edit form holds both photos, saved (the box links the stored pictures now).
+    // Its Edit form holds both photos, saved (the box shows the stored pictures now).
     const newLine = yourCopies.getByRole("listitem").filter({ has: page.getByRole("img", { name: /^Front of Raw, Excellent/ }) });
     await newLine.getByRole("button", { name: /^Edit / }).click();
     const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, Excellent/ });
     await expect(editForm).toBeVisible();
-    const savedFront = editForm.getByRole("link", { name: /^Front of Raw, Excellent.*, full size \(opens a new tab\)$/ });
-    const savedBack = editForm.getByRole("link", { name: /^Back of Raw, Excellent.*, full size \(opens a new tab\)$/ });
-    await expect(savedFront).toHaveAttribute("href", /\/copy-photo\/[0-9a-f]{32}\/image$/);
-    await expect(savedBack).toHaveAttribute("href", /\/copy-photo\/[0-9a-f]{32}\/image$/);
-    await expectPhotoServed(page, savedBack, "href");
+    const savedFront = editForm.getByRole("button", { name: /^Open front of Raw, Excellent/ }).getByRole("img", { name: /^Front of Raw, Excellent/ });
+    const savedBack = editForm.getByRole("button", { name: /^Open back of Raw, Excellent/ }).getByRole("img", { name: /^Back of Raw, Excellent/ });
+    await expect(savedFront).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/thumb$/);
+    await expect(savedBack).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/thumb$/);
+    await expectPhotoServed(page, savedBack, "src");
     await editForm.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(editForm).toBeHidden();
 

@@ -12,7 +12,7 @@
 // #315, Bell #174, front then back) plus a re-scan of the Bowe card dropped
 // later into the same run (`playwright/fixtures/intake/`). NEO-427: every save
 // brings its own scans along (the tile says "Photos are in!", and the card's
-// drawer holds the pair, the front and the back with their "full size" links),
+// drawer holds the pair, the front and the back each opening the photo viewer),
 // and a scanned save never folds into a line that is already there, so the
 // second Bowe is a second line, each with its own photos. The misread case is
 // made certain rather than left to the reader (Jason, 2026-10-28): the set we
@@ -142,6 +142,11 @@ test(
     // What was read is shown (as read, so any case), and nothing saved itself.
     await expect(bell.getByText(/^Read: #174 · .*bell/i)).toBeVisible();
     await expect(page.getByRole("region", { name: "Saved, 0" })).toBeVisible();
+    // A binder card never has a price (NEO-481: only a box run's tiles do,
+    // add-cards-box-run-per-card-price). The tile's count is there, so the
+    // absence means something (R2).
+    await expect(mcfadden.getByRole("textbox", { name: /^(Count|Had \d+ →)$/ })).toBeVisible();
+    await expect(mcfadden.getByRole("textbox", { name: /^Price, / })).toHaveCount(0);
 
     // --- Bell, in the drawer: the misread explained, the right card found -----------
     await bell.getByRole("button", { name: "Review #174 Antonio Brown" }).click();
@@ -243,14 +248,14 @@ test(
       await expect(remove).toHaveCount(lines);
       // NEO-427: each line carries its pair: a thumbnail beside the line...
       await expect(yourCopies.getByRole("img", { name: /^(Front|Back) of / })).toHaveCount(lines);
-      // ...and the line's own Edit form holds both sides, each opening full size.
+      // ...and the line's own Edit form holds both sides, each opening the card photo viewer (NEO-481).
       const editLine = yourCopies.getByRole("button", { name: new RegExp(`^Edit ${escapeRe(short)}, `) });
       await expect(editLine).toHaveCount(lines);
       await editLine.first().click();
       const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
       const photos = editForm.getByRole("region", { name: /^Photos of / });
-      await expect(photos.getByRole("link", { name: /^Front of .*, full size \(opens a new tab\)$/ })).toBeVisible();
-      await expect(photos.getByRole("link", { name: /^Back of .*, full size \(opens a new tab\)$/ })).toBeVisible();
+      await expect(photos.getByRole("button", { name: /^Open front of / })).toBeVisible();
+      await expect(photos.getByRole("button", { name: /^Open back of / })).toBeVisible();
       // One check for the one-line card and one for the two-line card.
       if (number !== "47") {
         await expectAccessible(page, { label: `Card drawer, ${lines === 1 ? "a saved copy" : "two saved copies"} with scanned photos`, within: drawer });
