@@ -24,8 +24,8 @@ The resulting design:
   image — as the fallback when classical fails its QC gate, and as a
   verification pass when classical succeeds — so size capacity and latency
   expectations around ~5-10s/image of ONNX inference per request. Both model
-  weights (BiRefNet via rembg, SAM) are baked into the image at build time so
-  there is no runtime download.
+  weights (BiRefNet, run through onnxruntime directly since NEO-484; SAM) are
+  baked into the image at build time so there is no runtime download.
 
   The pre-check is what keeps that cost off the scanner majority. Pixel
   strategies find the card by locating a card/background boundary, which does
@@ -95,7 +95,8 @@ as `jsonPayload` and per-stage numbers (`gcs_ms`, `vision_calls`,
 FAST role's quad crop on its own (detection, checks and warp), kept out of
 `classical_ms` so its cost is visible. It stays at INFO whatever `LOG_LEVEL` says, and it carries
 only numbers, flags and stage labels: no identifiers, paths or image data.
-See `app/timing.py`.
+See `app/timing.py`. The dev cache adds its own counters and `cache_mode` to
+the same line; see [Dev cache](#dev-cache-neo-484).
 
 ### `POST /process` modes
 
@@ -354,6 +355,79 @@ Gate the rollout on the PostHog feature flag
 `preprocess-crop-only-enabled` so adoption can be ramped or halted
 without a code deploy.
 
+## Dev cache (NEO-484)
+
+On the **dev base service only**, `/process-entry` reuses a Vision answer (A)
+or a BiRefNet alpha plane (B) it has already computed for the same input, so
+the E2E suite stops paying for the same model calls on every run. Everywhere
+else every call is live. Code: `app/devcache/`.
+
+**When it is on.** All three gates must pass, checked per request
+(`app/devcache/policy.py`); any exception while deciding means off:
+
+| Gate | Rule | Off mode |
+|---|---|---|
+| G1 | `ENVIRONMENT` is exactly `dev` | `off:not_dev` |
+| G2 | `PREPROCESS_DEV_CACHE_BUCKET` is set and not blank | `off:no_bucket` |
+| G3 | the request `Host` is not a tagged revision (no `---` in its first DNS label), so never a `pr-N` preview or a `sha-*` blue/green candidate | `off:tagged_host` (`off:no_host` without a Host) |
+
+Bucket IAM (only the dev preprocess runtime accounts can use it) and a CI check
+of each deploy's env and `/health` back the gates up. Only `/process-entry`
+binds a policy: `/process`, `/crop`, the smoke tests and the crop matrix always
+run live. A preview can never hit, which is why the live integration test below
+is the pre-merge proof.
+
+**What is cached.**
+
+- **A, Vision.** Key: sha256 of `nb-devcache/vision`, `VISION_CACHE_FORMAT`, the
+  google-cloud-vision version, `TEXT_DETECTION` and the sha256 of the bytes
+  actually sent (after the >9 MB shrink). Value: the `AnnotateImageResponse`
+  proto bytes. An answer carrying `error.message`, and any exception, is never
+  stored. A unit test pins the request to the image bytes alone; adding a
+  request option means bumping `VISION_CACHE_FORMAT`.
+- **B, BiRefNet.** Key: sha256 of `nb-devcache/birefnet`, `MASK_CACHE_FORMAT`,
+  a canonical JSON fingerprint (`INFERENCE_IMPL`, `PRE_POST_SPEC`, model,
+  baked weights sha256, session options, providers, and the onnxruntime,
+  Pillow and numpy versions) and the sha256, shape and dtype of the padded
+  input `tiered.pad_for_birefnet` builds. Value: the whole padded alpha plane
+  as a lossless PNG. Cropping, the `> 25` threshold and the close always run
+  after the cache. Without the bake's `<model>.onnx.sha256` file, B is off.
+
+**Storage.** Objects are `NBC1` + sha256(payload) + payload. Writes are
+create-only (`if_generation_match=0`; a 412 means another request stored the
+same answer first and counts as success). A damaged object is a miss: the call
+runs live and the answer overwrites that exact generation. Reads time out
+after 2 s and writes after 5 s, with retries off; any failure runs live, bumps
+a counter and logs a rate-limited warning naming the exception class only,
+never a key. The bucket deletes objects after 7 days.
+
+**Telemetry.** The timing line carries `cache_mode`,
+`vision_cache_{hits,misses,errors}`, `birefnet_cache_{hits,misses,errors}`,
+`cache_write_failures` and `cache_ms`. `/health` reports `dev_cache` (the mode
+for the Host it was asked on).
+
+**Live test.** `tests/integration/test_devcache_live.py` writes under a fresh
+`itest/<run>/` prefix in the real bucket, runs each fixture twice (the second
+run must hit and answer byte-identically), replaces the stored entries with
+different valid ones (the answer must follow them), then deletes the prefix.
+It needs ADC for a developer account with access to the bucket and Vision, and
+the fixture images (`python scripts/fetch_fixtures.py`):
+
+```bash
+RUN_INTEGRATION_TESTS=1 DEVCACHE_ITEST_BUCKET=<dev cache bucket> \
+  pytest tests/integration/test_devcache_live.py -v
+```
+
+BiRefNet runs a deterministic stand-in there unless `BIREFNET_HOME` holds a
+baked model and `DEVCACHE_ITEST_REAL_BIREFNET=1` is set.
+
+<!--
+  NEO-484 C (P3): PLACEHOLDER for the BiRefNet direct-ORT sections (the
+  rembg 2.0.78 transcription, the bake and its provenance, the session
+  options, the golden-mask parity job). P3 hands this text to P1, who
+  replaces this comment with it. Do not merge with this comment in place.
+-->
+
 ## Local dev
 
 Everything here assumes `services/preprocess/` as the working directory.
@@ -378,10 +452,11 @@ They differ along two axes — what they run against, and what they assert.
 | `tests/unit` | in-process, models stubbed | logic, routing, validators | `preprocess-test`, blocking |
 | `tests/functional` | a **deployed** revision | crop / deskew / rotate on real cards | `preprocess-crop-matrix`, blocking |
 | `tests/smoke` | a **deployed** revision | response envelope, auth, wiring | `preview-smoke`, advisory |
-| `tests/integration` | in-process, real Vision + Anthropic | classify accuracy | manual, `RUN_INTEGRATION_TESTS=1` |
+| `tests/integration` | in-process, real Vision + Anthropic (+ the dev cache bucket) | classify accuracy; the dev cache end to end | manual, `RUN_INTEGRATION_TESTS=1` |
 
 `tests/unit` can never exercise BiRefNet — `tests/unit/conftest.py` blocks
-`rembg.new_session` so a stray test cannot pull ~1GB of weights in CI. That is
+`app.cropper.birefnet._new_inference_session`, the one place an ORT session is
+built, so a stray test cannot load ~1GB of weights in CI. That is
 the whole reason `tests/functional` exists: the crop cascade's behaviour is a
 property of the deployed artifact, and the only honest way to assert it is to
 send a real card to a real revision. See `tests/functional/test_crop_matrix.py`

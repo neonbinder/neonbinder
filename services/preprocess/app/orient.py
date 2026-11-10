@@ -26,6 +26,7 @@ from google.api_core.exceptions import ServiceUnavailable
 from google.cloud import vision
 from PIL import Image
 
+from app.devcache import vision as devcache_vision
 from app.exif import EXIF_ORIENTATION_TAG
 from app.timing import increment_current
 
@@ -198,8 +199,19 @@ def detect_orientation(
     note. The `client` kwarg is injected in tests; an injected client is
     called exactly once and never rebuilt or retried, so a test that injects
     one sees every exception as raised.
+
+    The dev cache (`app.devcache.vision`) sits in front of the RPC on whatever
+    client is used. It is on only inside a `/process-entry` request on the dev
+    base service; on a hit no RPC is made.
     """
-    response = _text_detection(_shrink_for_vision(image_bytes), client)
+    sent = _shrink_for_vision(image_bytes)
+    # Dev cache A (NEO-484): on the dev base only, an answer already stored for
+    # these exact bytes is reused. Off everywhere else, so this is a no-op.
+    # Only an answer without an error is ever stored.
+    response, slot = devcache_vision.lookup(sent)
+    if response is None:
+        response = _text_detection(sent, client)
+        devcache_vision.remember(slot, response)
 
     if response.error.message:
         raise RuntimeError(f"vision api error: {response.error.message}")
