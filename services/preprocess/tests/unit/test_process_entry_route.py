@@ -65,8 +65,8 @@ def _set_bucket(monkeypatch):
 @pytest.fixture(autouse=True)
 def _decline_tiered(monkeypatch):
     """Same guard as test_process_route: the tiered strategy's BiRefNet
-    fallback would need a real rembg session (model download — forbidden in
-    unit tests), so it declines and the rest of the cascade is exercised."""
+    fallback would need a real ORT session (a baked model — refused in unit
+    tests), so it declines and the rest of the cascade is exercised."""
     monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: None)
 
 
@@ -349,11 +349,13 @@ class TestExifUpright:
         assert response.json()["dhash"] == f"{compute_dhash(entry):016x}"
         assert fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg") == entry
 
-    def test_truncated_tagged_entry_returns_502(self, fake_gcs, monkeypatch):
+    def test_truncated_tagged_entry_is_a_terminal_422(self, fake_gcs, monkeypatch):
         # Valid JPEG magic and an intact EXIF header carrying a rotating
         # orientation, but the scan data cut off: reading the tag succeeds,
-        # the transpose decode fails — the route's undecodable-image 502
-        # (same fixture recipe as test_extract_route's undecodable member).
+        # the transpose decode fails. NEO-484: a decode failure is terminal
+        # (the same bytes fail every time), so 422 ENTRY_UNDECODABLE, not the
+        # retryable 502 it used to be (same fixture recipe as
+        # test_extract_route's undecodable member).
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)
         rng = random.Random(7)
@@ -366,7 +368,9 @@ class TestExifUpright:
         truncated = out.getvalue()[: int(len(out.getvalue()) * 0.6)]
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", truncated, "image/jpeg")
 
-        assert _post_entry(entry_index=0).status_code == 502
+        response = _post_entry(entry_index=0)
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "ENTRY_UNDECODABLE"
 
 
 class TestRasterCeiling:
@@ -683,15 +687,6 @@ class TestUpstreamFailures:
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
         assert _post_entry(entry_index=0).status_code == 502
 
-    def test_undecodable_extracted_object_returns_502(self, fake_gcs, monkeypatch):
-        # /extract only writes sniffed images, so bytes that don't decode
-        # mean the store was tampered with or corrupted — an upstream 502,
-        # not a caller error.
-        _stub_orient(monkeypatch)
-        _stub_classify(monkeypatch)
-        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", b"garbage", "image/jpeg")
-        assert _post_entry(entry_index=0).status_code == 502
-
 
 class TestCropQuality:
     """The NEO-173 `crop_quality` body field (fast|strong, default fast)."""
@@ -746,26 +741,27 @@ class TestCropQuality:
 def _spy_model_session(monkeypatch) -> dict[str, int]:
     """Spy on the BiRefNet/SAM model entrypoints and count every call.
 
-    The FAST role must never construct a model session, so both `_get_session`
-    (BiRefNet, via tiered) and `warm_up` are replaced with counters. The unit
-    conftest already makes a real `rembg.new_session` raise; these spies add
-    the positive assertion the NEO-175 contract asks for (assert NOT called).
+    The FAST role must never construct a model session, so BiRefNet's session
+    and inference (`app.cropper.birefnet`, NEO-484) and SAM are replaced with
+    counters. The unit conftest already refuses a real ORT session; these spies
+    add the positive assertion the NEO-175 contract asks for (assert NOT called).
     """
-    calls = {"get_session": 0, "warm_up": 0, "sam": 0}
+    calls = {"get_session": 0, "predict_alpha": 0, "sam": 0}
 
     def _get_session(*_a, **_k):
         calls["get_session"] += 1
         return object()
 
-    def _warm_up(*_a, **_k):
-        calls["warm_up"] += 1
+    def _predict_alpha(*_a, **_k):
+        calls["predict_alpha"] += 1
+        raise AssertionError("BiRefNet inference ran")
 
     def _sam(*_a, **_k):
         calls["sam"] += 1
         return None
 
-    monkeypatch.setattr("app.cropper.tiered._get_session", _get_session)
-    monkeypatch.setattr("app.cropper.tiered.warm_up", _warm_up)
+    monkeypatch.setattr("app.cropper.birefnet.get_session", _get_session)
+    monkeypatch.setattr("app.cropper.birefnet.predict_alpha", _predict_alpha)
     monkeypatch.setattr("app.cropper.sam.sam_crop", _sam)
     return calls
 
@@ -848,7 +844,7 @@ class TestFastRole:
         # Nothing was written to the output key — the HEAVY service will.
         assert not any(name.startswith(OUTPUT_PREFIX) for name in fake_gcs.names(BUCKET))
         # The model was never touched, and classify never ran (no accepted crop).
-        assert spy == {"get_session": 0, "warm_up": 0, "sam": 0}
+        assert spy == {"get_session": 0, "predict_alpha": 0, "sam": 0}
         assert classify_calls == []
         # Vision baseline orient still ran once — kept, not removed.
         assert len(orient_calls) >= 1
@@ -881,7 +877,7 @@ class TestFastRole:
         assert len(orient_calls) >= 1
         assert len(classify_calls) == 1
         # …but no local model session was ever constructed.
-        assert spy == {"get_session": 0, "warm_up": 0, "sam": 0}
+        assert spy == {"get_session": 0, "predict_alpha": 0, "sam": 0}
 
     def test_default_heavy_role_runs_the_full_cascade(self, fake_gcs, monkeypatch):
         # No PREPROCESS_ROLE set → HEAVY. escalate_only is never passed, so a
@@ -1259,6 +1255,18 @@ TIMING_KEYS = {
     "baseline_supplied",
     "haiku_bbox_reached",
     "haiku_bbox_won",
+    # NEO-484
+    "cache_ms",
+    "vision_cache_hits",
+    "vision_cache_misses",
+    "vision_cache_errors",
+    "birefnet_cache_hits",
+    "birefnet_cache_misses",
+    "birefnet_cache_errors",
+    "cache_write_failures",
+    "cache_mode",
+    "error_code",
+    "maxrss_mb",
 }
 
 
@@ -1386,3 +1394,391 @@ class TestTimingLine:
         (raw,) = timing_lines.lines
         for forbidden in (USER, JOB, BUCKET, "placeholders/", "extracted", "test-key"):
             assert forbidden not in raw
+
+
+# ── NEO-484 ──────────────────────────────────────────────────────────────────
+
+
+def _truncated_jpeg() -> bytes:
+    """A JPEG whose header reads (so it has a size) but whose scan data stops.
+
+    No EXIF tag, so the EXIF step is a no-op and the dHash is the first decode.
+    """
+    rng = random.Random(11)
+    raw = bytes(rng.randint(0, 255) for _ in range(120 * 160 * 3))
+    out = io.BytesIO()
+    Image.frombytes("RGB", (120, 160), raw).save(out, format="JPEG", quality=90)
+    data = out.getvalue()
+    return data[: len(data) // 2]
+
+
+NOT_AN_IMAGE = {
+    # The fake scanner's page (apps/scanner testing): 6 bytes labelled image/jpeg.
+    "side-1": b"side-1",
+    "empty": b"",
+    "truncated-jpeg": _truncated_jpeg(),
+}
+
+
+@pytest.fixture
+def forbid_upstream(monkeypatch) -> None:
+    """Fail the test if Vision, Anthropic or the cascade is reached."""
+
+    def _forbidden(*_a, **_k):
+        raise AssertionError("an undecodable entry reached Vision/Anthropic/the cascade")
+
+    monkeypatch.setattr(cropper, "detect_orientation", _forbidden)
+    monkeypatch.setattr(cropper, "classify_card", _forbidden)
+    monkeypatch.setattr(cropper, "crop", _forbidden)
+
+
+class TestUndecodableEntry:
+    """NEO-484: bytes that are not an image are a terminal 422, on both roles.
+
+    Before this they reached Vision (or failed the dHash) and came back as a
+    502, which the Convex workpool retried five times per entry.
+    """
+
+    @pytest.mark.parametrize("role", ["heavy", "fast"])
+    @pytest.mark.parametrize("name", sorted(NOT_AN_IMAGE))
+    def test_is_a_terminal_422_with_no_vision_call(
+        self, fake_gcs, monkeypatch, forbid_upstream, timing_lines, role, name
+    ):
+        monkeypatch.setenv("PREPROCESS_ROLE", role)
+        _spy_model_session(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", NOT_AN_IMAGE[name], "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 422, response.text
+        body = response.json()
+        assert set(body) == {"error_code", "detail"}
+        assert body["error_code"] == "ENTRY_UNDECODABLE"
+        assert isinstance(body["detail"], str) and body["detail"]
+        assert not any(obj.startswith(OUTPUT_PREFIX) for obj in fake_gcs.names(BUCKET))
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "ENTRY_UNDECODABLE"
+        assert line["role"] == role
+        assert line["vision_calls"] == 0
+
+    @pytest.mark.parametrize("role", ["heavy", "fast"])
+    @pytest.mark.parametrize("name", ["side-1", "empty"])
+    def test_no_image_header_is_refused_before_exif_and_dhash(
+        self, fake_gcs, monkeypatch, forbid_upstream, role, name
+    ):
+        monkeypatch.setenv("PREPROCESS_ROLE", role)
+
+        def _forbidden(*_a, **_k):
+            raise AssertionError("EXIF/dHash ran on bytes with no image header")
+
+        monkeypatch.setattr("app.main.apply_exif_orientation", _forbidden)
+        monkeypatch.setattr("app.main.compute_dhash", _forbidden)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", NOT_AN_IMAGE[name], "image/jpeg")
+
+        assert _post_entry(entry_index=0).status_code == 422
+
+    @pytest.mark.parametrize("role", ["heavy", "fast"])
+    @pytest.mark.parametrize("name", ["side-1", "empty"])
+    def test_a_supplied_dhash_does_not_skip_the_check(
+        self, fake_gcs, monkeypatch, forbid_upstream, role, name
+    ):
+        # A HEAVY request carrying FAST's dhash (and baseline) still refuses
+        # bytes that are not an image.
+        monkeypatch.setenv("PREPROCESS_ROLE", role)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", NOT_AN_IMAGE[name], "image/jpeg")
+
+        response = _post_body(dhash=SUPPLIED_DHASH, baseline=SUPPLIED_BASELINE)
+
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "ENTRY_UNDECODABLE"
+
+    def test_a_truncated_jpeg_fails_in_the_dhash_decode(
+        self, fake_gcs, monkeypatch, forbid_upstream
+    ):
+        # Fixture sanity: the header reads (a size, so the header check passes)
+        # and only the full decode fails. Proves the dHash split is what answers.
+        from app.imaging import read_raster_size
+
+        assert read_raster_size(NOT_AN_IMAGE["truncated-jpeg"]) == (120, 160)
+        with pytest.raises(OSError):
+            compute_dhash(NOT_AN_IMAGE["truncated-jpeg"])
+        fake_gcs.seed(
+            BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", NOT_AN_IMAGE["truncated-jpeg"], "image/jpeg"
+        )
+
+        assert _post_entry(entry_index=0).status_code == 422
+
+    @pytest.mark.parametrize(
+        "exc", [OSError("broken data stream"), SyntaxError("bad marker"), ValueError("bad")]
+    )
+    def test_decode_errors_in_the_dhash_are_422(self, fake_gcs, monkeypatch, forbid_upstream, exc):
+        def _raise(_b):
+            raise exc
+
+        monkeypatch.setattr("app.main.compute_dhash", _raise)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert _post_entry(entry_index=0).status_code == 422
+
+    def test_an_unidentified_image_in_exif_is_422(self, fake_gcs, monkeypatch, forbid_upstream):
+        from PIL import UnidentifiedImageError
+
+        def _raise(_b):
+            raise UnidentifiedImageError("cannot identify image file")
+
+        monkeypatch.setattr("app.main.apply_exif_orientation", _raise)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "ENTRY_UNDECODABLE"
+
+    @pytest.mark.parametrize("step", ["apply_exif_orientation", "compute_dhash"])
+    def test_any_other_error_in_exif_or_dhash_stays_a_502(
+        self, fake_gcs, monkeypatch, forbid_upstream, timing_lines, step
+    ):
+        def _raise(_b):
+            raise RuntimeError("not a decode error")
+
+        monkeypatch.setattr(f"app.main.{step}", _raise)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert _post_entry(entry_index=0).status_code == 502
+        (line,) = timing_lines.bodies()
+        assert (
+            line["error_code"]
+            == {
+                "apply_exif_orientation": "EXIF_FAILED",
+                "compute_dhash": "DHASH_FAILED",
+            }[step]
+        )
+
+    def test_413_is_unchanged(self, fake_gcs, monkeypatch, forbid_upstream, timing_lines):
+        edge = math.isqrt(int(MAX_IMAGE_PIXELS * 1.2)) + 1
+        out = io.BytesIO()
+        Image.new("RGB", (edge, edge), (255, 255, 255)).save(out, format="PNG", compress_level=1)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.png", out.getvalue(), "image/png")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 413
+        assert response.json()["error_code"] == "ENTRY_TOO_MANY_PIXELS"
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "ENTRY_TOO_MANY_PIXELS"
+
+    def test_404_is_unchanged(self, fake_gcs, forbid_upstream, timing_lines):
+        response = _post_entry(entry_index=5)
+
+        assert response.status_code == 404
+        assert response.json()["error_code"] == "ENTRY_NOT_FOUND"
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "ENTRY_NOT_FOUND"
+
+
+class TestTimingErrorCode:
+    """NEO-484: every exit's timing line says how the request ended."""
+
+    def test_success_has_no_error_code(self, fake_gcs, monkeypatch, timing_lines):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert _post_entry(entry_index=0).status_code == 200
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] is None
+        assert isinstance(line["maxrss_mb"], int) and line["maxrss_mb"] > 0
+
+    def test_fast_decline_has_no_error_code(self, fake_gcs, monkeypatch, timing_lines):
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        _spy_model_session(monkeypatch)
+        _tracking_orient(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        assert _post_entry(entry_index=0).json()["needs_escalation"] is True
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] is None
+
+    def test_invalid_identifier(self, fake_gcs, timing_lines):
+        assert _post_entry(job_id="not-a-uuid").status_code == 400
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "INVALID_IDENTIFIER"
+
+    def test_not_configured(self, fake_gcs, monkeypatch, timing_lines):
+        monkeypatch.delenv("GCS_PLACEHOLDER_BUCKET", raising=False)
+        assert _post_entry().status_code == 503
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "EXTRACT_NOT_CONFIGURED"
+
+    def test_storage_read_failure(self, fake_gcs, monkeypatch, timing_lines):
+        def _boom(*_a, **_k):
+            raise RuntimeError("gcs down")
+
+        monkeypatch.setattr(main_module._object_store, "stat", _boom)
+        assert _post_entry().status_code == 502
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "ENTRY_READ_FAILED"
+
+    def test_cascade_failure(self, fake_gcs, monkeypatch, timing_lines):
+        def _boom(_bytes):
+            raise RuntimeError("vision api down")
+
+        monkeypatch.setattr(cropper, "detect_orientation", _boom)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert _post_entry().status_code == 502
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "PIPELINE_UPSTREAM_FAILURE"
+
+    def test_classify_unparseable(self, fake_gcs, monkeypatch, timing_lines):
+        from app.classify import ClassifyError
+
+        _stub_orient(monkeypatch)
+
+        def _boom(_bytes):
+            raise ClassifyError("unparseable")
+
+        monkeypatch.setattr(cropper, "classify_card", _boom)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert _post_entry().status_code == 502
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "CLASSIFY_UNPARSEABLE"
+
+    def test_output_write_failure(self, fake_gcs, monkeypatch, timing_lines):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("gcs write down")
+
+        monkeypatch.setattr(main_module._object_store, "create", _boom)
+        assert _post_entry().status_code == 502
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "OUTPUT_WRITE_FAILED"
+
+    def test_an_unhandled_error_is_labelled_and_still_logged(
+        self, fake_gcs, monkeypatch, timing_lines
+    ):
+        def _boom(_request, _timings):
+            raise KeyError("bug")
+
+        monkeypatch.setattr(main_module, "_process_entry", _boom)
+        failing = TestClient(app, raise_server_exceptions=False)
+        response = failing.post(
+            "/process-entry",
+            headers={"x-internal-key": "test-key"},
+            json={"job_id": JOB, "user_id": USER, "entry_index": 0},
+        )
+
+        assert response.status_code == 500
+        (line,) = timing_lines.bodies()
+        assert line["error_code"] == "INTERNAL_ERROR"
+
+
+BASE_HOST = "neonbinder-preprocess-fast-abc123-uc.a.run.app"
+PREVIEW_HOST = "pr-512---neonbinder-preprocess-fast-abc123-uc.a.run.app"
+
+
+class TestDevCachePolicyBinding:
+    """NEO-484: /process-entry resolves the cache policy from its Host and binds it."""
+
+    @pytest.fixture
+    def dev_with_bucket(self, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("PREPROCESS_DEV_CACHE_BUCKET", "a-dev-cache-bucket")
+
+    def _capture_policy(self, monkeypatch) -> list:
+        from app.devcache import policy
+
+        seen: list = []
+        real = cropper.crop
+
+        def _cap(**kwargs):
+            seen.append(policy.current())
+            return real(**kwargs)
+
+        monkeypatch.setattr(cropper, "crop", _cap)
+        return seen
+
+    def _post_with_host(self, host: str):
+        return client.post(
+            "/process-entry",
+            headers={"x-internal-key": "test-key", "host": host},
+            json={"job_id": JOB, "user_id": USER, "entry_index": 0},
+        )
+
+    @pytest.mark.parametrize(
+        ("host", "mode"), [(BASE_HOST, "on"), (PREVIEW_HOST, "off:tagged_host")]
+    )
+    def test_cache_mode_follows_the_host(
+        self, fake_gcs, monkeypatch, timing_lines, dev_with_bucket, host, mode
+    ):
+        from app.devcache import policy
+
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        seen = self._capture_policy(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert self._post_with_host(host).status_code == 200
+
+        (line,) = timing_lines.bodies()
+        assert line["cache_mode"] == mode
+        # The cascade saw the same policy the line reports, bound for this
+        # request only.
+        (bound_policy,) = seen
+        assert bound_policy.mode == mode
+        assert bound_policy.enabled is (mode == "on")
+        assert policy.current() is policy.UNBOUND
+
+    def test_prod_is_off_on_any_host(self, fake_gcs, monkeypatch, timing_lines):
+        monkeypatch.setenv("ENVIRONMENT", "prod")
+        monkeypatch.setenv("PREPROCESS_DEV_CACHE_BUCKET", "a-dev-cache-bucket")
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert self._post_with_host(BASE_HOST).status_code == 200
+        (line,) = timing_lines.bodies()
+        assert line["cache_mode"] == "off:not_dev"
+
+    def test_failed_requests_carry_the_mode_too(self, fake_gcs, timing_lines, dev_with_bucket):
+        response = client.post(
+            "/process-entry",
+            headers={"x-internal-key": "test-key", "host": BASE_HOST},
+            json={"job_id": JOB, "user_id": USER, "entry_index": 9},
+        )
+        assert response.status_code == 404
+        (line,) = timing_lines.bodies()
+        assert line["cache_mode"] == "on"
+
+    def test_a_raising_resolver_runs_live(self, fake_gcs, monkeypatch, timing_lines):
+        from app.devcache import policy
+
+        def _boom(_host):
+            raise RuntimeError("policy bug")
+
+        monkeypatch.setattr(policy, "resolve", _boom)
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        seen = self._capture_policy(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert self._post_with_host(BASE_HOST).status_code == 200
+        (line,) = timing_lines.bodies()
+        assert line["cache_mode"] == "off:error"
+        assert seen[0].enabled is False
+
+    def test_the_line_never_names_the_bucket(self, fake_gcs, monkeypatch, timing_lines):
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("PREPROCESS_DEV_CACHE_BUCKET", "a-dev-cache-bucket")
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        self._post_with_host(BASE_HOST)
+
+        (raw,) = timing_lines.lines
+        assert "a-dev-cache-bucket" not in raw

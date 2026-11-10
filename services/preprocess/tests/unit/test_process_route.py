@@ -32,8 +32,8 @@ def _set_internal_key(monkeypatch):
 def _decline_tiered(monkeypatch):
     """These tests exercise the real cascade on tiny synthetic uploads.
 
-    The tiered strategy's BiRefNet fallback would need a real rembg session
-    (model download — forbidden in unit tests), so it declines here and the
+    The tiered strategy's BiRefNet fallback would need a real ORT session
+    (a baked model — refused in unit tests), so it declines here and the
     pre-existing pil_trim/sam/haiku behavior under test is unchanged.
     Tiered's own behavior is covered in test_cropper_tiered.py.
     """
@@ -615,25 +615,76 @@ def _noisy_jpeg(size: tuple[int, int]) -> bytes:
 
 class TestStartupWeightsGate:
     """REQUIRE_BAKED_WEIGHTS=1 (set in the Dockerfile) makes startup fail
-    loudly when the baked weights are missing and pre-warm the BiRefNet
-    session when they're present. Unit runs never set the flag."""
+    loudly when the baked BiRefNet model is missing and load the ORT session
+    when it is present (NEO-484: no warm-up inference). Unit runs never set
+    the flag."""
+
+    @staticmethod
+    def _counting_load(monkeypatch) -> list[bool]:
+        called: list[bool] = []
+
+        def _fake_load():
+            called.append(True)
+            return {"session_load_s": 0.5, "model": "birefnet-general", "ort": "x"}
+
+        monkeypatch.setattr("app.cropper.birefnet.load_session", _fake_load)
+        return called
 
     def test_startup_raises_when_weights_missing(self, monkeypatch, tmp_path):
         monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
-        monkeypatch.setenv("U2NET_HOME", str(tmp_path))  # exists, but empty
-        with pytest.raises(RuntimeError, match="no .onnx weights"):
+        monkeypatch.setenv("BIREFNET_HOME", str(tmp_path))  # exists, but empty
+        called = self._counting_load(monkeypatch)
+        with pytest.raises(RuntimeError, match="no baked model"):
+            _verify_baked_weights()
+        assert called == []
+
+    def test_startup_raises_when_only_another_model_is_baked(self, monkeypatch, tmp_path):
+        # The check is for the model BIREFNET_MODEL selects, not any .onnx.
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        monkeypatch.setenv("BIREFNET_HOME", str(tmp_path))
+        monkeypatch.setenv("BIREFNET_MODEL", "birefnet-general")
+        (tmp_path / "birefnet-general-lite.onnx").write_bytes(b"stub")
+        self._counting_load(monkeypatch)
+        with pytest.raises(RuntimeError, match="birefnet-general.onnx"):
             _verify_baked_weights()
 
-    def test_startup_warms_the_session_when_weights_present(self, monkeypatch, tmp_path):
+    def test_startup_refuses_a_model_outside_the_allowlist(self, monkeypatch, tmp_path):
         monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
-        (tmp_path / "model.onnx").write_bytes(b"stub")
-        monkeypatch.setenv("U2NET_HOME", str(tmp_path))
-        called: list[bool] = []
-        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
+        monkeypatch.setenv("BIREFNET_HOME", str(tmp_path))
+        monkeypatch.setenv("BIREFNET_MODEL", "../../etc/passwd")
+        self._counting_load(monkeypatch)
+        with pytest.raises(ValueError, match="BIREFNET_MODEL"):
+            _verify_baked_weights()
+
+    def test_startup_loads_the_session_when_weights_present(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        monkeypatch.setenv("BIREFNET_MODEL", "birefnet-general-lite")
+        (tmp_path / "birefnet-general-lite.onnx").write_bytes(b"stub")
+        monkeypatch.setenv("BIREFNET_HOME", str(tmp_path))
+        called = self._counting_load(monkeypatch)
 
         _verify_baked_weights()
 
         assert called == [True]
+
+    def test_startup_runs_no_inference(self, monkeypatch, tmp_path):
+        from app.cropper import birefnet
+
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        (tmp_path / "birefnet-general.onnx").write_bytes(b"stub")
+        monkeypatch.setenv("BIREFNET_HOME", str(tmp_path))
+        monkeypatch.delenv("BIREFNET_MODEL", raising=False)
+        monkeypatch.setattr(birefnet, "_session", None)
+        monkeypatch.setattr(birefnet, "_create_session", object)
+
+        def _no_inference(*_a, **_k):
+            raise AssertionError("startup ran an inference")
+
+        monkeypatch.setattr(birefnet, "predict_alpha", _no_inference)
+
+        _verify_baked_weights()
+
+        assert birefnet.is_session_loaded()
 
     def test_startup_does_not_load_sam(self, monkeypatch, tmp_path):
         # NEO-315: a startup SAM load measured 46-94s on every HEAVY cold
@@ -642,9 +693,10 @@ class TestStartupWeightsGate:
         from app.cropper import sam
 
         monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
-        (tmp_path / "model.onnx").write_bytes(b"stub")
-        monkeypatch.setenv("U2NET_HOME", str(tmp_path))
-        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: None)
+        (tmp_path / "birefnet-general.onnx").write_bytes(b"stub")
+        monkeypatch.setenv("BIREFNET_HOME", str(tmp_path))
+        monkeypatch.delenv("BIREFNET_MODEL", raising=False)
+        self._counting_load(monkeypatch)
         monkeypatch.setattr(sam, "_model", None)
         monkeypatch.setattr(sam, "_processor", None)
 
@@ -660,8 +712,7 @@ class TestStartupWeightsGate:
 
     def test_startup_is_a_noop_without_the_flag(self, monkeypatch):
         monkeypatch.delenv("REQUIRE_BAKED_WEIGHTS", raising=False)
-        called: list[bool] = []
-        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
+        called = self._counting_load(monkeypatch)
 
         _verify_baked_weights()
 
@@ -738,3 +789,37 @@ class TestCropQuality:
             data={"crop_quality": "strong"},
         )
         assert captured == ["fast", "strong"]
+
+
+class TestRunsLive:
+    """NEO-484: only /process-entry binds a dev cache policy; /process never does,
+    so the crop matrix and the smokes, which call it, always run live."""
+
+    def test_process_binds_no_cache_policy_even_on_the_dev_base(self, monkeypatch):
+        from app import cropper
+        from app.devcache import policy
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("PREPROCESS_DEV_CACHE_BUCKET", "a-dev-cache-bucket")
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        seen: list = []
+        real = cropper.crop
+
+        def _cap(**kwargs):
+            seen.append(policy.current())
+            return real(**kwargs)
+
+        monkeypatch.setattr(cropper, "crop", _cap)
+
+        response = client.post(
+            "/process",
+            headers={
+                "x-internal-key": "test-key",
+                "host": "neonbinder-preprocess-abc123-uc.a.run.app",
+            },
+            files={"image": ("card.jpg", _jpeg(), "image/jpeg")},
+        )
+
+        assert response.status_code == 200, response.text
+        assert seen == [policy.UNBOUND]
