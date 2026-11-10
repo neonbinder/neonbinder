@@ -3037,6 +3037,45 @@ describe("NEO-446: setting a loose photo aside", () => {
     });
   });
 
+  describe("a failed photo cropped by hand (NEO-481)", () => {
+    const unread = (extra: Record<string, unknown> = {}) => ({
+      entryIndex: 0,
+      originalName: "a.jpg",
+      status: "failed",
+      errorCode: "PHOTO_UNREADABLE",
+      retries: 0,
+      ...extra,
+    });
+    const rendering = { pendingEdit: { status: "rendering", turns: 0, crop: { x: 0, y: 0, w: 1, h: 1 } } };
+
+    it("while the crop renders, says Touching it up… and offers no Try again", () => {
+      openWith([unread(rendering)]);
+      expect(screen.getByText("Touching it up…")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Try again: a.jpg" })).toBeNull();
+      // Crop by hand stays, so the viewer (which shows the pending state) can be reopened.
+      expect(screen.getByRole("button", { name: "Crop by hand: a.jpg" })).toBeTruthy();
+      expect(document.getElementById("loose-why-0")?.textContent).toBe("Couldn't read it");
+    });
+
+    it("with no edit in flight, the tile is unchanged: Couldn't read it, Crop by hand and Try again", () => {
+      openWith([unread()]);
+      expect(screen.queryByText("Touching it up…")).toBeNull();
+      expect(document.getElementById("loose-why-0")?.textContent).toBe("Couldn't read it");
+      expect(screen.getByRole("button", { name: "Crop by hand: a.jpg" })).toBeTruthy();
+      const retry = screen.getByRole("button", { name: "Try again: a.jpg" });
+      expect(retry.getAttribute("aria-describedby")).toBe("loose-why-0");
+    });
+
+    it("when the crop fails to render, Try again comes back beside the failure and Keep the old photo", () => {
+      openWith([unread({ pendingEdit: { ...rendering.pendingEdit, status: "failed" } })]);
+      expect(screen.queryByText("Touching it up…")).toBeNull();
+      expect(screen.getByText("That edit didn't take. Your old photo is still here.")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Try again: a.jpg" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Try again: touch up a.jpg" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Keep the old photo: a.jpg" })).toBeTruthy();
+    });
+  });
+
   describe("focus after Bring back", () => {
     const heading = () => document.getElementById("intake-pairing");
     const tile = (n: number) => document.querySelector(`[data-loose-photo="${n}"]`);

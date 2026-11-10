@@ -2639,20 +2639,23 @@ function LineEditLine({ photos }: { photos: CopyPhotos | undefined }) {
     .map((side) => ({ side, state: editStateOf({ pendingEdit: photos?.[side]?.pending }) }))
     .find((s) => s.state);
   if (!state?.state) return null;
-  if (state.state.kind === "rendering") {
-    return (
-      <span className="mt-0.5 flex items-start gap-1 text-ink-2">
-        <RunGlyph kind="building" tones={PHOTO_TONES} />
-        <span>{EDIT_RENDERING_LINE}</span>
-      </span>
-    );
-  }
+  if (state.state.kind === "rendering") return <EditRenderingLine />;
   return (
     <span className="mt-0.5 flex items-start gap-1 text-notice-warn-ink">
       <RunGlyph kind="failed" tones={PHOTO_TONES} />
       <span>
         {state.state.line} {lineRetryLine(state.side)}
       </span>
+    </span>
+  );
+}
+
+/** NEO-481 — "Touching it up…" under a tile's words, for an edit in flight with no thumbnail chip to say it. */
+function EditRenderingLine() {
+  return (
+    <span className="mt-0.5 flex items-start gap-1 text-ink-2">
+      <RunGlyph kind="building" tones={PHOTO_TONES} />
+      <span>{EDIT_RENDERING_LINE}</span>
     </span>
   );
 }
@@ -2664,10 +2667,22 @@ const THUMB_ATTR = "data-scan-thumb";
  * NEO-481 — a scan's failed hand edit, under its tile's words: what went
  * wrong, with Try again (the same save again) and Keep the old photo (drop the
  * failed edit). The old photo stays up throughout; while an edit renders the
- * thumbnail says so itself. Either press takes its buttons away, so focus that fell
- * to the page lands on the photo itself.
+ * thumbnail says so itself, or, on a tile with no thumbnail (`noThumb`: a
+ * loose photo auto crop couldn't read, cropped by hand), this line does.
+ * Either press takes its buttons away, so focus that fell to the page lands
+ * on the photo itself.
  */
-function EditLine({ jobId, image, label }: { jobId: string; image: IntakeImage | undefined; label: string }) {
+function EditLine({
+  jobId,
+  image,
+  label,
+  noThumb = false,
+}: {
+  jobId: string;
+  image: IntakeImage | undefined;
+  label: string;
+  noThumb?: boolean;
+}) {
   const { notify } = usePageApi();
   const saveEdit = useAction(api.photoEdits.saveScanEdit);
   const dismiss = useAction(api.photoEdits.dismissPhotoEditFailure);
@@ -2675,8 +2690,9 @@ function EditLine({ jobId, image, label }: { jobId: string; image: IntakeImage |
   const [busy, setBusy] = useState(false);
   const edit = image;
   const state = editStateOf(edit);
-  // While it renders, the thumbnail's own chip says so ("Touching it up…").
-  if (!state || !edit || state.kind === "rendering") return null;
+  // While it renders, the thumbnail's own chip says so ("Touching it up…"); with no thumbnail, this line does.
+  if (state?.kind === "rendering") return noThumb ? <EditRenderingLine /> : null;
+  if (!state || !edit) return null;
   const pending = edit.pendingEdit;
   const press = (box: Element | null, write: () => Promise<unknown>) => {
     if (pressing.current) return;
@@ -2915,7 +2931,13 @@ function LoosePile({
               </span>
             </button>
           </div>
-          <EditLine jobId={jobId} image={i} label={labels.get(i.entryIndex) ?? i.originalName} />
+          {/* A failed photo has no thumbnail to carry "Touching it up…" while its hand crop renders, so the line says it. */}
+          <EditLine
+            jobId={jobId}
+            image={i}
+            label={labels.get(i.entryIndex) ?? i.originalName}
+            noThumb={i.status === "failed"}
+          />
           <div className="mt-1 flex flex-wrap gap-2">
             {/* NEO-481: auto crop missed it; the collector can cut it out by hand (never one over the pixel ceiling). */}
             {i.status === "failed" && i.errorCode !== ENTRY_TOO_MANY_PIXELS && (
@@ -2932,7 +2954,8 @@ function LoosePile({
                 Crop by hand
               </NeonButton>
             )}
-            {onRetry && canRetryPhoto(i) && (
+            {/* Not while a hand crop renders: a read started now would race it. */}
+            {onRetry && canRetryPhoto(i) && editStateOf(i)?.kind !== "rendering" && (
               <NeonButton
                 size="1"
                 variant="secondary"
