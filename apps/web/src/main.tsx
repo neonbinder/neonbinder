@@ -70,6 +70,7 @@ const TestNeedsReauth = lazy(() => import("@/app/testing/needs-reauth/page"));
 const TestKilledDrain = lazy(() => import("@/app/testing/killed-drain/page"));
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
 const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
+const TestFailPlaceholderEntry = lazy(() => import("@/app/testing/fail-placeholder-entry/page"));
 const Dashboard = lazy(loadDashboard);
 const ProfilePublic = lazy(loadProfilePublic);
 const ProfileCredentials = lazy(() => import("@/app/profile/credentials/page"));
@@ -193,6 +194,11 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route
             path="/testing/seed-placeholder-upload"
             element={<Deferred><TestSeedPlaceholderUpload /></Deferred>}
+          />
+          {/* NEO-481: fails one of the caller's real uploaded scans, for the hand-crop rescue spec. */}
+          <Route
+            path="/testing/fail-placeholder-entry"
+            element={<Deferred><TestFailPlaceholderEntry /></Deferred>}
           />
 
           {/* Protected routes — wrapped in binder shell */}

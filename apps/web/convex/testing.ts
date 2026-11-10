@@ -530,6 +530,117 @@ export const seedMyTestFailedPhotoRun = mutation({
 });
 
 /**
+ * NEO-481 — turn one of the caller's REAL, already-uploaded scans into a
+ * failed photo, as a 502 or a timeout from `/process-entry` leaves it, so a
+ * spec can prove "Crop by hand" rescues it live (read again, paired, matched).
+ * Preprocess always falls back to some crop, so no fixture fails by itself.
+ *
+ * What it writes, and only that: the image row goes `failed` with
+ * `PROCESS_ENTRY_FAILED` and a seeded detail, every field a read or an edit
+ * wrote is cleared (identity, side, orientation, text count, hash, crop box,
+ * edits), and the job's counters move one photo to failed. The scan's
+ * `extracted/` original is left in GCS: that is what the hand crop renders
+ * from. Pairing then re-runs (forced, so a finished batch re-pairs too), which
+ * drops the photo from its pair, as a real failure would never have paired it;
+ * the intake run's matches follow through the pairing writer.
+ *
+ * `file` is the photo's `originalName`, which must name exactly one photo of
+ * the job. `jobId` is optional: without it, the caller's most recently active
+ * job. Accepted on a photo already uploaded (`queued`, `processing` or
+ * `done`); a work item still in flight then settles into a terminal row and
+ * is ignored, as the pipeline ignores any late completion.
+ *
+ * Same safety as the seeds above: fails closed in production (no
+ * TESTING_RESET_SECRET), signed in, and only the CALLER's own job and photo.
+ * It writes no new rows, so whatever clears the job (the global E2E reset's
+ * `resetPlaceholderJobsBatch`, or the upload page's cancel-first) clears it.
+ */
+export const failMyTestPlaceholderEntry = mutation({
+  args: { file: v.string(), jobId: v.optional(v.string()) },
+  returns: v.object({
+    jobId: v.string(),
+    entryIndex: v.number(),
+    runId: v.union(v.id("intakeRuns"), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    const job = args.jobId
+      ? await ctx.db
+          .query("placeholderJobs")
+          .withIndex("by_job", (q) => q.eq("jobId", args.jobId as string))
+          .unique()
+      : await ctx.db
+          .query("placeholderJobs")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .order("desc")
+          .first();
+    if (!job || job.userId !== userId) throw new Error("No batch of yours to fail a photo in");
+
+    const named = (
+      await ctx.db
+        .query("placeholderImages")
+        .withIndex("by_job_and_index", (q) => q.eq("jobId", job.jobId))
+        .collect()
+    ).filter((image) => image.originalName === args.file);
+    if (named.length !== 1) {
+      throw new Error(`Expected one photo named ${args.file} in this batch, found ${named.length}`);
+    }
+    const image = named[0];
+    if (image.userId !== userId) throw new Error("No batch of yours to fail a photo in");
+    if (image.status !== "queued" && image.status !== "processing" && image.status !== "done") {
+      throw new Error(`Only an uploaded photo can be failed (this one is ${image.status})`);
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(image._id, {
+      status: "failed",
+      errorCode: "PROCESS_ENTRY_FAILED",
+      errorDetail: "seeded for E2E: preprocess /process-entry answered 502",
+      settledAt: now,
+      workId: undefined,
+      players: undefined,
+      team: undefined,
+      cardNumber: undefined,
+      side: undefined,
+      sideByUser: undefined,
+      rotationDegrees: undefined,
+      orientConfidence: undefined,
+      textCount: undefined,
+      croppedSource: undefined,
+      dhash: undefined,
+      outputExtension: undefined,
+      pairStatus: undefined,
+      edit: undefined,
+      autoCrop: undefined,
+      edits: undefined,
+      pendingEdit: undefined,
+    });
+    await ctx.db.patch(job._id, {
+      processedImages: Math.max(0, (job.processedImages ?? 0) - (image.status === "done" ? 1 : 0)),
+      failedImages: (job.failedImages ?? 0) + 1,
+      lastActivityAt: now,
+    });
+    await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
+      jobId: job.jobId,
+      userId,
+      final: false,
+      force: true,
+    });
+    const run = await ctx.db
+      .query("intakeRuns")
+      .withIndex("by_job", (q) => q.eq("jobId", job.jobId))
+      .first();
+    return { jobId: job.jobId, entryIndex: image.entryIndex, runId: run?._id ?? null };
+  },
+});
+
+/**
  * NEO-441 — a run holding four read photos that no pair claims, for the spec
  * that drives the Pairing column's pair-by-hand button. Real photos pair
  * themselves, so a spec cannot keep two of them loose; this writes the state

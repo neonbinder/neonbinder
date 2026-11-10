@@ -1123,3 +1123,66 @@ describe("security notes", () => {
     expect((await w.t.run((ctx) => ctx.db.get(photoId)))?.pendingEdit?.status).toBe("failed");
   });
 });
+
+describe("NEO-481 test hook: failMyTestPlaceholderEntry", () => {
+  const failFront = (w: Awaited<ReturnType<typeof world>>, as: "me" | "them" = "me") =>
+    w[as].mutation(api.testing.failMyTestPlaceholderEntry, { file: "front.jpg" });
+
+  test("refused outside a testing deployment, and when signed out, writing nothing", async () => {
+    const w = await world();
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    await expect(failFront(w)).rejects.toThrow(/not enabled on this deployment/);
+    vi.stubEnv("TESTING_RESET_SECRET", "on");
+    await expect(w.t.mutation(api.testing.failMyTestPlaceholderEntry, { file: "front.jpg" })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    expect((await w.image())?.status).toBe("done");
+  });
+
+  test("another collector's photo is refused, by job or by their newest batch", async () => {
+    const w = await world();
+    vi.stubEnv("TESTING_RESET_SECRET", "on");
+    await expect(failFront(w, "them")).rejects.toThrow(/No batch of yours/);
+    await expect(
+      w.them.mutation(api.testing.failMyTestPlaceholderEntry, { file: "front.jpg", jobId: JOB }),
+    ).rejects.toThrow(/No batch of yours/);
+    expect((await w.image())?.status).toBe("done");
+    expect((await w.jobRow())?.failedImages).toBe(0);
+  });
+
+  test("a name that matches no photo, or one not uploaded yet, is refused", async () => {
+    const w = await world({ front: { status: "awaiting_upload" } });
+    vi.stubEnv("TESTING_RESET_SECRET", "on");
+    await expect(w.me.mutation(api.testing.failMyTestPlaceholderEntry, { file: "nope.jpg" })).rejects.toThrow(
+      /found 0/,
+    );
+    await expect(failFront(w)).rejects.toThrow(/Only an uploaded photo/);
+  });
+
+  test("leaves the photo failed as a 502 would, and a hand crop then rescues it", async () => {
+    const w = await world();
+    vi.stubEnv("TESTING_RESET_SECRET", "on");
+    const failed = await failFront(w);
+    expect(failed).toMatchObject({ jobId: JOB, entryIndex: FRONT, runId: expect.any(String) });
+    const row = await w.image();
+    expect(row).toMatchObject({ status: "failed", errorCode: "PROCESS_ENTRY_FAILED" });
+    for (const field of ["players", "side", "textCount", "rotationDegrees", "autoCrop", "dhash", "edit", "edits"] as const) {
+      expect(row?.[field]).toBeUndefined();
+    }
+    expect([(await w.jobRow())?.processedImages, (await w.jobRow())?.failedImages]).toEqual([1, 1]);
+    // Pairing re-runs and drops it from its pair, as a real failure never paired.
+    await drainScheduled(w.t);
+    const pairs = await w.t.run((ctx) => ctx.db.query("placeholderPairs").collect());
+    expect(pairs.filter((p) => p.frontIndex === FRONT || p.backIndex === FRONT)).toEqual([]);
+    // The original stays: the viewer opens on it, for a crop by hand.
+    expect(bucket.has(extractedKey(FRONT))).toBe(true);
+    const source = await w.me.action(api.photoEdits.photoEditSource, { ref: scanRef });
+    expect(source).toMatchObject({ mode: "original", edit: { turns: 0, crop: null } });
+
+    await w.me.action(api.photoEdits.saveScanEdit, { jobId: JOB, entryIndex: FRONT, edit: EDIT, expectVersion: 0 });
+    await drainScheduled(w.t);
+    const rescued = await w.image();
+    expect(rescued).toMatchObject({ status: "done", players: ["Dwight Gooden"], side: "back", edit: { version: 1 } });
+    expect([(await w.jobRow())?.processedImages, (await w.jobRow())?.failedImages]).toEqual([2, 0]);
+  });
+});
