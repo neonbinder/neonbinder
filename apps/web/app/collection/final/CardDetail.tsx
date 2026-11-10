@@ -1006,6 +1006,7 @@ export function CopyList({
                     <CopyPhotosField
                       copy={copy}
                       line={names[i]}
+                      card={name}
                       photos={photoMap?.get(copy.id)}
                       ext={photosExt}
                       initialError={photoError?.copyId === copy.id ? photoError.message : undefined}
@@ -1026,7 +1027,7 @@ export function CopyList({
                   copy.id === focusCopyId ? "bg-pick-blue/20 ring-2 ring-inset ring-selection" : ""
                 }`}
               >
-                <LineThumb photos={photoMap?.get(copy.id)} line={names[i]} />
+                <LineThumb photos={photoMap?.get(copy.id)} line={names[i]} copy={copy} card={name} />
                 <span
                   className={`min-w-40 flex-1 ${
                     // At least 10rem wide; beside a thumbnail on a phone, the buttons wrap below rather than crush the words.

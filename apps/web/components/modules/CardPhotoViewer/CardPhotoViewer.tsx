@@ -1,0 +1,639 @@
+/**
+ * NEO-481 — the one card photo viewer: a big look at a card's front or back,
+ * a quarter turn either way, and a crop by hand with a box that spins a full
+ * circle. Every surface that shows a card photo it can edit opens this, with a
+ * `PhotoSource` that says where the photo lives (`./types.ts`).
+ *
+ * The save is asynchronous. Save photo hands the edit over and is accepted at
+ * once; the picture shows the edit straight away from the source the tools
+ * drew on (`./previewStore.ts`), with "Touching it up…" until the new file
+ * lands. A render that fails leaves the old photo live and offers Try again.
+ *
+ * A dialog, so it stays out of the URL: Escape closes it (and only it, never
+ * the card drawer under it) and focus goes back to the photo that opened it
+ * (`usePhotoViewer`).
+ */
+
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  ArrowDownIcon,
+  ArrowLeftIcon,
+  ArrowPathIcon,
+  ArrowRightIcon,
+  ArrowUpIcon,
+  ArrowUturnLeftIcon,
+  ArrowUturnRightIcon,
+  MinusIcon,
+  PlusIcon,
+} from "@heroicons/react/24/outline";
+import Overlay from "@/app/collection/prototypes/p1/Overlay";
+import NeonButton from "@/components/modules/NeonButton";
+import { Input } from "@/components/primitives/Input";
+import {
+  cropOrNull,
+  describeCrop,
+  editsEqual,
+  effectiveCrop,
+  nudgeCrop,
+  normalizeAngle,
+  RESIZE_STEP,
+  resizeCrop,
+  setCropAngle,
+  tidyEdit,
+  tiltCrop,
+  turnBy,
+  type PhotoCrop,
+  type PhotoEdit,
+} from "@/lib/photo-edit/geometry";
+import CropStage from "./CropStage";
+import { CardPhoto, EditedImage, pendingWords } from "./EditedPhoto";
+import { forgetPreview, rememberPreview } from "./previewStore";
+import type { EditableStart, EditStart, PhotoSideSource, PhotoSource, ViewerSide } from "./types";
+
+const SIDE_WORD: Record<ViewerSide, string> = { front: "Front", back: "Back" };
+
+/** Words the viewer says (and the specs read). One place, so a rename is one edit. */
+export const VIEWER_WORDS = {
+  storedMode: "This photo's original scan is gone, so a crop can only trim what's here.",
+  loading: "Getting the photo ready…",
+  loadFailed: "Couldn't open this photo for editing.",
+  saved: "Saved.",
+  landed: "All set. Your edited photo is in.",
+  stillRendering: "Still touching up the last edit. Give it a moment.",
+  nothingChanged: "Turn or crop the photo first.",
+  outOfEdits: "This photo is out of hand edits.",
+  noAutoCrop: "No auto crop here. Drag the box to fit the card.",
+} as const;
+
+/** How long the box holds still before its size is read out. */
+const ANNOUNCE_AFTER_MS = 600;
+
+type Loaded = { state: "loading" } | { state: "ready"; start: EditStart; forUrl: string } | { state: "error" };
+
+/** True when focus sits in a text field, where the viewer's letter keys are typing. */
+const typing = (el: EventTarget | null) =>
+  el instanceof HTMLElement && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+
+export default function CardPhotoViewer({
+  source,
+  initialSide = "front",
+  onClose,
+}: {
+  source: PhotoSource;
+  initialSide?: ViewerSide;
+  onClose: () => void;
+}) {
+  const headingId = useId();
+  const helpId = useId();
+  const sides = (["front", "back"] as const).filter((s) => source[s]);
+  const [side, setSide] = useState<ViewerSide>(source[initialSide] ? initialSide : (sides[0] ?? "front"));
+  const current: PhotoSideSource | undefined = source[side];
+
+  const [loaded, setLoaded] = useState<Partial<Record<ViewerSide, Loaded>>>({});
+  /** The edit being drawn, per side; absent = the side's saved state. */
+  const [drafts, setDrafts] = useState<Partial<Record<ViewerSide, PhotoEdit>>>({});
+  /** What each side was saved as in this viewer (the baseline the draft compares with), and what it was before. */
+  const [saves, setSaves] = useState<Partial<Record<ViewerSide, { before: PhotoEdit; after: PhotoEdit }>>>({});
+  const [cropping, setCropping] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [heard, setHeard] = useState("");
+
+  const entry = loaded[side];
+  const start = entry?.state === "ready" ? entry.start : undefined;
+  const editable: EditableStart | undefined = start && start.mode !== "viewOnly" ? start : undefined;
+  const viewOnlyReason = current?.viewOnly ?? (start?.mode === "viewOnly" ? start.reason : undefined) ?? (current && !current.load ? "" : undefined);
+  const baseline = editable ? (saves[side]?.after ?? editable.opening) : undefined;
+  const draft = drafts[side] ?? baseline;
+  const dirty = !!(draft && baseline && !editsEqual(draft, baseline));
+  const pending = current?.pending;
+  const rendering = pending?.status === "rendering";
+  const outOfEdits = editable?.editsLeft === 0;
+
+  // Read where an edit starts when a side opens, and again when its photo
+  // changes underneath (a new version landed): an old start would draw on an
+  // old picture. Loading is also the server's cue to warm the renderer.
+  const loadFor = useRef<Partial<Record<ViewerSide, string>>>({});
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const hasDraft = !!drafts[side];
+  const [reloads, setReloads] = useState(0);
+  useEffect(() => {
+    if (!current?.load || current.viewOnly) return;
+    if (!current.imageUrl || loadFor.current[side] === current.imageUrl) return;
+    if (hasDraft) return; // never pull the picture out from under a draft
+    const forUrl = current.imageUrl;
+    const thisSide = side;
+    loadFor.current[thisSide] = forUrl;
+    // A later load for this side (its photo changed again) wins over this one.
+    const latest = () => mounted.current && loadFor.current[thisSide] === forUrl;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the start is an outside answer, asked for when the side opens
+    setLoaded((l) => ({ ...l, [thisSide]: l[thisSide]?.state === "ready" ? l[thisSide] : { state: "loading" } }));
+    current.load().then(
+      (s) => {
+        if (latest()) setLoaded((l) => ({ ...l, [thisSide]: { state: "ready", start: s, forUrl } }));
+      },
+      () => {
+        // Stays failed until the collector asks again (`retryLoad`): never a loop of reads.
+        if (latest()) setLoaded((l) => ({ ...l, [thisSide]: { state: "error" } }));
+      },
+    );
+  }, [side, current, hasDraft, reloads]);
+  const retryLoad = () => {
+    loadFor.current[side] = undefined;
+    setReloads((n) => n + 1);
+  };
+
+  // Say when a render this viewer started has landed.
+  const wasRendering = useRef(rendering);
+  useEffect(() => {
+    if (wasRendering.current && !pending && saves[side]) setSaid(VIEWER_WORDS.landed);
+    wasRendering.current = rendering;
+  }, [rendering, pending, saves, side]);
+
+  // Read the box out once it holds still.
+  const description = cropping && editable && draft ? describeCrop(draft, editable.srcW, editable.srcH) : "";
+  useEffect(() => {
+    if (!description) return;
+    const t = setTimeout(() => setHeard(description), ANNOUNCE_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [description]);
+
+  const setDraft = (next: PhotoEdit) => {
+    setError(null);
+    setDrafts((d) => ({ ...d, [side]: next }));
+  };
+  const crop: PhotoCrop | null = editable && draft ? effectiveCrop(draft, editable.srcW, editable.srcH) : null;
+  const setCrop = (next: PhotoCrop) => draft && setDraft({ ...draft, crop: next });
+
+  const turn = (delta: number) => draft && setDraft({ ...draft, turns: turnBy(draft.turns, delta) });
+  const toggleCrop = () => {
+    if (!editable || !draft) return;
+    if (cropping && draft.crop) setDraft({ ...draft, crop: cropOrNull(draft.crop) });
+    setCropping((c) => !c);
+  };
+  const startOver = () => editable && setDraft(editable.reset);
+
+  const blockedBy = (): string | null => {
+    if (busy) return "";
+    if (rendering) return VIEWER_WORDS.stillRendering;
+    if (outOfEdits) return VIEWER_WORDS.outOfEdits;
+    return null;
+  };
+
+  const send = async (edit: PhotoEdit, done: (sent: PhotoEdit) => void) => {
+    if (!editable || !current?.save) return;
+    const sent = tidyEdit(edit);
+    setBusy(true);
+    setError(null);
+    rememberPreview(current.previewKey, { edit: sent, sourceUrl: editable.sourceUrl, srcW: editable.srcW, srcH: editable.srcH });
+    try {
+      await current.save(sent, editable);
+      done(sent);
+      setSaid(VIEWER_WORDS.saved);
+    } catch (e) {
+      forgetPreview(current.previewKey);
+      setSaid("");
+      setError(e instanceof Error && e.message ? e.message : "That edit didn't save. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = () => {
+    const blocked = blockedBy();
+    if (blocked !== null) {
+      if (blocked) setError(blocked);
+      return;
+    }
+    if (!draft || !baseline || !dirty) {
+      setError(VIEWER_WORDS.nothingChanged);
+      return;
+    }
+    const before = baseline;
+    const edit = draft.crop ? { ...draft, crop: cropOrNull(draft.crop) } : draft;
+    void send(edit, (sent) => {
+      setSaves((s) => ({ ...s, [side]: { before, after: sent } }));
+      setDrafts((d) => ({ ...d, [side]: undefined }));
+      setCropping(false);
+    });
+  };
+
+  const lastSave = saves[side];
+  const canUndo = !!lastSave && (!!current?.undo || editable?.mode === "original");
+  const undo = () => {
+    if (!lastSave || blockedBy() !== null) return;
+    if (current?.undo) {
+      setBusy(true);
+      setError(null);
+      current.undo().then(
+        () => {
+          setSaves((s) => ({ ...s, [side]: undefined }));
+          setDrafts((d) => ({ ...d, [side]: undefined }));
+          setSaid("Put back the photo from before.");
+        },
+        (e: unknown) => setError(e instanceof Error && e.message ? e.message : "Couldn't put the old photo back."),
+      ).finally(() => setBusy(false));
+      return;
+    }
+    // A scan re-renders from its original, so its Undo saves the edit it had before.
+    void send(lastSave.before, () => {
+      setSaves((s) => ({ ...s, [side]: undefined }));
+      setDrafts((d) => ({ ...d, [side]: undefined }));
+    });
+  };
+
+  const tryAgain = () => {
+    if (!pending || pending.status !== "failed" || busy) return;
+    void send(pending.edit, (sent) => {
+      setSaves((s) => ({ ...s, [side]: { before: s[side]?.before ?? editable?.opening ?? sent, after: sent } }));
+    });
+  };
+  const keepOld = () => {
+    if (!current?.dismissFailure || busy) return;
+    forgetPreview(current.previewKey);
+    current.dismissFailure().catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : "Couldn't clear that note."));
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape") {
+      // Only this dialog: the card drawer under it stays open.
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+      return;
+    }
+    if (e.altKey || e.ctrlKey || e.metaKey || typing(e.target) || !editable) return;
+    if (e.key === "[" || e.key === "]") {
+      e.preventDefault();
+      e.stopPropagation();
+      turn(e.key === "]" ? 1 : -1);
+    } else if (e.key === "c" || e.key === "C") {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleCrop();
+    }
+  };
+
+  const switchSide = (to: ViewerSide) => {
+    if (to === side) return;
+    setCropping(false);
+    setError(null);
+    setSaid("");
+    setSide(to);
+  };
+
+  const word = SIDE_WORD[side];
+  const alt = `${word} of ${source.label}`;
+  const blocked = blockedBy();
+
+  return (
+    <Overlay labelledBy={headingId} onClose={onClose} variant="stage">
+      <div
+        className="pointer-events-auto absolute inset-0 flex flex-col overflow-y-auto bg-raised text-ink sm:inset-auto sm:left-1/2 sm:top-1/2 sm:h-[min(54rem,calc(100dvh-2rem))] sm:w-[min(60rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl"
+        onKeyDown={onKeyDown}
+        data-card-photo-viewer=""
+      >
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-rule px-4 py-3">
+          <h2 id={headingId} tabIndex={-1} className="min-w-0 flex-1 rounded-sm text-lg font-semibold focus-outline">
+            {alt}
+          </h2>
+          {sides.length > 1 && (
+            <div role="group" aria-label="Which side" className="flex rounded-md border border-control p-0.5">
+              {sides.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  aria-pressed={s === side}
+                  onClick={() => switchSide(s)}
+                  className={`min-h-11 min-w-16 rounded px-3 text-sm font-medium focus-outline ${
+                    s === side ? "bg-neon-blue text-on-neon-blue" : "text-ink-2 hover:text-ink"
+                  }`}
+                >
+                  {SIDE_WORD[s]}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <Notices
+          viewOnly={viewOnlyReason}
+          loading={entry?.state === "loading"}
+          loadFailed={entry?.state === "error"}
+          onRetryLoad={retryLoad}
+          stored={editable?.mode === "stored"}
+          editsLeft={editable?.editsLeft}
+          pending={pending}
+          busy={busy}
+          onTryAgain={editable && current?.save ? tryAgain : undefined}
+          onKeepOld={current?.dismissFailure ? keepOld : undefined}
+        />
+
+        <div
+          // The stage takes whatever height the panel leaves; the picture fills it, letterboxed.
+          className="relative mx-4 my-3 min-h-[15rem] flex-1 overflow-hidden rounded-md bg-raised-deep"
+        >
+          {editable && draft && cropping ? (
+            <CropStage
+              sourceUrl={editable.sourceUrl}
+              srcW={editable.srcW}
+              srcH={editable.srcH}
+              turns={draft.turns}
+              crop={draft.crop}
+              onChange={setCrop}
+              instructionsId={helpId}
+            />
+          ) : editable && draft && (dirty || current?.shown) ? (
+            <EditedImage
+              src={editable.sourceUrl}
+              alt={alt}
+              edit={draft}
+              srcW={editable.srcW}
+              srcH={editable.srcH}
+              className="absolute inset-0 block h-full w-full"
+            />
+          ) : current && !current.imageUrl ? (
+            <p className="absolute inset-0 flex items-center justify-center text-sm text-ink-3">Loading the photo…</p>
+          ) : current?.imageUrl ? (
+            <CardPhoto
+              src={current.imageUrl}
+              alt={alt}
+              shown={current.shown}
+              pending={pending}
+              previewKey={current.previewKey}
+              chip={false}
+              className="absolute inset-0 block h-full w-full object-contain"
+            />
+          ) : (
+            <p className="absolute inset-0 flex items-center justify-center text-sm text-ink-3">No {side} photo yet.</p>
+          )}
+        </div>
+
+        {editable && draft && (
+          <div className="flex flex-col gap-3 px-4">
+            <div role="toolbar" aria-label="Photo tools" className="flex flex-wrap gap-2">
+              <Tool label="Turn left" icon={<ArrowUturnLeftIcon />} onClick={() => turn(-1)} shortcut="[" />
+              <Tool label="Turn right" icon={<ArrowUturnRightIcon />} onClick={() => turn(1)} shortcut="]" />
+              <NeonButton
+                type="button"
+                variant="tertiary"
+                outline={!cropping}
+                aria-pressed={cropping}
+                aria-keyshortcuts="C"
+                onClick={toggleCrop}
+                className="min-h-11"
+              >
+                Crop by hand
+              </NeonButton>
+              <Tool label="Start over" icon={<ArrowPathIcon />} onClick={startOver} />
+              {canUndo && (
+                <Tool
+                  label="Undo"
+                  icon={<ArrowUturnLeftIcon />}
+                  onClick={undo}
+                  disabledBecause={blocked ?? undefined}
+                />
+              )}
+            </div>
+
+            {cropping && crop && (
+              <CropControls
+                crop={crop}
+                turns={draft.turns}
+                onChange={setCrop}
+                helpId={helpId}
+                noAutoCrop={editable?.noAutoCrop === true}
+              />
+            )}
+          </div>
+        )}
+
+        <div className="sr-only" aria-live="polite" aria-atomic="true">
+          {heard}
+        </div>
+        <p className="min-h-5 px-4 pt-2 text-sm text-ink-2" role="status">
+          {said}
+        </p>
+        <p className="min-h-5 px-4 text-sm text-neon-pink-text" role="alert">
+          {error ?? ""}
+        </p>
+
+        <div className="mt-auto flex flex-wrap items-center justify-end gap-2 border-t border-rule px-4 py-3">
+          {editable && current?.save && (
+            <NeonButton
+              type="button"
+              variant="primary"
+              onClick={save}
+              aria-disabled={!dirty || blocked !== null || undefined}
+              title={blocked || (!dirty ? VIEWER_WORDS.nothingChanged : undefined)}
+              className="min-h-11"
+            >
+              {busy ? "Saving…" : "Save photo"}
+            </NeonButton>
+          )}
+          <NeonButton type="button" variant="negative" outline onClick={onClose} className="min-h-11">
+            Close
+          </NeonButton>
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
+/** One tool button: an icon and its words, 44 px tall. */
+function Tool({
+  label,
+  icon,
+  onClick,
+  shortcut,
+  disabledBecause,
+}: {
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+  shortcut?: string;
+  disabledBecause?: string;
+}) {
+  return (
+    <NeonButton
+      type="button"
+      variant="secondary"
+      outline
+      onClick={() => {
+        if (disabledBecause === undefined) onClick();
+      }}
+      aria-disabled={disabledBecause !== undefined || undefined}
+      title={disabledBecause || undefined}
+      aria-keyshortcuts={shortcut}
+      className="min-h-11"
+    >
+      <span aria-hidden="true" className="h-4 w-4">
+        {icon}
+      </span>
+      {label}
+    </NeonButton>
+  );
+}
+
+/** The visible steps for everything a drag does, and the angle as a number. */
+function CropControls({
+  crop,
+  turns,
+  onChange,
+  helpId,
+  noAutoCrop,
+}: {
+  crop: PhotoCrop;
+  turns: PhotoEdit["turns"];
+  onChange: (c: PhotoCrop) => void;
+  helpId: string;
+  /** The photo has no auto crop, so the box opened on the whole frame. */
+  noAutoCrop: boolean;
+}) {
+  const [angleText, setAngleText] = useState<string | null>(null);
+  const shownAngle = angleText ?? String(Math.round(normalizeAngle(crop.angle) * 10) / 10);
+  const step = (label: string, icon: ReactNode, next: () => PhotoCrop) => (
+    <NeonButton
+      type="button"
+      variant="secondary"
+      outline
+      aria-label={label}
+      title={label}
+      onClick={() => onChange(next())}
+      className="min-h-11 min-w-11 px-0"
+    >
+      <span aria-hidden="true" className="h-5 w-5">
+        {icon}
+      </span>
+    </NeonButton>
+  );
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-rule p-3">
+      {noAutoCrop && <p className="text-sm text-ink-2">{VIEWER_WORDS.noAutoCrop}</p>}
+      <p id={helpId} className="text-xs text-ink-3">
+        Drag the box to move it, a corner to resize it, or the round handle to spin it.
+        <span className="[@media(pointer:coarse)]:sr-only">
+          {" "}
+          On the box: arrows nudge it (Shift for bigger steps), + and − resize it, comma and period tilt it a degree (Shift
+          for 15°).
+        </span>
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <div role="group" aria-label="Move steps" className="flex gap-1">
+          {step("Nudge crop left", <ArrowLeftIcon />, () => nudgeCrop(crop, -1, 0, turns))}
+          {step("Nudge crop up", <ArrowUpIcon />, () => nudgeCrop(crop, 0, -1, turns))}
+          {step("Nudge crop down", <ArrowDownIcon />, () => nudgeCrop(crop, 0, 1, turns))}
+          {step("Nudge crop right", <ArrowRightIcon />, () => nudgeCrop(crop, 1, 0, turns))}
+        </div>
+        <div role="group" aria-label="Size steps" className="flex gap-1">
+          {step("Shrink crop", <MinusIcon />, () => resizeCrop(crop, 1 / RESIZE_STEP))}
+          {step("Grow crop", <PlusIcon />, () => resizeCrop(crop, RESIZE_STEP))}
+        </div>
+        <div role="group" aria-label="Tilt steps" className="flex items-center gap-1">
+          {step("Tilt crop left", <ArrowUturnLeftIcon />, () => tiltCrop(crop, -1))}
+          {step("Tilt crop right", <ArrowUturnRightIcon />, () => tiltCrop(crop, 1))}
+          <label className="ml-1 flex items-center gap-2 text-sm text-ink-2">
+            <span>Angle</span>
+            <Input
+              bare
+              type="number"
+              inputMode="decimal"
+              min={-180}
+              max={180}
+              step={1}
+              aria-label="Angle, degrees"
+              value={shownAngle}
+              onChange={(e) => {
+                const text = e.target.value;
+                setAngleText(text);
+                const n = Number(text);
+                if (text.trim() !== "" && Number.isFinite(n) && n >= -180 && n <= 180) onChange(setCropAngle(crop, n));
+              }}
+              onBlur={() => setAngleText(null)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setAngleText(null);
+              }}
+              className="h-11 w-20 rounded-md border border-field-rule bg-field px-2 text-sm text-ink"
+            />
+            <span aria-hidden="true">°</span>
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The lines above the photo: why it is view-only, what the source is, a pending or failed edit. */
+function Notices({
+  viewOnly,
+  loading,
+  loadFailed,
+  stored,
+  editsLeft,
+  pending,
+  busy,
+  onTryAgain,
+  onKeepOld,
+  onRetryLoad,
+}: {
+  viewOnly: string | undefined;
+  loading: boolean;
+  loadFailed: boolean;
+  stored: boolean;
+  editsLeft: number | undefined;
+  pending: PhotoSideSource["pending"];
+  busy: boolean;
+  onTryAgain?: () => void;
+  onKeepOld?: () => void;
+  onRetryLoad: () => void;
+}) {
+  const lines: ReactNode[] = [];
+  if (viewOnly) lines.push(<p key="view">{viewOnly}</p>);
+  else if (loading) lines.push(<p key="load">{VIEWER_WORDS.loading}</p>);
+  else if (loadFailed) {
+    lines.push(
+      <div key="fail" className="flex flex-wrap items-center gap-2">
+        <p>{VIEWER_WORDS.loadFailed}</p>
+        <NeonButton type="button" variant="secondary" outline onClick={onRetryLoad} className="min-h-11">
+          Open it again
+        </NeonButton>
+      </div>,
+    );
+  }
+  if (stored) lines.push(<p key="stored">{VIEWER_WORDS.storedMode}</p>);
+  if (editsLeft !== undefined && editsLeft <= 3) {
+    lines.push(
+      <p key="left">{editsLeft === 0 ? VIEWER_WORDS.outOfEdits : `${editsLeft} hand ${editsLeft === 1 ? "edit" : "edits"} left on this photo.`}</p>,
+    );
+  }
+  if (pending) {
+    lines.push(
+      <div key="pending" className="flex flex-wrap items-center gap-2" data-viewer-pending={pending.status}>
+        <p className={pending.status === "failed" ? "text-notice-danger-ink" : ""}>{pendingWords(pending)}</p>
+        {pending.status === "failed" && onTryAgain && (
+          <NeonButton type="button" variant="primary" outline onClick={onTryAgain} aria-disabled={busy || undefined} className="min-h-11">
+            Try again
+          </NeonButton>
+        )}
+        {pending.status === "failed" && onKeepOld && (
+          <NeonButton type="button" variant="secondary" outline onClick={onKeepOld} className="min-h-11">
+            Keep the old photo
+          </NeonButton>
+        )}
+      </div>,
+    );
+  }
+  if (lines.length === 0) return null;
+  return <div className="flex flex-col gap-1 px-4 pt-3 text-sm text-ink-2">{lines}</div>;
+}
+
+/** Re-exported for a surface that only needs the words. */
+export { SIDE_WORD };
+export type { EditableStart, EditStart };

@@ -39,6 +39,8 @@
 
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+import { redrawnSide } from "@/components/modules/CardPhotoViewer/sources";
+import type { PhotoSource } from "@/components/modules/CardPhotoViewer/types";
 import { CardImagesProvider } from "./cardImages";
 import {
   brands,
@@ -1259,6 +1261,32 @@ function useDemoCopyPhotos(
     next.set(copy.id, { ...(had.back ? { front: had.back } : {}), ...(had.front ? { back: had.front } : {}) });
     keep(next);
   }, [keep]);
+  /** NEO-481 — a side's photo re-drawn by the viewer: the new picture replaces the old on every surface. */
+  const replaceSide = useCallback(
+    (copyId: CopyId, side: PhotoSide, image: Blob, thumb: Blob) => {
+      const prev = latest.current;
+      const had = prev.get(copyId);
+      if (!had?.[side]) return;
+      drop(had[side]);
+      const next = new Map(prev);
+      next.set(copyId, { ...had, [side]: { imageUrl: URL.createObjectURL(image), thumbUrl: URL.createObjectURL(thumb) } });
+      keep(next);
+    },
+    [keep],
+  );
+  /** NEO-481 — the viewer on a demo line: turned and cropped in the browser, never uploaded. */
+  const usePhotoSource = useCallback(
+    (copy: Copy, label: string, photos: CopyPhotos | undefined): PhotoSource => {
+      const side = (s: PhotoSide) => {
+        const p = photos?.[s];
+        return p
+          ? redrawnSide({ imageUrl: p.imageUrl, previewKey: `demo:${copy.id}:${s}`, onSave: (image, thumb) => replaceSide(copy.id, s, image, thumb) })
+          : undefined;
+      };
+      return { label, front: side("front"), back: side("back") };
+    },
+    [replaceSide],
+  );
   const useCardImages = useCallback(
     (cardIds: readonly string[]) => {
       // Only lines still in the collection count.
@@ -1275,8 +1303,8 @@ function useDemoCopyPhotos(
     [byCopy, copies],
   );
   return useMemo(
-    () => ({ usePhotos, addPhoto, removePhoto, swapPhotos, useCardImages }),
-    [usePhotos, addPhoto, removePhoto, swapPhotos, useCardImages],
+    () => ({ usePhotos, addPhoto, removePhoto, swapPhotos, useCardImages, usePhotoSource }),
+    [usePhotos, addPhoto, removePhoto, swapPhotos, useCardImages, usePhotoSource],
   );
 }
 

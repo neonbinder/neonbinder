@@ -80,6 +80,7 @@
 
 import { createContext, useContext, useMemo } from "react";
 import type { BrowseFilter, CardRequest, NewCardRequest } from "../store";
+import type { PhotoSource } from "@/components/modules/CardPhotoViewer/types";
 import type {
   AddManyResult,
   BinderNeeds,
@@ -501,6 +502,12 @@ export interface CopyPhotosExtension {
   removePhoto(copy: Copy, side: PhotoSide): Promise<void>;
   /** Trade a line's front and back photos. */
   swapPhotos(copy: Copy): Promise<void>;
+  /**
+   * NEO-481 — the card photo viewer's source for one line (turn and crop by
+   * hand). A hook: call it from the viewer's own component, mounted only
+   * while the viewer is open. Absent: the line's photos open view-only.
+   */
+  usePhotoSource?(copy: Copy, label: string, photos: CopyPhotos | undefined): PhotoSource;
   /**
    * The photo that stands for each of these cards in the collection (the
    * first line with a front, else a back), for `CardFace`

@@ -1,7 +1,8 @@
 /**
  * NEO-377, NEO-431 — the one photo box: the front and the back side by side,
- * each with Add (or Replace) and Remove. A saved photo opens full size in a new
- * tab; a held one is only on this page, so it has no link. Three places show it: a line's Edit form, the drawer's Add form and Request
+ * each with Add (or Replace) and Remove. A photo opens the card photo viewer
+ * (NEO-481): a saved one can be turned and cropped there, a held one is only
+ * on this page, so it opens view-only. Three places show it: a line's Edit form, the drawer's Add form and Request
  * a card. It looks and behaves the same in all three; what differs is when a
  * photo saves.
  *
@@ -21,8 +22,14 @@
 import { useEffect, useId, useRef, useState, type DragEvent } from "react";
 import { PhotoIcon } from "@heroicons/react/24/outline";
 import { COPY_PHOTO_ACCEPT } from "@/lib/collection/copy-photo-resize";
+import CardPhotoViewer from "@/components/modules/CardPhotoViewer/CardPhotoViewer";
+import { CardPhoto } from "@/components/modules/CardPhotoViewer/EditedPhoto";
+import { copyPreviewKey } from "@/components/modules/CardPhotoViewer/convexEdits";
+import { heldPhotoSource, viewOnlySource } from "@/components/modules/CardPhotoViewer/sources";
+import type { PhotoSource } from "@/components/modules/CardPhotoViewer/types";
+import { usePhotoViewer } from "@/components/modules/CardPhotoViewer/usePhotoViewer";
 import { QUIET_BUTTON } from "../prototypes/p1/ui";
-import { writeErrorMessage, type CopyPhotosExtension } from "./data/store";
+import { useCopyPhotos, writeErrorMessage, type CopyPhotosExtension } from "./data/store";
 import type { Copy, CopyPhotos, PhotoSide } from "./data/types";
 
 export const PHOTO_SIDES: readonly PhotoSide[] = ["front", "back"];
@@ -38,19 +45,84 @@ const HOLDABLE_TYPES = new Set(COPY_PHOTO_ACCEPT.split(","));
 /** What the box holds by default: the types a photo can be saved from, or a type the browser can't name. */
 const notHoldable = (file: File) => (file.type === "" || HOLDABLE_TYPES.has(file.type) ? null : NOT_A_PHOTO);
 
-/** A line's front thumbnail beside its words, when it has one. */
-export function LineThumb({ photos, line }: { photos: CopyPhotos | undefined; line: string }) {
-  const shown = photos?.front ?? photos?.back;
+const THUMB = "aspect-[5/7] h-12 w-auto shrink-0 rounded-sm border border-rule object-contain";
+
+/**
+ * A line's front thumbnail beside its words, when it has one. With the line's
+ * `copy` it is a button that opens the card photo viewer (NEO-481) on that
+ * side; `card` names the card in the viewer's heading.
+ */
+export function LineThumb({
+  photos,
+  line,
+  copy,
+  card,
+}: {
+  photos: CopyPhotos | undefined;
+  line: string;
+  copy?: Copy;
+  card?: string;
+}) {
+  const ext = useCopyPhotos();
+  const viewer = usePhotoViewer();
+  const side: PhotoSide = photos?.front ? "front" : "back";
+  const shown = photos?.[side];
   if (!shown) return null;
-  return (
-    <img
+  const picture = (
+    <CardPhoto
       src={shown.thumbUrl}
-      alt={`${photos?.front ? "Front" : "Back"} of ${line}`}
-      className="aspect-[5/7] h-12 w-auto shrink-0 rounded-sm border border-rule object-contain"
+      alt={`${SIDE_WORD[side]} of ${line}`}
+      className={THUMB}
+      pending={shown.pending}
+      previewKey={copy ? copyPreviewKey(copy.id, side) : undefined}
+      chip={false}
       loading="lazy"
-      decoding="async"
     />
   );
+  if (!copy) return picture;
+  return (
+    <>
+      <button
+        type="button"
+        className="shrink-0 rounded-sm focus-outline max-sm:min-h-11"
+        aria-label={`Open photos of ${line}`}
+        data-copy-photo-open={copy.id}
+        onClick={(e) => viewer.open(side, e.currentTarget)}
+      >
+        {picture}
+      </button>
+      {viewer.side && (
+        <LinePhotoViewer copy={copy} label={card ?? line} photos={photos} ext={ext} side={viewer.side} onClose={viewer.close} />
+      )}
+    </>
+  );
+}
+
+/** A line's photos when the store has no viewer source: look, no edits. */
+function useViewOnlyLine(_copy: Copy, label: string, photos: CopyPhotos | undefined): PhotoSource {
+  return viewOnlySource(label, { front: photos?.front?.imageUrl, back: photos?.back?.imageUrl }, "These photos can't be turned or cropped here.");
+}
+
+/** The viewer on one line's photos, mounted only while open (its source is a hook). */
+function LinePhotoViewer({
+  copy,
+  label,
+  photos,
+  ext,
+  side,
+  onClose,
+}: {
+  copy: Copy;
+  label: string;
+  photos: CopyPhotos | undefined;
+  ext: CopyPhotosExtension | undefined;
+  side: PhotoSide;
+  onClose: () => void;
+}) {
+  // A store either has a viewer source or it does not, for its whole life: the hook order never changes.
+  const usePhotoSourceOf = ext?.usePhotoSource ?? useViewOnlyLine;
+  const source = usePhotoSourceOf(copy, label, photos);
+  return <CardPhotoViewer source={source} initialSide={side} onClose={onClose} />;
 }
 
 /** Which side each dropped file goes to: one on a side goes there; otherwise front, then back. */
@@ -82,7 +154,8 @@ function PhotosBox({
   status,
   error,
   ownAlert = true,
-  openFullSize,
+  onOpen,
+  previewKeyOf,
   className = "mt-4",
   onPut,
   onRemove,
@@ -103,8 +176,10 @@ function PhotosBox({
   error: string | null;
   /** False when the form has its own alert and `onRefuse` goes there: nothing would ever be said in this one. */
   ownAlert?: boolean;
-  /** A photo's tile links to the full size. Only a saved photo has an address worth opening. */
-  openFullSize: boolean;
+  /** A photo's tile opens the card photo viewer on that side (NEO-481); `from` gets focus back. */
+  onOpen: (side: PhotoSide, from: HTMLElement) => void;
+  /** A side's key in the viewer's preview memory, so a tile shows an edit still rendering. */
+  previewKeyOf?: (side: PhotoSide) => string;
   className?: string;
   onPut: (picked: readonly PickedPhoto[]) => void;
   /** `done` parks the keyboard: Remove unmounts itself. */
@@ -230,39 +305,26 @@ function PhotosBox({
               data-copy-photo-side={side}
             >
               <p className="text-xs text-ink-3">{word}</p>
-              {shown && openFullSize ? (
-                <a
-                  href={shown.imageUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
+              {shown ? (
+                <button
+                  type="button"
                   {...dragTile(side)}
-                  className={`mt-1 block cursor-grab rounded-sm focus-outline ${
+                  className={`mt-1 block w-full cursor-grab rounded-sm focus-outline ${
                     over === side ? "ring-4 ring-selection" : ""
                   }`}
-                  aria-label={`${word} of ${line}, full size (opens a new tab)`}
+                  aria-label={`Open ${side} of ${line}`}
+                  data-copy-photo-open={side}
+                  onClick={(e) => onOpen(side, e.currentTarget)}
                 >
-                  <img
+                  <CardPhoto
                     src={shown.thumbUrl}
-                    // The link names it. This is for a picture the browser can't draw (a HEIC off Safari).
-                    alt={`${word} side`}
-                    draggable={false}
-                    className={TILE_IMAGE}
-                    decoding="async"
-                  />
-                </a>
-              ) : shown ? (
-                <div
-                  {...dragTile(side)}
-                  className={`mt-1 cursor-grab rounded-sm ${over === side ? "ring-4 ring-selection" : ""}`}
-                >
-                  <img
-                    src={shown.thumbUrl}
+                    // The button names it. This is for a picture the browser can't draw (a HEIC off Safari).
                     alt={`${word} of ${line}`}
-                    draggable={false}
                     className={TILE_IMAGE}
-                    decoding="async"
+                    pending={shown.pending}
+                    previewKey={previewKeyOf?.(side)}
                   />
-                </div>
+                </button>
               ) : (
                 <div
                   className={`mt-1 flex aspect-[5/7] w-full items-center justify-center rounded-sm border border-dashed text-ink-3 ${
@@ -335,6 +397,11 @@ function PhotosBox({
       )}
       <p className="mt-2 text-xs text-ink-3" role="status">
         {status}
+        {PHOTO_SIDES.filter((side) => photos?.[side]?.pending?.status === "failed").map((side) => (
+          <span key={side} className="block text-notice-danger-ink">
+            The {side} edit didn&rsquo;t save. Open the {side} photo to try again.
+          </span>
+        ))}
       </p>
       {/* Mounted from the start, so a screen reader announces what lands in it. */}
       {ownAlert && (
@@ -350,6 +417,7 @@ function PhotosBox({
 export default function CopyPhotosField({
   copy,
   line,
+  card,
   photos,
   ext,
   initialError,
@@ -357,6 +425,8 @@ export default function CopyPhotosField({
   copy: Copy;
   /** The line's name ("Raw, Mint ×3"), for the photos' names. */
   line: string;
+  /** The card's name, for the photo viewer's heading; the line's name when absent. */
+  card?: string;
   photos: CopyPhotos | undefined;
   ext: CopyPhotosExtension;
   /** Shown when the field opens: a photo that failed on the way in with the copy. */
@@ -365,6 +435,7 @@ export default function CopyPhotosField({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(initialError ?? null);
+  const viewer = usePhotoViewer();
 
   const run = async (doing: string, done: string, work: () => Promise<void>, after?: () => void) => {
     setBusy(true);
@@ -383,16 +454,18 @@ export default function CopyPhotosField({
   };
 
   return (
+    <>
     <PhotosBox
       boxId={copy.id}
       line={line}
       photos={photos}
       accept={COPY_PHOTO_ACCEPT}
-      help="Saved as soon as you add them."
+      help="Saved as soon as you add them. Open one to turn or crop it."
       busy={busy}
       status={status}
       error={error}
-      openFullSize
+      onOpen={viewer.open}
+      previewKeyOf={(side) => copyPreviewKey(copy.id, side)}
       onPut={(picked) => {
         const words = picked.map((p) => p.side).join(" and ");
         const saved = picked.length > 1 ? "Front and back photos saved." : `${SIDE_WORD[picked[0].side]} photo saved.`;
@@ -408,6 +481,10 @@ export default function CopyPhotosField({
       }}
       onRefuse={setError}
     />
+    {viewer.side && (
+      <LinePhotoViewer copy={copy} label={card ?? line} photos={photos} ext={ext} side={viewer.side} onClose={viewer.close} />
+    )}
+    </>
   );
 }
 
@@ -458,6 +535,7 @@ export function HeldPhotosField({
   const boxId = useId();
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const viewer = usePhotoViewer();
   const say = onProblem ?? setError;
   const frontUrl = useObjectUrl(files.front);
   const backUrl = useObjectUrl(files.back);
@@ -467,6 +545,7 @@ export function HeldPhotosField({
   };
 
   return (
+    <>
     <PhotosBox
       boxId={boxId}
       line={line}
@@ -477,7 +556,7 @@ export function HeldPhotosField({
       status={saving ?? status}
       error={error}
       ownAlert={!onProblem}
-      openFullSize={false}
+      onOpen={viewer.open}
       className={className}
       onPut={(picked) => {
         const good = picked.filter((p) => check(p.file) === null);
@@ -507,5 +586,13 @@ export function HeldPhotosField({
       }}
       onRefuse={say}
     />
+    {viewer.side && (
+      <CardPhotoViewer
+        source={heldPhotoSource(line, { front: photos.front?.imageUrl, back: photos.back?.imageUrl })}
+        initialSide={viewer.side}
+        onClose={viewer.close}
+      />
+    )}
+    </>
   );
 }
