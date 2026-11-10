@@ -956,10 +956,15 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
     }
   };
 
-  /** The undo of a move or a placement: the same cards back where they were. */
-  const undoMove = (r: { copyId: string; from: { homeId: string; slot?: number; quantity: number } }) => async () => {
-    run((s) => demoOps.moveCopy(s, r.copyId, r.from.homeId, r.from.quantity, r.from.slot));
-  };
+  /**
+   * The undo of a move or a placement: the same cards back where they were,
+   * at the price they had when the move changed it (NEO-479).
+   */
+  const undoMove =
+    (r: { copyId: string; from: { homeId: string; slot?: number; quantity: number; minPrice?: number | null } }) =>
+    async () => {
+      run((s) => demoOps.moveCopy(s, r.copyId, r.from.homeId, r.from.quantity, r.from.slot, r.from.minPrice));
+    };
 
   const noRules = async (): Promise<never> => {
     throw new DemoRefusal("Smart binder rules need an account. Sign up to build one.");
@@ -1063,7 +1068,7 @@ function demoActions(stateRef: { current: DemoState }): CollectionActions {
     },
 
     async moveCopy(copy, toHomeId, options) {
-      const r = run((s) => demoOps.moveCopy(s, copy.id, toHomeId, options?.quantity, options?.slot));
+      const r = run((s) => demoOps.moveCopy(s, copy.id, toHomeId, options?.quantity, options?.slot, options?.minPrice));
       return { copyId: r.copyId, folded: r.folded, split: r.split, undo: undoMove(r) };
     },
 
