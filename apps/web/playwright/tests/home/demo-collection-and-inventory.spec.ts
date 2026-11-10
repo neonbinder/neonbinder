@@ -100,12 +100,13 @@ test(
     await door.click();
     await expect(page).toHaveURL(/[?&]side=inventory/);
     await expect(page).toHaveURL(/[?&]tab=cards/);
-    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
-    // Arriving from the door puts the keyboard at the start of the new page: the demo
-    // notice. (The side page's own h1 is what the app aims for, takeSideArrival; in the
-    // demo shell the side change remounts the page and the notice takes focus after it.)
+    // Arriving from the door puts the keyboard on the new side's own heading (takeSideArrival),
+    // not back on the demo notice, which takes focus only when the demo is first opened.
     // Read before the shell's Menu is opened on a phone: closing it hands focus to its toggle.
-    await expect(about).toBeFocused();
+    const inventoryHeading = page.getByRole("heading", { level: 1, name: "Inventory" });
+    await expect(inventoryHeading).toBeVisible();
+    await expect(inventoryHeading).toBeFocused();
+    await expect(about).not.toBeFocused();
     await expectShellOn(page, isMobile, "Inventory");
 
     // The inventory's three tabs, plus the demo's Add cards (NEO-369).

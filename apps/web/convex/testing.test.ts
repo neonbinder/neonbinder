@@ -11,6 +11,7 @@ import schema from "./schema";
 import { __resetContractCache } from "./credentials";
 import { insertTestCard } from "../lib/testing/card-row";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { VISIT_GAP_MS } from "./dashboard";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1201,5 +1202,55 @@ describe("seedMyTestCredentials — label-scans fixture", () => {
     ).rejects.toThrow(/not enabled on this deployment/);
 
     expect(await readFixtureRows(t, USER_A)).toHaveLength(0);
+  });
+});
+
+describe("backdateMyDashboardVisit (NEO-464)", () => {
+  test("fails closed when TESTING_RESET_SECRET is unset (production)", async () => {
+    const t = convexTest(schema, modules);
+    delete process.env.TESTING_RESET_SECRET;
+    await expect(
+      t.withIdentity({ subject: USER_A }).mutation(api.testing.backdateMyDashboardVisit, {}),
+    ).rejects.toThrow(/not enabled/i);
+  });
+
+  test("refuses an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.backdateMyDashboardVisit, {})).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("is a no-op before the caller's first open", async () => {
+    const t = convexTest(schema, modules);
+    const result = await t.withIdentity({ subject: USER_A }).mutation(api.testing.backdateMyDashboardVisit, {});
+    expect(result).toEqual({ backdated: false });
+  });
+
+  test("moves only the caller's open back, so the next open starts a new visit from there", async () => {
+    const t = convexTest(schema, modules);
+    const me = t.withIdentity({ subject: USER_A });
+    const other = t.withIdentity({ subject: USER_B });
+    expect(await me.mutation(api.dashboard.markVisit, {})).toEqual({ sinceMs: null });
+    await other.mutation(api.dashboard.markVisit, {});
+    const visitOf = (userId: string) =>
+      t.run(async (ctx) =>
+        (
+          await ctx.db
+            .query("userProfiles")
+            .withIndex("by_user", (q) => q.eq("userId", userId))
+            .unique()
+        )?.dashboardVisit,
+      );
+    const otherBefore = await visitOf(USER_B);
+
+    const before = Date.now();
+    expect(await me.mutation(api.testing.backdateMyDashboardVisit, {})).toEqual({ backdated: true });
+    const moved = await visitOf(USER_A);
+    expect(moved?.sinceAt).toBeUndefined();
+    expect(moved!.seenAt).toBeLessThanOrEqual(before - VISIT_GAP_MS);
+
+    // The next open is a new visit whose "new" starts at the moved open.
+    expect(await me.mutation(api.dashboard.markVisit, {})).toEqual({ sinceMs: moved!.seenAt });
+    // Another account's visit is untouched.
+    expect(await visitOf(USER_B)).toEqual(otherBefore);
   });
 });

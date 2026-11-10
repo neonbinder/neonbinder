@@ -135,6 +135,14 @@ Things that look like failures during the apps/web fast gates but are not.
 13. **Never pipe the full `npm run test:unit` through `grep | head`** for a
    verdict: `head` closes early, the summary lines are lost and the exit code
    is `head`'s. Redirect to a scratch log, then grep `Test Files`/`Tests`.
+14. **A local E2E red during a sibling's edit of `src/main.tsx` is the dev
+   server, not the product.** main.tsx cannot hot-update, so Vite full-reloads
+   every open page ("page.evaluate: Execution context was destroyed" mid-axe),
+   and a route the sibling is changing serves its old element for that run
+   (NEO-464: `/binder-tracking?side=inventory` landed on `/demo` while the
+   side-aware redirect was being written). Before diagnosing, compare the
+   trace's request times (`*-trace.network`, `main.tsx?t=` changing between
+   loads) with `stat` mtimes of the source; then rerun on a quiet tree.
 
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.

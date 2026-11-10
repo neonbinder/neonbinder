@@ -67,6 +67,7 @@ const TestReset = lazy(() => import("@/app/testing/reset/page"));
 const TestSeedCredentials = lazy(() => import("@/app/testing/seed-credentials/page"));
 const TestNeedsReauth = lazy(() => import("@/app/testing/needs-reauth/page"));
 const TestKilledDrain = lazy(() => import("@/app/testing/killed-drain/page"));
+const TestBackdateDashboardVisit = lazy(() => import("@/app/testing/backdate-dashboard-visit/page"));
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
 const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
 const Dashboard = lazy(loadDashboard);
@@ -137,6 +138,18 @@ function LegacySetSelector() {
   return <Navigate to={`/admin/set-builder${search}`} replace />;
 }
 
+/**
+ * The old /binder-tracking demo URL (bookmarks, old links), forwarded to the demo
+ * app. The old demo put its side in the query (`?demo=on&side=inventory`), so that
+ * one lands on /demo/inventory, not on a bare `<Navigate to="/demo">` that drops it.
+ * Anything else lands on /demo. Replaces the entry, so Back leaves the demo.
+ */
+function LegacyBinderTracking() {
+  const { search } = useLocation();
+  const inventory = new URLSearchParams(search).get("side") === "inventory";
+  return <Navigate to={inventory ? "/demo/inventory" : "/demo"} replace />;
+}
+
 function ScrollToTop() {
   const { pathname } = useLocation();
   useEffect(() => {
@@ -174,8 +187,8 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             <Route path="inventory" element={<Deferred><DashboardDemoCollection side="inventory" /></Deferred>} />
           </Route>
           <Route path="/collection-tracking" element={<Deferred><CollectionTracking /></Deferred>} />
-          {/* NEO-464 — the old demo URL: bookmarks and links still land on /demo. */}
-          <Route path="/binder-tracking" element={<Navigate to="/demo" replace />} />
+          {/* NEO-464 — the old demo URL: bookmarks and links still land on the demo, `side=inventory` on its Inventory. */}
+          <Route path="/binder-tracking" element={<LegacyBinderTracking />} />
           <Route path="/easypost-setup" element={<Deferred><EasypostSetup /></Deferred>} />
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />
@@ -194,6 +207,10 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           />
           <Route path="/testing/needs-reauth" element={<Deferred><TestNeedsReauth /></Deferred>} />
           <Route path="/testing/killed-drain" element={<Deferred><TestKilledDrain /></Deferred>} />
+          <Route
+            path="/testing/backdate-dashboard-visit"
+            element={<Deferred><TestBackdateDashboardVisit /></Deferred>}
+          />
           <Route
             path="/testing/seed-placeholder-run"
             element={<Deferred><TestSeedPlaceholderRun /></Deferred>}

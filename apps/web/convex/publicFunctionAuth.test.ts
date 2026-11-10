@@ -3062,3 +3062,29 @@ describe("NEO-475: the BSC call telemetry store is internal, never public", () =
     expect(names.sort()).toEqual(["internalMutation", "internalQuery"]);
   });
 });
+
+/**
+ * NEO-464 — `testing.backdateMyDashboardVisit`: public so the E2E test page can
+ * call it, and closed everywhere else. Pinned: refused off a testing deployment
+ * (`TESTING_RESET_SECRET` unset, i.e. production) even for a signed-in caller,
+ * and refused to an anonymous caller where it is enabled. Its caller scoping is
+ * testing.test.ts's.
+ */
+describe("NEO-464 testing.backdateMyDashboardVisit — testing deployments only, signed in", () => {
+  test("refused in production and to an anonymous caller", async () => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      delete process.env.TESTING_RESET_SECRET;
+      const prod = convexTest(schema, modules);
+      await expect(
+        prod.withIdentity(SIGNED_IN).mutation(api.testing.backdateMyDashboardVisit, {}),
+      ).rejects.toThrow(/not enabled/);
+      process.env.TESTING_RESET_SECRET = "x";
+      const dev = convexTest(schema, modules);
+      await expect(dev.mutation(api.testing.backdateMyDashboardVisit, {})).rejects.toThrow(/Not authenticated/);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
+  });
+});

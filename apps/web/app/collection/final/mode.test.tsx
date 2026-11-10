@@ -8,6 +8,7 @@ import {
   SideLink,
   deeperDemoState,
   sideOf,
+  sideArrivalPending,
   takeSideArrival,
   useCollectionParams,
   useCollectionSide,
@@ -21,11 +22,12 @@ import type { Side } from "./data/types";
  * NEO-364 — which side a URL stands for, the side link, and the demo's
  * history depth across a side switch (so "Back to the tour" is one step).
  */
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   // The arrival note is module state: drain it so one test's link never leaks into the next.
   takeSideArrival("inventory");
   takeSideArrival("collection");
+  await Promise.resolve();
 });
 
 describe("sideOf", () => {
@@ -175,12 +177,18 @@ describe("SideLink", () => {
     expect(takeSideArrival("inventory")).toBe(false);
   });
 
-  it("a followed link records the arrival once, for that side only", () => {
+  it("a followed link records the arrival for that side only, for the commit that takes it", async () => {
     wrap(link("inventory"), "/collection");
+    expect(sideArrivalPending()).toBe(false);
     fireEvent.click(screen.getByRole("link", { name: "go" }));
+    expect(sideArrivalPending()).toBe(true);
     expect(takeSideArrival("collection")).toBe(false);
     expect(takeSideArrival("inventory")).toBe(true);
+    // StrictMode's second run of the same mount's effects still sees it.
+    expect(takeSideArrival("inventory")).toBe(true);
+    await Promise.resolve();
     expect(takeSideArrival("inventory")).toBe(false);
+    expect(sideArrivalPending()).toBe(false);
   });
 });
 

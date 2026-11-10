@@ -4,6 +4,10 @@
 // everything, so every section shows, an order waiting to ship leads, and the
 // Hopper's processing scans link each run to the Add cards tab that finishes
 // it (here, the demo's Inventory side). Signed out, fake data, read-only (R7).
+// The panels the screen opens (a binder's pocket page, an order's cards) are
+// checked for accessibility OPEN, as well as the closed page: the open state is
+// what a keyboard or screen-reader user spends their time in. Needs a Look has
+// nothing to open (a plain list), so there is no open state of it to check.
 import { test, expect, expectAccessible } from "../../support/fixtures";
 
 test(
@@ -47,5 +51,22 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/\/demo$/);
     await expect(hopper).toBeVisible();
+
+    // An order opens to every card on it: check the opened order.
+    const orders = page.getByRole("region", { name: "Out the Door" });
+    const showCards = orders.getByRole("button", { name: /^Show all \d+ cards? in .+ order / }).first();
+    await showCards.click();
+    // The button's words flip with the state, so the open one is found by its new name.
+    await expect(orders.getByRole("button", { name: /^Hide the cards/, expanded: true }).first()).toBeVisible();
+    await expectAccessible(page, { within: orders, label: "Dashboard demo, an order opened" });
+
+    // A binder opens to a pocket page: check the opened page.
+    const shelf = page.getByRole("list", { name: "Binders on the shelf" });
+    const spine = shelf.getByRole("button", { name: /^.+, \d+ cards?, / }).first();
+    await spine.click();
+    await expect(spine).toHaveAttribute("aria-expanded", "true");
+    const pocketPage = page.getByRole("list", { name: /, page 1 of \d+$/ });
+    await expect(pocketPage).toBeVisible();
+    await expectAccessible(page, { within: pocketPage, label: "Dashboard demo, a binder's pocket page open" });
   },
 );

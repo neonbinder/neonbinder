@@ -22,7 +22,7 @@
 // - Deletes are strictly scoped to the three per-user tables via the by_user
 //   index. No bulk-wipe paths, no cross-user reach.
 
-import { mutation, action, internalAction, internalMutation } from "./_generated/server";
+import { mutation, action, internalAction, internalMutation, type MutationCtx } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
@@ -38,6 +38,7 @@ import { ListingGate } from "./listingGate";
 import { intakePhotoFailureValidator, listingPlatformValidator } from "./schema";
 import { DRAIN_LEASE_MS } from "./listingDrain";
 import { newToken } from "./listingOutbox";
+import { VISIT_GAP_MS } from "./dashboard";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -582,6 +583,144 @@ export const seedMyTestLoosePhotosRun = mutation({
       homeId,
       createdAt: now,
       lastActivityAt: now,
+    });
+    return { runId };
+  },
+});
+
+/**
+ * Set aside every open scan (a match row neither saved nor set aside) in the
+ * caller's 20 newest intake runs, which is what `dashboard.intake` reads: the
+ * In the Hopper section then has nothing to count. Owned rows only.
+ */
+async function setAsideOpenScans(ctx: MutationCtx, userId: string): Promise<number> {
+  const runs = await ctx.db
+    .query("intakeRuns")
+    .withIndex("by_user_and_activity", (q) => q.eq("userId", userId))
+    .order("desc")
+    .take(20);
+  let cleared = 0;
+  for (const run of runs) {
+    const rows = await ctx.db
+      .query("intakeMatches")
+      .withIndex("by_run", (q) => q.eq("runId", run._id))
+      .take(200);
+    for (const row of rows) {
+      if (row.savedAt === undefined && row.setAside !== true) {
+        await ctx.db.patch(row._id, { setAside: true });
+        cleared += 1;
+      }
+    }
+  }
+  return cleared;
+}
+
+/**
+ * NEO-464 — the other half of {@link seedMyTestHopperRun}: leave the caller's
+ * hopper empty, for the dashboard spec that proves In the Hopper stays away
+ * when nothing is in intake. The spec cannot rely on which specs ran on the
+ * account before it, so it asks for the state it needs.
+ *
+ * Same safety as the seeds above: fails closed in production and touches only
+ * rows owned by the CALLER.
+ */
+export const clearMyTestHopper = mutation({
+  args: {},
+  returns: v.object({ cleared: v.number() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+    return { cleared: await setAsideOpenScans(ctx, userId) };
+  },
+});
+
+/**
+ * NEO-464 — a run with one scan still open, for the spec that proves the
+ * signed-in dashboard's In the Hopper section counts it and links the run to
+ * the Add cards tab that finishes it. The hopper counts MATCH rows
+ * (`dashboard.intake`; a photo still being processed has no row yet), so this
+ * writes what a read pair leaves when nothing identified it: an open scanner
+ * run, two photos `done`, one manual pair and one match row with no card
+ * (band "none", reason "noMatch"), homed in the caller's Main. That is "1 scan
+ * processing" on the dashboard and a run the Add cards tab can open. The
+ * caller's earlier open scans are set aside first, so a repeat seeds one scan
+ * again, not another.
+ *
+ * Same safety as the seeds above: fails closed in production, writes only rows
+ * owned by the CALLER, spends no model budget, and leaves an open run the idle
+ * sweep closes. Callers cancel their active runs first (the page does).
+ */
+export const seedMyTestHopperRun = mutation({
+  args: {},
+  returns: v.object({ runId: v.id("intakeRuns") }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    // Free the hopper first, like the page frees the active-run cap: the caller's
+    // earlier open scans (an earlier call of this seed leaves one) are set aside,
+    // so the dashboard counts exactly the scan written below.
+    await setAsideOpenScans(ctx, userId);
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: 2,
+      processedImages: 2,
+      failedImages: 0,
+      rejectedEntries: 0,
+      nextEntryIndex: 2,
+      lastActivityAt: now,
+    });
+    for (const entryIndex of [0, 1]) {
+      await ctx.db.insert("placeholderImages", {
+        jobId,
+        userId,
+        entryIndex,
+        originalName: `hopper-${jobId.slice(0, 8)}-${entryIndex}.jpg`,
+        status: "done",
+        queuedAt: now,
+        settledAt: now,
+      });
+    }
+    const pairId = await ctx.db.insert("placeholderPairs", {
+      jobId,
+      userId,
+      frontIndex: 0,
+      backIndex: 1,
+      confidence: "side-only",
+      mechanism: "manual",
+      score: 0,
+    });
+    const homeId = await getOrCreateMain(ctx, userId);
+    const runId = await ctx.db.insert("intakeRuns", { userId, jobId, homeId, createdAt: now, lastActivityAt: now });
+    await ctx.db.insert("intakeMatches", {
+      runId,
+      userId,
+      pairId,
+      frontIndex: 0,
+      backIndex: 1,
+      readKey: "hopper",
+      confidence: 0,
+      band: "none",
+      reason: "noMatch",
+      candidates: [],
+      variations: [],
     });
     return { runId };
   },
@@ -1212,5 +1351,45 @@ export const seedMyTestLabelScans = internalMutation({
       scans: scans.length,
       applied: result.applied,
     };
+  },
+});
+
+/**
+ * NEO-464: moves the caller's last dashboard open back past `VISIT_GAP_MS`, so
+ * the next open starts a new visit and "N cards filed since your last visit"
+ * can be proved live. Nothing else can produce it on demand: a new visit needs
+ * thirty minutes away from the dashboard, which no spec can wait.
+ *
+ * The open lands `VISIT_GAP_MS` plus a second ago, so the next visit's "new"
+ * starts there: everything filed in that window counts, which is why a spec
+ * reads its own binder's spine, not an exact total. `sinceAt` is dropped (the
+ * visit it belonged to is over).
+ *
+ * Safety, in the same shape as the other helpers in this file: fails closed in
+ * production (`TESTING_RESET_SECRET` is unset there); touches only the CALLER's
+ * own profile (no userId argument); and changes one timestamp that only decides
+ * what the dashboard calls new. It grants nothing and deletes nothing.
+ */
+export const backdateMyDashboardVisit = mutation({
+  args: {},
+  returns: v.object({ backdated: v.boolean() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test dashboard-visit backdating is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    // No open yet: the next one is a first visit whatever this does.
+    if (!profile?.dashboardVisit) return { backdated: false };
+    await ctx.db.patch(profile._id, {
+      dashboardVisit: { seenAt: Date.now() - VISIT_GAP_MS - 1000 },
+    });
+    return { backdated: true };
   },
 });

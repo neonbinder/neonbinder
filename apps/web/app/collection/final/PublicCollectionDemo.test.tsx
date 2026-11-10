@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
@@ -68,6 +69,34 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+});
+
+/** The demo remounted on every side change, as the `/demo` shell's two routes do (NEO-464), under StrictMode as in the app. */
+function RemountOnSide() {
+  const { search } = useLocation();
+  const side = new URLSearchParams(search).get("side") ?? "collection";
+  return <PublicCollectionDemo key={side} onExit={vi.fn()} keepParams={{ demo: "on" }} />;
+}
+
+describe("focus when the demo remounts on a side change (NEO-464)", () => {
+  it("lands on the new side's heading, not the demo notice; the notice takes it only on first entry", async () => {
+    render(
+      <StrictMode>
+        <Theme>
+          <MemoryRouter initialEntries={[DEMO_URL]}>
+            <Routes>
+              <Route path="/binder-tracking" element={<RemountOnSide />} />
+            </Routes>
+          </MemoryRouter>
+        </Theme>
+      </StrictMode>,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("region", { name: "About this demo" }));
+    fireEvent.click(within(sideSwitch()).getByRole("link", { name: "Boxes I sell" }));
+    const heading = await screen.findByRole("heading", { level: 1, name: "Inventory" });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(document.activeElement).not.toBe(screen.getByRole("region", { name: "About this demo" }));
+  });
 });
 
 describe("the public collection demo", () => {
