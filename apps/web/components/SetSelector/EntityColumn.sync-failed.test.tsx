@@ -662,3 +662,110 @@ describe("EntityColumn — focus after a sync ends (NEO-450 a11y)", () => {
     }
   });
 });
+
+describe("EntityColumn — a fresh failure calms once the column recovers (NEO-450 a11y)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.items = [{ _id: "y2024", value: "2024" }];
+    state.status = FAILED;
+    mockEnsure.mockResolvedValue(ENSURE_FAILED);
+  });
+
+  async function pressSync() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Sync Years" }));
+    });
+  }
+
+  function settle(view: ReturnType<typeof renderYears>, status: unknown) {
+    state.status = status;
+    view.rerender(yearsColumn());
+  }
+
+  it("after a later success, an error nobody here caused reads as a status", async () => {
+    const view = renderYears();
+    await pressSync();
+    expectFreshFailure();
+
+    // A later sync (another session's, or a background one) succeeds...
+    settle(view, { status: "done" });
+    expect(screen.queryByText(YEARS_FAILED)).toBeNull();
+    // ...and then some other sync fails, with no new attempt from this column.
+    settle(view, FAILED);
+
+    expect(mockEnsure).toHaveBeenCalledTimes(1);
+    expectStoredFailure();
+  });
+
+  it("the status row disappearing also ends the fresh failure", async () => {
+    const view = renderYears();
+    await pressSync();
+    expectFreshFailure();
+
+    settle(view, null);
+    settle(view, FAILED);
+
+    expectStoredFailure();
+  });
+
+  it("answered over the OLD stored error, then syncing, then error: still an alert", async () => {
+    // The action answers while the previous stored error still shows; the row
+    // then passes through "syncing" before landing on the new failure.
+    const view = renderYears();
+    await pressSync();
+    expectFreshFailure();
+
+    settle(view, { status: "syncing" });
+    settle(view, FAILED);
+
+    expectFreshFailure();
+  });
+
+  it("answered before the query caught up from a stale 'done': still an alert once error lands", async () => {
+    // The column showed no failure; the retry's action says "error" while the
+    // status query still reports the pre-retry "done".
+    state.status = { status: "done" };
+    const view = renderYears();
+    await pressSync();
+    expect(screen.queryByText(YEARS_FAILED)).toBeNull();
+
+    settle(view, { status: "done" });
+    settle(view, FAILED);
+
+    expectFreshFailure();
+  });
+
+  it("a fresh failure after a calm-down is an alert again", async () => {
+    const view = renderYears();
+    await pressSync();
+    settle(view, { status: "done" });
+    settle(view, FAILED);
+    expectStoredFailure();
+
+    await pressSync();
+
+    expectFreshFailure();
+  });
+
+  it("a null ensure result neither throws nor counts as a failure", async () => {
+    // Hand-rolled thenable so a throw from the success handler is caught here,
+    // deterministically, instead of escaping as an unhandled rejection.
+    let thrown: unknown = null;
+    mockEnsure.mockImplementation(() => ({
+      then(onOk: (res: unknown) => void) {
+        try {
+          onOk(null);
+        } catch (err) {
+          thrown = err;
+        }
+      },
+    }));
+    renderYears();
+
+    await pressSync();
+
+    expect(mockEnsure).toHaveBeenCalledTimes(1);
+    expect(thrown).toBeNull();
+    expectStoredFailure();
+  });
+});
