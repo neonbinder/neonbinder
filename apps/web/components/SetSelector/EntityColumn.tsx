@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useId, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useAction, useConvex, useMutation, useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
@@ -437,6 +437,67 @@ export default function EntityColumn({
     api.selectorOptions.ensureSelectorOptions,
   );
 
+  // NEO-450 (a11y) — how loudly the "Couldn't sync <X>" box speaks.
+  //
+  // The box shows whenever the STORED status is "error", which is persisted
+  // server state: a refresh, a deep link or a "+ Custom" round trip would
+  // re-insert it, and as `role="alert"` every such mount interrupted the screen
+  // reader (up to five columns at once on load). So urgency follows THIS
+  // session's own attempt instead. Each sync this column runs that comes back
+  // `reason: "error"` (or rejects) bumps `attempt`; the box is keyed on it, so a
+  // fast error → error retry still remounts and re-announces, and it is an alert
+  // only while that failure is fresh (`urgent`). A stored error nobody here just
+  // caused renders as a polite status.
+  //
+  // Scoped to the (level, parentId) the attempt ran for. Moving to another
+  // parent resets the count during render (React's "adjust state when a prop
+  // changes" pattern, no effect), and a late answer for a scope the column
+  // has already left is dropped rather than announced against the new one.
+  // An answer landing after unmount needs no guard: React 19 ignores a state
+  // update on an unmounted component. No refs here on purpose: `forceSync`
+  // is handed to the render-time `idleButtons`, and a handler that reaches a
+  // ref through `runEnsure` fails react-hooks/refs there.
+  const syncScopeKey = `${level ?? ""}:${parentId ?? "root"}`;
+  const [syncFailure, setSyncFailure] = useState<{
+    scope: string;
+    attempt: number;
+    urgent: boolean;
+  }>({ scope: syncScopeKey, attempt: 0, urgent: false });
+  if (syncFailure.scope !== syncScopeKey) {
+    setSyncFailure({ scope: syncScopeKey, attempt: 0, urgent: false });
+  }
+  const failedAttempt =
+    syncFailure.scope === syncScopeKey ? syncFailure.attempt : 0;
+  const syncFailureUrgent = failedAttempt > 0 && syncFailure.urgent;
+  // The failure box, named by the Sync button it sits above (its retry).
+  const syncFailedId = useId();
+  // The retry button, so focus can return to it when a sync started from it
+  // ends (see the branch park below).
+  const syncButtonRef = useRef<HTMLButtonElement | null>(null);
+  const runEnsure = useCallback(
+    (args: Parameters<typeof ensureOptions>[0]) => {
+      const scope = `${args.level}:${args.parentId ?? "root"}`;
+      const failed = () =>
+        setSyncFailure((prev) =>
+          prev.scope === scope
+            ? { scope, attempt: prev.attempt + 1, urgent: true }
+            : prev,
+        );
+      void ensureOptions(args).then(
+        (res) => {
+          if (res.reason === "error") failed();
+        },
+        (err: unknown) => {
+          failed();
+          // Still surfaces as an unhandled rejection, as the bare `void` call
+          // did before, so error reporting sees it.
+          throw err;
+        },
+      );
+    },
+    [ensureOptions],
+  );
+
   // NEO-427: the idle buttons wait for the status read, so a status read that
   // stalls has to recover the way a stalled items read does.
   useEffect(() => {
@@ -789,6 +850,21 @@ export default function EntityColumn({
     renderedBranchRef.current = branchKey;
     if (previous === branchKey) return;
     if (!hadFocusInsideRef.current) return;
+    // NEO-450 (a11y): a sync ending puts the idle row back. Focus was parked
+    // on the container (tabIndex -1, no ring) when the panel replaced the
+    // Sync button, so hand it back to that button — the retry, now described
+    // by the failure box when the sync failed. Only from the park spot (or
+    // <body>), never from somewhere the operator moved on to.
+    if (
+      previous === "syncing" &&
+      branchKey === "idle" &&
+      (document.activeElement === containerRef.current ||
+        document.activeElement === document.body) &&
+      syncButtonRef.current
+    ) {
+      syncButtonRef.current.focus({ preventScroll: true });
+      return;
+    }
     if (document.activeElement !== document.body) return;
     containerRef.current?.focus({ preventScroll: true });
   }, [branchKey]);
@@ -837,8 +913,8 @@ export default function EntityColumn({
     const key = `${level}:${parentId ?? "root"}`;
     if (ensuredRef.current.has(key)) return;
     ensuredRef.current.add(key);
-    void ensureOptions({ level, parentId });
-  }, [useEnsureSync, isVisible, level, parentId, items, ensureOptions]);
+    runEnsure({ level, parentId });
+  }, [useEnsureSync, isVisible, level, parentId, items, runEnsure]);
 
   const addCustomOption = useMutation(
     api.selectorOptions.addCustomSelectorOption,
@@ -1549,12 +1625,19 @@ export default function EntityColumn({
       setCustomError(null);
       setCustomStage({ kind: "input" });
       pendingCreateEnterRef.current = false;
+      // NEO-450: the operator has heard the failure and moved on; when Cancel
+      // brings the box back it is the stored state again, not a fresh alert.
+      setSyncFailure((prev) => (prev.urgent ? { ...prev, urgent: false } : prev));
       setMode("custom");
     };
     return (
       <div className="flex gap-2 items-center flex-wrap">
         {!hideSync && (
           <NeonButton
+            ref={syncButtonRef}
+            aria-describedby={
+              syncStatus?.status === "error" ? syncFailedId : undefined
+            }
             className={fieldClass("btn-sync")}
             onClick={onSync}
             onKeyDown={(e) => activateOnEnter(e, onSync)}
@@ -1643,7 +1726,7 @@ export default function EntityColumn({
       // Mark this as a sync THIS session explicitly asked for, so the panel
       // above still shows even though the click also set hasInteracted true.
       setSelfRequestedSync(true);
-      void ensureOptions({ level, parentId, force: true });
+      runEnsure({ level, parentId, force: true });
     };
     return (
       <>
@@ -1651,11 +1734,16 @@ export default function EntityColumn({
             forces the same sync. The selector drops its empty line meanwhile
             (`ColumnSyncFailedContext`), so this is the only thing the column
             says about a failed sync. It names the column (NEO-450) rather
-            than echoing the server's generic status message, and mounts only
-            on failure so `role="alert"` announces it as it appears. */}
+            than echoing the server's generic status message. An alert only
+            for a failure this session's own attempt just produced, a polite
+            status for a stored one; keyed on the attempt so a repeat failure
+            remounts and is heard again (see `syncFailure`). */}
         {syncStatus?.status === "error" && (
           <div
-            role="alert"
+            key={failedAttempt}
+            id={syncFailedId}
+            role={syncFailureUrgent ? "alert" : "status"}
+            aria-atomic="true"
             className="p-3 mb-1 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
           >
             {columnSyncFailedMessage(addButtonText.replace(/^Sync /, ""))}
