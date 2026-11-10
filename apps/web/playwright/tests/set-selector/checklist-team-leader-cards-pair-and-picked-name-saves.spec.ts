@@ -59,6 +59,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
 
 const FOOTBALL_2014 = { sport: "Football", year: "2014", manufacturer: "Topps" };
@@ -97,6 +98,10 @@ test(
 
     // ── STEP 3: fetch. The empty checklist makes everything below THIS fetch's.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    // NEO-478/482: BSC's side comes from its own per-card answers, captured as the
+    // publisher's checklist (SET-REGISTRY.md), so the ~550-card fetch makes no
+    // per-card BSC call. The team-leader cards' team text is still BSC's.
+    const checklist = await usePublishersChecklist(page, CHECKLISTS.topps2014FootballBase);
     await syncChecklistButton(page).click();
     const dialog = page.getByRole("dialog", { name: /^Match Cards/ });
     // Live BSC + SportLots round trip (GUIDE hard rule 3, marketplace exception).
@@ -106,6 +111,7 @@ test(
     const confirm = dialog.getByRole("button", { name: "Confirm card matches", disabled: false });
     await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
     await expect(confirm).toHaveText("Confirm");
+    await expectTeamsFromChecklist(page, checklist);
 
     // ── STEP 4 (a): at most 12 of each kind of conflict. The Matched toggle's
     // name appends ", N with a player conflict" then ", M with a name

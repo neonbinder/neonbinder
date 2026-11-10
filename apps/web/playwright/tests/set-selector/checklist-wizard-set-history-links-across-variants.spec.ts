@@ -75,6 +75,8 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
 import {
   answerPlayerAsNew,
   advanceToSave,
@@ -120,10 +122,28 @@ const GIBSON = "Bob Gibson";
 const MORGAN = "Joe Morgan";
 const BROWNS = "St. Louis Browns";
 /**
+ * Each insert's captured publisher's checklist (NEO-478/482): BSC's own per-card
+ * answers, uploaded before the Sync, so no fetch here asks BSC for a card one by
+ * one. The whole flow's fetches read the same teams and names they always did;
+ * the files are registered in SET-REGISTRY.md. NOT the Silk Collection: all 201
+ * of its cards are numbered `NNO`, and a number pairs only when it is exactly one
+ * on both sides (rule 7), so no upload could answer a card; its fetch keeps asking
+ * BSC card by card, as it always did.
+ */
+const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
+  [FIRST]: CHECKLISTS.teamBonus2010,
+  [THIRD]: CHECKLISTS.peakPerformance2010,
+  [FOURTH]: CHECKLISTS.turkeyRed2010,
+  [SIXTH]: CHECKLISTS.peakPerformanceRelics2010,
+  [PRIOR]: CHECKLISTS.careerBestJumboJerseys2009,
+};
+/**
  * GUIDE hard rule 3, the exception "a step that directly drives a live
  * BSC/SportLots round trip on data that is not pre-synced": a fetch of an
  * insert never fetched before, and the column's first sync. Only those waits
  * carry it; the wizard opening afterwards is our own backend at the 7 s default.
+ * The fetch itself (the bulk checklist, one BSC round trip) is waited on with
+ * `expectAfterMarketplace` (NEO-487): 7 s plus the seconds BSC is visibly holding it.
  */
 const LIVE_BSC_FETCH = 60_000;
 
@@ -295,13 +315,18 @@ async function fetchInsertToWizard(
   await columnOption(page, "Inserts", name).click();
   // The empty-checklist assert makes the saved cards below THIS fetch's (fresh-only guard).
   await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+  const checklist = CHECKLIST_OF[name];
+  const published = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 
   // A SportLots set paired with the insert opens "Match Cards"; one source takes
   // the one-marketplace path. NEO-287: paused, the dialog is the bug.
   const matchCards = page.getByText(/Match Cards/).first();
   const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-  await expect(matchCards.or(kept).or(wizard).first()).toBeVisible({ timeout: LIVE_BSC_FETCH });
+  await expectAfterMarketplace(page, matchCards.or(kept).or(wizard).first(), {
+    platform: "BuySportsCards",
+    what: `${name}'s fetch landing`,
+  });
   if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
   if (await matchCards.isVisible()) {
     const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
@@ -311,6 +336,7 @@ async function fetchInsertToWizard(
   }
   // Our own backend after the live fetch: the 7 s default.
   await expect(wizard, `${name}'s sync opens Tidy up this set`).toBeVisible();
+  if (published !== undefined) await expectTeamsFromChecklist(page, published);
 }
 
 test(

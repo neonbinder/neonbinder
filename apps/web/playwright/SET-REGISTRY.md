@@ -3090,6 +3090,101 @@ button's name is `Keep all, <side> sets` when it reaches the whole column and
 | `bowman-insert-grouping-builds-parallels` — 2026 Bowman › `Insert` | insert | — | no | none (its `Keep all N, BSC set(s)` / `Keep all, BSC sets` behave as without the check) |
 | `inserts-1996-score-…`, `reconcile-sportlots-twins-save-each-to-its-own-set` — `Insert` columns | insert | — | no | none |
 
+## Publisher's checklist fixtures (NEO-478, NEO-482)
+
+A fetch that is given a publisher's checklist with a team beside each card asks
+BuySportsCards for nothing per card (D4). The specs that used to make one
+`card-listing` call per card (about 40 calls a set, thousands a run) now upload
+a CSV through "Add the publisher's checklist" before Sync card checklist and
+assert the same teams. **A fixture is a capture of BSC's own answers, never
+invented data:** each file is what BSC says today, so every team assertion in
+the moved specs is unchanged. Nothing here adds a set: every file belongs to a
+set that is already registered above, and its owner spec is unchanged.
+
+**The files** live in `playwright/fixtures/checklists/<year>-<sport>-<set>-<variant>.csv`
+(`number,player,team`; a cell with several names joins them with `; `), and
+`support/published-checklist.ts` (`CHECKLISTS`, `usePublishersChecklist`,
+`expectTeamsFromChecklist`) is the only place a spec names one. A spec asserts
+the result line `Teams from your checklist: N of M cards` with N and M read off
+the file (`checklistFacts`), never typed.
+
+**How they are captured.** `playwright/tools/capture-bsc-checklist-teams.mjs`
+(read its header). It lists the set's cards from BSC's public storefront search,
+reads each card's own `card-listing` answer, parses both the way the adapter
+does, and refuses a partial set. RUN IT FROM A LAPTOP only: never from a Convex
+deployment (Convex's shared egress is what BSC pushes back on), and never while
+a CI seller job is running (`gh run list --status in_progress`). It paces
+itself at 1 call a second and backs off on a 429; if a 429 outlasts its retries
+it stops, writes nothing and reports how long the block lasted. Re-capture a
+file when its set changes on BSC; the spec that uses it fails by name on the
+`Teams from your checklist` line (or on the preview row count) if it is stale.
+
+**Measured, 2026-11-10 (laptop, 1 call a second): BSC answers 429 on the
+`card-listing` endpoint after about every 50 sustained calls, even at 1 call a
+second, and the block lasts about 45 s (the tool's 15 s then 30 s backoff
+clears it; the longest single episode was 330 s).** The tool recovered every time; no capture was stopped by a block (one run, Topps 2014 football, stopped on a request timeout and resumed from its cache).
+This is the same pushback a fetch without a checklist meets from Convex, and
+the reason the specs upload instead of fetching card by card.
+
+| file | set (registered above) | rows | rows with a team | spec |
+|---|---|---|---|---|
+| `2024-topps-stars-of-mlb-network-base` | Baseball > 2024 > Topps > Stars of MLB Network > Base | 10 | 0 | the default wizard fixture (`fetchChecklistToWizard`, no `target.set`) |
+| `1995-hockey-tulsa-oilers-chl-base` | Hockey > 1995 > Tulsa Oilers CHL | 18 | 18 | `checklist-wizard-skip-commits-and-unskip` |
+| `1995-hockey-memphis-riverkings-chl-base` | Memphis RiverKings CHL | 18 | 18 | `checklist-wizard-career-team-commits` |
+| `1995-hockey-san-antonio-iguanas-chl-base` | San Antonio Iguanas CHL | 18 | 18 | `checklist-wizard-link-commits` |
+| `1995-hockey-fort-worth-fire-chl-base` | Fort Worth Fire CHL | 18 | 18 | `checklist-wizard-skip-not-a-person`, `checklist-wizard-name-fragment-asks-operator` |
+| `1996-new-haven-ravens-rally-raffle-base` | Baseball > 1996 > Rally Raffle (via All Brands) | 9 | 8 | `checklist-wizard-link-team-saves-alias` |
+| `2025-topps-welcome-to-the-club-3x-mvp-base` | Baseball > 2025 > Topps > Welcome to the Club: 3X MVP | 36 | 36 | `checklist-wizard-past-era-team-link-commits` |
+| `2024-bbm-rookie-edition-premium-base` | BBM Rookie Edition Premium | 36 | 36 | `checklist-wizard-same-name-pick-step` |
+| `2010-topps-insert-team-bonus` | Baseball > 2010 > Topps > Insert > Team Bonus | 20 | 20 | `checklist-wizard-set-history-links-across-variants` |
+| `2010-topps-insert-peak-performance` | ... Peak Performance | 100 | 100 | same |
+| `2010-topps-insert-peak-performance-relics` | ... Peak Performance Relics | 158 | 158 (154 numbered once; 4 rows repeat a number and are asked of BSC, D2) | same |
+| `2010-topps-insert-turkey-red` | ... Turkey Red | 100 | 100 | same |
+| `2009-topps-insert-career-best-jumbo-jerseys` | Baseball > 2009 > Topps > Insert > Career Best Jumbo Jerseys | 54 | 54 | same |
+| `2026-football-bowman-base` | Football > 2026 > Bowman > Base | 200 | 200 | `inventory-bsc-listing-2026-bowman-chrome-prefix` (its Base build) |
+| `2014-football-topps-base` | Football > 2014 > Topps > Base | 554 | 553 | `checklist-team-leader-cards-pair-and-picked-name-saves` |
+| `1995-hockey-oklahoma-city-blazers-chl-base` | Hockey > 1995 > Oklahoma City Blazers CHL | 18 | 18 | the new `checklist-published-upload-skips-bsc-and-asks-on-disagreement` (below) |
+
+**Why a published-checklist upload is not a different flow to the ones it
+replaced.** Every moved spec asserts the wizard's decisions, the saved cards or
+a name step, not how the teams reached the wizard. The `Teams from your
+checklist: N of M cards` line is the only new assertion, and it is what proves
+the upload (not BSC) supplied the teams.
+
+**Deliberately not moved.**
+* `inserts-1996-score-*`: the two BSC series of 1996 Score repeat card numbers
+  across series, so rule 7's exactly-one-number match refuses most rows and a
+  checklist would not cut the calls; the spec keeps its own fetch.
+* `checklist-one-marketplace-skips-match-dialog` (Roanoke Express ECHL):
+  every card number on BSC is `NNO` (no number), so no checklist can pair
+  by number; Roanoke's file was captured and deleted for that reason.
+* `2010 Topps > Insert > Silk Collection` inside `checklist-wizard-set-history-links-across-variants`:
+  all 201 of its cards are numbered `NNO`, so no row pairs (rule 7); it keeps
+  its live per-card fetch and no file was kept.
+* `checklist-bsc-team-enrichment`, the dual-team spec, `autograph-format` and
+  `seed`: their point is the live per-card read, so they keep it (the
+  coordinator's list).
+
+### Two new committing specs, one set each: PROPOSED, need Jason's approval
+
+Both use a BSC-only set that is already a registered spare in "The 1995
+minor-league hockey wizard fixtures" (or one next to it); neither adds a
+SportLots dependency; both are SOLE WRITER and FRESH-ONLY (a re-run on the same
+seed fails at `No cards in this checklist yet.` by name, and CI reseeds each
+pass); every name is skipped, so no player or team is minted.
+
+| spec | set | cards | role |
+|---|---|---|---|
+| `checklist-published-upload-skips-bsc-and-asks-on-disagreement` (NEO-478) | Hockey > 1995 > Unknown (All Brands) > **Oklahoma City Blazers CHL** > Base | 18 (numbered 1-18, one club) | sole writer; commits after asking on two disagreements; card #6's repeated number is looked up on BSC (D2) |
+| `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards` (NEO-487) | Hockey > 1995 > Unknown (All Brands) > **Halifax Mooseheads QMJHL** > Base (a spare listed above) | 26 (cards 1-25 and one `NNO`) | sole writer; needs the preview's `NEONBINDER_TEST_BSC_STALL_CARD_IDS` set to the three card ids in the spec's header |
+
+Oklahoma City Blazers CHL is not one of the listed spares: it is proposed as a
+new set (numbered 1-18, so the paste can repeat and misspell numbers). A
+spare from the list cannot stand in for it unless it is numbered and its
+numbers are unique: Dayton Bombers ECHL (32 cards, numbered) is the fallback,
+Dunkin Donuts Portland Pirates AHL and Louisiana Ice Gators ECHL are all `NNO`
+and cannot be used.
+
 ## Adding a set
 
 **Custom set** — pick an unused prefix, add a row to the table above in the same
