@@ -485,6 +485,9 @@ function makeCredentialFetch(opts: {
   };
 }
 
+/** The id a "no seller" profile answer still carries; it must never reach a result. */
+const NO_SELLER_PROFILE_ID = "bsc-user-482";
+
 /** BSC's own profile route, where the seller id is read (`fetchBscSellerId`). */
 const BSC_PROFILE_URL = "https://api-prod.buysportscards.com/marketplace/user/profile";
 
@@ -505,20 +508,26 @@ function withBscSellerProfile(
   opts: {
     profile: { sellerId: string } | "no_seller" | "timeout";
     hits: { token: number; profile: number };
+    /** "unreachable": the token read throws, so the session cannot open. */
+    token?: "ok" | "unreachable";
   },
 ): FetchStub {
   return async (url, init) => {
     const u = String(url);
     if (u.includes("/credentials/buysportscards-credentials-") && u.endsWith("/token")) {
       opts.hits.token += 1;
+      if (opts.token === "unreachable") throw new TypeError("fetch failed");
       return jsonResponse({ token: "bsc-session-token", expiresAt: Date.now() + 3_600_000 });
     }
     if (u === BSC_PROFILE_URL) {
       opts.hits.profile += 1;
       if (opts.profile === "timeout") throw timeoutError();
-      return jsonResponse({
-        sellerProfile: opts.profile === "no_seller" ? {} : { sellerId: opts.profile.sellerId },
-      });
+      // "no_seller": BSC's profile carries an id of its own, but no seller id.
+      return jsonResponse(
+        opts.profile === "no_seller"
+          ? { id: NO_SELLER_PROFILE_ID, sellerProfile: {} }
+          : { sellerProfile: { sellerId: opts.profile.sellerId } },
+      );
     }
     return inner(url, init);
   };
@@ -1234,7 +1243,10 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     );
     const log = vi.spyOn(console, "log");
 
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    const result = await seed(t, true);
+    expect(result.seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    // The id is saved, never echoed back in the result.
+    expect(JSON.stringify(result)).not.toContain("seller-482");
 
     expect(puts).toHaveLength(0); // still the no-login path
     expect(hits.profile).toBe(1);
@@ -1275,6 +1287,37 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(summaries).toEqual([expect.objectContaining({ op: "seedSellerId", calls: 2, ok: 0 })]);
     // The stored sign-in is still good; only the id is missing.
+    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+    await drainScheduled(t);
+  });
+
+  test("the seller session cannot open (token read fails): stored false with the session's reason, no profile read", async () => {
+    // A throwing token read, not a 404: a "Credentials not found" 404 sends
+    // the token read down its self-heal branch, which removes the credential
+    // flag — a different path from the one under test.
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    const hits = { token: 0, profile: 0 };
+    stubFetch(
+      withBscSellerProfile(makeCredentialFetch({ metadata: SIGNED_IN, puts }), {
+        profile: { sellerId: "seller-482" },
+        hits,
+        token: "unreachable",
+      }),
+    );
+
+    expect((await seed(t, true)).seeded).toEqual([
+      {
+        site: "buysportscards",
+        stored: false,
+        reason:
+          "BuySportsCards seller id not saved: NeonBinder couldn't sign in to BuySportsCards for you. Connect it again under Profile.",
+      },
+    ]);
+
+    expect(hits.token).toBeGreaterThan(0); // the session was attempted
+    expect(hits.profile).toBe(0);
+    expect(await sellerIdOf(t)).toBeNull();
     expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
     await drainScheduled(t);
   });
@@ -1354,9 +1397,10 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       withBscSellerProfile(makeCredentialFetch({ metadata: SIGNED_IN, puts }), { profile: "no_seller", hits }),
     );
 
-    expect((await seed(t, true)).seeded).toEqual([
-      { site: "buysportscards", stored: false, reason: NO_SELLER },
-    ]);
+    const result = await seed(t, true);
+    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: NO_SELLER }]);
+    // Nothing from BSC's answer reaches the reason or the result.
+    expect(JSON.stringify(result)).not.toContain(NO_SELLER_PROFILE_ID);
 
     // A profile naming no seller is an answer, not a failure: no retry.
     expect(hits.profile).toBe(1);
