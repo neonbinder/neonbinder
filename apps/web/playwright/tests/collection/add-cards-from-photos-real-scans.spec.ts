@@ -146,7 +146,7 @@ test(
     // add-cards-box-run-per-card-price). The tile's count is there, so the
     // absence means something (R2).
     await expect(mcfadden.getByRole("textbox", { name: /^(Count|Had \d+ →)$/ })).toBeVisible();
-    await expect(mcfadden.getByRole("textbox", { name: /^Price, / })).toHaveCount(0);
+    await expect(mcfadden.getByRole("textbox", { name: /price/i })).toHaveCount(0);
 
     // --- Bell, in the drawer: the misread explained, the right card found -----------
     await bell.getByRole("button", { name: "Review #174 Antonio Brown" }).click();

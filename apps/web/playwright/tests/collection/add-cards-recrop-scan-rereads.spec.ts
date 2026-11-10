@@ -17,7 +17,7 @@
 // unit tests' (`convex/photoEdits.test.ts`). The STORED-mode viewer (a photo
 // with no scan behind it) is card-photo-viewer-rotate-crop-saved-copy.
 //
-// R7/R7a: writes only a hand-made, per-attempt set (`intkr-<attempt>`,
+// R7/R7a: writes only a hand-made, per-attempt set (`intkr-<ATTEMPT_TOKEN>`,
 // SET-REGISTRY.md) under the real Baseball > 2024 > Topps, with no marketplace
 // id beneath it: one hand-added card with the real player's name (what the scans
 // read; scoped by the set). One intake run (closed with "Done adding photos"),
@@ -31,6 +31,7 @@
 // up…") run at 7 s.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Locator } from "@playwright/test";
 import { addCardViaForm, escapeRe } from "../../support/cards";
 import { collectorCascade, intakeDropzone, pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -45,8 +46,8 @@ const PIPELINE = 480_000;
 test(
   "Add cards: a waiting scan is cropped by hand on its original and read again, and the saved copy's photo is the edited one",
   { tag: ["@collection"] },
-  async ({ page, signIn, env }) => {
-    const setName = `intkr-${env.ATTEMPT_ID}`;
+  async ({ page, signIn, env, isMobile }) => {
+    const setName = `intkr-${env.ATTEMPT_TOKEN}`;
     const label = "#160 Darren McFadden";
     const doneButton = page.getByRole("button", { name: "Done adding photos" });
     const runClosedNote = page.getByText("This run's photos are all in. To add more, start a new run.");
@@ -83,6 +84,10 @@ test(
       await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
       await drillToCustom(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set: setName });
       await selectOrCreate(page, "Variant Types", "Insert", { via: "list" });
+      // 15 s is INHERITED, as is, from add-cards-from-photos-real-scans (NEO-382): the
+      // Inserts column of a type this spec just made mounts behind the create. No
+      // sign-off is recorded at either site (GUIDE hard rule 3); flagged in the
+      // NEO-481 report for Jason to sign off or bring to 7 s, not granted here.
       await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: 15_000 });
       // A new type's column pays its first-visit sync before "+ Custom" shows (as in add-cards-from-photos-real-scans).
       await expect(page.getByRole("button", { name: "Add custom Inserts" })).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
@@ -106,30 +111,121 @@ test(
       const tile = waiting.getByRole("article", { name: label, exact: true });
       await expect(tile.getByText(/^Matched \d+%$/)).toBeVisible();
 
-      // --- Open the front: the scan's original, the box on the auto crop -----------------------------
       const openFront = tile.getByRole("button", { name: `Open front of ${label}`, exact: true });
-      await openFront.click();
       const viewer = page.getByRole("dialog", { name: `Front of ${label}`, exact: true });
+      const backViewer = page.getByRole("dialog", { name: `Back of ${label}`, exact: true });
+      const sideOf = (v: Locator, side: "Front" | "Back") =>
+        v.getByRole("radiogroup", { name: "Which side" }).getByRole("radio", { name: side, exact: true });
       const tools = viewer.getByRole("toolbar", { name: "Photo tools" });
       // The viewer has two live lines once cropping (the angle note is the other), so a
       // line is found by what it says (GUIDE: duplicated live regions).
       const said = (words: string) => viewer.getByRole("status").filter({ hasText: new RegExp(`^${escapeRe(words)}$`) });
       const cropByHand = tools.getByRole("button", { name: "Crop by hand", exact: true });
+
+      // --- The keyboard and the review drawer open the viewer too --------------------------------
+      // e on the selected card opens its front; the side switch shows its back.
+      await tile.getByRole("button", { name: `Yes, save ${label}`, exact: true }).focus();
+      await page.keyboard.press("e");
+      await expect(viewer).toBeVisible();
+      await expect(sideOf(viewer, "Front")).toBeChecked();
+      await sideOf(viewer, "Back").click();
+      await expect(backViewer).toBeVisible();
+      await expect(sideOf(backViewer, "Back")).toBeChecked();
+      await expect(backViewer.getByRole("img", { name: `Back of ${label}`, exact: true })).toBeVisible();
+      await backViewer.getByRole("button", { name: "Close", exact: true }).click();
+      await expect(backViewer).toBeHidden();
+      // The review drawer (named by the card) has the pair; its back opens on the back.
+      await tile.getByRole("button", { name: `Review ${label}`, exact: true }).click();
+      const review = page.getByRole("dialog", { name: label, exact: true });
+      await expect(review).toBeVisible();
+      const reviewBack = review.getByRole("button", { name: `Open back of ${label}`, exact: true });
+      await reviewBack.click();
+      await expect(backViewer).toBeVisible();
+      await expect(sideOf(backViewer, "Back")).toBeChecked();
+      // Escape closes only the viewer, and the keyboard is back on the photo it came from.
+      await page.keyboard.press("Escape");
+      await expect(backViewer).toBeHidden();
+      await expect(reviewBack).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(review).toBeHidden();
+
+      // --- Open the front: the scan's original, the box on the auto crop -----------------------------
+      await openFront.click();
       await expect(cropByHand).toBeVisible();
       // The original is there, so the crop can go anywhere: no "can only trim" line (tools first, R2).
       await expect(viewer.getByText(STORED_MODE, { exact: true })).toHaveCount(0);
       await cropByHand.click();
       await expect(cropByHand).toHaveAttribute("aria-pressed", "true");
-      await expect(viewer.getByRole("application", { name: "Crop box", exact: true })).toBeVisible();
+      const cropBox = viewer.getByRole("application", { name: "Crop box", exact: true });
+      await expect(cropBox).toBeVisible();
       // The pipeline found the card, so the box opens on its auto crop, not the whole frame.
       // (The auto crop is the preprocess `crop_box` this PR adds: a deployment on an older
       // preprocess shows the note, so this line proves itself on the PR preview.)
       await expect(viewer.getByText("No auto crop here. Drag the box to fit the card.", { exact: true })).toHaveCount(0);
 
-      // --- Tilt the box 4°, turn the photo a quarter, Save ----------------------------------------
+      // Phones keep the width, height and tilt steps (and the Angle field) behind
+      // "More steps"; from sm up they show and the button is hidden.
+      const moreSteps = viewer.getByRole("button", { name: "More steps", exact: true });
+      if (isMobile) {
+        await expect(moreSteps).toHaveAttribute("aria-expanded", "false");
+        await moreSteps.click();
+        await expect(moreSteps).toHaveAttribute("aria-expanded", "true");
+      } else {
+        await expect(moreSteps).toBeHidden();
+      }
+      // The box reads itself out once it holds still: angle, size in the scan's pixels, place.
       const angle = viewer.getByRole("spinbutton", { name: "Angle, degrees", exact: true });
+      const readout = viewer.getByText(/^Tilted -?\d+°, \d+ by \d+ pixels, \d+% from the left and \d+% from the top\.$/);
+      const readSize = async (): Promise<{ w: number; h: number } | null> => {
+        const m = /, (\d+) by (\d+) pixels/.exec((await readout.textContent()) ?? "");
+        return m ? { w: Number(m[1]), h: Number(m[2]) } : null;
+      };
+
+      // --- By pointer: a corner resizes the box, the round handle spins it -----------------------
+      // Square it, shrink it to about half (15 steps of 4%) and push it down to the
+      // picture's bottom edge by keys. The spin handle then has room above the
+      // top edge, where it goes first (spinHandle in CropStage; it moves below or
+      // inside only when above would leave the picture), so the box's drawn bounds
+      // are its corners' 22 px touch rings (HIT) with the handle's ring on top.
+      const RING = 22;
+      await angle.fill("0");
+      await cropBox.focus();
+      for (let i = 0; i < 15; i++) await page.keyboard.press("-");
+      for (let i = 0; i < 12; i++) await page.keyboard.press("Shift+ArrowDown");
+      await expect(readout).toHaveText(/^Tilted 0°, /);
+      const squared = await readSize();
+      expect(squared, "the readout's size").not.toBeNull();
+      const drawn = await cropBox.boundingBox();
+      expect(drawn, "the crop box is drawn").not.toBeNull();
+      const corner = { x: drawn!.x + drawn!.width - RING, y: drawn!.y + drawn!.height - RING };
+      await page.mouse.move(corner.x, corner.y);
+      await page.mouse.down();
+      await page.mouse.move(corner.x - 40, corner.y - 40, { steps: 8 });
+      await page.mouse.up();
+      // The bottom-right corner came in: narrower and shorter, in the readout.
+      await expect
+        .poll(async () => {
+          const now = await readSize();
+          return now !== null && now.w < squared!.w && now.h < squared!.h;
+        })
+        .toBe(true);
+      const resized = await cropBox.boundingBox();
+      expect(resized, "the crop box is drawn").not.toBeNull();
+      const knob = { x: resized!.x + resized!.width / 2, y: resized!.y + RING };
+      await page.mouse.move(knob.x, knob.y);
+      await page.mouse.down();
+      await page.mouse.move(knob.x + 120, knob.y + 30, { steps: 8 });
+      await page.mouse.up();
+      // Swung to the right: the box is tilted, and the Angle field says so.
+      await expect(angle).not.toHaveValue("0");
+      await expect(readout).not.toHaveText(/^Tilted 0°, /);
+
+      // --- Tilt the box 4°, turn the photo a quarter, Save ----------------------------------------
       await angle.fill("4");
-      await expect(viewer.getByText(/^Tilted 4°, \d+ by \d+ pixels, \d+% from the left and \d+% from the top\.$/)).toHaveCount(1);
+      await expect(readout).toHaveText(/^Tilted 4°, /);
+      // The crop's size before the turn: the saved file is this, on its side (below).
+      const cropped = await readSize();
+      expect(cropped, "the readout's size").not.toBeNull();
       await tools.getByRole("button", { name: "Turn right", exact: true }).click();
       await expectAccessible(page, { within: viewer, label: "Card photo viewer, cropping a scan's original by hand" });
       await viewer.getByRole("button", { name: "Save photo", exact: true }).click();
@@ -140,15 +236,15 @@ test(
       await expect(openFront).toBeFocused();
 
       // --- The tile touches it up, reads it again, and lands matched ------------------------------
-      await expect(tile.getByText("Touching it up…", { exact: true })).toBeVisible();
-      // A screen reader hears it on the opener too; the button keeps its name.
+      // The opener's description is the tile's state (the button keeps its name):
+      // "Touching it up…" from the Save until the render lands, then nothing.
       await expect(openFront).toHaveAccessibleDescription("Touching it up…");
       await expectAccessible(page, { label: "Add cards, a scan touching up after a hand crop" });
       // Render, re-read and re-match: EDIT_LANDS.
-      await expect(tile.getByText("Touching it up…", { exact: true })).toHaveCount(0, { timeout: EDIT_LANDS });
-      // Landed, not failed: no "Keep the old one" offer, and the opener says nothing more.
-      await expect(tile.getByRole("button", { name: `Keep the old one: the front of ${label}`, exact: true })).toHaveCount(0);
-      await expect(openFront).toHaveAccessibleDescription("");
+      await expect(openFront).toHaveAccessibleDescription("", { timeout: EDIT_LANDS });
+      // Landed, not failed: no "Keep the old photo" offer (the empty description above
+      // is not "Edit didn't save" either).
+      await expect(tile.getByRole("button", { name: `Keep the old photo: the front of ${label}`, exact: true })).toHaveCount(0);
       await expect(runStatus).toHaveText("Everything is read. 1 waiting for you, 0 saved.", { timeout: EDIT_LANDS });
       await expect(tile.getByText(/^Matched \d+%$/)).toBeVisible();
       await expect(tile.getByText(/^Read: #160 · .*mcfadden/i)).toBeVisible();
@@ -160,11 +256,24 @@ test(
       const savedTile = saved.getByRole("listitem").filter({ has: page.getByText(label, { exact: true }) });
       await expect(savedTile.getByText("Photos are in!", { exact: true })).toBeVisible();
       {
-        const { drawer, thumb } = await openDrawer();
+        const { drawer, yourCopies, thumb } = await openDrawer();
         const { w, h } = await servedPhotoSize(page, thumb, "src");
         // Turned a quarter: the saved front is landscape.
         expect(w, `the saved front is landscape (${w}x${h})`).toBeGreaterThan(h);
         await expectAccessible(page, { within: drawer, label: "Card drawer, a copy saved with a hand-cropped scan" });
+        // The full-size file is the crop the readout named, on its side: W by H read
+        // before the turn is H by W now, scaled down to the 1600 px long edge a
+        // saved photo keeps (one pixel either way for the rounding).
+        await yourCopies.getByRole("button", { name: /^Open photos of / }).click();
+        const lineViewer = page.getByRole("dialog", { name: /^Front of #160\b/ });
+        const full = lineViewer.getByRole("img", { name: /^Front of #160\b/ });
+        await expect(full).toHaveAttribute("src", /\/copy-photo\/[0-9a-f]{32}\/image$/);
+        const served = await servedPhotoSize(page, full, "src");
+        const k = Math.min(1, 1600 / Math.max(cropped!.w, cropped!.h));
+        expect(Math.abs(served.w - cropped!.h * k), `served ${served.w}x${served.h}, crop ${cropped!.w}x${cropped!.h}`).toBeLessThanOrEqual(1);
+        expect(Math.abs(served.h - cropped!.w * k), `served ${served.w}x${served.h}, crop ${cropped!.w}x${cropped!.h}`).toBeLessThanOrEqual(1);
+        await page.keyboard.press("Escape");
+        await expect(lineViewer).toBeHidden();
         // The drawer rides on the URL: Back closes it.
         await page.goBack();
         await expect(drawer).toBeHidden();

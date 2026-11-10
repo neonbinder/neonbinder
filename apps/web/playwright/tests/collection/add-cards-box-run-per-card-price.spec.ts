@@ -1,6 +1,8 @@
 // NEO-481 (R1): on Add cards into a BOX, every waiting card has a price of its
 // own. The field ("Price, <card>") starts at the run's Min price; `p` on the
-// selected card jumps there, a typed price and Enter save THAT card at it, and
+// selected card jumps there, a typed price and Enter save THAT card at it (a
+// text that isn't a price stays, with an alert under the field, and saves
+// nothing), and
 // a card saved with the field untouched goes in at the run's default. The card
 // drawer then shows each line's own price. A binder never shows a price: that
 // half is asserted on the binder run of add-cards-from-photos-real-scans (its
@@ -13,7 +15,7 @@
 // (the /testing/seed-placeholder-run precedent), but no such seed exists and
 // the UI path needs no new testing surface, so the spec drives the UI.
 //
-// R7/R7a: writes only a hand-made, per-attempt set (`intkp-<attempt>`,
+// R7/R7a: writes only a hand-made, per-attempt set (`intkp-<ATTEMPT_TOKEN>`,
 // SET-REGISTRY.md) under the real Baseball > 2024 > Topps, with no marketplace
 // id beneath it: two hand-added cards with the real players' names (what the
 // scans read; scoped by the set). A minted box that lists nowhere (deleted at
@@ -44,7 +46,7 @@ test(
   "Add cards into a box: each card has its own price, prefilled from the run's Min price; p, a price and Enter save that card at it",
   { tag: ["@collection"] },
   async ({ page, signIn, env }) => {
-    const setName = `intkp-${env.ATTEMPT_ID}`;
+    const setName = `intkp-${env.ATTEMPT_TOKEN}`;
     const boxName = `Price${env.ATTEMPT_TOKEN}`;
     const mcfadden = { cardNumber: "160", playerName: "Darren McFadden" };
     const bowe = { cardNumber: "315", playerName: "Dwayne Bowe" };
@@ -88,6 +90,10 @@ test(
       await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
       await drillToCustom(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set: setName });
       await selectOrCreate(page, "Variant Types", "Insert", { via: "list" });
+      // 15 s is INHERITED, as is, from add-cards-from-photos-real-scans (NEO-382): the
+      // Inserts column of a type this spec just made mounts behind the create. No
+      // sign-off is recorded at either site (GUIDE hard rule 3); flagged in the
+      // NEO-481 report for Jason to sign off or bring to 7 s, not granted here.
       await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: 15_000 });
       // A new type's column pays its first-visit sync before "+ Custom" shows (as in add-cards-from-photos-real-scans).
       await expect(page.getByRole("button", { name: "Add custom Inserts" })).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
@@ -147,8 +153,23 @@ test(
       await mcfaddenTile.getByRole("button", { name: "Yes, save #160 Darren McFadden", exact: true }).focus();
       await page.keyboard.press("p");
       await expect(mcfaddenPrice).toBeFocused();
+      // A price that isn't one stays in the field with why under it, and Enter saves nothing.
       // The field selects its number on focus, so typing replaces it.
+      const priceProblem = mcfaddenTile.getByRole("alert").filter({ hasText: "That price doesn't look right. Try something like 1.50." });
+      await page.keyboard.type("4.2.5");
+      await page.keyboard.press("Enter");
+      await expect(priceProblem).toBeVisible();
+      await expect(mcfaddenPrice).toHaveAttribute("aria-invalid", "true");
+      await expect(mcfaddenPrice).toHaveAccessibleDescription(/^That price doesn't look right\. Try something like 1\.50\. /);
+      await expect(mcfaddenPrice).toHaveValue("4.2.5");
+      await expect(waiting).toHaveAccessibleName("Needs you, 2");
+      await expect(saved).toHaveAccessibleName("Saved, 0");
+      await expectAccessible(page, { label: "Add cards into a box, a card price that doesn't look right" });
+      // A real price clears it.
+      await page.keyboard.press("ControlOrMeta+a");
       await page.keyboard.type("4.25");
+      await expect(priceProblem).toBeHidden();
+      await expect(mcfaddenPrice).not.toHaveAttribute("aria-invalid", "true");
       await expect(mcfaddenPrice).toHaveValue("4.25");
       await page.keyboard.press("Enter");
       copiesLeft.add("160");

@@ -40,3 +40,9 @@ An `aria-describedby` that points at an element with its own `aria-label` yields
 the label, not the element's text, as the accessible description: a
 `toHaveAccessibleDescription(<the tray words>)` goes red if the tray region gets
 a label.
+
+The 12-starts window is the deployment env `MAX_JOB_STARTS_PER_WINDOW`
+(`resolveMaxJobStartsPerWindow`, integer 1-200). On YOUR OWN worktree
+deployment you may raise it with `npx convex env set` for a day of reruns
+(say so in the report, and unset it after); never on shared dev or a preview,
+and never in a spec.

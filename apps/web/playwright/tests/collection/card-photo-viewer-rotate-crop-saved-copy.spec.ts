@@ -41,7 +41,7 @@ import { EDIT_LANDED, EDIT_LANDS, STORED_MODE, photoViewer, servedPhotoSize } fr
 test(
   "Card photo viewer: a saved copy's photo turns and crops by keyboard into a new saved file, Escape keeps the drawer, and Undo puts the last one back",
   { tag: ["@collection"] },
-  async ({ page, signIn }) => {
+  async ({ page, signIn, isMobile }) => {
     await signIn("/collection");
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
     const tabs = page.getByRole("navigation", { name: "Collection sections" });
@@ -145,6 +145,16 @@ test(
       const cropBox = viewer.getByRole("application", { name: "Crop box", exact: true });
       const angle = viewer.getByRole("spinbutton", { name: "Angle, degrees", exact: true });
       await expect(cropBox).toBeVisible();
+      // Phones keep the width, height and tilt steps (and the Angle field) behind
+      // "More steps"; from sm up they show and the button is hidden.
+      const moreSteps = viewer.getByRole("button", { name: "More steps", exact: true });
+      if (isMobile) {
+        await expect(moreSteps).toHaveAttribute("aria-expanded", "false");
+        await moreSteps.click();
+        await expect(moreSteps).toHaveAttribute("aria-expanded", "true");
+      } else {
+        await expect(moreSteps).toBeHidden();
+      }
       await expect(viewer.getByRole("group", { name: "Move steps", exact: true })).toBeVisible();
       await expect(viewer.getByRole("group", { name: "Size steps", exact: true })).toBeVisible();
       await expect(viewer.getByRole("group", { name: "Width and height steps", exact: true })).toBeVisible();
