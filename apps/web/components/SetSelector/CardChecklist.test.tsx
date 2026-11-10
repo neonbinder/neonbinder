@@ -1624,6 +1624,151 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
   });
 
   /**
+   * NEO-478 — the publisher's checklist: the button and dialog beside Sync,
+   * the chip, the rows and waitKey the sync sends, the "Teams from your
+   * checklist" line, and a disagreement forcing the wizard open.
+   */
+  describe("NEO-478: the publisher's checklist", () => {
+    const PASTE = "1 Solo One - Solo Team\n2 Solo Two - Solo Team";
+    const ROWS = [
+      { number: "1", players: ["Solo One"], teams: ["Solo Team"] },
+      { number: "2", players: ["Solo Two"], teams: ["Solo Team"] },
+    ];
+
+    async function addChecklist(text = PASTE) {
+      fireEvent.click(screen.getByRole("button", { name: "Add the publisher's checklist" }));
+      const box = await screen.findByLabelText("Paste the checklist");
+      await act(async () => {
+        fireEvent.change(box, { target: { value: text } });
+      });
+      await waitFor(() => expect(screen.getByText("2 rows")).toBeTruthy());
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+      });
+    }
+
+    async function syncWith(
+      rerender: Parameters<typeof streamCandidates>[0],
+      batch: unknown,
+      result: Record<string, unknown> = {},
+    ) {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, batch);
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 0 BSC-only, 2 SL-only",
+          candidateCount: 2,
+          attachedSides: ["sportlots"],
+          ...result,
+        });
+      });
+    }
+
+    it("the button opens the dialog, and Cancel closes it with no chip", async () => {
+      renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: "Add the publisher's checklist" }));
+      expect(await screen.findByRole("dialog", { name: "Publisher's checklist" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
+    });
+
+    it("accepting shows the chip with the row count, and Remove clears it", async () => {
+      renderChecklist();
+      await addChecklist();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByText("Publisher's checklist: 2 rows")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
+      expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
+    });
+
+    it("the next sync passes the rows and a valid waitKey to fetchCardChecklist", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist).toHaveBeenCalledTimes(1);
+      expect(mockFetchChecklist).toHaveBeenCalledWith({
+        selectorOptionId: VARIANT_ID,
+        waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
+        publishedChecklist: { rows: ROWS },
+      });
+    });
+
+    it("a sync with no checklist (or after Remove) sends no publishedChecklist", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist.mock.calls[0][0]).not.toHaveProperty("publishedChecklist");
+      expect(mockFetchChecklist.mock.calls[0][0].waitKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    });
+
+    it("renders 'Teams from your checklist: N of M cards' from checklistTeams while the wizard is open", async () => {
+      // The line rides on the sync banner; a run that commits with no
+      // question replaces the banner with "Saved N cards.", so the line is
+      // read where the run stops: on a card the wizard has to settle.
+      const conflictBatch = {
+        ...arrivedBatch,
+        cards: slCandidates.map((card, i) =>
+          i === 0
+            ? { ...card, checklistConflict: { teams: { marketplace: [], checklist: ["Reds"] } } }
+            : card,
+        ),
+      };
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, conflictBatch, { checklistTeams: { matched: 1, total: 2 } });
+      await screen.findByText("Wizard opened teams-only");
+      expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards");
+    });
+
+    it("says nothing about checklist teams when the fetch reports none", async () => {
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, arrivedBatch);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(liveRegionText()).not.toContain("Teams from your checklist");
+    });
+
+    it("an open checklistConflict forces the wizard open instead of committing", async () => {
+      const conflictBatch = {
+        ...arrivedBatch,
+        cards: slCandidates.map((card, i) =>
+          i === 0
+            ? {
+                ...card,
+                checklistConflict: {
+                  players: { marketplace: ["Solo One"], checklist: ["Solo Won"] },
+                },
+              }
+            : card,
+        ),
+      };
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, conflictBatch);
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+    });
+
+    it("a conflict on the card reaches the wizard's preview cards", async () => {
+      const checklistConflict = {
+        teams: { marketplace: ["Reds"], checklist: ["Cincinnati Reds"] },
+      };
+      const conflictBatch = {
+        ...arrivedBatch,
+        cards: slCandidates.map((card, i) => (i === 0 ? { ...card, checklistConflict } : card)),
+      };
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, conflictBatch);
+      await screen.findByText("Wizard opened teams-only");
+      expect(mockResolveEntities.mock.calls[0][0].cards[0].checklistConflict).toEqual(
+        checklistConflict,
+      );
+    });
+  });
+
+  /**
    * NEO-335 — no names to review is no longer "nothing to ask". A SportLots
    * sync of known players is the biggest source of teamless cards, so a card
    * that would save with no team opens the wizard straight onto its final
