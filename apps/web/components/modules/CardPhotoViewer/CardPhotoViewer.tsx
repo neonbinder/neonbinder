@@ -178,12 +178,24 @@ export default function CardPhotoViewer({
     setReloads((n) => n + 1);
   };
 
-  // Say when a render this viewer started has landed.
-  const wasRendering = useRef(rendering);
+  // Follow each side's pending edit as it moves on. Rendering then gone: the
+  // new file landed, so say so. Turned failed: nothing new landed, so "Saved."
+  // goes, the failure notice is the only word, and there is nothing to Undo
+  // (the photo is still the one from before). Per side, so switching sides
+  // never reads as a landing.
+  const status = pending?.status;
+  const lastStatus = useRef<Partial<Record<ViewerSide, "rendering" | "failed" | undefined>>>({});
   useEffect(() => {
-    if (wasRendering.current && !pending && saves[side]) setSaid(VIEWER_WORDS.landed);
-    wasRendering.current = rendering;
-  }, [rendering, pending, saves, side, setSaid]);
+    const was = lastStatus.current[side];
+    lastStatus.current[side] = status;
+    if (was === status) return;
+    if (was === "rendering" && status === undefined && saves[side]) setSaid(VIEWER_WORDS.landed);
+    if (status === "failed") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the failure is an outside answer arriving
+      setSaid("");
+      setSaves((s) => (s[side] ? { ...s, [side]: undefined } : s));
+    }
+  }, [status, saves, side, setSaid]);
 
   // Read the box out once it holds still.
   const description = cropping && editable && draft ? describeCrop(draft, editable.srcW, editable.srcH) : "";

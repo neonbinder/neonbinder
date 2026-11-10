@@ -12,3 +12,4 @@
 - [Read-only reuse of an owner component](read-only-reuse-of-owner-component.md) — extracted hook owner wiring, privacy switch order in the spec, layout branches, "fixture too hard" claims
 - [Keyboard alternative to pointer, unit only](keyboard-alternative-to-pointer-unit-only.md) — Tab/Enter onto a drop box proven only in happy-dom; ask for a live press + per-viewport layout geometry
 - [Spec move mojibake](spec-rename-mojibake-vacuous-negatives.md) — renamed specs can corrupt … and arrows; negative asserts go vacuous; byte-grep every moved file
+- [Re-read proof needs a changed read](reread-proof-needs-a-changed-read.md) — identical-read fixtures make a re-read spec vacuous; use a failed auto crop rescued by hand; diff plan "covers X" claims vs spec diff
