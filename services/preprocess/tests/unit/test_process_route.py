@@ -120,6 +120,8 @@ class TestRequestValidation:
             files={"image": ("card.txt", b"not an image", "text/plain")},
         )
         assert response.status_code == 415
+        # Names the field, never echoes the content type sent.
+        assert response.json()["detail"] == "unsupported content-type for image"
 
     def test_empty_image_returns_400(self, monkeypatch):
         _stub_orient(monkeypatch)
@@ -158,7 +160,9 @@ class TestRequestValidation:
             files={"image": ("card.jpg", _jpeg(size=(1200, 1600)), "image/jpeg")},
         )
         assert response.status_code == 413
-        assert "1200x1600" in response.json()["detail"]
+        # The detail is fixed text: it never echoes the upload's size.
+        assert response.json()["detail"] == "image exceeds the pixel limit"
+        assert "1200" not in response.text
 
     def test_image_between_service_cap_and_pillow_hard_limit_returns_413(self, monkeypatch):
         """65.6MP sits in the band where only the explicit check can refuse:
@@ -174,7 +178,7 @@ class TestRequestValidation:
             files={"image": ("card.jpg", payload.getvalue(), "image/jpeg")},
         )
         assert response.status_code == 413
-        assert "8100x8100" in response.json()["detail"]
+        assert "8100" not in response.text
 
     def test_bomb_past_pillow_hard_limit_returns_413_not_502(self, monkeypatch):
         """Above 2x the process-wide ceiling Pillow refuses to even size the

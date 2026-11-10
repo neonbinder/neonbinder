@@ -274,8 +274,10 @@ class TestRefusals:
         assert (plan.crop_w, plan.crop_h) == (100, 80)
 
     def test_a_frame_of_another_shape_is_refused(self):
-        with pytest.raises(EditFrameMismatchError):
-            plan_edit(PhotoEdit(0, _box(50, 40, 10, 10, src=(100, 80))), 100, 100)
+        with pytest.raises(EditFrameMismatchError) as caught:
+            plan_edit(PhotoEdit(0, _box(50, 40, 10, 10, src=(123, 80))), 100, 100)
+        # The message goes into a response detail, so it echoes no size.
+        assert not any(ch.isdigit() for ch in str(caught.value))
 
     def test_a_frame_of_the_same_shape_at_another_size_is_scaled(self):
         plan = plan_edit(PhotoEdit(0, _box(50, 40, 10, 20, src=(100, 80))), 300, 240)

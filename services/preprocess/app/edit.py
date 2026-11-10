@@ -159,10 +159,8 @@ def _scaled_box(crop: EditCrop, source_w: int, source_h: int) -> EditCrop:
     scale_w = source_w / crop.src_w
     scale_h = source_h / crop.src_h
     if abs(scale_w - scale_h) > FRAME_ASPECT_TOLERANCE * max(scale_w, scale_h):
-        raise EditFrameMismatchError(
-            f"source is {source_w}x{source_h}, not a scale of the edit's "
-            f"{crop.src_w}x{crop.src_h} frame"
-        )
+        # A fixed message: error details never echo sizes or caller values.
+        raise EditFrameMismatchError("the source is not a scale of the edit's frame")
     scale = scale_w
     return EditCrop(
         cx=crop.cx * scale,

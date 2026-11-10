@@ -424,6 +424,7 @@ class TestScanFormRefusals:
 
         assert response.status_code == 422
         assert response.json()["error_code"] == "EDIT_FRAME_MISMATCH"
+        assert "600" not in response.text and "400" not in response.text
 
     def test_an_original_over_the_pixel_ceiling_is_a_terminal_413(self, fake_gcs, monkeypatch):
         monkeypatch.setattr("app.imaging.MAX_IMAGE_PIXELS", 100)
@@ -433,6 +434,7 @@ class TestScanFormRefusals:
 
         assert response.status_code == 413
         assert response.json()["error_code"] == "ENTRY_TOO_MANY_PIXELS"
+        assert "40" not in response.json()["detail"] and "60" not in response.json()["detail"]
         assert MAX_IMAGE_PIXELS > 100
 
     def test_an_undecodable_original_is_a_terminal_422(self, fake_gcs):
@@ -606,6 +608,48 @@ class TestBytesForm:
 
         assert response.status_code == 415
         assert response.json()["error_code"] == "UNSUPPORTED_MEDIA_TYPE"
+        assert "gif" not in response.json()["detail"]
+
+    @pytest.mark.parametrize("size", [(4097, 100), (100, 4097), (6000, 8000)])
+    def test_a_photo_bigger_than_a_stored_photo_can_be_is_413(self, fake_gcs, monkeypatch, size):
+        """Stored photos are at most 1600 px, but R2's signed PUT bounds
+        bytes, not pixels: a flat JPEG of a few MB can decode to 64 MP. The
+        ceiling is read from the header, before any full decode."""
+        decodes: list[int] = []
+        monkeypatch.setattr(
+            "app.main.apply_exif_orientation", lambda b: decodes.append(1) or (b, 1)
+        )
+        flat = _jpeg(Image.new("RGB", size, "white"))
+
+        response = _post_bytes(flat, {"turns": 0, "crop": None})
+
+        assert response.status_code == 413
+        assert response.json()["error_code"] == "IMAGE_TOO_LARGE"
+        assert str(size[0]) not in response.text and str(size[1]) not in response.text
+        assert decodes == [], "refused before the first full decode"
+
+    def test_a_photo_at_the_edge_ceiling_renders(self, fake_gcs):
+        flat = _jpeg(Image.new("RGB", (4096, 100), "white"))
+
+        response = _post_bytes(flat, {"turns": 0, "crop": None})
+
+        assert response.status_code == 200
+        assert response.json()["image"]["width"] == 1600
+
+    def test_a_bomb_past_pillows_limit_is_413_too(self, fake_gcs, monkeypatch):
+        """A header Pillow will not even size reads as over the ceiling."""
+        from app.imaging import RasterTooLargeError
+
+        def _bomb(_b):
+            raise RasterTooLargeError("too big")
+
+        monkeypatch.setattr("app.main.check_raster_size", lambda _b: None)
+        monkeypatch.setattr("app.main.read_raster_size", _bomb)
+
+        response = _post_bytes(_jpeg(_quadrants((40, 60))), {"turns": 0, "crop": None})
+
+        assert response.status_code == 413
+        assert response.json()["error_code"] == "IMAGE_TOO_LARGE"
 
     def test_an_empty_image_is_400(self, fake_gcs):
         response = _post_bytes(b"", {"turns": 0, "crop": None})

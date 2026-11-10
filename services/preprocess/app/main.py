@@ -324,10 +324,12 @@ def _verify_internal_key(x_internal_key: str | None) -> None:
 
 
 def _validate_content_type(content_type: str | None, *, field: str) -> None:
+    # Error details name the field (a literal from this file) and never echo
+    # what the caller sent (NEO-481 audit).
     if (content_type or "").split(";")[0].strip() not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"unsupported content-type for {field}: {content_type}",
+            detail=f"unsupported content-type for {field}",
         )
 
 
@@ -354,10 +356,10 @@ async def _read_upload(upload: FormFile, *, field: str) -> bytes:
     # existing error paths own that case.
     try:
         check_raster_size(data)
-    except RasterTooLargeError as exc:
+    except RasterTooLargeError:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=f"{field}: {exc}",
+            detail=f"{field} exceeds the pixel limit",
         ) from None
     return data
 
@@ -1652,6 +1654,15 @@ def derive_copy_photos_route(
 # never enlarged, the same byte caps and quality steps), carrying the
 # source's ICC profile and pixel density.
 
+# The bytes form's own ceiling (NEO-481 audit). Its source is a stored photo,
+# which NeonBinder keeps at most 1600 px on the long edge, so nothing honest
+# comes near this. It is far below the 65 MP scan ceiling because a stored
+# photo reaches R2 through a signed PUT that bounds bytes, never pixels, and a
+# flat JPEG of a few MB can decode to 64 MP. Checked from the header before
+# the first full decode (the EXIF upright). The long edge survives that
+# transpose unchanged, so the order costs nothing.
+RENDER_EDIT_BYTES_MAX_EDGE = 4096
+
 # Quality steps for the full-resolution crop a scan edit stores. The first that
 # fits the extracted-object ceiling wins: it is read back through that same
 # ceiling by the re-read and by anything that serves it.
@@ -1911,6 +1922,17 @@ def _render_edit_bytes_sync(
 ) -> RenderEditResponse | JSONResponse:
     started = time.monotonic()
     try:
+        size = read_raster_size(image_bytes)
+    except RasterTooLargeError:
+        size = (RENDER_EDIT_BYTES_MAX_EDGE + 1, RENDER_EDIT_BYTES_MAX_EDGE + 1)
+    if size is not None and max(size) > RENDER_EDIT_BYTES_MAX_EDGE:
+        logger.warning("render_edit: form=bytes stored photo over the edge ceiling")
+        return _error(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "IMAGE_TOO_LARGE",
+            "the image is larger than a stored photo can be",
+        )
+    try:
         # A stored photo carries no orientation tag today, but one that did
         # would be shown uprighted, so that is the frame its edit was drawn in.
         upright, _orientation = apply_exif_orientation(image_bytes)
@@ -1997,8 +2019,12 @@ def _render_edit_scan(request: RenderEditScanRequest) -> RenderEditResponse | JS
     # edit was drawn in (and `crop_box` was measured in) is the frame read here.
     try:
         check_raster_size(source_bytes)
-    except RasterTooLargeError as exc:
-        return _error(status.HTTP_413_CONTENT_TOO_LARGE, "ENTRY_TOO_MANY_PIXELS", str(exc))
+    except RasterTooLargeError:
+        return _error(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "ENTRY_TOO_MANY_PIXELS",
+            "the extracted image exceeds the pixel limit",
+        )
     try:
         upright, _orientation = apply_exif_orientation(source_bytes)
     except Exception:
