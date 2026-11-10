@@ -42,6 +42,7 @@
  */
 
 import {
+  act,
   fireEvent,
   render as renderBare,
   screen,
@@ -73,6 +74,8 @@ vi.mock("../../convex/_generated/api", () => ({
       // a raw string. `get` stays mocked because it stays exported.
       getByIdParam: "players.getByIdParam",
       nearMatches: "players.nearMatches",
+      // NEO-463: the one-word fragment pre-check behind Create.
+      nameFragmentCheck: "players.nameFragmentCheck",
       createByAdmin: "players.createByAdmin",
       savePlayerFields: "players.savePlayerFields",
       enrichFromWikidata: "players.enrichFromWikidata",
@@ -398,6 +401,8 @@ const BORDERLINE_PLAYER = {
 let management: unknown;
 let searchResults: unknown;
 let nearMatches: unknown;
+/** NEO-463 — `players.nameFragmentCheck`'s answer; undefined = not answered. */
+let fragmentCheck: unknown;
 /** NEO-313 — `players.cardsForPlayer`'s answer, keyed by player id. */
 let cardsForPlayerById: Record<string, unknown> = {};
 /**
@@ -417,6 +422,8 @@ function routeQuery(ref: string, args: Record<string, unknown>): unknown {
       return searchResults;
     case "players.nearMatches":
       return nearMatches;
+    case "players.nameFragmentCheck":
+      return fragmentCheck;
     case "players.get":
       return PLAYERS_BY_ID[args.id as string] ?? null;
     // NEO-235: same map, and the same `?? null` for anything not in it. That
@@ -455,6 +462,7 @@ beforeEach(() => {
   };
   searchResults = [GRIFFEY, TROUT];
   nearMatches = undefined;
+  fragmentCheck = undefined;
   cardsForPlayerById = {};
   loadingIds.clear();
   PLAYERS_BY_ID["p-gwynn"] = GWYNN;
@@ -3033,5 +3041,163 @@ describe("playerCounterSentence (NEO-330)", () => {
       expect(sample).not.toMatch(/of /);
       expect(sample).not.toMatch(/truncated|type to search|keep typing/);
     }
+  });
+});
+
+describe("NEO-463: a one-word name that is a piece of a fuller one", () => {
+  const GRIFFEY_FRAGMENT = {
+    isFragment: true,
+    matches: [{ _id: "p-griffey", name: "Ken Griffey Jr." }],
+  };
+  const QUESTION =
+    "Just Griffey? We've got Ken Griffey Jr. Pick one, or add Griffey as a one-name player.";
+
+  /** Type the name and wait until the debounced check has been asked about it. */
+  async function typeChecked(container: HTMLElement, name: string) {
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: name },
+    });
+    await waitFor(() =>
+      expect(lastArgs("players.nameFragmentCheck")).toEqual({
+        name,
+        sportId: "sport-baseball",
+      }),
+    );
+  }
+
+  it("stops Create on a fragment, shows the question focused, and writes nothing", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    const panel = screen.getByRole("group", { name: QUESTION });
+    expect(document.activeElement).toBe(panel);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+  });
+
+  it("creates as usual when the check says the name is not a fragment", async () => {
+    fragmentCheck = { isFragment: false, matches: [] };
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Ichiro");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create player Ichiro" }));
+
+    expect(screen.queryByRole("group", { name: /^Just Ichiro\?/ })).toBeNull();
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Ichiro",
+        sportId: "sport-baseball",
+      }),
+    );
+  });
+
+  it("a choice opens the existing fuller-named player", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Ken Griffey Jr." }));
+
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole("heading", { level: 3, name: "Ken Griffey Jr." }),
+    ).toBeTruthy();
+  });
+
+  it("'Add as a one-name player' creates with oneNamePlayer: true", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as a one-name player" }));
+
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Griffey",
+        sportId: "sport-baseball",
+        oneNamePlayer: true,
+      }),
+    );
+  });
+
+  it("opens the question from the server's refusal when the check had not answered", async () => {
+    mockCreateByAdmin.mockRejectedValue(
+      new ConvexError({
+        code: "PLAYER_NAME_FRAGMENT",
+        message: "Griffey is part of a player NeonBinder already has.",
+        matches: [{ _id: "p-griffey", name: "Ken Griffey Jr." }],
+      }),
+    );
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Griffey");
+
+    expect(await screen.findByRole("group", { name: QUESTION })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("never lists a fuller name twice: Possible matches drops what the question owns", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    nearMatches = [{ _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "close" }];
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    expect(
+      screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
+    ).toHaveLength(1);
+  });
+
+  it("Escape shuts the question and returns focus to Create", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    const create = screen.getByRole("button", { name: "Create player Griffey" });
+    fireEvent.click(create);
+
+    fireEvent.keyDown(screen.getByRole("group", { name: QUESTION }), { key: "Escape" });
+
+    expect(screen.queryByRole("group", { name: QUESTION })).toBeNull();
+    expect(document.activeElement).toBe(create);
+  });
+
+  it("a repeat Create with the question already up moves focus back to it", async () => {
+    fragmentCheck = GRIFFEY_FRAGMENT;
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    const create = screen.getByRole("button", { name: "Create player Griffey" });
+    fireEvent.click(create);
+    const panel = screen.getByRole("group", { name: QUESTION });
+
+    // The operator tabs away and presses Create again: the panel is already
+    // mounted, so its own autoFocus cannot answer the press.
+    act(() => create.focus());
+    expect(document.activeElement).toBe(create);
+    fireEvent.click(create);
+
+    expect(document.activeElement).toBe(panel);
+    expect(screen.getAllByRole("group", { name: QUESTION })).toHaveLength(1);
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+  });
+
+  it("a truncated read asks for the whole name, lists no choices, and keeps the one-name button", async () => {
+    fragmentCheck = { isFragment: true, truncated: true, matches: [] };
+    const { container } = render(<PlayerManagement />);
+    await typeChecked(container, "Griffey");
+    fireEvent.click(screen.getByRole("button", { name: "Create player Griffey" }));
+
+    expect(
+      screen.getByRole("group", {
+        name: "Just Griffey? That's part of a fuller name we've got. Type the whole name to find them, or add Griffey as a one-name player.",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Fuller names for Griffey" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as a one-name player" })).toBeTruthy();
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
   });
 });
