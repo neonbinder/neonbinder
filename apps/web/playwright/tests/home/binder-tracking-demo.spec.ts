@@ -221,9 +221,14 @@ test(
     await drawer.getByRole("button", { name: `Sell ${line}` }).first().click();
     const sellForm = drawer.getByRole("form", { name: /^Sell / });
     await sellForm.getByRole("combobox", { name: "Into which box" }).selectOption({ label: "Show box" });
+    // NEO-479: going up for sale takes a price of its own; the demo has no common price to fall back on.
+    const price = sellForm.getByRole("textbox", { name: "Price", exact: true });
+    await expect(price).toHaveValue("");
+    await expect(sellForm.getByRole("button", { name: /^Put (it|\d+) up for sale$/ })).toBeDisabled();
+    await price.fill("1.50");
     await expectAccessible(page, { within: sellForm, label: "Collection demo, the drawer's Sell panel" });
     await sellForm.getByRole("button", { name: /^Put (it|\d+) up for sale$/ }).click();
-    await expect(drawer.getByRole("status").filter({ hasText: /up for sale in Show box/ })).toBeVisible();
+    await expect(drawer.getByRole("status").filter({ hasText: /up for sale in Show box at \$1\.50/ })).toBeVisible();
     await expect(drawer.getByText(/For sale · Show box/).first()).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
