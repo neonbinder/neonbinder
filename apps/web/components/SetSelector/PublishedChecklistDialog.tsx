@@ -130,6 +130,21 @@ export function checklistTeamsLine(matched: number, total: number): string {
   return `Teams from your checklist: ${matched.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} ${total === 1 ? "card" : "cards"}`;
 }
 
+/**
+ * NEO-490 — one checklist row as Match Cards prints it: "#17 Mike Lowell",
+ * with " · Boston Red Sox" when the row names a team. Players and teams join
+ * with " / ", as the dialog's other rosters do.
+ */
+export function checklistRowLine(row: {
+  number: string;
+  players: readonly string[];
+  teams: readonly string[];
+}): string {
+  const who = row.players.join(" / ");
+  const base = `#${row.number}${who ? ` ${who}` : ""}`;
+  return row.teams.length > 0 ? `${base} · ${row.teams.join(" / ")}` : base;
+}
+
 /** The paste box holds text, but no line of it reads as a card. */
 export const NOTHING_READS =
   "Nothing reads as a card yet. Each line starts with its card number.";
