@@ -589,7 +589,14 @@ are `checklist-bsc-team-enrichment` (card #300), the stall spec
 (`checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`) and the upload spec
 (`checklist-published-upload-skips-bsc-and-asks-on-disagreement`). Do not read a
 green seed as evidence that a per-card BSC lookup works. The Future Stars insert
-and the Gold Wave build stay live syncs.
+uploads its own file too (20 cards, `fixtures/checklists/2024-topps-chrome-insert-future-stars.csv`);
+the Gold Wave build is a copy of Base's cards and asks BSC for nothing per card.
+A spec whose point IS a live per-card read keeps that read small: it uploads the
+set's file with the few cards it needs left OUT (`--omit-number`), as the stall
+spec does with five.
+
+The bootstrap's optional BSC warm-up (a live sign-in through the browser service)
+runs on worker 0 only, so shards do not all sign in to BSC at the same moment.
 
 **BSC's 429 cooldown (NEO-487), as a spec meets it.** A `card-listing` 429 opens a
 deployment-wide cooldown: 15 s the first time, doubling on each further 429 to a

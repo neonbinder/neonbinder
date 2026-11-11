@@ -3153,6 +3153,13 @@ the reason the specs upload instead of fetching card by card.
 | `2014-football-topps-base` | Football > 2014 > Topps > Base | 554 | 553 | `checklist-team-leader-cards-pair-and-picked-name-saves` |
 | `1995-hockey-oklahoma-city-blazers-chl-base` | Hockey > 1995 > Oklahoma City Blazers CHL | 18 | 18 | the new `checklist-published-upload-skips-bsc-and-asks-on-disagreement` (below) |
 | `2024-topps-chrome-base` | Baseball > 2024 > Topps > Topps Chrome > Base (the seed's anchor) | 334 (335 cards; **card #300's row is left OUT**, so one card, Julio Rodriguez, is still asked of BSC live) | 334 | `setup` (the seed's Base fetch, D8 amended); #300's live lookup is the one `checklist-bsc-team-enrichment` proves. Re-capture with `--omit-number 300`. The seed asserts its result line and fails by name on a "Checklist says otherwise" step |
+| `2024-topps-chrome-insert-future-stars` | Baseball > 2024 > Topps > Topps Chrome > Insert > Future Stars (the seed's anchor) | 20 (`FS-1`..`FS-20`) | 20 | `setup` (the seed's Future Stars fetch: no `card-listing` call; the seller listing specs read the set it builds) |
+| `1995-hockey-roanoke-express-echl-base` | Hockey > 1995 > Unknown (All Brands) > Roanoke Express ECHL > Base | 25, every number `NNO` (each pairs by player: the 25 players are each on one card and one row) | 25 | none today (see "Deliberately not moved": the one-marketplace spec cannot take it) |
+| `2025-bowman-draft-insert-bowman-draft-nights-autographs` | Baseball > 2025 > Bowman > Bowman Draft > Insert > Bowman Draft Nights Autographs | 5 (`BDNA-EW`, `-GF`, `-KA`, `-SH`, `-XN`) | 5 | `checklist-autograph-format-asked-applied-and-changeable` (the AU + SN99 tags come from BSC's checklist, not from the file) |
+| `2025-bowman-draft-insert-prospect-dual-autographs` | Baseball > 2025 > Bowman > Bowman Draft > Insert > Prospect Dual Autographs | 13 (14 cards; **`PDA-WW`'s row is left OUT**: its "Boston Red Sox, Detroit Tigers" value is the live read the spec is about) | 13 | `checklist-dual-team-card-links-both-teams`. Re-capture with `--omit-number PDA-WW` (`--set-name bowman-draft --variant insert --variant-name prospect-dual-autographs`) |
+| `2026-bowman-insert-anime` | Baseball > 2026 > Bowman > Insert > Anime | 36 lines, 35 read (the `TBD` line is no card number we can read, so that one card, Terrell Owens, is asked of BSC live); six of the cards are football players | 35 | `bowman-insert-grouping-builds-parallels`, PART 4 (Anime's fetch) |
+| `1995-hockey-halifax-mooseheads-qmjhl-base-full` | Hockey > 1995 > Halifax Mooseheads QMJHL > Base | 26 (cards 1-25 and one `NNO`) | 26 | none uploaded whole: the source of the next file |
+| `1995-hockey-halifax-mooseheads-qmjhl-base-five-live` | same | 21 (cards 1, 2, 3, 24 and 25 left OUT, so BSC is asked for exactly those five: #1-#3 are the stalled ids, #24 and #25 answer) | 21 | `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`. Made from the full file with no BSC call: `node playwright/tools/capture-bsc-checklist-teams.mjs --out <file> --cache <the full file's cache> --sport hockey --year 1995 --set-name halifax-mooseheads-qmjhl --variant base --omit-number 1 --omit-number 2 --omit-number 3 --omit-number 24 --omit-number 25` |
 
 **Why a published-checklist upload is not a different flow to the ones it
 replaced.** Every moved spec asserts the wizard's decisions, the saved cards or
@@ -3162,14 +3169,21 @@ the upload (not BSC) supplied the teams.
 
 **Deliberately not moved.**
 * `inserts-1996-score-*`: the two BSC series of 1996 Score repeat card numbers
-  across series, so rule 7's exactly-one-number match refuses most rows and a
-  checklist would not cut the calls; the spec keeps its own fetch.
-* `checklist-one-marketplace-skips-match-dialog` (Roanoke Express ECHL):
-  every card number on BSC is `NNO` (no number), so no checklist can pair
-  by number; Roanoke's file was captured and deleted for that reason.
-* `checklist-bsc-team-enrichment`, the dual-team spec, `autograph-format` and
-  `seed`: their point is the live per-card read, so they keep it (the
-  coordinator's list).
+  across series (both run 1-110), so rule 7's exactly-one-number match refuses
+  most rows and a checklist would not cut the calls; the spec keeps its own
+  fetch.
+* `checklist-one-marketplace-skips-match-dialog` (Roanoke Express ECHL): tried
+  with the file above (2026-11-10) and put back. A team the checklist names is a
+  claim that stays (`checklistClaim` in `teams-on-cards.ts`): no rule fills another
+  team over it, and skipping the New Team step does not release it, so the created
+  player's career-team pre-fill (STEP 6, what NEO-335 added) never happened. The
+  spec's own live fetch is the one whose skipped team name releases the claim.
+* `checklist-bsc-team-enrichment` and `seed`'s card #300: their point is the live
+  per-card read, so they keep it. The dual-team spec keeps ONE live read, `PDA-WW`
+  (its row is left out of the file), and uploads the other 13 cards; the
+  autograph-format spec uploads all five of its cards (NEO-478, wired 2026-11-10):
+  its point is the format question, which comes from BSC's checklist tags, not
+  from the file.
 
 ### Two new committing specs, one set each: PROPOSED, need Jason's approval
 

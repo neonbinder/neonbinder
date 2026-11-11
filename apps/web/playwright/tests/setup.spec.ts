@@ -362,7 +362,11 @@ test(
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible({
       timeout: 30_000,
     });
+    // The seed's Future Stars checklist is BSC's own answers (the 20 cards), so the fetch asks BSC
+    // for no card (D4): the BSC listing specs that read this set no longer depend on 20 live reads.
+    const futureStars = await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
     await fetchChecklist(page, env.SL_PAUSED, { open: 90_000, settle: 90_000 });
+    await expectTeamsFromChecklist(page, futureStars);
     // Every Future Stars player is already known from Base: no NAMES review.
     // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
     // steps only: a card that would save with no team (a SportLots-only card
@@ -371,6 +375,12 @@ test(
     // fetchChecklist waited for the wizard or the "Saved" banner, so which one
     // is up is settled and read once. The seed answers nothing on those steps.
     if (await wizard.isVisible()) {
+      // The file is BSC's own answers, so a "Checklist says otherwise" step means the capture is stale.
+      await expect(stepCounter(page)).toBeVisible();
+      await expect(
+        checklistDisagreementHeading(page),
+        "the seed's 2024-topps-chrome-insert-future-stars.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
+      ).toBeHidden();
       // A names review fails here, by name: nothing is undecided.
       await expect(wizard.getByRole("button", { name: /Skip remaining names|Add remaining players as new/ })).toHaveCount(0);
       await expect(wizard.getByText(/^(Cards with no team|Card titles)$/)).toBeVisible();

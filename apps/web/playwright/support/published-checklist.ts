@@ -46,6 +46,32 @@ export const CHECKLISTS = {
   careerBestJumboJerseys2009: "2009-topps-insert-career-best-jumbo-jerseys",
   bowman2026Base: "2026-football-bowman-base",
   topps2014FootballBase: "2014-football-topps-base",
+  /** Baseball 2024 Topps Chrome Insert Future Stars: 20 cards (`FS-1`..`FS-20`), the setup's insert fetch. */
+  futureStars2024: "2024-topps-chrome-insert-future-stars",
+  /** Hockey 1995 Roanoke Express ECHL Base: 25 cards, every one `NNO`, so each pairs by player. */
+  roanokeExpress1995: "1995-hockey-roanoke-express-echl-base",
+  /** Baseball 2025 Bowman Draft Insert Bowman Draft Nights Autographs: 5 cards (`BDNA-EW`..), the autograph-format spec's set. */
+  bowmanDraftNightsAutographs2025: "2025-bowman-draft-insert-bowman-draft-nights-autographs",
+  /**
+   * Baseball 2025 Bowman Draft Insert Prospect Dual Autographs: 14 cards (`PDA-AD`..), the dual-team spec's set,
+   * with `PDA-WW`'s row LEFT OUT (13 rows): the one card whose two-club team value that spec reads live.
+   */
+  prospectDualAutographs2025: "2025-bowman-draft-insert-prospect-dual-autographs",
+  /**
+   * Baseball 2026 Bowman Insert Anime: 35 rows read (the `TBD` row is no card number we can read, so
+   * that one card is still asked of BSC); six of the cards are football players.
+   */
+  bowmanAnime2026: "2026-bowman-insert-anime",
+  /**
+   * Hockey 1995 Halifax Mooseheads QMJHL Base, ALL 26 cards. No spec uploads it whole: it is the
+   * source of the trimmed copy below (made from it with `--omit-number`).
+   */
+  halifaxMooseheads1995Full: "1995-hockey-halifax-mooseheads-qmjhl-base-full",
+  /**
+   * The Halifax file with cards 1, 2, 3, 24 and 25 left OUT: 21 rows. The NEO-487 stall spec uploads
+   * it, so exactly five cards are asked of BSC live: #1-#3 are the stalled ids, #24 and #25 answer.
+   */
+  halifaxMooseheads1995FiveLive: "1995-hockey-halifax-mooseheads-qmjhl-base-five-live",
 } as const;
 
 export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];

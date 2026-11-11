@@ -17,26 +17,37 @@
 // A deployment without the flag answers every card, so the spec goes RED at the
 // "23 need you" assert, by name: that is the switch being unset, not a product bug.
 //
-// WHAT IS DELIBERATELY NOT USED: the publisher's checklist. This spec is about
-// the per-card lookups a fetch makes WITHOUT one, so no file is uploaded.
+// THE PUBLISHER'S CHECKLIST (Jason, 2026-11-10: prefer prebuilt checklists over
+// live calls while BSC is unstable, keeping a small live read as the coverage).
+// The spec uploads fixtures/checklists/1995-hockey-halifax-mooseheads-qmjhl-base-
+// five-live.csv: the set's own BSC answers for 21 of its 26 cards, with cards
+// #1, #2, #3, #24 and #25 left OUT. So BSC is asked per card for exactly five:
+// the three stalled ones (#1-#3), which this spec is about, and two that
+// answer (#24, #25), which prove a lookup that is NOT stalled still lands.
 //
+
 // WHAT IT PROVES, IN ORDER:
 //   1. The fetch lands within 7 s of our own time plus any seconds the screen
 //      says it is "Waiting on BuySportsCards..." (`expectAfterMarketplace`). A
 //      stall that were retried card by card would blow the 7 s; a stall is
-//      instant, so the only time left is ours.
+//      instant, so the only time left is ours. The result line then says the
+//      checklist supplied the teams of 21 cards ("Teams from your checklist").
 //   2. Every name is skipped, so the wizard's "Cards with no team" step lists the
 //      whole set (it cannot tell a stalled card from an answered one whose team
 //      name was skipped); the spec only proves the step is reached.
 //   (A stalled card reaches the operator from the background lane only after
 //   about 6 minutes, so the spec asserts the queued state, never the give-up.)
-//   3. After the save the split is on the checklist: the 23 cards BSC answered
-//      (their team name was skipped, so they end teamless) are the operator's,
-//      "23 need you", and the 3 it did not answer are not in that count: they
-//      wait in the queue, and the checklist says so in its own words, "Still
-//      looking up teams for 3 cards. Nothing for you to do yet." (a status line;
-//      its number moves at most every 5 s, so the first value after the save is
-//      the full three). Both are positives; neither can be read off a dead page.
+//   3. After the save the split is on the checklist: the 23 cards that have an
+//      answer (21 from the checklist and the 2 BSC answered live; their team name
+//      was skipped, so they end teamless) are the operator's, "23 need you", and
+//      the 3 it did not answer are not in that count: they wait in the queue, and
+//      the checklist says so in its own words, "Still looking up teams for 3
+//      cards. Nothing for you to do yet." (a status line; its number moves at
+//      most every 5 s, so the first value after the save is the full three). The
+//      "23" is also the proof of the two live answers: had either met a BSC 429
+//      it would wait in the queue too, and the line would say 4 (or 5) cards.
+//      Both are positives; neither can be read off a dead page. Axe runs on the
+//      saved checklist with the status line showing.
 //
 // FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Halifax Mooseheads QMJHL",
 // one of the registered spares, needs Jason's approval to take): SOLE WRITER of
@@ -46,6 +57,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   advanceToSave,
@@ -70,12 +82,14 @@ test(
     // The precondition for a FIRST fetch (fresh-only): a re-run fails here, by name.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
 
-    // ── 1. The fetch, with no publisher's checklist: every card is asked of BSC ──
+    // ── 1. The fetch, with the trimmed checklist: BSC is asked per card for five only ──
+    const facts = await usePublishersChecklist(page, CHECKLISTS.halifaxMooseheads1995FiveLive);
     await syncChecklistButton(page).click();
     await expectAfterMarketplace(page, page.getByText(new RegExp(`Kept all ${CARDS} cards from BSC`)), {
       platform: "BuySportsCards",
       what: "the fetch's kept-cards line",
     });
+    await expectTeamsFromChecklist(page, facts);
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
 
@@ -98,11 +112,12 @@ test(
     // The 23 BSC answered ended teamless and are the operator's; the 3 it did not answer are not in that count.
     await expect(
       page.getByRole("button", { name: `${CARDS - STALLED} need you` }),
-      `the attention count is not ${CARDS - STALLED}: the preview's NEONBINDER_TEST_BSC_STALL_CARD_IDS is unset or lists other ids`,
+      `the attention count is not ${CARDS - STALLED}: the deployment's NEONBINDER_TEST_BSC_STALL_CARD_IDS is unset or lists other ids, or one of the two live lookups (#24, #25) met a BSC 429 and waits in the queue (read the status line's number)`,
     ).toBeVisible();
     // The queue's own words: the status line names the three, and says it is not the operator's yet.
     await expect(
       page.getByRole("status").filter({ hasText: new RegExp(`^Still looking up teams for ${STALLED} cards\\.`) }),
     ).toBeVisible();
+    await expectAccessible(page, { label: "Halifax checklist saved, the unanswered cards waiting in the background" });
   },
 );

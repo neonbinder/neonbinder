@@ -37,13 +37,18 @@
 //      a shared row this spec does not mint. The backend's own log line for the
 //      fetch ("calls":1 for 18 cards) is what shows BSC was asked once.
 //
-// ASSUMPTIONS, written before the UI existed (the names are the contract in
-// todos/neo-451-contracts.md; what follows is not): the "Skipped lines" entry
-// shows the line's own text; the "N rows" preview count reads "19 rows"; the
-// result line shows with the wizard open; both picks are kept when Back returns
-// to the step; a name step for the misspelt names, if one is asked, is answered
-// by the bulk skip. A red on any of these is the first thing to check against
-// the shipped UI.
+// BEFORE THE REAL PASTE the dialog is shown two things that are not a checklist:
+//   * a paste that reads as no card: the count's status says "Nothing reads as a
+//     card yet. Each line starts with its card number.", pressing Use says
+//     "Nothing to use yet", and the dialog stays open (axe on that state);
+//   * a paste with a "Card Set" column naming two subsets: the question "Which of
+//     these belong to this set?" shows with NOTHING ticked, Use refuses with "Tick
+//     at least one subset first", and ticking one subset narrows the preview to
+//     that subset's rows (axe on that state).
+// AFTER USING the real paste, "Remove the publisher's checklist" takes the chip
+// away (and the button to add one is back); the checklist is then used again for
+// the flow below. No plain Sync follows the Remove: that would ask BSC for each of
+// the 18 cards live.
 //
 // FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Oklahoma City Blazers CHL",
 // PROPOSED, needs Jason's approval): SOLE WRITER of that set (BSC only, 18 cards,
@@ -80,6 +85,10 @@ import {
 } from "../../support/wizard";
 
 const SET = "Oklahoma City Blazers CHL";
+/** The dialog's own words for a paste that reads as no card, a Use with nothing to use, and a Use with no subset ticked. */
+const NOTHING_READS = "Nothing reads as a card yet. Each line starts with its card number.";
+const NOTHING_TO_USE = "Nothing to use yet — paste lines that start with a card number.";
+const PICK_A_SUBSET = "Tick at least one subset first — then use it.";
 const JUNK_LINE = "Page 1 of 1 - checklist continues on the back of the card";
 
 /** Swap the first pair of different neighbouring letters after the first two of a surname: a misspelling no matcher takes for the same name. */
@@ -138,7 +147,54 @@ test(
     await expect(publishersChecklistButton(page)).toBeFocused();
     await publishersChecklistButton(page).click();
     await expect(dialog).toBeVisible();
-    await dialog.getByRole("textbox", { name: "Paste the checklist" }).fill(lines.join("\n"));
+    const paste = dialog.getByRole("textbox", { name: "Paste the checklist" });
+    const useButton = dialog.getByRole("button", { name: "Use this checklist" });
+
+    // A paste that reads as no card: said at once, refused on Use, the dialog stays.
+    await paste.fill("hello there\nnothing in this paste starts with a card number");
+    await expect(dialog.getByRole("status").filter({ hasText: NOTHING_READS })).toBeVisible();
+    await expect(dialog.getByText(/Try a line like/)).toBeVisible();
+    // Use is aria-disabled while there is nothing to use, so click() would wait it out (GUIDE): the
+    // press is made from the keyboard, which the product answers with its reason.
+    await useButton.focus();
+    await page.keyboard.press("Enter");
+    await expect(dialog.getByRole("status").filter({ hasText: NOTHING_TO_USE })).toBeVisible();
+    await expect(dialog).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Publisher's checklist dialog, a paste that reads as no card" });
+
+    // A paste naming two subsets: asked before anything is used, none ticked to start.
+    const base = rows.slice(0, 4);
+    const insert = rows.slice(4, 6);
+    await paste.fill(
+      [
+        "Card Set,Card #,Player,Team",
+        ...base.map((r) => `Base,${r.number},${r.player},${r.team}`),
+        ...insert.map((r) => `Insert,${r.number},${r.player},${r.team}`),
+      ].join("\n"),
+    );
+    const subsetQuestion = dialog.getByRole("group", { name: "Which of these belong to this set?" });
+    await expect(subsetQuestion).toBeVisible();
+    const baseBox = subsetQuestion.getByRole("checkbox", { name: "Base", exact: true });
+    const insertBox = subsetQuestion.getByRole("checkbox", { name: "Insert", exact: true });
+    await expect(baseBox).not.toBeChecked();
+    await expect(insertBox).not.toBeChecked();
+    const previewRowsShown = dialog.getByRole("table", { name: "Preview of the rows the sync will use" }).getByRole("row");
+    await expect(dialog.getByText("Tick the subsets that belong to this set, and their rows show up here.")).toBeVisible();
+    await useButton.focus();
+    await page.keyboard.press("Enter");
+    await expect(dialog.getByRole("status").filter({ hasText: PICK_A_SUBSET })).toBeVisible();
+    await expect(dialog).toBeVisible();
+    // Ticking one subset narrows the preview to its rows (the header row is one of the table's rows).
+    await insertBox.check();
+    await expect(previewRowsShown).toHaveCount(insert.length + 1);
+    await expect(dialog.getByText("Tick the subsets that belong to this set, and their rows show up here.")).toBeHidden();
+    await expectAccessible(page, { within: dialog, label: "Publisher's checklist dialog, one of two subsets ticked" });
+    await baseBox.check();
+    await expect(previewRowsShown).toHaveCount(base.length + insert.length + 1);
+
+    // The real paste: the published line format, no subsets.
+    await paste.fill(lines.join("\n"));
+    await expect(subsetQuestion).toBeHidden();
     await expect(previewRowCount(dialog, rowCount)).toBeVisible();
     // The line that is no card is listed, not dropped silently.
     await expect(dialog.getByText("Skipped lines")).toBeVisible();
@@ -152,7 +208,22 @@ test(
     await dialog.getByRole("button", { name: "Use this checklist" }).click();
     await expect(dialog).toBeHidden();
     await expect(publishersChecklistChip(page, rowCount)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Remove the publisher's checklist" })).toBeVisible();
+    const removeChecklist = page.getByRole("button", { name: "Remove the publisher's checklist" });
+    await expect(removeChecklist).toBeVisible();
+
+    // ── 1b. Remove: the chip goes and the button to add one is back ──
+    // (Not followed by a plain Sync: that would ask BSC for each of the 18 cards live, a burst
+    // that has met BSC's 429 for the next spec. Use it again for the flow below.)
+    await removeChecklist.click();
+    await expect(publishersChecklistChip(page, rowCount)).toBeHidden();
+    await expect(publishersChecklistButton(page)).toBeVisible();
+    await publishersChecklistButton(page).click();
+    await expect(dialog).toBeVisible();
+    await paste.fill(lines.join("\n"));
+    await expect(previewRowCount(dialog, rowCount)).toBeVisible();
+    await useButton.click();
+    await expect(dialog).toBeHidden();
+    await expect(publishersChecklistChip(page, rowCount)).toBeVisible();
 
     // ── 2. Sync: BSC is asked for the bulk checklist, and for no card one by one ──
     await syncChecklistButton(page).click();

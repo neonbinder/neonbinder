@@ -24,6 +24,16 @@
 // pick). All three are global; the same trade
 // checklist-wizard-career-team-commits makes.
 //
+// NO PUBLISHER'S CHECKLIST HERE, on purpose (NEO-478, tried 2026-11-10 with
+// fixtures/checklists/1995-hockey-roanoke-express-echl-base.csv, 25 NNO rows paired
+// by player, and put back). A team the operator's checklist names is a data claim
+// that stays (components/SetSelector/teams-on-cards.ts, `checklistClaim`): no rule
+// fills another team over it, and skipping the New Team step does not release it. So
+// every card came up on "Leave for later" and the created player's career-team
+// PRE-FILL (STEP 6, the NEO-335 behaviour this spec exists to prove) never happened:
+// `Templetuohy` stayed unchecked. A live BSC lookup is the fetch whose team name the
+// skip DOES release, so this spec keeps its own live fetch.
+//
 // Sole writer of the Roanoke Express ECHL set; fresh-only (it commits the
 // checklist). Re-seed before re-running.
 import type { Page } from "@playwright/test";
