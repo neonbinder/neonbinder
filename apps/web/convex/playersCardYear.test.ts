@@ -1497,13 +1497,20 @@ describe("NEO-424: Hall of Fame breaks a tie only when nobody was active in the 
     const { sportId } = await seedSetOfYear(t, "2024");
     const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
     const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
-    await insertFamer(t, sportId, true, [{ teamId: cubs, fromYear: 1951, toYear: 1966 }]);
+    const famer = await insertFamer(t, sportId, true, [
+      { teamId: cubs, fromYear: 1951, toYear: 1966 },
+    ]);
     // The rival's Padres years are nowhere near the card's year.
-    await insertFamer(t, sportId, false, [{ teamId: padres, fromYear: 1930, toYear: 1937 }]);
+    const rival = await insertFamer(t, sportId, false, [
+      { teamId: padres, fromYear: 1930, toYear: 1937 },
+    ]);
 
-    expect(
-      (await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] })).playerId,
-    ).toBeUndefined();
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+    expect(resolved.playerId).not.toBe(famer);
+    // NEO-490 — the card's team is the evidence, and only the rival ever
+    // played for it, so rule 6b (career team) names him.
+    expect(resolved.playerId).toBe(rival);
+    expect(resolved.narrowedBy).toBe("careerTeam");
   });
 
   test("the Hall of Famer's OWN team on the card supports him, and a third team blocks nobody", async () => {

@@ -380,6 +380,88 @@ export async function resolveTeamForSetYear(
 }
 
 /**
+ * NEO-490 (2b) — the bounds on `narrowTeamRowsByCardPlayers`. A team name
+ * printed on more than 16 cards, or a card carrying more than 4 players, is
+ * not narrowed at all: past either the read stops being small, and a name that
+ * common is better asked once than guessed from a sample. At the bounds the
+ * helper reads at most 64 player documents.
+ */
+export const CARD_PLAYER_TEAM_MAX_CARDS = 16;
+export const CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD = 4;
+
+/**
+ * NEO-490 (2b) — when a team name has several eras and the set year did not
+ * separate them, let the CARD'S OWN PLAYERS say which one.
+ *
+ * `cardPlayerIds` holds, per card printing this team name, the NB players the
+ * card's names resolved to. For each card, the candidate rows any of its
+ * players has a stint on (`teamYears[].teamId`) are collected. The answer is
+ * a row only when EVERY card gives exactly one and every card gives the SAME
+ * one. A card with no resolved player, a card whose players point at two
+ * eras, or two cards that disagree, all leave it to the operator: the
+ * exactly-one guard of product invariant 7, applied per card and then across
+ * cards.
+ *
+ * A row whose era begins after `setYear` is never an answer, whatever a stint
+ * says: a card can show a team's past, never its future (`pickTeamForYear`).
+ * With no `setYear` nothing is excluded.
+ *
+ * Reads only player documents, each once, and never a team: the candidate
+ * rows are passed in. Returns null without reading when the bounds above are
+ * passed or there are fewer than two candidates (one row is
+ * `resolveTeamForSetYear`'s to answer).
+ */
+export async function narrowTeamRowsByCardPlayers(
+  ctx: QueryCtx | MutationCtx,
+  candidates: readonly Doc<"teams">[],
+  cardPlayerIds: ReadonlyArray<ReadonlyArray<Id<"players">>>,
+  setYear: number | undefined,
+): Promise<Id<"teams"> | null> {
+  if (candidates.length < 2) return null;
+  if (cardPlayerIds.length === 0 || cardPlayerIds.length > CARD_PLAYER_TEAM_MAX_CARDS) {
+    return null;
+  }
+  if (cardPlayerIds.some((ids) => ids.length > CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD)) {
+    return null;
+  }
+  const year = setYear !== undefined && Number.isInteger(setYear) ? setYear : undefined;
+  const eligible = new Set<string>(
+    candidates
+      .filter((row) => {
+        const from = row.yearsActive?.from;
+        return year === undefined || from === undefined || from <= year;
+      })
+      .map((row) => row._id as string),
+  );
+  if (eligible.size === 0) return null;
+
+  const stintTeamsByPlayer = new Map<string, Set<string>>();
+  let answer: string | null = null;
+  for (const ids of cardPlayerIds) {
+    const onCard = new Set<string>();
+    for (const playerId of ids) {
+      const key = playerId as string;
+      let teams = stintTeamsByPlayer.get(key);
+      if (!teams) {
+        const player = await ctx.db.get(playerId);
+        teams = new Set((player?.teamYears ?? []).map((stint) => stint.teamId as string));
+        stintTeamsByPlayer.set(key, teams);
+      }
+      for (const teamId of teams) {
+        if (eligible.has(teamId)) onCard.add(teamId);
+      }
+    }
+    if (onCard.size !== 1) return null;
+    const [only] = onCard;
+    if (answer !== null && answer !== only) return null;
+    answer = only;
+  }
+  return answer === null
+    ? null
+    : (candidates.find((row) => (row._id as string) === answer)?._id ?? null);
+}
+
+/**
  * The rows this one would collide with — same name, overlapping era.
  *
  * The identity check for a WRITE, as opposed to `resolveTeamForSetYear`'s check

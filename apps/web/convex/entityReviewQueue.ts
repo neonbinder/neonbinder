@@ -106,6 +106,9 @@ import { PLAYER_DESCRIPTION_MAX_TEAMS } from "../lib/players/player-description"
 const autoLinkOriginValidator = v.union(
   v.literal("setHistory"),
   v.literal("hallOfFame"),
+  // NEO-490: the card's team picked the one same-name player with a stint on
+  // it (rule 6b), or the card's player picked the one team era he played for.
+  v.literal("careerTeam"),
 );
 
 /**
@@ -126,6 +129,7 @@ const preselectValidator = v.object({
     // back as the primary. Written only by `clearDecision`.
     v.literal("setHistory"),
     v.literal("hallOfFame"),
+    v.literal("careerTeam"),
   ),
 });
 
@@ -1448,7 +1452,9 @@ export const startBatch = internalMutation({
           ? link.playerId !== undefined && link.teamId === undefined
           : link.teamId !== undefined &&
             link.playerId === undefined &&
-            link.origin === "setHistory";
+            // NEO-490: a team is auto-linked by set history (rule F) or by
+            // the card's own player (careerTeam), never by Hall of Fame.
+            link.origin !== "hallOfFame";
       const key = keyFor(link.kind, link.name);
       if (!wellFormed || isBlankKey(link.kind, key)) {
         malformedFacts += 1;
@@ -1508,7 +1514,7 @@ export const startBatch = internalMutation({
      */
     const autoLinkLog: Array<{
       rowId: Id<"entityReviewQueue">;
-      origin: "setHistory" | "hallOfFame";
+      origin: AutoLinkFact["origin"];
       playerId?: Id<"players">;
       teamId?: Id<"teams">;
     }> = [];
@@ -1579,7 +1585,7 @@ export const startBatch = internalMutation({
           decision:
             link.kind === "player"
               ? { action: "link", linkedPlayerId: link.playerId, autoLinked: link.origin }
-              : { action: "link", linkedTeamId: link.teamId, autoLinked: "setHistory" },
+              : { action: "link", linkedTeamId: link.teamId, autoLinked: link.origin },
         });
         ops += 1;
         autoLinkLog.push({
