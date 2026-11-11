@@ -1011,6 +1011,8 @@ export type ListingProblemReason =
 /** One card a sync held back, named as the collector reads it. */
 export interface SyncProblem {
   reason: ListingProblemReason;
+  /** The card the row names, when NB knows it: the row opens that card's panel. */
+  cardId?: CardId;
   /** NB's card number; absent for a platform row NB cannot tie to a card. */
   cardNo?: string;
   /** The card's player(s), as NB names them. */

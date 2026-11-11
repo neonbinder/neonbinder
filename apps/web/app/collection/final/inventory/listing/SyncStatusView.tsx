@@ -1,6 +1,6 @@
 import { useId, useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "@heroicons/react/24/outline";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import { LiveLine, RunGlyph, type RunLineKind } from "@/components/modules/RunLedger";
 import { FOCUS } from "../../../prototypes/p1/ui";
 import type {
@@ -52,7 +52,9 @@ import {
  *
  * The first five held-back cards of a set show inline; "Show all N held
  * back" reads the whole list once, on demand (`loadProblems`), so the screen
- * never subscribes to a long list.
+ * never subscribes to a long list. Each held-back card NB can name opens its
+ * card panel on Inventory (`heldBackHref`), its reason kept beside it; the
+ * admin's read-only view keeps them as text.
  *
  * Headings start at `level` (the platform's name) and go one deeper for its
  * three parts, so the screen sits under whatever heading its page has.
@@ -632,6 +634,17 @@ export function countsLine(counts: SyncSetResult["counts"]): string | null {
   return parts.join(", ");
 }
 
+/**
+ * Where a held-back card is fixed: its card panel on Inventory's Cards tab
+ * (Jason, 2026-11-11: every held-back card "should open the card panel where
+ * they could fix it"). A push, so Back returns to Sync status. The demo keeps
+ * its own prefix.
+ */
+export function heldBackHref(pathname: string, cardId: string): string {
+  const root = pathname.startsWith("/demo") ? "/demo" : "";
+  return `${root}/inventory?${new URLSearchParams({ tab: "cards", detail: cardId })}`;
+}
+
 type Loaded = { state: "idle" } | { state: "loading" } | { state: "error" } | { state: "done"; list: SetProblems };
 
 function SetRow({
@@ -648,6 +661,7 @@ function SetRow({
   showSteps: boolean;
 }) {
   const listId = useId();
+  const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState<Loaded>({ state: "idle" });
   const counts = countsLine(set.counts);
@@ -699,8 +713,21 @@ function SetRow({
             <ul id={listId} className="space-y-1 border-l-2 border-neon-yellow-text/60 pl-3">
               {shown.map((problem, i) => (
                 <li key={`${problem.cardNo ?? "unmatched"}-${problem.reason}-${i}`}>
-                  <span className="font-semibold text-ink">{problemCardName(problem, platform)}</span>
-                  <span className="text-ink-2"> {problemSentence(problem, readOnly, platform)}</span>
+                  {/* The collector's own card opens its panel, where the fix is; the admin's read-only view and a
+                      row NB can't tie to a card stay text. */}
+                  {!readOnly && problem.cardId ? (
+                    <Link to={heldBackHref(pathname, problem.cardId)} className={`group rounded-sm ${FOCUS}`}>
+                      <span className="font-semibold text-ink underline decoration-neon-blue-text underline-offset-2 group-hover:text-neon-blue-text">
+                        {problemCardName(problem, platform)}
+                      </span>
+                      <span className="text-ink-2"> {problemSentence(problem, readOnly, platform)}</span>
+                    </Link>
+                  ) : (
+                    <>
+                      <span className="font-semibold text-ink">{problemCardName(problem, platform)}</span>
+                      <span className="text-ink-2"> {problemSentence(problem, readOnly, platform)}</span>
+                    </>
+                  )}
                 </li>
               ))}
             </ul>

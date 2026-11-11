@@ -101,6 +101,22 @@ test(
     await sync.getByRole("link", { name: "Open Sync status", exact: true }).click();
     await expect(page).toHaveURL(/\/inventory\?tab=sync$/);
 
+    // On Sync status too, every held-back card is a way to its fix (so cards past what the dashboard
+    // names are reachable): the row, its reason beside it, opens the card's panel; Back returns here.
+    const ebayStatus = page.getByRole("region", { name: "eBay", exact: true });
+    const statusRow = ebayStatus.getByRole("link", {
+      name: new RegExp(`^#${escapeRegExp(card.number)} ${escapeRegExp(card.player)} .*price`, "i"),
+    });
+    await expect(statusRow).toBeVisible();
+    await expectAccessible(page, { label: "Inventory Sync status, held-back cards as links" });
+    await statusRow.click();
+    await expect(page).toHaveURL(/\/inventory\?tab=cards&detail=[^&]+$/);
+    await expect(drawer).toBeVisible();
+    await expect(yourCopies.getByRole("button", { name: `Edit ${card.short}, Raw, Excellent`, exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/inventory\?tab=sync$/);
+    await expect(statusRow).toBeVisible();
+
     // --- Clear the seeds: the order and the sync problems are gone -----------
     await page.goto("/testing/seed-dashboard?clear=1");
     await expect(page).toHaveURL(/\/dashboard$/);

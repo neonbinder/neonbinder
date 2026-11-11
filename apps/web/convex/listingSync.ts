@@ -813,6 +813,8 @@ export const queueVariantPage = internalMutation({
 
 /** One held-back card: NB's number and label, never a marketplace id. */
 const syncProblemValidator = v.object({
+  /** The card the row names, when NB hydrated it: the tab links the row to that card's panel. */
+  cardId: v.optional(v.id("cardChecklist")),
   cardNo: v.optional(v.string()),
   cardLabel: v.optional(v.string()),
   reason: listingProblemReasonValidator,
@@ -935,6 +937,7 @@ async function publicProblem(
   const card = await labels.card(problem.cardId);
   if (!card) return out;
   return {
+    cardId: problem.cardId,
     cardNo: card.cardNo,
     ...(card.cardLabel !== undefined ? { cardLabel: card.cardLabel } : {}),
     ...out,

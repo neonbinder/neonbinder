@@ -21,6 +21,7 @@ export type RawSetProblems = FunctionReturnType<typeof api.listingSync.syncSetPr
 function toProblem(raw: RawProblem): SyncProblem {
   return {
     reason: raw.reason,
+    ...(raw.cardId !== undefined ? { cardId: raw.cardId } : {}),
     ...(raw.cardNo !== undefined ? { cardNo: raw.cardNo } : {}),
     ...(raw.cardLabel !== undefined ? { cardLabel: raw.cardLabel } : {}),
     ...(raw.detail !== undefined ? { detail: raw.detail } : {}),
