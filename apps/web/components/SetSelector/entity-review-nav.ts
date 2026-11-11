@@ -170,7 +170,7 @@ export function preselectReasonLine(preselect: NavPreselect): string {
     case "hallOfFame":
       return `None of the ${preselect.name}s on file played that year, but one's in the Hall of Fame (${preselect.sportValue}). Same one?`;
     case "careerTeam":
-      return `Only one ${preselect.name} on file played for the team on this card (${preselect.sportValue}). Same one?`;
+      return `Only one ${preselect.name} on file ever played for this card's team (${preselect.sportValue}). Same one?`;
     case "onlyNamesake":
     default:
       return `We've only got one ${who} on file. Same one?`;
@@ -222,10 +222,16 @@ export type CareerContextCard = {
 
 /**
  * NEO-490 — what on the card settled a `careerTeam` auto-link, for
- * `describeDecision`: a PLAYER row gets the team printed on the first card
- * carrying its name ("Houston Astros"), a TEAM row the first player on the
- * first card printing its name ("Satchel Paige"). Null for any other row, or
- * when no card says.
+ * `describeDecision`: a PLAYER row gets the team printed on the card carrying
+ * its name ("Houston Astros"), a TEAM row the player on the card printing its
+ * name ("Satchel Paige"). Null for any other row, or when no card says.
+ *
+ * Named only when nothing else could have been meant: exactly ONE card
+ * carries the name, and that card prints exactly one team and one player.
+ * With two cards carrying the name, or a card with two teams or two players,
+ * the one this would print may not be the one that decided, and a wrong name
+ * here reads as a fact. Null then, and the line falls back to its general
+ * words ("played for the team on the card").
  *
  * Display only, and read off the cards the wizard already holds, so nothing
  * extra is stored on the row. Names compare by `normalizeEntityName`, the same
@@ -239,6 +245,7 @@ export function careerTeamContextFor(
   const decision = row.decision;
   if (decision?.action !== "link" || decision.autoLinked !== "careerTeam") return null;
   if (!cards || !row.name) return null;
+  if (row.kind !== "team" && row.kind !== "player") return null;
   const key = normalizeEntityName(row.name);
   if (!key) return null;
   const teamsOf = (card: CareerContextCard): string[] => {
@@ -246,18 +253,31 @@ export function careerTeamContextFor(
     if (named.length === 0 && card.team?.trim()) named.push(card.team.trim());
     return named;
   };
-  for (const card of cards) {
-    if (row.kind === "team") {
-      if (!teamsOf(card).some((t) => normalizeEntityName(t) === key)) continue;
-      const player = (card.players ?? []).map((p) => p.trim()).find(Boolean);
-      if (player) return player;
-    } else if (row.kind === "player") {
-      if (!(card.players ?? []).some((p) => normalizeEntityName(p) === key)) continue;
-      const team = teamsOf(card)[0];
-      if (team) return team;
-    }
-  }
-  return null;
+  const playersOf = (card: CareerContextCard): string[] =>
+    (card.players ?? []).map((p) => p.trim()).filter(Boolean);
+  const carrying = cards.filter((card) =>
+    (row.kind === "team" ? teamsOf(card) : playersOf(card)).some(
+      (n) => normalizeEntityName(n) === key,
+    ),
+  );
+  if (carrying.length !== 1) return null;
+  const teams = teamsOf(carrying[0]);
+  const players = playersOf(carrying[0]);
+  if (teams.length !== 1 || players.length !== 1) return null;
+  return row.kind === "team" ? players[0] : teams[0];
+}
+
+/**
+ * NEO-490 — a team name as it reads after "played for": "the Houston
+ * Astros", but "Team USA" and "USA" as they are, and a name that already
+ * starts with "the" left alone.
+ */
+function teamAfterPlayedFor(team: string): string {
+  if (/^the\s/i.test(team)) return team;
+  if (/^team\b/i.test(team)) return team;
+  // All caps (at least one letter, no lower-case): "USA", "CCCP".
+  if (/[A-Z]/.test(team) && team === team.toUpperCase()) return team;
+  return `the ${team}`;
 }
 
 /**
@@ -956,8 +976,9 @@ function settle(nav: NavState, next: NavState): NavState {
  * NEO-490 — `careerTeam` says what on the card settled it, in `careerContext`
  * (see `careerTeamContextFor`): a player row names the card's team, "Linked
  * to Nelson Cruz · played for the Houston Astros"; a team row names the
- * card's player, "Linked to St. Louis Browns · Satchel Paige's club". With no
- * context it still says why, in general words.
+ * card's player, "Linked to St. Louis Browns · Satchel Paige played there".
+ * With no context it still says why, in general words ("· played for the
+ * team on the card", "· the player on the card played there").
  */
 export function describeDecision(
   decision: NavDecision | null | undefined,
@@ -980,14 +1001,12 @@ export function describeDecision(
     if (decision.autoLinked === "careerTeam") {
       const context = careerContext?.trim();
       if (decision.linkedTeamId) {
-        const why = context ? `${context}'s club` : "the card's player played there";
+        const why = context
+          ? `${context} played there`
+          : "the player on the card played there";
         return who ? `Linked to ${who} · ${why}` : `Linked to a team · ${why}`;
       }
-      const team = context
-        ? /^the\s/i.test(context)
-          ? context
-          : `the ${context}`
-        : "the team on the card";
+      const team = context ? teamAfterPlayedFor(context) : "the team on the card";
       return who
         ? `Linked to ${who} · played for ${team}`
         : `Linked to a player · played for ${team}`;

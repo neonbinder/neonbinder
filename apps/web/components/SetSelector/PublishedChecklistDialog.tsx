@@ -133,15 +133,17 @@ export function checklistTeamsLine(matched: number, total: number): string {
 /**
  * NEO-490 — one checklist row as Match Cards prints it: "#17 Mike Lowell",
  * with " · Boston Red Sox" when the row names a team. Players and teams join
- * with " / ", as the dialog's other rosters do.
+ * with " / ", as the dialog's other rosters do. A card printed with no number
+ * reads "NNO Mike Lowell": "#NNO" would claim a number the card does not have.
  */
 export function checklistRowLine(row: {
   number: string;
   players: readonly string[];
   teams: readonly string[];
+  noNumber?: true;
 }): string {
   const who = row.players.join(" / ");
-  const base = `#${row.number}${who ? ` ${who}` : ""}`;
+  const base = `${row.noNumber ? "" : "#"}${row.number}${who ? ` ${who}` : ""}`;
   return row.teams.length > 0 ? `${base} · ${row.teams.join(" / ")}` : base;
 }
 
