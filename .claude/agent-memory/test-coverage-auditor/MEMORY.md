@@ -12,4 +12,4 @@
 - [Read-only reuse of an owner component](read-only-reuse-of-owner-component.md) — extracted hook owner wiring, privacy switch order in the spec, layout branches, "fixture too hard" claims
 - [Keyboard alternative to pointer, unit only](keyboard-alternative-to-pointer-unit-only.md) — Tab/Enter onto a drop box proven only in happy-dom; ask for a live press + per-viewport layout geometry
 - [Spec move mojibake](spec-rename-mojibake-vacuous-negatives.md) — renamed specs can corrupt … and arrows; negative asserts go vacuous; byte-grep every moved file
-- [Harness fix masked by product fallback](harness-fix-masked-by-product-fallback.md) — seed pre-doing lazy product work: E2E green proves nothing; unit tests per early-return branch are the proof
+- [Measured-wait helper](measured-wait-helper-untested-and-narrower-than-flat-timeout.md) — flat live timeout swapped for announced-wait credit: helper untested, narrower than the flat ceiling, 429 UI never forced live
