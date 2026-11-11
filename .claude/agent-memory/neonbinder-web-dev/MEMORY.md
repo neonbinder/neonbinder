@@ -189,3 +189,5 @@
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
 - [axe radiogroup may wrap content](reference_axe_radiogroup_may_wrap_content.md) — no requiredOwned in axe 4.13; wrap the card in the radiogroup, keep the li plain
 - [Leak assertion matches the epoch](reference_leak_assertion_matches_the_epoch.md) — bscSeller.telemetry "555" check trips on the epoch-ms `at`; rerun before blaming
+- [Real-app screenshots via suite helpers](reference_real_app_screenshots_reuse_the_suite_helpers.md) — scratch config + {"type":"module"}; emulateMedia per mode; force-click an aria-disabled NeonButton
+- [Sticky header in a padded scroller](reference_sticky_header_in_a_padded_scroller.md) — sticks at the padding edge; thead bg does not paint; sticky+bg per th, border-separate, overflow-clip

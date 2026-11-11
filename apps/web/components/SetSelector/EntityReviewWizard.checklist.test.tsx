@@ -6,7 +6,7 @@
  * The step's own markup is pinned in ChecklistConflictStep.test.tsx and the
  * pure rules in checklist-conflict.test.tsx; this file is the wiring.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -87,7 +87,7 @@ const PLAIN_CARD: Card = {
 
 let onChecklistChoicesChange: ReturnType<typeof vi.fn>;
 
-function wizard(cards: Card[]) {
+function wizard(cards: Card[], onCancel: () => void = vi.fn()) {
   return (
     <EntityReviewWizard
       isOpen
@@ -95,7 +95,7 @@ function wizard(cards: Card[]) {
       batchId="batch-1"
       summary={{ cardCount: cards.length, deleteCount: 0, reviewDecisionCount: 0 }}
       onConfirm={vi.fn()}
-      onCancel={vi.fn()}
+      onCancel={onCancel}
       previewCards={cards}
       onTeamAnswersChange={vi.fn()}
       onChecklistChoicesChange={onChecklistChoicesChange}
@@ -210,6 +210,65 @@ describe("the checklist step in the wizard (NEO-478)", () => {
     expect(onChecklistChoicesChange).toHaveBeenLastCalledWith(["marketplace", undefined]);
     fireEvent.click(NEXT());
     expect(screen.queryByRole("heading", { name: "Checklist says otherwise" })).toBeNull();
+  });
+
+  it("Cancel with only checklist picks made asks before discarding them (NEO-482)", async () => {
+    const onCancel = vi.fn();
+    render(wizard([CONFLICT_CARD, PLAIN_CARD], onCancel));
+    fireEvent.click(use());
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel \(Esc\)/ }));
+    // The pick is a decision: the existing confirmation stands between it and the bin.
+    expect(screen.getByText("Discard 1 decision?")).toBeTruthy();
+    expect(onCancel).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cancel with nothing picked still closes at once", async () => {
+    const onCancel = vi.fn();
+    render(wizard([CONFLICT_CARD, PLAIN_CARD], onCancel));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Cancel \(Esc\)/ }));
+    });
+    expect(screen.queryByText(/^Discard \d+ decisions?\?$/)).toBeNull();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts checklist picks and decided names together", () => {
+    currentRows = [
+      row({ name: "Pete Rose" }),
+      row({ name: "Pete Rosa" }),
+      row({ name: "Johnny Bench", decision: { action: "create" } }),
+    ];
+    render(wizard([CONFLICT_CARD, PLAIN_CARD]));
+    fireEvent.click(use());
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel \(Esc\)/ }));
+    expect(screen.getByText("Discard 2 decisions?")).toBeTruthy();
+  });
+
+  it("puts the lookup status on the buttons' line while the checklist step is up (NEO-482)", () => {
+    currentRows = [
+      row({ name: "Pete Rose" }),
+      row({ name: "Pete Rosa" }),
+      row({ name: "Johnny Bench", status: "pending" }),
+    ];
+    render(wizard([CONFLICT_CARD, PLAIN_CARD]));
+    const live = screen
+      .getAllByRole("status")
+      .find((el) => el.textContent === "1 still looking up — wait or skip");
+    expect(live).toBeTruthy();
+    // Row 2 sits FIRST in the footer's one flex line, beside the row that holds Next.
+    const statusRow = live!.parentElement as HTMLElement;
+    const footer = statusRow.parentElement as HTMLElement;
+    expect(statusRow.className).toContain("order-first");
+    expect(footer.className).toContain("flex");
+    expect(footer.className).not.toContain("space-y-2");
+    expect(footer.contains(NEXT())).toBe(true);
+    // It wraps rather than truncating; a phone gives it a line of its own.
+    expect(live!.className).not.toContain("truncate");
+    expect(statusRow.className).toContain("max-sm:basis-full");
   });
 
   it("a wizard with no checklistConflict never shows the step", () => {

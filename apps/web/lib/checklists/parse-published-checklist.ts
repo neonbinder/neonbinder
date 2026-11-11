@@ -22,6 +22,10 @@
  * the reason, never dropped silently. A card number is NOT treated as unique
  * (product rule 7): two rows with the same number are both kept, and the
  * server's exactly-one guard decides what they can match.
+ *
+ * A line whose leading "number" is a season ("1995-96 Fort Worth Fire team
+ * set") or the set's own year (`options.setYear`) is the checklist's title,
+ * not a card, and is skipped as `LOOKS_LIKE_A_TITLE`.
  */
 
 export type PublishedChecklistRow = {
@@ -200,9 +204,40 @@ function teamsFrom(cell: string): string[] {
 const NUMBER_TOKEN = /^#?([A-Za-z0-9][A-Za-z0-9.-]*)$/;
 
 function cleanNumber(raw: string): string | null {
-  const token = raw.trim().replace(/^#/, "").replace(/[.:]$/, "");
+  const token = numberToken(raw);
   if (!token || !/\d/.test(token) || !NUMBER_TOKEN.test(token)) return null;
   return token;
+}
+
+/** The raw number cell or first word, without a leading "#" or a trailing "." / ":". */
+function numberToken(raw: string): string {
+  return raw.trim().replace(/^#/, "").replace(/[.:]$/, "");
+}
+
+/**
+ * A season, "1995-96", "2024/25", "1999–2000": a title line's leading word
+ * ("1995-96 Fort Worth Fire team set"), never a card number.
+ */
+const SEASON = /^(19|20)\d{2}[-/–]\d{2,4}$/;
+
+/** Said for a line whose leading number is the set's year or a season. */
+export const LOOKS_LIKE_A_TITLE = "Looks like a title, not a card";
+
+/**
+ * A number that is the set's own year ("2024" on a 2024 set's heading line)
+ * or a season reads as a title, not a card. `setYear` is the 4-digit year,
+ * already pulled out of the set's year value.
+ */
+function readsAsTitle(raw: string, setYear: string | null): boolean {
+  const token = numberToken(raw);
+  return SEASON.test(token) || (setYear !== null && token === setYear);
+}
+
+/** "1995", "1995-96", 1995 → "1995"; anything without a leading 4-digit year → null. */
+function fourDigitYear(year: string | number | null | undefined): string | null {
+  if (year === null || year === undefined) return null;
+  const match = /^\s*((?:19|20)\d{2})(?!\d)/.exec(String(year));
+  return match ? match[1] : null;
 }
 
 /** Which limit, if any, a row breaks. */
@@ -221,8 +256,12 @@ function overLimit(row: PublishedChecklistRow): string | null {
  * The published line format, one line:
  * `<number> <players>[ - <teams>][ (note)]`.
  */
-function parseLine(text: string): PublishedChecklistRow | { reason: string } {
+function parseLine(
+  text: string,
+  setYear: string | null,
+): PublishedChecklistRow | { reason: string } {
   const match = /^\s*(\S+)\s*(.*)$/.exec(text);
+  if (match && readsAsTitle(match[1], setYear)) return { reason: LOOKS_LIKE_A_TITLE };
   const number = match ? cleanNumber(match[1]) : null;
   if (!match || !number) return { reason: "No card number at the start" };
   // Whitespace runs collapse to one space first: splitting on
@@ -257,11 +296,25 @@ function detectDelimited(firstLine: string): {
   return null;
 }
 
+/** What the caller knows about the set the checklist is for. */
+export type PublishedChecklistOptions = {
+  /**
+   * The set's year ("1995", or a season such as "1995-96": its first year is
+   * used). A line whose card number is that year is a title line, skipped
+   * with `LOOKS_LIKE_A_TITLE`.
+   */
+  setYear?: string | number | null;
+};
+
 /**
  * Read a pasted or uploaded checklist. Blank lines are not content and are
  * passed over; every other line is a row or a `skipped` entry.
  */
-export function parsePublishedChecklist(text: string): PublishedChecklistParse {
+export function parsePublishedChecklist(
+  text: string,
+  options: PublishedChecklistOptions = {},
+): PublishedChecklistParse {
+  const setYear = fourDigitYear(options.setYear);
   if (text.length > PUBLISHED_CHECKLIST_MAX_TEXT) {
     return { rows: [], skipped: [], format: "lines", tooBig: true };
   }
@@ -311,7 +364,7 @@ export function parsePublishedChecklist(text: string): PublishedChecklistParse {
       continue;
     }
     if (!header) {
-      const parsed = parseLine(raw);
+      const parsed = parseLine(raw, setYear);
       if ("reason" in parsed) skipped.push({ line: i + 1, text: raw, reason: parsed.reason });
       else keep(i, raw, parsed);
       continue;
@@ -332,6 +385,10 @@ export function parsePublishedChecklist(text: string): PublishedChecklistParse {
         teams.push(...teamsFrom(cell));
       }
     });
+    if (numberCell !== "" && readsAsTitle(numberCell, setYear)) {
+      skipped.push({ line: i + 1, text: raw, reason: LOOKS_LIKE_A_TITLE });
+      continue;
+    }
     if (!number) {
       skipped.push({
         line: i + 1,

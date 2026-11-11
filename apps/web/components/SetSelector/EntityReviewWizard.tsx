@@ -691,6 +691,11 @@ export default function EntityReviewWizard({
   const checklistUnansweredCount = checklistIndexes.filter(
     (i) => checklistChoices[i] === undefined,
   ).length;
+  /**
+   * NEO-482 — the checklist step's picks are decisions too: Cancel with only
+   * those made asks "Discard N decisions?" rather than throwing them away.
+   */
+  const checklistPickedCount = checklistIndexes.length - checklistUnansweredCount;
   /** Reported up as an aligned array, only when the answers change. */
   const reportedChecklist = useRef<string | null>(null);
   useEffect(() => {
@@ -1288,6 +1293,8 @@ export default function EntityReviewWizard({
 
   const total = rows?.length ?? 0;
   const decided = useMemo(() => rows?.filter((r) => r.decision).length ?? 0, [rows]);
+  /** What Cancel would throw away: the names decided and the checklist picks. */
+  const discardCount = decided + checklistPickedCount;
   /** What the OPERATOR is waiting on — every kind of row. Drives the status
    *  line, which is why it must not be narrowed to players.
    *
@@ -2247,13 +2254,13 @@ export default function EntityReviewWizard({
   // that triggered them, natively, which otherwise strands focus on
   // `<body>` for the length of the round-trip.
   //
-  // `cancelling && !confirming` on purpose: when `decided > 0`, `cancelling`
+  // `cancelling && !confirming` on purpose: when `discardCount > 0`, `cancelling`
   // flips true from INSIDE the already-open `ConfirmDialog` (its own
   // "Discard" button), which already parks focus on ITS OWN container via
   // the identical pattern. Parking here too would fire in the same commit
   // and steal focus back out of the confirm dialog that is still on screen.
   // This branch is for the one case ConfirmDialog is never involved in: the
-  // `decided === 0` immediate-cancel fast path.
+  // `discardCount === 0` immediate-cancel fast path.
   useEffect(() => {
     if ((cancelling && !confirming) || saving) dialogRootRef.current?.focus();
   }, [cancelling, confirming, saving]);
@@ -2948,7 +2955,7 @@ export default function EntityReviewWizard({
   const requestClose = () => {
     if (cancelling || saving) return;
     setCancelError(null);
-    if (decided === 0) {
+    if (discardCount === 0) {
       void runCancel();
       return;
     }
@@ -4155,6 +4162,22 @@ export default function EntityReviewWizard({
     (pickStep || preselectShown)
       ? pickNotice.text
       : footerStatus;
+
+  /**
+   * NEO-482 — with no row on screen (the checklist step, a post-review step,
+   * the list) row 1's left side is empty, and the status line under its
+   * reserved two-line height sat alone at the bottom-left, well below Cancel
+   * and Next. Then the status moves UP into the buttons' line, on their left,
+   * centred on them. Only when row 2 holds nothing but that text: the bulk
+   * links, the blocked reason and Stop keep row 2 as it was. The DOM does
+   * not move (only classes change), so the live region is never remounted.
+   */
+  const bulkLinksShown = !expired && !allDecided && !checklistPending && remainingNames > 0;
+  const statusBesideButtons =
+    current === null &&
+    !bulkLinksShown &&
+    !(createBlocked && !pickStep) &&
+    !(footerStatus !== null && autoAddPending);
 
   const summaryRows: Array<[string, number]> = [
     ["Cards to save", summary.cardCount],
@@ -6119,7 +6142,13 @@ export default function EntityReviewWizard({
           */}
           <div
             ref={footerRef}
-            className="px-6 py-4 border-t border-rule-strong shrink-0 space-y-2"
+            className={`px-6 py-4 border-t border-rule-strong shrink-0 ${
+              statusBesideButtons
+                ? // Row 2 first (`order-first`), on the buttons' line; on a
+                  // phone it takes the full width above them and wraps.
+                  "flex items-center gap-x-4 gap-y-2 max-sm:flex-wrap"
+                : "space-y-2"
+            }`}
           >
             {/*
               ROW 1 — actions. The right group never yields (`shrink-0`); the
@@ -6154,7 +6183,11 @@ export default function EntityReviewWizard({
                * word by word, and at 375px the right group clipped the one
                * button the step exists for. sm and up are unchanged.
                */
-              className="flex min-h-[4.25rem] items-center justify-between gap-4 max-sm:flex-wrap max-sm:gap-y-3"
+              className={
+                statusBesideButtons
+                  ? "flex shrink-0 items-center justify-end gap-4 max-sm:w-full max-sm:flex-wrap max-sm:gap-y-3"
+                  : "flex min-h-[4.25rem] items-center justify-between gap-4 max-sm:flex-wrap max-sm:gap-y-3"
+              }
             >
             {/*
               ROW 1 LEFT — THE DECISION FOR THE ROW ON SCREEN.
@@ -6172,9 +6205,14 @@ export default function EntityReviewWizard({
               Mutually exclusive with "Confirm & Save" on the right by
               construction: a presented row means not every row is decided.
             */}
-            <div className="flex min-w-0 flex-wrap items-center gap-3 max-sm:basis-full">
-              {decisionControls}
-            </div>
+            {/* Not rendered with the status beside the buttons: there is no
+                row on screen then, so no decision, and an empty full-width
+                line here would only add a gap on a phone. */}
+            {!statusBesideButtons && (
+              <div className="flex min-w-0 flex-wrap items-center gap-3 max-sm:basis-full">
+                {decisionControls}
+              </div>
+            )}
             {/* The buttons never yield: if row 1 is ever too narrow, the bulk
                 links clip, not the way out of the dialog. */}
             <div className="flex shrink-0 items-center gap-3 max-sm:w-full max-sm:flex-wrap max-sm:justify-end">
@@ -6407,7 +6445,13 @@ export default function EntityReviewWizard({
               bulk links wrap onto the next line inside the dialog rather than
               running past its right edge. sm and up are unchanged.
             */}
-            <div className="flex min-h-6 items-center gap-3 max-sm:flex-wrap max-sm:gap-y-2">
+            <div
+              className={
+                statusBesideButtons
+                  ? "order-first flex min-w-0 flex-1 items-center max-sm:basis-full"
+                  : "flex min-h-6 items-center gap-3 max-sm:flex-wrap max-sm:gap-y-2"
+              }
+            >
               {/*
                 The live region is its OWN element and holds only text. The bulk
                 links sit beside it, deliberately outside it: a button inside a
@@ -6471,8 +6515,12 @@ export default function EntityReviewWizard({
                    note above. Inherited, this was Radix's `--gray-12` at 16px:
                    not a contrast failure, but not the muted status line the
                    footer's reserved height is measured against either. */
-                className={`min-w-0 truncate text-xs text-ink-3 max-sm:basis-full ${
-                  createBlocked && !pickStep ? "shrink-0" : "flex-1"
+                className={`min-w-0 text-xs text-ink-3 max-sm:basis-full ${
+                  statusBesideButtons
+                    ? // Beside the buttons it wraps rather than truncates:
+                      // the line is short, and a phone gives it its own row.
+                      "flex-1 text-pretty"
+                    : `truncate ${createBlocked && !pickStep ? "shrink-0" : "flex-1"}`
                 }`}
                 role="status"
                 aria-live="polite"
@@ -6590,7 +6638,7 @@ export default function EntityReviewWizard({
       */}
       {confirming && (
         <ConfirmDialog
-          title={`Discard ${decided} ${decided === 1 ? "decision" : "decisions"}?`}
+          title={`Discard ${discardCount} ${discardCount === 1 ? "decision" : "decisions"}?`}
           description="Your review decisions for this fetch are thrown away and no cards are saved. The same names come back the next time you sync this set."
           confirmLabel="Discard"
           busyLabel="Discarding…"

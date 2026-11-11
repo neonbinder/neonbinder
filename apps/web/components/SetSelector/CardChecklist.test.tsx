@@ -1691,6 +1691,17 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
     });
 
+    it("while a checklist is attached the chip is its handle: no add button, focus on Remove, and Remove brings the button back focused (NEO-482)", async () => {
+      renderChecklist();
+      await addChecklist();
+      expect(screen.queryByRole("button", { name: "Add the publisher's checklist" })).toBeNull();
+      const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
+      await waitFor(() => expect(document.activeElement).toBe(remove));
+      fireEvent.click(remove);
+      const add = await screen.findByRole("button", { name: "Add the publisher's checklist" });
+      await waitFor(() => expect(document.activeElement).toBe(add));
+    });
+
     it("the next sync passes the rows and a valid waitKey to fetchCardChecklist", async () => {
       const { rerender } = renderChecklist();
       await addChecklist();

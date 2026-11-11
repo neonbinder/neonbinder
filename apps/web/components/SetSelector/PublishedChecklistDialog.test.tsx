@@ -287,10 +287,12 @@ describe("the copy helpers and the chip", () => {
     expect(onRemove).not.toHaveBeenCalled();
   });
 
-  it("Remove is at least a 24px target (WCAG 2.5.8), 44px on a phone", () => {
+  it("Remove is at least a 24px target (WCAG 2.5.8), 44px to a finger, in a one-line chip", () => {
     render(<PublishedChecklistChip rowCount={3} onRemove={vi.fn()} />);
     const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
     expect(remove.className).toContain("min-h-6");
-    expect(remove.className).toContain("max-sm:min-h-11");
+    // 24px + 10px above and below: the target grows, the chip does not.
+    expect(remove.className).toContain("after:-inset-y-2.5");
+    expect(remove.className).not.toContain("min-h-11");
   });
 });

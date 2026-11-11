@@ -4,6 +4,7 @@ import {
   PUBLISHED_CHECKLIST_MAX_NAME,
   PUBLISHED_CHECKLIST_MAX_ROWS,
   PUBLISHED_CHECKLIST_MAX_TEXT,
+  LOOKS_LIKE_A_TITLE,
   parsePublishedChecklist,
   splitDelimited,
 } from "./parse-published-checklist";
@@ -80,6 +81,72 @@ describe("parsePublishedChecklist — the published line format", () => {
   it("reads CRLF and a leading BOM", () => {
     const out = parsePublishedChecklist("﻿1 A Player - Team A\r\n2 B Player - Team B");
     expect(out.rows.map((r) => r.number)).toEqual(["1", "2"]);
+  });
+});
+
+describe("parsePublishedChecklist — a title line is not a card", () => {
+  it("skips a line led by a season as a title, whatever the separator", () => {
+    const out = parsePublishedChecklist(
+      [
+        "1995-96 Fort Worth Fire team set",
+        "2024/25 Topps Chrome",
+        "1999–2000 Upper Deck",
+        "1 Scott Allen - Fort Worth Fire",
+      ].join("\n"),
+    );
+    expect(out.rows.map((r) => r.number)).toEqual(["1"]);
+    expect(out.skipped).toEqual([
+      { line: 1, text: "1995-96 Fort Worth Fire team set", reason: LOOKS_LIKE_A_TITLE },
+      { line: 2, text: "2024/25 Topps Chrome", reason: LOOKS_LIKE_A_TITLE },
+      { line: 3, text: "1999–2000 Upper Deck", reason: LOOKS_LIKE_A_TITLE },
+    ]);
+    expect(LOOKS_LIKE_A_TITLE).toBe("Looks like a title, not a card");
+  });
+
+  it("keeps a card number that only looks like a range or a year without a set year", () => {
+    const out = parsePublishedChecklist(
+      ["BDC-12 Some Player - Team A", "1995 Some Player - Team B", "1895-96 Old Timer - Team C"].join(
+        "\n",
+      ),
+    );
+    expect(out.rows.map((r) => r.number)).toEqual(["BDC-12", "1995", "1895-96"]);
+    expect(out.skipped).toEqual([]);
+  });
+
+  it("skips a line whose number is the set's year, given as a number, a string or a season", () => {
+    const text = "1995 Fort Worth Fire\n#1995. Fort Worth Fire\n1 Scott Allen - Fort Worth Fire";
+    for (const setYear of [1995, "1995", "1995-96"]) {
+      const out = parsePublishedChecklist(text, { setYear });
+      expect(out.rows.map((r) => r.number)).toEqual(["1"]);
+      expect(out.skipped.map((s) => [s.line, s.reason])).toEqual([
+        [1, LOOKS_LIKE_A_TITLE],
+        [2, LOOKS_LIKE_A_TITLE],
+      ]);
+    }
+  });
+
+  it("keeps another year's number, and ignores a set year it cannot read", () => {
+    expect(
+      parsePublishedChecklist("1996 Some Player - Team A", { setYear: 1995 }).rows,
+    ).toHaveLength(1);
+    for (const setYear of [null, undefined, "", "Unknown", "95", "19955"]) {
+      expect(
+        parsePublishedChecklist("1995 Some Player - Team A", { setYear }).rows,
+      ).toHaveLength(1);
+    }
+  });
+
+  it("skips a title in a CSV number column too", () => {
+    const out = parsePublishedChecklist(
+      "Card Number,Player,Team\n1995-96,Fort Worth Fire,\n2024,Header,Card\n7,A Guy,Team A",
+      { setYear: "2024" },
+    );
+    expect(out.format).toBe("csv");
+    expect(out.rows.map((r) => r.number)).toEqual(["7"]);
+    expect(out.skipped.map((s) => [s.line, s.reason])).toEqual([
+      [2, LOOKS_LIKE_A_TITLE],
+      [3, LOOKS_LIKE_A_TITLE],
+    ]);
   });
 });
 

@@ -1160,6 +1160,14 @@ export default function CardChecklist({
   /** The button that opened the dialog, so focus goes back to it (or to the chip's Remove). */
   const publishedOpenerRef = useRef<HTMLButtonElement>(null);
   /**
+   * The chip's Remove. Using a checklist takes "Add the publisher's
+   * checklist" away (the chip is the handle while one is attached), so focus
+   * lands here instead of on a button that is gone.
+   */
+  const publishedRemoveRef = useRef<HTMLButtonElement>(null);
+  /** The set's year, so the dialog reads a "1995 …" heading line as a title. */
+  const setYearValue = ancestorChain?.find((c) => c.level === "year")?.value ?? null;
+  /**
    * NEO-478 — "Teams from your checklist: N of M cards", for this run. A ref
    * like `soloKeptRef`: every line the run says from the fetch to the save
    * carries it.
@@ -1281,6 +1289,23 @@ export default function CardChecklist({
   // see no visible feedback after submit. Cleared once `cards` length has
   // grown.
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  /**
+   * NEO-482 — was this checklist EMPTY when it first loaded in this sitting?
+   * Then the list mounts only when a save (or the first Add Card) fills it,
+   * and it opens at its TOP: the operator has just saved the set and reads it
+   * from #1. Opening at the end (`initialTopMostItemIndex`) is for coming
+   * BACK to a checklist that already had cards. Recorded once per leaf, on
+   * the render its cards first arrive (render-phase, the previous-render
+   * pattern), so moving to another leaf and back reads that leaf afresh.
+   */
+  const [firstLoad, setFirstLoad] = useState<{
+    variantId: Id<"selectorOptions">;
+    empty: boolean;
+  } | null>(null);
+  if (cards !== undefined && firstLoad?.variantId !== variantId) {
+    setFirstLoad({ variantId, empty: cards.length === 0 });
+  }
+  const filledThisSitting = firstLoad?.variantId === variantId && firstLoad.empty;
   const newCardIdRef = useRef<Id<"cardChecklist"> | null>(null);
   const prevCardCountRef = useRef(0);
   // NEO-195: true from the moment a sync starts until the action resolves.
@@ -3176,8 +3201,10 @@ export default function CardChecklist({
   /**
    * NEO-478 — "Add the publisher's checklist", beside Sync wherever Sync is.
    * Purple (tertiary): a supporting input to the sync, not the sync itself.
+   * Not while a checklist is attached: the chip says so, and its Remove
+   * brings this back.
    */
-  const publishedChecklistButton = (
+  const publishedChecklistButton = activePublished ? null : (
     <NeonButton
       ref={publishedOpenerRef}
       variant="tertiary"
@@ -3262,6 +3289,7 @@ export default function CardChecklist({
           <PublishedChecklistChip
             rowCount={activePublished.rows.length}
             disabled={busy}
+            removeRef={publishedRemoveRef}
             onRemove={() => {
               setPublishedChecklist(null);
               // The chip and its button go; land on the button that adds one.
@@ -3898,8 +3926,11 @@ export default function CardChecklist({
             // NEO-343: a search result opens at its FIRST match instead — the
             // list remounts when a query that found nothing starts finding
             // cards again.
+            //
+            // NEO-482: and a checklist that was empty when it loaded opens at
+            // #1 — its first save just filled it (see `filledThisSitting`).
             initialTopMostItemIndex={
-              searching || displayRows.length === 0
+              searching || filledThisSitting || displayRows.length === 0
                 ? 0
                 : displayRows.length - 1
             }
@@ -4036,9 +4067,13 @@ export default function CardChecklist({
       {publishedDialogOpen && (
         <PublishedChecklistDialog
           initial={activePublished}
+          setYear={setYearValue}
           onUse={(checklist) => {
             setPublishedChecklist({ variantId, checklist });
             setPublishedDialogOpen(false);
+            // The opener goes with the dialog (the chip replaces it), so the
+            // dialog's own restore has nothing to land on: Remove takes it.
+            requestAnimationFrame(() => publishedRemoveRef.current?.focus());
           }}
           onCancel={() => setPublishedDialogOpen(false)}
           restoreFocusRef={publishedOpenerRef}
