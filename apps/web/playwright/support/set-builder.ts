@@ -19,6 +19,7 @@
  *   button   "Add custom Years"          (+ Custom)
  */
 import { expect, type Locator, type Page } from "@playwright/test";
+import { columnSyncFailedMessage } from "../../components/SetSelector/column-sync-failed";
 import type { FlowEnv } from "./env";
 import { expectAfterMarketplace } from "./marketplace-wait";
 
@@ -31,9 +32,45 @@ export type Column =
   | "Inserts"
   | "Parallels";
 
+/** `s` as a literal inside a RegExp. */
+export function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * NEO-450: ANY column's failed-sync sentence ("Couldn't sync <column> —
+ * please try again."), cut from the product's own builder around a marker, so
+ * a copy change moves this with it instead of silently matching nothing. For
+ * page-wide "no column failed" checks (setup.spec's `expectNoSyncFailure`);
+ * `columnSyncError` is the one-column locator.
+ */
+const COLUMN_MARKER = "\u0001";
+const [SYNC_FAILED_HEAD, SYNC_FAILED_TAIL] = columnSyncFailedMessage(COLUMN_MARKER).split(COLUMN_MARKER);
+export const ANY_COLUMN_SYNC_FAILED = new RegExp(`${escapeRe(SYNC_FAILED_HEAD)}.+${escapeRe(SYNC_FAILED_TAIL)}`);
+
 /** The panel's subtitle: the signal that the Set Builder (not the nav) has mounted. */
 export function setBuilderReady(page: Page): Locator {
   return page.getByText("Build set parameters using marketplace APIs");
+}
+
+/**
+ * NEO-450: the column's own "Couldn't sync <column> — please try again."
+ * box, shown when its sync failed outright. It is an `alert` when THIS
+ * session's own sync attempt failed, and a `status` when the error is one the
+ * server already held (another session's failed sync, or one stored before
+ * this page loaded); same sentence either way, so this matches both. The
+ * sentence filter keeps it apart from the column's other `status` box (the
+ * sync-done notice). While it shows on an empty column the idle
+ * "No <column> available…" line is hidden, so the empty line is no longer
+ * proof the sync ran. The sentence comes from the product's own builder, so
+ * it cannot drift from what the column draws. The retry is the column's
+ * `Sync <column>` button.
+ */
+export function columnSyncError(page: Page, column: Column): Locator {
+  return page
+    .getByRole("alert")
+    .or(page.getByRole("status"))
+    .filter({ hasText: columnSyncFailedMessage(column) });
 }
 
 export function columnHeading(page: Page, column: Column): Locator {
@@ -187,14 +224,25 @@ export async function selectOrCreate(
   { via = "search", confirm }: SelectOrCreateOptions = {},
 ): Promise<void> {
   const option = columnOption(page, column, name);
+  const syncFailed = columnSyncError(page, column);
+  // The column settles on its rows, its "nothing here" line, or its failed-
+  // sync alert (NEO-450: the empty line is hidden while that alert shows, so
+  // without it a failed sync would only surface as a 7 s timeout). `.first()`:
+  // the alert can sit beside rows a sync stored earlier.
   if (via === "search") {
     await columnSearch(page, column).fill(name);
-    await expect(option.or(page.getByText("No matches found"))).toBeVisible();
+    await expect(option.or(page.getByText("No matches found")).or(syncFailed).first()).toBeVisible();
   } else {
     const anyRow = page.getByRole("listbox", { name: column }).getByRole("option").first();
     const empty = page.getByText(`No ${column.toLowerCase()} available`);
-    await expect(anyRow.or(empty)).toBeVisible();
+    await expect(anyRow.or(empty).or(syncFailed).first()).toBeVisible();
   }
+  // A failed sync is a product bug, never a cue to retry or to hand-make the
+  // row: making it here would hide the failure behind a "+ Custom" row.
+  await expect(
+    syncFailed,
+    `${column}'s sync failed ("${columnSyncFailedMessage(column)}"); selectOrCreate never makes a row over a failed sync`,
+  ).toBeHidden();
   if (!(await option.isVisible())) {
     await addCustomEntry(page, column, name, { confirm });
     if (via === "search") await columnSearch(page, column).fill(name);
@@ -387,6 +435,17 @@ export async function drillToColdManufacturer(
     const allBrands = columnOption(page, "Manufacturers", "All Brands");
     await expect(allBrands).toBeVisible();
     if (!env.SL_PAUSED) await expect(empty).toBeHidden({ timeout: 60_000 });
+    // NEO-450: a failed sync hides the empty line too, so the line going is
+    // no proof the brands landed; the column's failed-sync alert must be
+    // absent as well. `Sync Manufacturers` renders only once the column's
+    // status read has landed (NEO-427), so wait for it first: before that the
+    // alert is absent whatever the status, and the check below would pass
+    // without having read anything.
+    await expect(page.getByRole("button", { name: "Sync Manufacturers", exact: true })).toBeVisible();
+    await expect(
+      columnSyncError(page, "Manufacturers"),
+      "the Manufacturers sync failed under All Brands",
+    ).toBeHidden();
     // Paused, the pinned view is the column's only guaranteed entry: the rest
     // (the year's `Unknown` row, hand-made brands) depend on which specs ran
     // first, so none of it is asserted here.
