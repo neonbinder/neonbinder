@@ -562,8 +562,12 @@ describe("CardPairingModal — isStreaming (NEO-195/a11y)", () => {
   test("the streaming sentence is absent when not streaming, but the status region stays mounted", () => {
     renderModal({});
     expect(document.getElementById("pairing-streaming-status")).toBeNull();
-    const region = screen.getByRole("status");
-    expect(region.id).toBe("pairing-streaming-announcer");
+    // NEO-490 added the checklist's own status region beside the stream's, so
+    // the stream's is found by its id, not as the only role=status.
+    const region = screen
+      .getAllByRole("status")
+      .find((el) => el.id === "pairing-streaming-announcer")!;
+    expect(region).toBeTruthy();
     expect(region.textContent).toBe("");
   });
 
