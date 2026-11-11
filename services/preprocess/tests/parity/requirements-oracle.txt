@@ -9,8 +9,9 @@
 #   pip install --no-deps --require-hashes --only-binary=:all: -r <this file>
 #   pip check
 # Every hash is the cp312 manylinux x86_64 (or py3-none-any) wheel on PyPI.
-# Dependabot ignores these packages (.github/dependabot.yml): a bump changes
-# the oracle, so it is made by hand, and only with the goldens regenerated.
+# Dependabot's block for this directory has version updates off
+# (.github/dependabot.yml): a bump changes the oracle, so it is made by hand,
+# and only with the goldens regenerated.
 rembg==2.0.78 \
     --hash=sha256:57dde57215d0cd407947753bd9928c927c363c7381139ae87dcd6160cc13c89a
     # rembg-2.0.78-py3-none-any.whl

@@ -1,32 +1,30 @@
 ---
 name: preprocess-spend-is-heavy-cold-starts-times-ci-runs
-description: GCP spend is per E2E run, not idle - heavy preprocess cold starts (~2/3 of heavy cost, ~100 s of each is the rembg/onnxruntime import) plus fast-lane Vision calls; measure with startup_latencies + per-instance request logs before proposing a cost fix
+description: GCP spend is per E2E run, not idle - heavy preprocess cold starts times E2E run count dominate; measure with startup_latencies + per-instance request logs before proposing a cost fix
 metadata:
   type: project
 ---
 
-Measured for NEO-484 (2026-11-10). Dev holds ~85-90% of the bill and it scales
-with full E2E runs, not time: request-based billing, scale-to-zero, zero-cost
-days when CI is quiet. PRs that do not touch services/preprocess all share the
-dev main heavy revision; preprocess PR previews are only ~10% of heavy time.
+Pattern from NEO-484 (2026-11-10). Under request-based billing with
+scale-to-zero, preprocess spend scales with full E2E runs, not with time:
+quiet CI days cost almost nothing. The multiplier is heavy cold-start time x
+E2E run count, so a cold-start cut is the main lever.
 
-- Heavy (4 vCPU / 16Gi, concurrency 1): each instance serves ~3 escalations
-  (~35 s BiRefNet each) after a ~230 s cold start, so cold starts are ~2/3 of
-  heavy cost. Startup phases from the log lines: ~100 s between "Waiting for
-  application startup" and "loading BiRefNet session" (the onnxruntime + rembg
-  import inside `_get_session`), ~40 s session create, ~48 s dummy inference
-  (rembg pads to 1024, so it is a full pass), plus probe-period lag.
-- Most cold-started instances serve real escalations; warm-on-intent instances
-  that never get work are ~12%, so cutting warm-ups is not the lever.
-- Vision is called ~0.85x per fast-lane entry; heavy gets the baseline passed
-  through and almost never calls it.
-- Heavy memory p99 is ~55% of 16Gi.
+- Each heavy instance serves only a few escalations, so its cold start is a
+  large share of its billed time.
+- Break a cold start into phases from the startup log lines (module import,
+  session create, any warm-up inference, probe lag) before choosing a fix. In
+  NEO-484 most of it was imports (numba compiling an unused dependency, then
+  lazily read image layers), not the model.
+- Warm-on-intent instances that never get work, preview deploys and warm-up
+  fan-outs were each small; check them, but don't assume they are the lever.
 
-**Why:** the obvious guesses (preview deploys, idle instances, warm-up
-fan-outs) are each small; the multiplier is cold-start time x E2E run count.
+**Why:** the obvious guesses are each small; the multiplier is cold-start time
+x run count.
 
 **How to apply:** for any spend or heavy-latency plan, pull
 `run.googleapis.com/container/startup_latencies` count/mean and the heavy request
 log grouped by instance before sizing a fix. A cold-start cut also relieves the
 heavy-escalation E2E reds ([[heavy-escalation-red-read-the-request-log-per-instance]]).
-Keep project ids and billing table names out of this file.
+Keep bill shares, service sizing, project ids and billing table names out of
+this file; they belong in the private operational notes.

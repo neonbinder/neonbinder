@@ -15,7 +15,10 @@ same key first, which is success: the key fixes the value.
 
 **Bounded.** Reads time out after 2 s and writes after 5 s, with the library's
 retries off (`retry=None`). A slow or failing bucket costs at most that, then
-the request runs live.
+the request runs live. A read asks for at most `MAX_OBJECT_BYTES + 1` bytes (one
+ranged GET, no extra metadata call), so an object over `MAX_OBJECT_BYTES` is
+never held whole in memory and never decoded: it reads as CORRUPT, the request
+runs live, and the answer overwrites it.
 
 **Never raises.** Every failure is an outcome or a False, plus a counter bumped
 by the kind module, plus a rate-limited warning that names the exception class
@@ -44,6 +47,10 @@ logger = logging.getLogger(__name__)
 MAGIC: Final[bytes] = b"NBC1"
 DIGEST_LEN: Final[int] = 32
 HEADER_LEN: Final[int] = len(MAGIC) + DIGEST_LEN
+
+# The largest object a read will accept. Real payloads (a Vision response proto,
+# a padded alpha plane PNG) are a few MB at most; anything larger is not ours.
+MAX_OBJECT_BYTES: Final[int] = 64 * 1024 * 1024
 
 READ_TIMEOUT_S: Final[float] = 2.0
 WRITE_TIMEOUT_S: Final[float] = 5.0
@@ -127,6 +134,10 @@ def warn_limited(kind: str, op: str, exc: BaseException | None = None) -> None:
     logger.warning("devcache: %s %s failed (%s); running live", kind, op, reason)
 
 
+class ObjectTooLarge(Exception):  # noqa: N818 - names the log line, never raised
+    """A cached object over `MAX_OBJECT_BYTES`; only its class name is ever logged."""
+
+
 class CacheOff(Exception):  # noqa: N818 - a signal, not an error
     """Raised by a kind's key builder when that kind is off for this process.
 
@@ -204,13 +215,18 @@ class CacheStore:
         """Read and unwrap one object. Never raises."""
         try:
             blob = self._blob(kind, key)
-            data = blob.download_as_bytes(timeout=READ_TIMEOUT_S, retry=None)
+            # `end` is inclusive: one byte past the cap tells an over-cap object
+            # from one exactly at it, without a separate metadata request.
+            data = blob.download_as_bytes(end=MAX_OBJECT_BYTES, timeout=READ_TIMEOUT_S, retry=None)
         except Exception as exc:  # noqa: BLE001 - every failure is an outcome
             if _is_not_found(exc):
                 return Read(MISS)
             warn_limited(kind, "read", exc)
             return Read(ERROR)
         generation = _generation_of(blob)
+        if len(data) > MAX_OBJECT_BYTES:
+            warn_limited(kind, "size", ObjectTooLarge())
+            return Read(CORRUPT, generation=generation)
         payload = decode(bytes(data))
         if payload is None:
             warn_limited(kind, "envelope")

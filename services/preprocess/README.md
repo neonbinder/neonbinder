@@ -439,7 +439,9 @@ is the pre-merge proof.
 **Storage.** Objects are `NBC1` + sha256(payload) + payload. Writes are
 create-only (`if_generation_match=0`; a 412 means another request stored the
 same answer first and counts as success). A damaged object is a miss: the call
-runs live and the answer overwrites that exact generation. Reads time out
+runs live and the answer overwrites that exact generation. An object over
+64 MiB is treated the same way and never decoded: a read fetches at most one
+byte past the cap. Reads time out
 after 2 s and writes after 5 s, with retries off; any failure runs live, bumps
 a counter and logs a rate-limited warning naming the exception class only,
 never a key. The bucket deletes objects after 7 days.
@@ -463,6 +465,14 @@ RUN_INTEGRATION_TESTS=1 DEVCACHE_ITEST_BUCKET=<dev cache bucket> \
 
 BiRefNet runs a deterministic stand-in there unless `BIREFNET_HOME` holds a
 baked model and `DEVCACHE_ITEST_REAL_BIREFNET=1` is set.
+
+**Trust.** IAM on the cache bucket is the security boundary; the gates decide
+correctness, and the envelope's sha256 catches damage, not forgery. See
+`app/devcache/__init__.py`.
+
+**Runbook.** If a dev E2E red looks like a wrong mask or a wrong OCR answer,
+wipe the cache prefix in the dev cache bucket (`vision/`, `birefnet/`, or
+both) and rerun; every entry is rebuilt live on its next miss.
 
 ## BiRefNet: direct onnxruntime (NEO-484)
 
@@ -543,8 +553,10 @@ lists plus the new one, keeping the same `--goldens-from` run and tolerance.
 The PNGs are copied from that run, so they come out byte-identical, and the
 manifest gains the new fingerprint and run. Check both before committing.
 
-Dependabot ignores the oracle-only packages; bump them by hand, together with
-the goldens.
+Dependabot has its own block for `tests/parity` with version updates off
+(`open-pull-requests-limit: 0` in `.github/dependabot.yml`), so the oracle and
+check pins are bumped by hand, together with the goldens. A Dependabot security
+PR there gets the same treatment before it merges.
 
 ## Cold start: deferred SDK imports (NEO-484)
 

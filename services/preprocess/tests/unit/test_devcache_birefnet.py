@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import io
 import json
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +40,22 @@ def home(tmp_path, monkeypatch):
     monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
     (tmp_path / "birefnet-general.onnx.sha256").write_text(f"{WEIGHTS}  birefnet-general.onnx\n")
     return tmp_path
+
+
+def _png_header(width: int, height: int) -> bytes:
+    """An 8-bit grayscale PNG that declares `width`x`height` but carries no real pixels."""
+
+    def chunk(cid: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(cid + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + cid + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(b"\x00"))
+        + chunk(b"IEND", b"")
+    )
 
 
 def _padded(seed: int = 7, shape=(40, 30, 3)) -> np.ndarray:
@@ -221,6 +239,27 @@ class TestValue:
         payload = db.encode_alpha(np.zeros((3, 4), np.uint8))
         with pytest.raises(ValueError):
             db.decode_alpha(payload, (4, 3))
+
+    def test_decode_refuses_the_wrong_size_before_decoding_pixels(self, monkeypatch):
+        from PIL import PngImagePlugin
+
+        def _no_load(self):
+            raise AssertionError("pixel data decoded before the size check")
+
+        payload = db.encode_alpha(np.zeros((3, 4), np.uint8))
+        monkeypatch.setattr(PngImagePlugin.PngImageFile, "load", _no_load)
+        with pytest.raises(ValueError, match="wrong shape"):
+            db.decode_alpha(payload, (4, 3))
+
+    def test_decode_refuses_huge_declared_dimensions_without_allocating(self, monkeypatch):
+        from PIL import PngImagePlugin
+
+        def _no_load(self):
+            raise AssertionError("pixel data decoded before the size check")
+
+        monkeypatch.setattr(PngImagePlugin.PngImageFile, "load", _no_load)
+        with pytest.raises(ValueError, match="wrong shape"):
+            db.decode_alpha(_png_header(8000, 8000), (40, 30))
 
     @pytest.mark.parametrize("fmt,mode", [("PNG", "RGB"), ("JPEG", "L"), ("PNG", "I;16")])
     def test_decode_refuses_other_images(self, fmt, mode):

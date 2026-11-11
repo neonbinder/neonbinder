@@ -25,3 +25,7 @@ tests/fixtures/*.webp
 # committed toolchain.
 scripts/logs.sh
 scripts/logs-tail.sh
+
+# NEO-484 mask-parity recipe output: fixture photos and the ~970 MB original
+# BiRefNet model (tests/parity, README). Never committed.
+.parity/

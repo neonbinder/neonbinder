@@ -34,8 +34,11 @@ class FakeCacheBlob:
         self.name = name
         self.generation: int | None = None
 
-    def download_as_bytes(self, *, timeout: float, retry: Any) -> bytes:
-        self._client.calls.append(("read", self.name, {"timeout": timeout, "retry": retry}))
+    def download_as_bytes(self, *, end: int, timeout: float, retry: Any) -> bytes:
+        """`end` is required here (inclusive, as in GCS) so every read is bounded."""
+        self._client.calls.append(
+            ("read", self.name, {"end": end, "timeout": timeout, "retry": retry})
+        )
         if self._client.read_error is not None:
             raise self._client.read_error
         objects = self._client.objects(self.bucket)
@@ -43,7 +46,7 @@ class FakeCacheBlob:
             raise gexc.NotFound("no such object")
         data, generation = objects[self.name]
         self.generation = generation
-        return data
+        return data[: end + 1]
 
     def upload_from_string(
         self,
@@ -212,7 +215,7 @@ class TestCacheStore:
             "retry": None,
         }
         (rd,) = client.ops("read")
-        assert rd[2] == {"timeout": 2.0, "retry": None}
+        assert rd[2] == {"end": 64 * 1024 * 1024, "timeout": 2.0, "retry": None}
 
     def test_missing_object_is_a_miss(self):
         assert store.CacheStore(BUCKET, client=FakeCacheClient()).get("vision", KEY) == store.Read(
@@ -224,6 +227,42 @@ class TestCacheStore:
         gen = client.seed(f"vision/{KEY}", b"garbage")
         read = store.CacheStore(BUCKET, client=client).get("vision", KEY)
         assert read == store.Read(store.CORRUPT, generation=gen)
+
+    def test_an_object_exactly_at_the_cap_is_a_hit(self, monkeypatch):
+        client = FakeCacheClient()
+        payload = b"p" * 64
+        monkeypatch.setattr(store, "MAX_OBJECT_BYTES", len(store.encode(payload)))
+        client.seed(f"vision/{KEY}", store.encode(payload))
+        read = store.CacheStore(BUCKET, client=client).get("vision", KEY)
+        assert read.outcome == store.HIT
+        assert read.payload == payload
+
+    def test_an_object_over_the_cap_is_corrupt_and_never_decoded(self, monkeypatch, caplog):
+        monkeypatch.setattr(store, "_warned_at", {})
+        client = FakeCacheClient()
+        payload = b"p" * 64
+        cap = len(store.encode(payload)) - 1
+        monkeypatch.setattr(store, "MAX_OBJECT_BYTES", cap)
+        gen = client.seed(f"vision/{KEY}", store.encode(payload))
+        decoded: list[bytes] = []
+        monkeypatch.setattr(store, "decode", decoded.append)
+
+        with caplog.at_level(logging.WARNING, logger="app.devcache.store"):
+            read = store.CacheStore(BUCKET, client=client).get("vision", KEY)
+
+        # CORRUPT with its generation: the request runs live and the answer
+        # overwrites exactly this object.
+        assert read == store.Read(store.CORRUPT, generation=gen)
+        assert decoded == []
+        (rd,) = client.ops("read")
+        assert rd[2]["end"] == cap
+        (line,) = [r.getMessage() for r in caplog.records]
+        assert "ObjectTooLarge" in line
+        assert KEY not in line
+        assert str(cap) not in line
+
+    def test_the_real_cap_is_64_mib(self):
+        assert store.MAX_OBJECT_BYTES == 64 * 1024 * 1024
 
     @pytest.mark.parametrize(
         "error",
@@ -398,6 +437,20 @@ class TestLookup:
         assert value is None
         assert slot.replace_generation == gen
         assert seen == ["vision_cache_errors"]
+
+    def test_over_cap_object_is_an_error_and_its_slot_overwrites_it(self, monkeypatch):
+        client = install_cache(monkeypatch)
+        big = store.encode(b"x" * 200)
+        monkeypatch.setattr(store, "MAX_OBJECT_BYTES", len(big) - 1)
+        gen = client.seed(f"vision/{KEY}", big)
+        seen = record_counts(monkeypatch)
+        with cache_on():
+            value, slot = _lookup()
+            assert value is None
+            assert slot.replace_generation == gen
+            assert slot.save(b"good") is True
+            assert _lookup() == ("good", None)
+        assert seen == ["vision_cache_errors", "vision_cache_hits"]
 
     def test_read_error_writes_nothing_afterwards(self, monkeypatch):
         client = install_cache(monkeypatch)

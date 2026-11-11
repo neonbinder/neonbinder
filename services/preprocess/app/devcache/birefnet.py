@@ -98,10 +98,18 @@ def encode_alpha(alpha: np.ndarray) -> bytes:
 
 
 def decode_alpha(payload: bytes, shape_hw: tuple[int, int]) -> np.ndarray:
-    """PNG bytes back to a uint8 HxW plane; rejects anything but an "L" PNG of `shape_hw`."""
+    """PNG bytes back to a uint8 HxW plane; rejects anything but an "L" PNG of `shape_hw`.
+
+    Format, mode and size come from the PNG header, so all three are checked
+    before `np.array` decodes any pixel data: a payload declaring huge
+    dimensions is refused without allocating them.
+    """
+    h, w = shape_hw
     with Image.open(BytesIO(payload)) as img:
         if img.format != "PNG" or img.mode != "L":
             raise ValueError("cached alpha is not an 8-bit grayscale PNG")
+        if img.size != (w, h):
+            raise ValueError("cached alpha has the wrong shape")
         alpha = np.array(img)
     if alpha.shape != shape_hw or alpha.dtype != np.uint8:
         raise ValueError("cached alpha has the wrong shape")

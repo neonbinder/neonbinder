@@ -76,30 +76,17 @@ updates:
       # ~190MB CPU wheel for the ~2.5GB CUDA build, in an image that already
       # bakes ~375MB of SAM weights. Bump torch by hand, keeping the suffix.
       - dependency-name: "torch"
-      # NEO-484: rembg left the runtime (the heavy service runs BiRefNet
-      # through onnxruntime directly). rembg 2.0.78 and the packages its
-      # removal dropped now live only in tests/parity/requirements-oracle.txt,
-      # the frozen ORACLE the mask-parity job compares our transcription
-      # against. Bumping any of them changes the oracle, not the product, so
-      # they move only by hand, with the goldens regenerated. Add any other
-      # package that is pinned ONLY in that file here too.
-      - dependency-name: "rembg"
-      - dependency-name: "pymatting"
-      - dependency-name: "numba"
-      - dependency-name: "llvmlite"
-      - dependency-name: "scipy"
-      - dependency-name: "scikit-image"
-      - dependency-name: "pooch"
-      - dependency-name: "jsonschema"
-      # The rest of the oracle's own dependencies, checked against the deployed
-      # image's freeze: each was installed only for rembg's stack (pooch,
-      # jsonschema, scikit-image). networkx, tqdm, requests and packaging stay
-      # unignored: torch and transformers need them at runtime.
-      - dependency-name: "imageio"
-      - dependency-name: "tifffile"
-      - dependency-name: "lazy-loader"
-      - dependency-name: "platformdirs"
-      - dependency-name: "jsonschema-specifications"
-      - dependency-name: "referencing"
-      - dependency-name: "rpds-py"
-      - dependency-name: "attrs"
+
+  # NEO-484 mask-parity pins (services/preprocess/tests/parity): the frozen
+  # rembg 2.0.78 ORACLE (requirements-oracle.txt) and the check image's test
+  # runner (requirements-check.txt). The block above does not read them, as
+  # Dependabot's pip updater does not scan arbitrary subdirectories. A bump here changes the oracle, not the product, so version
+  # updates are off (limit 0) and the pins move only by hand, with the goldens
+  # regenerated (README "BiRefNet: direct onnxruntime"). Security updates are
+  # not governed by this limit and can still open a PR; treat one the same
+  # way: rebuild the oracle and re-run the goldens before merging it.
+  - package-ecosystem: pip
+    directory: "/services/preprocess/tests/parity"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
