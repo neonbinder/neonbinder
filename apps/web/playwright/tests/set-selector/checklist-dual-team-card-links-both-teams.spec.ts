@@ -40,6 +40,7 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { CHECKLISTS, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
 
 const INSERT = "Prospect Dual Autographs";
@@ -127,6 +128,12 @@ test(
     // ── STEP 4: fetch from the marketplaces on the insert ──
     // The empty-checklist assert makes the saved cards below THIS fetch's.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    // The publisher's checklist (NEO-478): the 13 other cards' teams are BSC's own answers, uploaded, so
+    // BSC is asked per card for ONE card, PDA-WW, whose two-club value is what this spec reads live. (Its
+    // row is left out of the file on purpose; the fixture is fixtures/checklists/2025-bowman-draft-insert-
+    // prospect-dual-autographs.csv.) Fourteen live lookups in a burst met a BSC 429 here (every one of
+    // them), so the card the spec is about was never answered.
+    await usePublishersChecklist(page, CHECKLISTS.prospectDualAutographs2025);
     await syncChecklistButton(page).click();
 
     // Legitimate shapes: a SportLots set paired with the insert opens "Match
@@ -253,9 +260,13 @@ test(
     // text node (linked teams' full names joined ", ", then " · /N", ...), so
     // a FULL match means an `<name> (unconfirmed)` tail, or a card linked to
     // only one club, cannot answer. Either order is accepted. No other card
-    // in the set carries either club, so the pair IS PDA-WW, the list's last
-    // row (the list opens on it). The links are written BY THE SAVE (the
-    // NEO-333 fence), so the 7 s bar is the whole budget.
+    // in the set carries either club, so the pair IS PDA-WW. The links are written BY
+    // THE SAVE (the NEO-333 fence), so the 7 s bar is the whole budget.
+    // The list sits where its first streamed batch left it, which can be above the
+    // last row (this assert failed on both projects in CI run 42844015539, and locally
+    // with the list at its first card), so the card is found the way a collector would,
+    // by its number.
+    await page.getByRole("searchbox", { name: "Search cards" }).fill("PDA-WW");
     await expect(
       page.getByText(/^(Boston Red Sox, Detroit Tigers|Detroit Tigers, Boston Red Sox)( · .*)?$/),
     ).toBeVisible();
