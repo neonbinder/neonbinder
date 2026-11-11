@@ -13,37 +13,33 @@ import { useOpen } from "./useOpen";
  * batches they came in, newest first (any card filed into a binder in the
  * last 14 days, however it got there; none and the section is not drawn). Every card is captioned with its full
  * listing title; a pull that is on the Want List wears a dashed yellow
- * border and says so (Jason, review item 5). A pull opens its card panel
- * over the dashboard (`./panelLink`), as a card in the collection.
+ * border and says so (Jason, review item 5). A pull, and a card of the
+ * chase, opens its card panel over the dashboard (`./panelLink`), as a card
+ * in the collection, its ↑ ↓ stepping through the batch or the chase.
  */
 
 /** How many cards a batch shows before "Show all". */
 const BATCH_PREVIEW = 6;
 
-/** A card with its caption: the full listing title, then a note, then the Want List mark. */
-function Tile({ card, extra, wanted = false }: { card: DashCard; extra?: string; wanted?: boolean }) {
-  return (
-    <figure className="min-w-0">
-      {/* The caption names the card; the picture is not named again. */}
-      <div aria-hidden="true" className={wanted ? WANT_RING : undefined}>
-        <CardFace model={card.card} size="fill" />
-      </div>
-      <figcaption className="mt-1.5 space-y-0.5 text-xs leading-snug">
-        <CardTitle card={card} lines={3} className="text-ink" />
-        {extra && <span className="block truncate text-ink-3">{extra}</span>}
-        {wanted && <WantFlag />}
-      </figcaption>
-    </figure>
-  );
-}
-
 /**
- * A pull: the Tile's picture and words, as one link that opens the card's
- * panel. Named by its words, the full listing title first.
+ * A card tile: its picture and caption (the full listing title, then a note,
+ * then the Want List mark) as one link that opens the card's panel on the
+ * collection side, ↑ ↓ stepping through `list`. Named by its words, the full
+ * listing title first.
  */
-function PullTile({ card, wanted }: { card: DashCard; wanted: boolean }) {
+function CardTile({
+  card,
+  list,
+  extra,
+  wanted = false,
+}: {
+  card: DashCard;
+  list: readonly string[];
+  extra?: string;
+  wanted?: boolean;
+}) {
   return (
-    <PanelLink cardId={card.id} side="collection" className="group block rounded-md focus-outline">
+    <PanelLink cardId={card.id} side="collection" list={list} className="group block rounded-md focus-outline">
       <span
         aria-hidden="true"
         className={`block transition-transform group-hover:-translate-y-1 motion-reduce:transition-none ${wanted ? WANT_RING : ""}`}
@@ -52,6 +48,7 @@ function PullTile({ card, wanted }: { card: DashCard; wanted: boolean }) {
       </span>
       <span className="mt-1.5 block space-y-0.5 text-xs leading-snug">
         <CardTitle card={card} lines={3} className="text-ink" />
+        {extra && <span className="block truncate text-ink-3">{extra}</span>}
         {wanted && (
           <>
             {" "}
@@ -76,7 +73,7 @@ export function Chase({ wants }: { wants: WantCard[] }) {
         <ChaseEmpty />
       ) : (
         <ol className="grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-5">
-          {wants.map((w, i) => (
+          {wants.map((w, i, all) => (
             <li key={w.id} className={i === 0 ? "relative" : undefined}>
               {i === 0 && (
                 <span className="mb-1.5 block text-xs font-bold text-neon-yellow-text">
@@ -87,7 +84,7 @@ export function Chase({ wants }: { wants: WantCard[] }) {
                 </span>
               )}
               <div className={i === 0 ? "rounded-[6%] outline-2 outline-offset-2 outline-neon-yellow-text" : undefined}>
-                <Tile card={w} extra={w.forBinder ? `For ${w.forBinder}` : undefined} />
+                <CardTile card={w} list={all.map((x) => x.id)} extra={w.forBinder ? `For ${w.forBinder}` : undefined} />
               </div>
             </li>
           ))}
@@ -166,6 +163,8 @@ function Batch({ batch, wanted }: { batch: AdditionBatch; wanted: Set<string> })
   const shown = all ? batch.cards : batch.cards.slice(0, BATCH_PREVIEW);
   const hidden = batch.cards.length - BATCH_PREVIEW;
   const headingId = `cb-batch-${batch.id}`;
+  // ↑ ↓ in a pull's panel walk the whole batch, the cards behind Show all too.
+  const batchIds = batch.cards.map((c) => c.id);
 
   return (
     <article aria-labelledby={headingId} className="space-y-3">
@@ -180,7 +179,7 @@ function Batch({ batch, wanted }: { batch: AdditionBatch; wanted: Set<string> })
       <ul className="grid grid-cols-3 gap-x-3 gap-y-4 sm:grid-cols-6">
         {shown.map((c) => (
           <li key={`${c.id}@${c.binderName}`} className="min-w-0">
-            <PullTile card={c} wanted={wanted.has(c.id)} />
+            <CardTile card={c} list={batchIds} wanted={wanted.has(c.id)} />
           </li>
         ))}
       </ul>

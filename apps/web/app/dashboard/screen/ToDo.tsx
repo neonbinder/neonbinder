@@ -95,6 +95,8 @@ function OrderRow({ order }: { order: UnshippedSale }) {
   const problems = order.lines.filter((l): l is SaleLine & { problem: SaleProblem } => Boolean(l.problem));
   const more = order.cardCount - 1;
   const anchor = orderAnchor(order.id);
+  // ↑ ↓ in a card's panel walk the order's cards.
+  const orderIds = order.lines.flatMap((l) => (l.card ? [l.card.id] : []));
   const linesId = `${anchor}-lines`;
 
   return (
@@ -114,7 +116,13 @@ function OrderRow({ order }: { order: UnshippedSale }) {
       </div>
 
       <div className="flex min-w-0 flex-1 gap-3 py-3 pr-3 pl-1 sm:gap-4 sm:pr-5">
-        {order.firstCard ? <Thumb card={order.firstCard} className="w-11 sm:w-14" /> : <NoCardThumb className="w-11 sm:w-14" />}
+        {order.firstCard ? (
+          <PanelLink cardId={order.firstCard.id} side="inventory" list={orderIds} twin className="block self-start">
+            <Thumb card={order.firstCard} className="w-11 sm:w-14" />
+          </PanelLink>
+        ) : (
+          <NoCardThumb className="w-11 sm:w-14" />
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <MarketBadge marketplace={order.marketplace} />
@@ -128,7 +136,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
           </div>
           <div className="mt-1 text-sm font-semibold leading-snug text-ink">
             {order.firstCard ? (
-              <PanelLink cardId={order.firstCard.id} side="inventory" className={CARD_LINK}>
+              <PanelLink cardId={order.firstCard.id} side="inventory" list={orderIds} className={CARD_LINK}>
                 <CardTitle card={order.firstCard} />
               </PanelLink>
             ) : (
@@ -149,7 +157,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
                 >
                   <ExclamationTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
                   <span>
-                    <ProblemText line={line} />
+                    <ProblemText line={line} list={orderIds} />
                   </span>
                 </li>
               ))}
@@ -179,7 +187,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
               <ul id={linesId} hidden={!open} className="mt-1 flex flex-col gap-2">
                 {order.lines.map((line, i) => (
                   <li key={i} className="flex items-center gap-3">
-                    <LineRow line={line} />
+                    <LineRow line={line} list={orderIds} />
                   </li>
                 ))}
               </ul>
@@ -203,7 +211,7 @@ function NoCardThumb({ className }: { className: string }) {
   );
 }
 
-function LineRow({ line }: { line: SaleLine }) {
+function LineRow({ line, list }: { line: SaleLine; list: readonly string[] }) {
   if (!line.card) {
     return (
       <>
@@ -218,9 +226,11 @@ function LineRow({ line }: { line: SaleLine }) {
   const c = line.card;
   return (
     <>
-      <Thumb card={c} className="w-8" />
+      <PanelLink cardId={c.id} side="inventory" list={list} twin className="block">
+        <Thumb card={c} className="w-8" />
+      </PanelLink>
       <span className="min-w-0 text-sm">
-        <PanelLink cardId={c.id} side="inventory" className={CARD_LINK}>
+        <PanelLink cardId={c.id} side="inventory" list={list} className={CARD_LINK}>
           <CardTitle card={c} className="text-ink" />
         </PanelLink>
         {line.quantity > 1 && <span className="tabular-nums text-ink-3"> ×{line.quantity}</span>}
@@ -236,7 +246,7 @@ function LineRow({ line }: { line: SaleLine }) {
  * One sentence per problem line, as `problemText` words it. An oversold
  * line's card is a link to its panel, where its boxes are put right.
  */
-function ProblemText({ line }: { line: SaleLine & { problem: SaleProblem } }) {
+function ProblemText({ line, list }: { line: SaleLine & { problem: SaleProblem }; list: readonly string[] }) {
   const p = line.problem;
   if (p.kind !== "oversold" || !line.card) return <>{problemText(line)}</>;
   return (
@@ -245,6 +255,7 @@ function ProblemText({ line }: { line: SaleLine & { problem: SaleProblem } }) {
       <PanelLink
         cardId={line.card.id}
         side="inventory"
+        list={list}
         className="rounded-sm font-semibold underline underline-offset-2 focus-outline"
       >
         {line.card.title}
@@ -286,7 +297,7 @@ export function NeedsALook({ data }: { data: DashboardData }) {
               .filter((l): l is SaleLine & { problem: SaleProblem } => Boolean(l.problem))
               .map((line, i) => (
                 <p key={i} className="text-sm text-ink-2">
-                  <ProblemText line={line} />
+                  <ProblemText line={line} list={order.lines.flatMap((l) => (l.card ? [l.card.id] : []))} />
                 </p>
               ))}
             <a

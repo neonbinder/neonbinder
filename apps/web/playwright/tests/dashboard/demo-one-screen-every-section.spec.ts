@@ -8,7 +8,9 @@
 // cover opens it. The panels the screen opens (a binder's pocket page, an order's cards) are
 // checked for accessibility OPEN, as well as the closed page: the open state is
 // what a keyboard or screen-reader user spends their time in, and so is a
-// card's panel, which opens over the dashboard. Needs a Look has nothing to
+// card's panel, which opens over the dashboard; its ↓ steps through the run of
+// cards it was opened from, and what it holds agrees with what the dashboard
+// said (a New Listing's box). Needs a Look has nothing to
 // open (a plain list), so there is no open state of it to check.
 import { test, expect, expectAccessible } from "../../support/fixtures";
 
@@ -92,9 +94,27 @@ test(
     const panel = page.getByRole("dialog");
     await expect(panel.getByRole("button", { name: "Close card detail" })).toBeVisible();
     await expectAccessible(page, { label: "Dashboard demo, a Fresh Pull's card panel open" });
+    // ↓ steps through the batch the pull came from, in place: one Back still closes the panel.
+    const opened = new URL(page.url()).searchParams.get("detail");
+    await expect(panel.getByText(/^Card 1 of \d+/)).toBeVisible();
+    await panel.getByRole("button", { name: "Next card" }).click();
+    await expect(panel.getByText(/^Card 2 of \d+/)).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("detail")).not.toBe(opened);
     await page.goBack();
     await expect(panel).toBeHidden();
+    await expect(page).not.toHaveURL(/detail=/);
     await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible();
     await expect(pull).toBeFocused();
+
+    // The demo's cards say what their panels say: a New Listing's panel holds the copies in the box
+    // its tile names.
+    const listing = page.getByRole("region", { name: "New Listings" }).getByRole("link").first();
+    const box = (await listing.innerText()).match(/\d+ in (.+)$/m)?.[1];
+    expect(box).toBeTruthy();
+    await listing.click();
+    await expect(page).toHaveURL(/[?&]detail=[^&]+&side=inventory$/);
+    await expect(panel.getByText(box!, { exact: false }).first()).toBeVisible();
+    await page.goBack();
+    await expect(panel).toBeHidden();
   },
 );

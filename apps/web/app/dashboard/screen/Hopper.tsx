@@ -24,6 +24,7 @@ const SLEEVES_SHOWN = 6;
 export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; wanted: Set<string> }) {
   if (intake.total === 0) return null;
   const guesses = intake.preview.flatMap((s) => (s.guess ? [{ id: s.id, card: s.guess }] : []));
+  const guessIds = guesses.map((g) => g.card.id);
   const sleeves = Math.min(intake.waiting, SLEEVES_SHOWN);
   const moreScans = intake.waiting - sleeves;
 
@@ -42,7 +43,7 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
           <ul aria-label="Best guesses waiting on your yes" className="mt-2.5 flex flex-col gap-2.5">
             {guesses.map((g) => (
               <li key={g.id}>
-                <CardLine card={g.card} wanted={wanted.has(g.card.id)} />
+                <CardLine card={g.card} wanted={wanted.has(g.card.id)} link={{ side: "collection", list: guessIds }} />
               </li>
             ))}
           </ul>

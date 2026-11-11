@@ -45,26 +45,44 @@ export function cardPanelSearch(search: string, cardId: CardId, side: Side): str
   return `?${p.toString()}`;
 }
 
-/** A link that opens `cardId`'s panel over the dashboard. Its words are the caller's. */
+/**
+ * A link that opens `cardId`'s panel over the dashboard. Its words are the
+ * caller's. `list` is the run of cards it sits in (a batch of pulls, a
+ * held-back set, the chase), so the panel's ↑ ↓ step through it, as on
+ * Collection; without one, or opened in a new tab, the panel holds just this
+ * card.
+ */
 export function PanelLink({
   cardId,
   side,
+  list,
+  twin = false,
   className,
   children,
 }: {
   cardId: CardId;
   side: Side;
+  list?: readonly CardId[];
+  /**
+   * A picture beside the card's own link (an order's thumbnail): it opens
+   * the same panel for a pointer, but is hidden from a reader and out of the
+   * Tab order, so the card is one stop and named once.
+   */
+  twin?: boolean;
   className?: string;
   children: ReactNode;
 }) {
   const { pathname, search } = useLocation();
+  const state: DrawerHistoryState = { drawer: true };
+  if (list && list.length > 1 && list.includes(cardId)) state.list = [...new Set(list)];
   return (
     <Link
       to={{ pathname, search: cardPanelSearch(search, cardId, side) }}
       // The drawer pushed this entry: Close steps Back off it, as on Collection.
-      state={{ drawer: true } satisfies DrawerHistoryState}
+      state={state}
       onPointerEnter={preloadCardPanel}
       onFocus={preloadCardPanel}
+      {...(twin ? { tabIndex: -1, "aria-hidden": true } : {})}
       className={className}
     >
       {children}

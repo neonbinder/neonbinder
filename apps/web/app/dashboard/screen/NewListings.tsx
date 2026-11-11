@@ -32,6 +32,8 @@ export default function NewListings({ listings }: { listings: NewListing[] }) {
   if (listings.length === 0) return null;
   const shown = all ? listings : listings.slice(0, PREVIEW);
   const hidden = listings.length - PREVIEW;
+  // ↑ ↓ in a listing's panel walk every new listing, the ones behind Show all too.
+  const listIds = listings.map((l) => l.id);
   return (
     <section aria-labelledby="cb-listings-heading" className="space-y-4">
       <BlockHeading id="cb-listings-heading" note="Into your boxes lately. Newest first.">
@@ -40,7 +42,7 @@ export default function NewListings({ listings }: { listings: NewListing[] }) {
       <ul className="grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-6">
         {shown.map((l) => (
           <li key={l.lineId} className="min-w-0">
-            <PanelLink cardId={l.id} side="inventory" className="group block rounded-md focus-outline">
+            <PanelLink cardId={l.id} side="inventory" list={listIds} className="group block rounded-md focus-outline">
               <span
                 aria-hidden="true"
                 className="block transition-transform group-hover:-translate-y-1 motion-reduce:transition-none"

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
-import { getDashboard } from "../fake-data";
+import { getDashboard, type DashboardData } from "../fake-data";
 import DashboardScreen from "./DashboardScreen";
 import { checklistsQuery, suggestionTarget } from "./CardPanelHost";
 import { cardPanelSearch, panelSide } from "./panelLink";
@@ -68,8 +68,7 @@ function LocationProbe() {
   );
 }
 
-function renderDashboard(entry: string) {
-  const data = getDashboard();
+function renderDashboard(entry: string, data: DashboardData = getDashboard()) {
   render(
     <Theme>
       <MemoryRouter initialEntries={[entry]}>
@@ -156,5 +155,112 @@ describe("a card opens its panel over the dashboard", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     // The panel's status line only comes with the panel.
     expect(screen.getAllByRole("status").map((s) => s.getAttribute("aria-label"))).toEqual(["Page URL"]);
+  });
+});
+
+describe("↑ ↓ step through the run of cards the panel was opened from", () => {
+  it("a Fresh Pull's panel walks its batch, each step in place: Back still closes it in one", async () => {
+    const data = renderDashboard("/demo");
+    const batch = data.additions[0];
+    const second = batch.cards[1];
+    const pulls = screen.getByRole("region", { name: "Fresh Pulls" });
+    fireEvent.click(within(pulls).getAllByRole("link", { name: new RegExp(`^${escape(second.title)}`) })[0]);
+    const panel = await screen.findByRole("dialog");
+    await settle();
+    expect(within(panel).getByText(new RegExp(`^Card 2 of ${batch.cards.length}`))).toBeTruthy();
+    const next = within(panel).getByRole("button", { name: "Next card" });
+    expect(next.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(next);
+    await waitFor(() => expect(pageUrl()).toBe(`/demo?detail=${encodeURIComponent(batch.cards[2].id)}`));
+    await settle();
+    // The step replaced the entry and kept the batch: the panel now holds its third card.
+    expect(within(screen.getByRole("dialog")).getByText(new RegExp(`^Card 3 of ${batch.cards.length}`))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Browser Back", hidden: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(pageUrl()).toBe("/demo");
+  });
+
+  it("a shared link carries no list: the panel holds just its card", async () => {
+    const data = renderDashboard("/demo");
+    cleanup();
+    const pull = data.additions[0].cards[1];
+    renderDashboard(`/demo?detail=${encodeURIComponent(pull.id)}`);
+    const panel = await screen.findByRole("dialog");
+    await settle();
+    expect(within(panel).getByRole("button", { name: "Next card" }).getAttribute("aria-disabled")).toBe("true");
+    expect(within(panel).getByRole("button", { name: "Previous card" }).getAttribute("aria-disabled")).toBe("true");
+    expect(within(panel).queryByText(/^Card \d+ of \d+/)).toBeNull();
+  });
+
+  it("the chase walks the Want List, top chase first", async () => {
+    const data = renderDashboard("/demo");
+    const chase = screen.getByRole("region", { name: "The Chase" });
+    const top = data.wantList[0];
+    const link = within(chase).getByRole("link", { name: new RegExp(`^${escape(top.title)}`) });
+    expect(link.getAttribute("href")).toBe(`/demo?detail=${encodeURIComponent(top.id)}`);
+    fireEvent.click(link);
+    const panel = await screen.findByRole("dialog");
+    await settle();
+    expect(within(panel).getByText(new RegExp(`^Card 1 of ${data.wantList.length}`))).toBeTruthy();
+    expect(within(panel).getByRole("button", { name: "Previous card" }).getAttribute("aria-disabled")).toBe("true");
+  });
+});
+
+describe("every card the dashboard shows opens its panel", () => {
+  const hrefOf = (cardId: string, side = "") => `/demo?detail=${encodeURIComponent(cardId)}${side}`;
+
+  it("the chase, Binders Filling Up, Could fit, the hopper's guesses and the boards' needs, on the collection side", () => {
+    const data = renderDashboard("/demo");
+    const chase = screen.getByRole("region", { name: "The Chase" });
+    expect(within(chase).getAllByRole("link").map((l) => l.getAttribute("href"))).toEqual(
+      data.wantList.map((w) => hrefOf(w.id)),
+    );
+    for (const [region, list] of [
+      ["Binders Filling Up", /^New in /],
+      ["Could fit your smart binders", /^Cards that could fit /],
+      ["In the Hopper", /^Best guesses waiting on your yes$/],
+    ] as const) {
+      const lists = within(screen.getByRole("region", { name: region })).getAllByRole("list", { name: list });
+      const links = lists.flatMap((l) => within(l).getAllByRole("link"));
+      expect(links.length, region).toBeGreaterThan(0);
+      for (const link of links) expect(link.getAttribute("href"), region).toMatch(/^\/demo\?detail=[^&]+$/);
+    }
+    const needs = screen.getAllByRole("link").filter((l) => l.closest("article")?.textContent?.includes("Need:") && l.getAttribute("href")?.includes("detail="));
+    expect(needs.length).toBeGreaterThan(0);
+  });
+
+  it("an order's picture opens its card too, for a pointer: out of the Tab order and hidden from a reader, beside the named link", () => {
+    const data = renderDashboard("/demo");
+    const order = data.sales!.unshipped[0];
+    const first = order.firstCard!;
+    const orders = screen.getByRole("region", { name: "Out the Door" });
+    const named = within(orders).getAllByRole("link", { name: new RegExp(`^${escape(first.title)}`) })[0];
+    const twin = within(orders)
+      .getAllByRole("link", { hidden: true })
+      .find((l) => l.getAttribute("aria-hidden") === "true" && l.getAttribute("href") === named.getAttribute("href"));
+    expect(twin?.getAttribute("tabindex")).toBe("-1");
+    expect(named.getAttribute("href")).toBe(hrefOf(first.id, "&side=inventory"));
+  });
+
+  it("a finished checklist's cheer: each card, and the one that closed it out, open the panel", () => {
+    const base = getDashboard();
+    const cards = base.newListings.slice(0, 3);
+    const justCompleted = {
+      id: "done-test",
+      label: "Test Checklist",
+      setLabel: "Test Set",
+      checklistName: null,
+      total: cards.length,
+      lastCard: cards[2],
+      cards,
+      whenLabel: "Yesterday",
+    };
+    renderDashboard("/demo", { ...base, justCompleted });
+    const faces = screen.getByRole("list", { name: "Test Checklist, every card" });
+    expect(within(faces).getAllByRole("link").map((l) => l.getAttribute("href"))).toEqual(cards.map((c) => hrefOf(c.id)));
+    const cheer = faces.parentElement!;
+    const closer = within(cheer).getByRole("link", { name: cards[2].title });
+    expect(closer.getAttribute("href")).toBe(hrefOf(cards[2].id));
+    expect(screen.getByRole("button", { name: "Nice! Hide the Test Checklist cheer" })).toBeTruthy();
   });
 });

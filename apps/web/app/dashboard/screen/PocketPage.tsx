@@ -3,6 +3,7 @@ import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import CardFace, { EmptySleeve } from "@/app/collection/prototypes/_shared/CardFace";
 import { count } from "./bits";
+import { PanelLink } from "./panelLink";
 import { POCKETS_PER_PAGE, pocketsOf, type ShelfBinder } from "./shelf-model";
 
 /**
@@ -11,13 +12,19 @@ import { POCKETS_PER_PAGE, pocketsOf, type ShelfBinder } from "./shelf-model";
  * binder opens on what came in since the last visit; a binder with pages
  * (the Contenders build) or a checklist keeps its own order, with an empty
  * pocket for every card still needed. New cards wear a green "New" tab.
- * Every pocket is captioned with its card's full listing title.
+ * Every pocket is captioned with its card's full listing title, and opens
+ * that card's panel over the dashboard (a needed one too: it is wanted or
+ * added from there).
  *
  * The screen places the title and the page in separate grid cells (see
  * DashboardScreen): the title sits level with "Your binders" and the page
  * stops at the bottom of the shelves. Which binder is open lives in the URL
  * (pushed); the page turn replaces the entry (an in-view tweak).
  */
+
+/** A pocket's card as a link: the whole sleeve's contents, lifting a touch under the pointer. */
+const POCKET_LINK =
+  "group block h-full rounded-[4px] focus-outline [&>div]:transition-transform [&>div]:motion-reduce:transition-none hover:[&>div]:-translate-y-0.5";
 
 interface PocketTitleProps {
   binder: ShelfBinder;
@@ -62,6 +69,7 @@ interface PocketPageProps {
 
 export default function PocketPage({ binder, page, onPage }: PocketPageProps) {
   const pockets = pocketsOf(binder);
+  const listIds = pockets.flatMap((p) => (p.card ? [p.card.id] : []));
   const pages = Math.max(1, Math.ceil(pockets.length / POCKETS_PER_PAGE));
   const shown = pockets.slice(page * POCKETS_PER_PAGE, (page + 1) * POCKETS_PER_PAGE);
   const atFirst = page === 0;
@@ -104,21 +112,22 @@ export default function PocketPage({ binder, page, onPage }: PocketPageProps) {
         {shown.map((p, i) => (
           <li key={p.key} className="cb-pocket">
             {/* The caption names the card, so the picture is not named again. */}
+            {/* A pocket's card opens its panel, ↑ ↓ walking the binder's cards; its title leads the link's name. */}
             {p.kind === "card" ? (
-              <>
+              <PanelLink cardId={p.card.id} side="collection" list={listIds} className={POCKET_LINK}>
                 <div aria-hidden="true">
                   <CardFace model={p.card.card} size="fill" />
                 </div>
-                {p.isNew && <span className="cb-pocket-new">New</span>}
                 <PocketCaption title={p.card.title} />
-              </>
+                {p.isNew && <span className="cb-pocket-new">New</span>}
+              </PanelLink>
             ) : p.card ? (
-              <>
+              <PanelLink cardId={p.card.id} side="collection" list={listIds} className={POCKET_LINK}>
                 <div aria-hidden="true">
                   <CardFace model={p.card.card} size="fill" empty />
                 </div>
                 <PocketCaption title={p.card.title} need />
-              </>
+              </PanelLink>
             ) : (
               <EmptySleeve size="fill" label={`Empty pocket ${i + 1} of ${POCKETS_PER_PAGE}`} />
             )}

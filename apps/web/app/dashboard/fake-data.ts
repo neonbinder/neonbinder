@@ -12,9 +12,13 @@
  *
  * Counts come from the demo's seed (`myCopies`, `binders`, `buildingSetIds`,
  * the same seed the collection demo at `/demo/collection` starts from), so the numbers here
- * match what the demo binder shows. Two things go past the seed, on purpose,
- * and say so where they are built: the just-completed checklist (its last card
- * is "new" here) and the intake guesses.
+ * match what the demo binder shows. Where a card lives (a binder, a box), the
+ * Want List and the trade pile come from the demo's collection store as it
+ * starts (`initialCollectionState`), because that is what a card's panel
+ * opens on: every card here says what its panel says (a Fresh Pull is filed in
+ * the binder it names, a New Listing, an order line and a held-back card sit in
+ * a box, the chase is the Want List). Only the intake guesses go past the seed,
+ * on purpose: they are cards the collector does not own yet.
  *
  * Rules the fixture keeps, so a prototype never has to:
  * - No values or worth anywhere: the only money is the price the collector
@@ -33,6 +37,7 @@
  */
 
 import { demoCard } from "@/app/collection/final/data/demoStore";
+import { initialCollectionState, MAIN_BINDER_ID } from "@/app/collection/final/store";
 import { compareCardNumbers } from "@/app/collection/final/data/labels";
 import type { CardId, SetId, VariantKind } from "@/app/collection/final/data/types";
 import { toDash, type DashCard } from "./dash-card";
@@ -96,6 +101,32 @@ const SET = {
   chrome: "2024-topps-chrome-baseball",
   topps: "2000-topps-football",
 } as const;
+
+// ---------------------------------------------------------------------------
+// Where the demo's cards live: the collection store as it starts
+// ---------------------------------------------------------------------------
+
+/** The demo store as `/demo/collection` and every card panel start it. */
+const STORE = initialCollectionState();
+const CONTAINERS = new Map(STORE.containers.map((c) => [c.id, c]));
+
+/** The store's lines in a box (Inventory), in the store's order. */
+const BOX_LINES = STORE.copies.filter((c) => CONTAINERS.get(c.homeId)?.kind === "box");
+
+/** Copies of a card in the collector's boxes. */
+function inBoxes(cardId: CardId): number {
+  return BOX_LINES.filter((c) => c.cardId === cardId).reduce((n, c) => n + c.quantity, 0);
+}
+
+/** The binder the store files a copy of the card in (the first, in the store's order); null when none is in a binder. */
+function binderOf(cardId: CardId): string | null {
+  for (const copy of STORE.copies) {
+    if (copy.cardId !== cardId) continue;
+    const home = CONTAINERS.get(copy.homeId);
+    if (home?.kind === "binder") return home.name;
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Sales (dealer only)
@@ -183,27 +214,24 @@ function sale(id: string, marketplace: Marketplace, orderNumber: string, daysSin
   };
 }
 
-/** Built in any order; sorted oldest first below. */
+/** The cards the demo's Show box holds (the store's box lines): what its orders sold. */
+const YZERMAN = pick(SET.udHockey, null, 1);
+const SCORE_PROOF = pick(SET.score, "Artist's Proof", 301);
+const SKENES_AUTO = pick(SET.chrome, "Chrome Rookie Autographs", "RA-PS");
+
+/**
+ * Built in any order; sorted oldest first below. Every line sells a card the
+ * store keeps in a box, so its panel opens on that box's copies; the oversold
+ * line counts what the boxes really hold.
+ */
 const UNSHIPPED_AS_BUILT: UnshippedSale[] = [
-  sale("sale-sl-1", "sportlots", "1184207", 5, "Paid", [{ card: pick(SET.topps, null, 340), quantity: 1 }]),
   sale("sale-bsc-1", "bsc", "BSC-3920118", 3, "Ready to ship", [
-    { card: pick(SET.udHockey, null, 1), quantity: 2 },
-    { card: pick(SET.udHockey, null, 2), quantity: 1 },
-    { card: pick(SET.udHockey, null, 18), quantity: 2, problem: { kind: "oversold", sold: 2, inBoxes: 1 } },
+    { card: YZERMAN, quantity: 4, problem: { kind: "oversold", sold: 4, inBoxes: inBoxes(YZERMAN.id) } },
   ]),
-  sale("sale-ebay-1", "ebay", "14-12873-40211", 2, "Paid", [
-    { card: pick(SET.chrome, "Chrome Rookie Autographs", "RA-PS"), quantity: 1 },
-  ]),
-  sale("sale-bsc-2", "bsc", "BSC-3921456", 1, "Ready to ship", [
-    { card: pick(SET.score, null, 301), quantity: 1 },
-    { card: pick(SET.score, null, 302), quantity: 1 },
+  sale("sale-ebay-1", "ebay", "14-12873-40211", 2, "Paid", [{ card: SKENES_AUTO, quantity: 1 }]),
+  sale("sale-bsc-2", "bsc", "BSC-3921456", 0, "Ready to ship", [
+    { card: SCORE_PROOF, quantity: 1 },
     { card: null, quantity: 1, problem: { kind: "unmatched", listingTitle: "2024 Score #333 Rome Odunze RC" } },
-  ]),
-  sale("sale-ebay-2", "ebay", "14-12880-11972", 0, "Paid", [{ card: pick(SET.contenders, null, 1), quantity: 1 }]),
-  sale("sale-sl-2", "sportlots", "1184388", 0, "Paid", [
-    { card: pick(SET.finest, null, 9), quantity: 1 },
-    { card: pick(SET.finest, null, 10), quantity: 1 },
-    { card: pick(SET.finest, null, 12), quantity: 1 },
   ]),
 ];
 
@@ -236,61 +264,58 @@ export interface AdditionBatch {
   sinceLastVisit: boolean;
 }
 
-function batch(id: string, whenLabel: string, daysAgo: number, sinceLastVisit: boolean, groups: [string, DashCard[]][]): AdditionBatch {
-  const cards: AddedCard[] = groups.flatMap(([binderName, list]) => list.map((c) => ({ ...c, binderName })));
+/**
+ * A batch of the cards given, newest first, each filed where the store files
+ * it, grouped by binder in the order the binders first come up. A card the
+ * store holds in no binder is not a pull of the collection, so it is left out.
+ */
+function batch(id: string, whenLabel: string, daysAgo: number, sinceLastVisit: boolean, list: DashCard[]): AdditionBatch {
+  const groups = new Map<string, DashCard[]>();
+  for (const card of list) {
+    const binderName = binderOf(card.id);
+    if (binderName === null) continue;
+    groups.set(binderName, [...(groups.get(binderName) ?? []), card]);
+  }
+  const cards: AddedCard[] = [...groups].flatMap(([binderName, cs]) => cs.map((c) => ({ ...c, binderName })));
   return {
     id,
     whenLabel,
     daysAgo,
     cards,
-    binders: groups.map(([name, list]) => ({ name, count: list.length })),
+    binders: [...groups].map(([name, cs]) => ({ name, count: cs.length })),
     sinceLastVisit,
   };
 }
 
-/**
- * The batches, newest first. All are cards the demo collector owns (the seed's
- * copies, filed where the demo files them), except the Topps Chrome Refractor
- * #13 in "Yesterday": the card that completed that checklist (`JUST_COMPLETED`).
- */
+/** The batches, newest first: cards the demo collector owns, filed where the demo files them. */
 const ADDITIONS: AdditionBatch[] = [
   batch("batch-today", "Today", 0, true, [
-    [
-      "Main",
-      [
-        pick(SET.score, "Gridiron Heritage", 1),
-        pick(SET.score, "Gridiron Heritage", 2),
-        pick(SET.score, "Gold Zone", 10),
-        pick(SET.score, "Lava", 302),
-        pick(SET.score, null, 11),
-        pick(SET.score, null, 12),
-      ],
-    ],
+    pick(SET.score, "Gridiron Heritage", 1),
+    pick(SET.score, "Gridiron Heritage", 2),
+    pick(SET.score, "Gold Zone", 10),
+    pick(SET.score, "Lava", 302),
+    pick(SET.score, null, 11),
+    pick(SET.score, null, 12),
   ]),
   batch("batch-yesterday", "Yesterday", 1, true, [
-    [
-      "Ohtani rainbow",
-      [
-        pick(SET.chrome, "Gold Refractor", 1),
-        pick(SET.chrome, "Green Refractor", 1),
-        pick(SET.chrome, "Aqua Refractor", 1),
-        pick(SET.chrome, "Negative Refractor", 1),
-      ],
-    ],
-    ["Main", [pick(SET.chrome, "Refractor", 13), pick(SET.chrome, "Orange Refractor", 25), pick(SET.chrome, "Refractor", 25)]],
+    pick(SET.chrome, "Gold Refractor", 1),
+    pick(SET.chrome, "Green Refractor", 1),
+    pick(SET.chrome, "Aqua Refractor", 1),
+    pick(SET.chrome, "Negative Refractor", 1),
+    pick(SET.chrome, "Orange Refractor", 25),
+    pick(SET.chrome, "Refractor", 25),
   ]),
   batch("batch-tuesday", "Tuesday", 3, true, [
-    [
-      "'96 Contenders",
-      ["1", "2", "4", "5", "7", "8", "10", "11", "12", "14", "15", "16", "18", "19", "21", "23", "24", "25", "27", "29", "30", "32", "34", "39"]
-        .reverse()
-        .map((n) => pick(SET.contenders, null, n)),
-    ],
-    ["Main", ["11", "10", "9", "8", "7", "5", "4", "3", "2", "1"].map((n) => pick(SET.udHockey, null, n))],
+    ...["1", "2", "4", "5", "7", "8", "10", "11", "12", "14", "15", "16", "18", "19", "21", "23", "24", "25", "27", "29", "30", "32", "34", "39"]
+      .reverse()
+      .map((n) => pick(SET.contenders, null, n)),
+    ...["11", "10", "9", "8", "7", "5", "4", "3", "2", "1"].map((n) => pick(SET.udHockey, null, n)),
   ]),
   batch("batch-weekend", "Last weekend", 6, false, [
-    ["Main", [pick(SET.udHockey, "Legends", 2), pick(SET.udHockey, "Legends", 1), pick(SET.udHockey, null, 18)]],
-    ["Slab case", [pick(SET.udHockey, "Game Jerseys", "GJ1")]],
+    pick(SET.udHockey, "Legends", 2),
+    pick(SET.udHockey, "Legends", 1),
+    pick(SET.udHockey, null, 18),
+    pick(SET.udHockey, "Game Jerseys", "GJ1"),
   ]),
 ];
 
@@ -404,22 +429,12 @@ export interface CompletedSet {
 }
 
 /**
- * Goes one card past the demo seed: the seed owns Ohtani #1 and Skenes #25 of
- * the three Refractors; here De La Cruz #13 came in yesterday and finished it.
+ * The demo collector has finished no checklist: the store owns two of the
+ * three Topps Chrome Refractors and nothing whole. A cheer here would open a
+ * panel saying otherwise, so the demo shows none (the signed-in page cheers
+ * a real one).
  */
-const JUST_COMPLETED: CompletedSet = (() => {
-  const cards = variantCards(SET.chrome, "Refractor").map((c) => dashCard(c.id));
-  return {
-    id: "done-2024-chrome-refractor",
-    label: "2024 Topps Chrome Refractor",
-    setLabel: "2024 Topps Chrome",
-    checklistName: "Refractor",
-    total: cards.length,
-    lastCard: pick(SET.chrome, "Refractor", 13),
-    cards,
-    whenLabel: "Yesterday",
-  };
-})();
+const JUST_COMPLETED: CompletedSet | null = null;
 
 // ---------------------------------------------------------------------------
 // Smart binders
@@ -489,14 +504,11 @@ export interface WantCard extends DashCard {
   forBinder: string | null;
 }
 
-/** The demo seed's four wants, plus the Ohtani SuperFractor 1/1 as the top chase. */
-const WANTS: WantCard[] = [
-  { ...pick(SET.chrome, "SuperFractor", 1), forBinder: "Ohtani rainbow" },
-  { ...pick(SET.chrome, "Red Refractor", 1), forBinder: "Ohtani rainbow" },
-  { ...pick(SET.chrome, "Orange Refractor", 1), forBinder: "Ohtani rainbow" },
-  { ...pick(SET.chrome, null, 12), forBinder: null },
-  { ...pick(SET.contenders, null, 13), forBinder: null },
-];
+/** The chase: the store's Want List, in its order, each with the binder it is wanted for. */
+const WANTS: WantCard[] = STORE.wants.map((w) => ({
+  ...dashCard(w.cardId),
+  forBinder: w.binderId ? (CONTAINERS.get(w.binderId)?.name ?? null) : null,
+}));
 
 /** One uploaded scan still in intake. */
 export interface IntakeScan {
@@ -582,10 +594,15 @@ export interface UnlistedBox {
   unlisted: number;
 }
 
-const UNLISTED_BOXES: UnlistedBox[] = [
-  { id: "box-unsorted", name: "Unsorted", unlisted: 12 },
-  { id: "box-show", name: "Show box", unlisted: 3 },
-];
+/** The store's boxes held off the marketplaces and holding cards, as the signed-in page finds them. */
+const UNLISTED_BOXES: UnlistedBox[] = STORE.containers
+  .filter((c) => c.kind === "box" && c.listedOnMarketplaces === false)
+  .map((c) => ({
+    id: c.id,
+    name: c.name,
+    unlisted: BOX_LINES.filter((l) => l.homeId === c.id).reduce((n, l) => n + l.quantity, 0),
+  }))
+  .filter((b) => b.unlisted > 0);
 
 /** Copies flagged Up for Trade. */
 export interface TradePile {
@@ -594,15 +611,12 @@ export interface TradePile {
   cards: DashCard[];
 }
 
-/**
- * The demo's trade rule (`final/store.ts` seedCopy): a single Trade bait copy
- * with no serial and no cost stays in the collection, up for trade.
- */
+/** The store's copies flagged up for trade, counted by physical card. */
 const TRADE_PILE: TradePile = (() => {
-  const flagged = myCopies.filter(
-    (c) => c.binderIds.includes("binder-trade-bait") && c.quantity === 1 && !c.serialNumber && c.costBasis === undefined,
-  );
-  return { count: flagged.length, cards: flagged.map((c) => dashCard(c.cardId)) };
+  const flagged = STORE.copies.filter((c) => c.upForTrade);
+  const seen = new Set<CardId>();
+  const cards = flagged.filter((c) => !seen.has(c.cardId) && seen.add(c.cardId)).map((c) => dashCard(c.cardId));
+  return { count: flagged.reduce((n, c) => n + c.quantity, 0), cards };
 })();
 
 // ---------------------------------------------------------------------------
@@ -674,23 +688,24 @@ export interface NewListing extends DashCard {
   daysAgo: number;
 }
 
-/** Newest first. Demo cards from the seed's own boxes' sets. */
-const NEW_LISTINGS: NewListing[] = [
-  { card: pick(SET.chrome, "Orange Refractor", 25), quantity: 1, priceCents: 4500, box: ["box-show", "Show box"], daysAgo: 0 },
-  { card: pick(SET.score, null, 301), quantity: 3, priceCents: 75, box: ["box-unsorted", "Unsorted"], daysAgo: 0 },
-  { card: pick(SET.score, null, 302), quantity: 2, priceCents: 75, box: ["box-unsorted", "Unsorted"], daysAgo: 0 },
-  { card: pick(SET.finest, null, 9), quantity: 1, priceCents: 1200, box: ["box-show", "Show box"], daysAgo: 1 },
-  { card: pick(SET.udHockey, null, 2), quantity: 4, priceCents: null, box: ["box-unsorted", "Unsorted"], daysAgo: 3 },
-  { card: pick(SET.topps, null, 340), quantity: 1, priceCents: 250, box: ["box-show", "Show box"], daysAgo: 5 },
-].map(({ card, quantity, priceCents, box, daysAgo }, i) => ({
-  ...card,
-  lineId: `listing-${i}`,
-  quantity,
-  priceCents,
-  boxId: box[0],
-  boxName: box[1],
-  daysAgo,
-}));
+/** Whole days ago for the store's box lines, newest first, in the store's order: the rest are a week old. */
+const LISTED_DAYS_AGO = [0, 1, 3];
+
+/** The store's box lines, newest first: what the card panel shows in the box, price and all. */
+const NEW_LISTINGS: NewListing[] = BOX_LINES.map((line, i) => {
+  const card = dashCard(line.cardId);
+  const price = line.minPrice ?? STORE.commonPrices?.[card.card.variant.id];
+  const box = CONTAINERS.get(line.homeId);
+  return {
+    ...card,
+    lineId: line.id,
+    quantity: line.quantity,
+    priceCents: price === undefined ? null : Math.round(price * 100),
+    boxId: line.homeId,
+    boxName: box?.name ?? "",
+    daysAgo: LISTED_DAYS_AGO[i] ?? 7,
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Sync status: what has not synced yet, and what keeps failing
@@ -728,20 +743,18 @@ export interface SyncStatusData {
   more: boolean;
 }
 
+/** A held-back set as the board names it: "2024 Score Artist's Proof", "1996-97 Upper Deck Base". */
+function heldBackSet(id: string, marketplace: Marketplace, card: DashCard, reason: string): SyncProblemSet {
+  const setLabel = `${card.setLabel} ${card.variantName ?? "Base"}`;
+  return { id, marketplace, setLabel, failure: null, heldBack: 1, cards: [{ card, reason }] };
+}
+
+/** Box cards only (a held-back card is one for sale), and never one an eBay order just sold. */
 const SYNC_STATUS: SyncStatusData = {
-  pending: [{ marketplace: "bsc", cards: 4, more: false }],
+  pending: [{ marketplace: "bsc", cards: 3, more: false }],
   problems: [
-    {
-      id: "sync-ebay-chrome",
-      marketplace: "ebay",
-      setLabel: "2024 Topps Chrome Base",
-      failure: null,
-      heldBack: 2,
-      cards: [
-        { card: pick(SET.chrome, null, 13), reason: "No price yet. Set one on the card, or a common price for the set." },
-        { card: pick(SET.chrome, null, 25), reason: "eBay listings need a photo. Add one to a copy of this card and it goes up." },
-      ],
-    },
+    heldBackSet("sync-ebay-score-proof", "ebay", SCORE_PROOF, "eBay listings need a photo. Add one to a copy of this card and it goes up."),
+    heldBackSet("sync-ebay-ud-hockey", "ebay", YZERMAN, "No price yet. Set one on the card, or a common price for the set."),
   ],
   more: false,
 };
@@ -762,11 +775,17 @@ export interface ShelfBox {
   label: ContainerLabel;
 }
 
-const SHELF_BOXES: ShelfBox[] = [
-  { id: "box-unsorted", name: "Unsorted", cardCount: 12, unsorted: true, label: labelOf({ kind: "box", system: "unsorted" }) },
-  { id: "box-show", name: "Show box", cardCount: 48, unsorted: false, label: labelOf({ kind: "box" }) },
-  { id: "box-monster", name: "Monster box", cardCount: 312, unsorted: false, label: labelOf({ kind: "box" }) },
-];
+/** The store's boxes in use (Unsorted only once it holds a card), with what each holds. */
+const SHELF_BOXES: ShelfBox[] = STORE.containers
+  .filter((c) => c.kind === "box")
+  .map((c) => ({
+    id: c.id,
+    name: c.name,
+    cardCount: BOX_LINES.filter((l) => l.homeId === c.id).reduce((n, l) => n + l.quantity, 0),
+    unsorted: c.system === "unsorted",
+    label: labelOf(c),
+  }))
+  .filter((b) => !b.unsorted || b.cardCount > 0);
 
 export interface DashboardData {
   /** null when the account has no order stored: no sales section at all. */
@@ -904,8 +923,9 @@ function distinctCards(copies: { cardId: string }[]): DashCard[] {
   return out;
 }
 
+/** Main's copies as the store files them (its up-for-trade copies stay in Main). */
 function mainCopies() {
-  return myCopies.filter((c) => c.binderIds.length === 0);
+  return STORE.copies.filter((c) => c.homeId === MAIN_BINDER_ID);
 }
 
 function quantityOf(copies: { quantity: number }[]): number {

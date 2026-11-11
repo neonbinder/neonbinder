@@ -67,11 +67,12 @@ describe("DashboardScreen: one screen, sections by data", () => {
   });
 
   it("an account that does not sell has no sales section at all, but its boxes still need a look", () => {
-    draw({ ...getDashboard(), sales: null });
+    // The demo store keeps no box off the marketplaces, so the account here brings its own.
+    draw({ ...getDashboard(), sales: null, unlistedBoxes: [{ id: "box-show", name: "Show box", unlisted: 5 }] });
     expect(heading("Out the Door")).toBeNull();
     expect(screen.queryByText("All shipped. Nice.")).toBeNull();
     const look = screen.getByRole("region", { name: "Needs a Look" });
-    expect(within(look).getByText("15 boxed cards not listed yet")).toBeTruthy();
+    expect(within(look).getByText("5 boxed cards not listed yet")).toBeTruthy();
     expect(screen.queryByText(/to ship\./)).toBeNull();
   });
 
@@ -277,7 +278,7 @@ describe("the sync status (review round 4)", () => {
     draw(data);
     const sync = screen.getByRole("region", { name: "Sync status" });
     expect(before(sync, heading("Out the Door")!)).toBe(true);
-    expect(within(sync).getByText("4 cards waiting for the next sync.")).toBeTruthy();
+    expect(within(sync).getByText("3 cards waiting for the next sync.")).toBeTruthy();
     expect(within(sync).getByRole("link", { name: "Open Sync status" }).getAttribute("href")).toBe("/demo/inventory?tab=sync");
     // Each set names its marketplace for a reader, and each held-back card opens its panel over the
     // dashboard as stock for sale, where the fix is.
@@ -300,7 +301,7 @@ describe("the sync status (review round 4)", () => {
     for (const link of within(sync).getAllByRole("link", { name: /No price yet|need a photo/ })) {
       expect(before(link, failure)).toBe(true);
     }
-    const rest = within(sync).getByRole("link", { name: `3 more cards on Sync status, held back in ${set.setLabel} on eBay` });
+    const rest = within(sync).getByRole("link", { name: `${5 - set.cards.length} more cards on Sync status, held back in ${set.setLabel} on eBay` });
     expect(rest.getAttribute("href")).toBe("/demo/inventory?tab=sync");
     expect(within(sync).getByText("More sets need a look on Sync status.")).toBeTruthy();
     expect(within(sync).queryByText(/waiting for the next sync/)).toBeNull();
@@ -336,7 +337,7 @@ describe("the sync status (review round 4)", () => {
     draw(getDashboard());
     const sync = screen.getByRole("region", { name: "Sync status" });
     const set = within(sync).getAllByRole("heading", { level: 3 })[0];
-    expect(before(set, within(sync).getByText("4 cards waiting for the next sync."))).toBe(true);
+    expect(before(set, within(sync).getByText("3 cards waiting for the next sync."))).toBe(true);
   });
 
   it("only cards waiting: no set, and a count that may be a floor", () => {
@@ -362,15 +363,14 @@ describe("New Listings (review round 4)", () => {
     expect(links).toHaveLength(data.newListings.length);
     const first = data.newListings[0];
     expect(links[0].getAttribute("href")).toBe(`/demo?detail=${encodeURIComponent(first.id)}&side=inventory`);
-    expect(links[0].textContent).toContain("$45.00");
-    expect(links[0].textContent).toContain("1 in Show box");
-    expect(within(listings).getAllByText("$0.75 each")).toHaveLength(2);
-    expect(within(listings).getByText("No price yet")).toBeTruthy();
+    expect(links[0].textContent).toContain(`${first.quantity} in ${first.boxName}`);
+    // The demo store prices none of its box lines, and the tiles say so, as the panel does.
+    expect(within(listings).getAllByText("No price yet")).toHaveLength(data.newListings.length);
   });
 
   it("more than six: the rest behind Show all", () => {
     const data = getDashboard();
-    const more = [...data.newListings, { ...data.newListings[0], lineId: "listing-x" }];
+    const more = Array.from({ length: 7 }, (_, i) => ({ ...data.newListings[i % data.newListings.length], lineId: `listing-${i}` }));
     draw({ ...data, newListings: more });
     const listings = screen.getByRole("region", { name: "New Listings" });
     expect(within(listings).getAllByRole("link")).toHaveLength(6);
@@ -403,15 +403,15 @@ describe("the third shelf (review round 4)", () => {
     expect(spines()).toHaveLength(16);
     expect(screen.getByRole("button", { name: "Show all 20 binders" })).toBeTruthy();
     const boxes = screen.getByRole("list", { name: "Shelf 3, boxes" });
-    const unsorted = within(boxes).getByRole("link", { name: "Unsorted, box, 12 cards for sale" });
-    expect(unsorted.getAttribute("href")).toBe("/demo/inventory?tab=boxes&b=box-unsorted");
+    const show = within(boxes).getByRole("link", { name: "Show box, box, 5 cards for sale" });
+    expect(show.getAttribute("href")).toBe("/demo/inventory?tab=boxes&b=box-show");
     expect(within(boxes).getAllByRole("link")).toHaveLength(data.shelfBoxes!.length);
     expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
   });
 
   it("more boxes than a shelf holds: the last place says how many more, into My Boxes", () => {
     const data = getDashboard();
-    const eight = Array.from({ length: 8 }, (_, i) => ({ ...data.shelfBoxes![1], id: `box-${i}`, name: `Box ${i}` }));
+    const eight = Array.from({ length: 8 }, (_, i) => ({ ...data.shelfBoxes![0], id: `box-${i}`, name: `Box ${i}` }));
     draw({ ...data, shelfBoxes: eight });
     const boxes = screen.getByRole("list", { name: "Shelf 3, boxes" });
     expect(within(boxes).getAllByRole("link", { name: /, box, / })).toHaveLength(5);

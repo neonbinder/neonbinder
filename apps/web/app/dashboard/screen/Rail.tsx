@@ -37,6 +37,8 @@ export function FillingUp({
       <ul className="divide-y divide-rule">
         {shown.map((b) => {
           const cards = b.newCards.slice(0, PER_BINDER);
+          // ↑ ↓ in a card's panel walk every card new in this binder, the ones past "+N more" too.
+          const list = b.newCards.map((c) => c.id);
           const more = b.newCards.length - cards.length;
           return (
             <li key={b.id} className="space-y-2 py-3 first:pt-0 last:pb-0">
@@ -56,7 +58,7 @@ export function FillingUp({
               <ul aria-label={`New in ${b.name}`} className="flex flex-col gap-2">
                 {cards.map((c) => (
                   <li key={c.id}>
-                    <CardLine card={c} thumb="w-8" wanted={wanted.has(c.id)} />
+                    <CardLine card={c} thumb="w-8" wanted={wanted.has(c.id)} link={{ side: "collection", list }} />
                   </li>
                 ))}
               </ul>

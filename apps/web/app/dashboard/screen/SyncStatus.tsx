@@ -83,6 +83,8 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
   const shown = all ? set.cards : set.cards.slice(0, HELD_PREVIEW);
   const folded = set.cards.length - HELD_PREVIEW;
   const unnamed = set.heldBack - set.cards.length;
+  // ↑ ↓ in a held-back card's panel walk the set's held-back cards, the folded ones too.
+  const heldIds = set.cards.map((c) => c.card.id);
   return (
     <article aria-labelledby={headingId} className="min-w-0">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -104,6 +106,7 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
                   <PanelLink
                     cardId={card.id}
                     side="inventory"
+                    list={heldIds}
                     className="flex h-full min-w-0 items-start gap-2.5 rounded-md border border-notice-warn-rule bg-notice-warn-bg p-2 hover:bg-hover-raised focus-outline"
                   >
                     <Thumb card={card} className="w-10" />

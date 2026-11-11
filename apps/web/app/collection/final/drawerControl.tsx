@@ -26,8 +26,8 @@ import type { StatusLine } from "./statusLine";
 /**
  * What the opener knew that the URL does not carry: the list the drawer's
  * ↑ ↓ step through, the card as drawn, the copy to ring. Kept for the card
- * it was set for; a drawer reopened from the URL alone steps through just
- * its own card.
+ * it was set for; a drawer reopened from the URL alone steps through the
+ * list on its history entry (`DrawerHistoryState.list`), else just its card.
  */
 interface DrawerExtras {
   cardId: CardId;
@@ -48,6 +48,20 @@ interface DrawerExtras {
  */
 export interface DrawerHistoryState {
   drawer?: boolean;
+  /**
+   * The list ↑ ↓ step through, for a drawer opened by a plain link (the
+   * dashboard's card links), which hands the drawer no extras. It rides on
+   * the entry, so ↑ ↓ (a replace keeps it), a refresh and Forward keep it; a
+   * link opened in a new tab carries none and steps through just its card.
+   */
+  list?: CardId[];
+}
+
+/** The history state's list, when it is one and holds the card. */
+function stateList(state: unknown, cardId: CardId): CardId[] | null {
+  const list = (state as DrawerHistoryState | null)?.list;
+  if (!Array.isArray(list) || !list.every((id) => typeof id === "string")) return null;
+  return list.includes(cardId) ? list : null;
 }
 
 /** The drawer as the URL (and the opener) has it: null while closed. */
@@ -97,7 +111,7 @@ export function useCardDrawer(
         listIds:
           extras && extras.listIds.includes(drawerId)
             ? extras.listIds
-            : [drawerId],
+            : (stateList(location.state, drawerId) ?? [drawerId]),
         seed: ours?.seed,
         mode:
           params.get(DRAWER_MODE_PARAM) === "add"

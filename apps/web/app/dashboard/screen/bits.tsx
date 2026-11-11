@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
 import "@/app/collection/final/cards/cards.css";
+import type { Side } from "@/app/collection/final/data/types";
 import { MARKETPLACES, type DashCard, type Marketplace } from "../fake-data";
+import { PanelLink } from "./panelLink";
 
 /**
  * NEO-464 combined dashboard — the small pieces every block uses: a count
@@ -70,29 +72,46 @@ export function WantFlag({ className = "" }: { className?: string }) {
  */
 export const WANT_RING = "rounded-[6%] outline-2 outline-offset-2 outline-dashed outline-neon-yellow-text";
 
-/** A row: a small card and its full title, for lists where a card is named. */
+/**
+ * A row: a small card and its full title, for lists where a card is named.
+ * With `link`, the whole row is one link that opens the card's panel on that
+ * side, ↑ ↓ stepping through `link.list` (`./panelLink`).
+ */
 export function CardLine({
   card,
   thumb = "w-10",
   wanted = false,
+  link,
   children,
 }: {
   card: DashCard;
   thumb?: string;
   wanted?: boolean;
+  link?: { side: Side; list: readonly string[] };
   children?: ReactNode;
 }) {
-  return (
-    <div className="flex min-w-0 items-start gap-2.5">
+  const body = (
+    <>
       <div className={wanted ? WANT_RING : undefined}>
         <Thumb card={card} className={thumb} />
       </div>
       <div className="min-w-0 flex-1 text-xs leading-snug">
-        <CardTitle card={card} className="text-ink" />
+        <CardTitle card={card} className={link ? "text-ink group-hover:text-neon-blue-text group-hover:underline" : "text-ink"} />
         {wanted && <WantFlag className="mt-0.5" />}
         {children}
       </div>
-    </div>
+    </>
+  );
+  if (!link) return <div className="flex min-w-0 items-start gap-2.5">{body}</div>;
+  return (
+    <PanelLink
+      cardId={card.id}
+      side={link.side}
+      list={link.list}
+      className="group flex min-w-0 items-start gap-2.5 rounded-md focus-outline"
+    >
+      {body}
+    </PanelLink>
   );
 }
 

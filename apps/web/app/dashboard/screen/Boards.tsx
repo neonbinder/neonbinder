@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Link, useLocation } from "react-router";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
+import { PanelLink } from "./panelLink";
 import NeonButton from "@/components/modules/NeonButton";
 import type { BuildingSet, CompletedSet, DashCard } from "../fake-data";
 import { sideHref } from "./bits";
@@ -175,13 +176,20 @@ function wallLink(setId: string, pathname: string): string {
 
 /** The board's title: the whole board is its hit area (the `after:` inset). */
 const TITLE_HIT =
-  "text-left after:absolute after:inset-0 after:rounded-xl hover:text-neon-blue-text focus-visible:outline-none";
+  "cb-board-title text-left after:absolute after:inset-0 after:rounded-xl hover:text-neon-blue-text focus-visible:outline-none";
 
 /**
  * How many needed cards the Need line names (on one line, clamped) before
  * "+N more". The signed-in page reads only these few of a set's needs.
  */
 export const NEED_NAMED = 5;
+
+/**
+ * A named need: above the title's stretched hit area, so it is its own click.
+ * The line clips (`truncate`), so its focus ring is drawn inside the words.
+ */
+const NEED_LINK =
+  "relative z-10 rounded-sm hover:text-neon-blue-text hover:underline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus";
 
 /**
  * One compact board: rank, name, percent; Have and Need; one bar of
@@ -212,10 +220,11 @@ function Board({
   for (const b of item.bulbs) if (!b.owned && b.cardId && wanted.has(b.cardId)) wantedIds.add(b.cardId);
   const wantedCount = wantedIds.size;
   const needText = named.map((c) => `${wanted.has(c.id) ? "★ " : ""}${c.title}`).join("; ");
+  const neededIds = ordered.map((c) => c.id);
 
   return (
     <article
-      className={`mc-led shadow-offset relative flex h-full flex-col gap-2.5 rounded-xl border border-rule transition-colors hover:border-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-4 has-[:focus-visible]:outline-focus ${
+      className={`mc-led shadow-offset relative flex h-full flex-col gap-2.5 rounded-xl border border-rule transition-colors hover:border-selection has-[.cb-board-title:focus-visible]:outline-2 has-[.cb-board-title:focus-visible]:outline-offset-4 has-[.cb-board-title:focus-visible]:outline-focus ${
         leader ? "p-4" : "p-3"
       }`}
     >
@@ -282,18 +291,28 @@ function Board({
       {/* Divs, not a p: globals.css gives p `text-wrap: pretty` unlayered, which beats `truncate`'s nowrap. */}
       <div className="flex min-w-0 items-baseline gap-1 text-xs text-ink-2">
         <span className="shrink-0 font-bold text-ink">Need:</span>
-        <div className="min-w-0 flex-1 truncate" title={needText}>
+        {/* Each named need opens its panel, ↑ ↓ walking every need the board holds. A focused one past the
+            clip scrolls the line to it; leaving the line puts it back at its start. */}
+        <div
+          className="min-w-0 flex-1 truncate"
+          title={needText}
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.scrollLeft = 0;
+          }}
+        >
           {named.map((c, i) => (
             <span key={c.id}>
-              {wanted.has(c.id) && (
-                <>
-                  <span aria-hidden="true" className="mc-star text-neon-yellow-text">
-                    ★{" "}
-                  </span>
-                  <span className="sr-only">On your Want List: </span>
-                </>
-              )}
-              {c.title}
+              <PanelLink cardId={c.id} side="collection" list={neededIds} className={NEED_LINK}>
+                {wanted.has(c.id) && (
+                  <>
+                    <span aria-hidden="true" className="mc-star text-neon-yellow-text">
+                      ★{" "}
+                    </span>
+                    <span className="sr-only">On your Want List: </span>
+                  </>
+                )}
+                {c.title}
+              </PanelLink>
               {i < named.length - 1 ? "; " : ""}
             </span>
           ))}
@@ -338,16 +357,33 @@ function Cheer({ done, onDismissed }: { done: CompletedSet; onDismissed: () => v
       className="shadow-offset flex flex-col gap-4 rounded-2xl border border-notice-success-rule bg-notice-success-bg p-4 sm:flex-row sm:items-center"
     >
       <ul aria-label={`${done.label}, every card`} className="flex shrink-0 gap-2">
-        {done.cards.map((c) => (
+        {done.cards.map((c, _i, all) => (
           <li key={c.id} className="w-14">
-            <CardFace model={c.card} size="fill" />
+            {/* The face's own name (role img) names the link. */}
+            <PanelLink
+              cardId={c.id}
+              side="collection"
+              list={all.map((x) => x.id)}
+              className="block rounded-[6%] transition-transform hover:-translate-y-0.5 focus-outline motion-reduce:transition-none"
+            >
+              <CardFace model={c.card} size="fill" />
+            </PanelLink>
           </li>
         ))}
       </ul>
       <div className="min-w-0 flex-1">
         <h3 className="text-lg font-bold text-notice-success-ink">Every bulb lit! {done.label} is done.</h3>
         <p className="text-sm text-ink-2">
-          All {done.total} in the binder. <span className="font-semibold text-ink">{done.lastCard.title}</span> closed it
+          All {done.total} in the binder.{" "}
+          <PanelLink
+            cardId={done.lastCard.id}
+            side="collection"
+            list={done.cards.map((c) => c.id)}
+            className="rounded-sm font-semibold text-ink underline-offset-2 hover:underline focus-outline"
+          >
+            {done.lastCard.title}
+          </PanelLink>{" "}
+          closed it
           out {when}.
         </p>
       </div>

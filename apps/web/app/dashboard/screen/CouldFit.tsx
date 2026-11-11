@@ -38,6 +38,8 @@ export default function CouldFit({ binders, wanted }: { binders: ShelfBinder[]; 
 
 function Strip({ binder, wanted }: { binder: ShelfBinder; wanted: Set<string> }) {
   const shown = binder.couldFit.slice(0, COULD_FIT_PREVIEW);
+  // ↑ ↓ in a card's panel walk every candidate the strip holds.
+  const list = binder.couldFit.map((c) => c.id);
   const total = binder.couldFitTotal?.count ?? binder.couldFit.length;
   const more = binder.couldFitTotal?.more ?? false;
   const rest = total - shown.length;
@@ -62,7 +64,7 @@ function Strip({ binder, wanted }: { binder: ShelfBinder; wanted: Set<string> })
         <ul aria-label={`Cards that could fit ${binder.name}`} className="flex flex-col gap-2">
           {shown.map((c) => (
             <li key={c.id}>
-              <CardLine card={c} thumb="w-9" wanted={wanted.has(c.id)} />
+              <CardLine card={c} thumb="w-9" wanted={wanted.has(c.id)} link={{ side: "collection", list }} />
             </li>
           ))}
         </ul>
