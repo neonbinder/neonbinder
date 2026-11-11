@@ -54,8 +54,15 @@ export default function BinderHeader({
       <div className="flex items-center gap-2 pointer-events-auto">
         <BrandMark />
         {/* The wordmark inherits its colour in dark and takes the deep brand
-            green in light (`--wordmark`, app/theme.css). */}
-        <span className="neon-header neon-header-sm text-wordmark">Neon Binder</span>
+            green in light (`--wordmark`, app/theme.css).
+
+            Under 360px it steps aside (NEO-464 audit). At 320 the mark, the
+            wordmark, the right-hand controls (the demo's Sign up button, or
+            the account button and Sign out) and the 44px menu toggle need
+            more than the 288px between the gutters, so the whole page
+            scrolled sideways. The logo beside it already carries the name
+            "Neon Binder", and every phone from 360 up keeps the wordmark. */}
+        <span className="neon-header neon-header-sm text-wordmark max-[359px]:hidden">Neon Binder</span>
       </div>
       <div className="flex items-center gap-3 pointer-events-auto">
         {actions ?? (

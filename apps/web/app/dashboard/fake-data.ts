@@ -46,7 +46,7 @@ import { demoCard } from "@/app/collection/final/data/demoStore";
 import { initialCollectionState, MAIN_BINDER_ID } from "@/app/collection/final/store";
 import { compareCardNumbers } from "@/app/collection/final/data/labels";
 import type { CardId, ListingProblemReason, SetId, VariantKind } from "@/app/collection/final/data/types";
-import { toDash, type DashCard } from "./dash-card";
+import { dashSetLabel, setRefLabel, toDash, type DashCard } from "./dash-card";
 import type { Marketplace } from "./dash-labels";
 import { DEFAULT_SPINE_FONT_ID } from "@/lib/print/spine-fonts";
 import { labelOf, PLAIN_LABEL } from "@/app/collection/final/binders/label";
@@ -60,6 +60,7 @@ import {
   cards as fixtureCards,
   describeRule,
   evaluateRule,
+  getBrand as getFixtureBrand,
   getCard as getFixtureCard,
   getSet as getFixtureSet,
   getSport as getFixtureSport,
@@ -70,6 +71,11 @@ import {
 } from "@/app/collection/prototypes/_shared/data";
 
 export type { DashCard } from "./dash-card";
+
+/** A demo set as the dashboard names it, brand and all, the way its cards' titles do ("1993 Topps Finest"). */
+function fixtureSetLabel(set: { season: string; name: string; brandId: string }): string {
+  return dashSetLabel({ season: set.season, name: set.name, brand: getFixtureBrand(set.brandId).name });
+}
 
 // ---------------------------------------------------------------------------
 // Cards
@@ -386,7 +392,7 @@ function buildingSet(setId: SetId): BuildingSet {
   const total = base.length;
   return {
     setId,
-    setLabel: `${set.season} ${set.name}`,
+    setLabel: fixtureSetLabel(set),
     have,
     total,
     need: total - have,
@@ -447,7 +453,7 @@ const JUST_COMPLETED: CompletedSet | null = (() => {
   const today = SCORE_1989_TODAY.map((n) => base.find((c) => c.cardNumber === n)!);
   const cards = [...today, ...byArrival.filter((c) => !today.includes(c))].slice(0, CHEER_CARDS).map((c) => dashCard(c.id));
   const set = getFixtureSet(SET.score89);
-  const label = `${set.season} ${set.name}`;
+  const label = fixtureSetLabel(set);
   return {
     id: `done-${SET.score89}-base`,
     label,
@@ -677,7 +683,7 @@ function newSet(setId: SetId): NewSet {
   const cover = first ? dashCard(first.id) : null;
   return {
     id: setId,
-    label: cover?.setLabel ?? `${set.season} ${set.name}`,
+    label: cover?.setLabel ?? fixtureSetLabel(set),
     variant: null,
     checklist: { tab: "checklists", set: setId },
     sport: getFixtureSport(set.sportId).name,
@@ -777,9 +783,7 @@ export interface SyncStatusData {
  * "2024 Score Artist's Proof", "1993 Topps Finest Base".
  */
 function heldSetLabel(card: DashCard): string {
-  const { season, name, brand } = card.card.set;
-  const set = name.toLowerCase().startsWith(brand.name.toLowerCase()) ? name : `${brand.name} ${name}`;
-  return `${season} ${set} ${card.variantName ?? "Base"}`;
+  return `${setRefLabel(card.card.set)} ${card.variantName ?? "Base"}`;
 }
 
 /** Why the demo's sync held a card back, in the words the signed-in page says them (`real/heldBackReason`). */

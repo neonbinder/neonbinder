@@ -61,7 +61,7 @@ export default function CollectionTrackingPage() {
           {/* Section 1: Upload Cards */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-6 sm:p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -133,7 +133,7 @@ export default function CollectionTrackingPage() {
           {/* Section 2: Locate in Database */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-pink/10 rounded-2xl p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-pink/10 rounded-2xl p-6 sm:p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -197,7 +197,7 @@ export default function CollectionTrackingPage() {
           {/* Section 3: Build Your Binder */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-yellow/10 to-neon-green/10 rounded-2xl p-12 border border-neon-yellow/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-yellow/10 to-neon-green/10 rounded-2xl p-6 sm:p-12 border border-neon-yellow/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -256,7 +256,7 @@ export default function CollectionTrackingPage() {
           {/* Section 4: Track Everything */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-pink/10 to-neon-purple/10 rounded-2xl p-12 border border-neon-pink/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-pink/10 to-neon-purple/10 rounded-2xl p-6 sm:p-12 border border-neon-pink/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 220 180"
                   width="200"
@@ -389,7 +389,7 @@ function TakeItForASpin() {
           <span
             key={spine.name}
             style={{ height: `${spine.tall}%`, backgroundColor: spine.bg, color: spine.ink } as CSSProperties}
-            className="flex w-10 items-center justify-center rounded-t-md border border-ink/10 py-3 shadow-[inset_-6px_0_10px_rgba(0,0,0,0.35)] sm:w-12"
+            className="flex w-9 items-center justify-center rounded-t-md border border-ink/10 py-3 shadow-[inset_-6px_0_10px_rgba(0,0,0,0.35)] min-[360px]:w-10 sm:w-12"
           >
             <span className="rotate-180 truncate text-lg font-extrabold leading-none tracking-tight [writing-mode:vertical-rl] sm:text-xl">
               {spine.name}

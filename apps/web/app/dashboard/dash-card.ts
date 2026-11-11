@@ -5,9 +5,9 @@
  * demo's from its fake catalog and the real page's from the store.
  */
 
-import { generateListingTitle, type ListingCardInputs } from "@/convex/features/generateListing";
-import { printRunLabel, setLabel, variantLabel } from "@/app/collection/final/data/labels";
-import type { Card, CardId, SetId, VariantKind } from "@/app/collection/final/data/types";
+import { brandedSetName, generateListingTitle, type ListingCardInputs } from "@/convex/features/generateListing";
+import { printRunLabel, variantLabel } from "@/app/collection/final/data/labels";
+import type { Card, CardId, SetId, SetRef, VariantKind } from "@/app/collection/final/data/types";
 
 /**
  * One card, ready to draw and to caption. `card` goes to CardFace's `model`;
@@ -22,7 +22,7 @@ export interface DashCard {
   player: string;
   /** Team on the card: "Packers". Empty when the card names none. */
   team: string;
-  /** Year and set: "1996 Playoff Contenders", "1996-97 Upper Deck". */
+  /** Year and set, as the title names them (`dashSetLabel`): "1993 Topps Finest", "1996-97 Upper Deck". */
   setLabel: string;
   setId: SetId;
   /** The card number as printed ("13", "13b", "GJ1"). A string, never unique on its own. */
@@ -41,6 +41,23 @@ export interface DashCard {
    * "2024 Topps Chrome Gold Refractor Parallel #1 Shohei Ohtani /50 Dodgers".
    */
   title: string;
+}
+
+/**
+ * A set as the dashboard names it: the season, then the brand and the set's
+ * name the way the cards' listing titles put them (`brandedSetName`), so a
+ * board headed "1993 Topps Finest" shows titles that start "1993 Topps
+ * Finest". `brand` is the set's NB brand row's name; null or "" names the set
+ * alone. The server's labels (`brandedSetLabel`, convex/lib/listingLabels.ts)
+ * use the same rule.
+ */
+export function dashSetLabel(set: { season: string; name: string; brand: string | null | undefined }): string {
+  return `${set.season} ${brandedSetName({ manufacturer: set.brand ?? undefined, setName: set.name })}`.trim();
+}
+
+/** `dashSetLabel` for the collection's own `SetRef`. */
+export function setRefLabel(set: Pick<SetRef, "season" | "name" | "brand">): string {
+  return dashSetLabel({ season: set.season, name: set.name, brand: set.brand.name });
 }
 
 /** The generator's inputs, from a card's own fields. Nothing here is marketplace data. */
@@ -75,7 +92,7 @@ export function toDash(card: Card): DashCard {
     card,
     player: card.players[0]?.name ?? "",
     team: card.teams[0]?.name ?? "",
-    setLabel: setLabel(card.set),
+    setLabel: setRefLabel(card.set),
     setId: card.set.id,
     cardNumber: card.cardNumber,
     variantKind: card.variant.kind,

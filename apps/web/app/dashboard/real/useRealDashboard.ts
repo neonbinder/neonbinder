@@ -54,7 +54,6 @@ import { useCardMap } from "@/app/collection/final/binders/hooks";
 import { binderPages, type CardsById, type PageModel } from "@/app/collection/final/binders/model";
 import { labelOf } from "@/app/collection/final/binders/label";
 import { describeSmartRule } from "@/app/collection/final/binders/RuleBuilder";
-import { setLabel } from "@/app/collection/final/data/labels";
 import {
   bindersOf,
   boxesOf,
@@ -77,7 +76,7 @@ import type {
   Want,
 } from "@/app/collection/final/data/types";
 import { problemSentence } from "@/app/collection/final/inventory/listing/copy";
-import { toDash, type DashCard } from "../dash-card";
+import { dashSetLabel, setRefLabel, toDash, type DashCard } from "../dash-card";
 import type {
   AddedCard,
   AdditionBatch,
@@ -565,7 +564,7 @@ export function newSetsOf(raw: readonly NewSetRaw[] | undefined, cards: CardsByI
     const cover = n.coverCardId ? cards?.get(n.coverCardId as CardId) : undefined;
     return {
       id: n.wholeSet ? n.set._id : `${n.set._id}:${n.opens._id}`,
-      label: setLabel(n.set),
+      label: dashSetLabel({ season: n.set.season, name: n.set.name, brand: n.set.manufacturer?.name }),
       variant: n.wholeSet ? null : variantNameOf(n.opens),
       checklist: checklistParamsOf(n.opens, n.set._id),
       sport: n.set.sport?.name ?? null,
@@ -598,10 +597,13 @@ export function completionWindowStart(nowMs: number): number {
 export function completedChecklistOf(raw: CompletionRaw, cards: CardsById): CompletedChecklist | null {
   const last = cards.get(raw.lastCardId);
   if (!last) return null;
+  // Named from the hydrated card's set, so the cheer says the set the way its
+  // cards' titles do ("1993 Topps Finest"), whatever the server's label says.
+  const label = setRefLabel(last.set);
   return {
     id: `done-${raw.setId}-base`,
-    label: raw.setLabel,
-    setLabel: raw.setLabel,
+    label,
+    setLabel: label,
     checklistName: raw.checklistName,
     total: raw.total,
     cards: dashCardsOf(raw.cardIds, cards),
@@ -633,7 +635,7 @@ export function buildingSetOf(
   const named = namedNeedsOf(board, wanted);
   return {
     setId: set.id,
-    setLabel: setLabel(set),
+    setLabel: setRefLabel(set),
     have,
     total,
     need: total - have,

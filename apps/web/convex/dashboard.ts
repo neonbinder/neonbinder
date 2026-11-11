@@ -60,7 +60,7 @@ import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS, hiddenAsEmpty } from "./collectionC
 import { CatalogReader, setRefValidator, variantRefValidator, type SetRef, type VariantRef } from "./lib/catalogView";
 import { awaitingShipment } from "./listingSales";
 import { LISTING_PLATFORMS } from "./listingOutbox";
-import { ListingLabels } from "./lib/listingLabels";
+import { ListingLabels, brandedSetLabel } from "./lib/listingLabels";
 import { listingPlatformValidator, listingProblemReasonValidator, saleItemProblemValidator } from "./schema";
 import { variantTypeKind } from "./variantRole";
 import { MAX_SORTED_LINES, type StoredRule } from "../lib/collection/binder-rule";
@@ -562,10 +562,6 @@ async function baseLines(
   return { lines, read: rows.length, truncated };
 }
 
-function setLabelOf(set: { season: string; name: string }): string {
-  return `${set.season} ${set.name}`.trim();
-}
-
 // ───────────────────────────────────────────────────────────────────────────
 // Queries
 // ───────────────────────────────────────────────────────────────────────────
@@ -653,7 +649,7 @@ export const justCompleted = query({
       if (!set) continue;
       out.push({
         setId,
-        setLabel: setLabelOf(set),
+        setLabel: brandedSetLabel(set),
         checklistName: null,
         total: checklist.cards.length,
         whenMs: done.whenMs,
@@ -1219,7 +1215,8 @@ export const syncAlerts = query({
         Number(b.heldBack > 0) - Number(a.heldBack > 0) || (b.record.lastRunAt ?? 0) - (a.record.lastRunAt ?? 0),
     );
     if (found.length > SYNC_ALERTS_SHOWN) more = true;
-    const labels = new ListingLabels(ctx);
+    // The set named with its brand, as the cards' listing titles under it name it (NEO-464).
+    const labels = new ListingLabels(ctx, { brand: true });
     const sets = [];
     for (const { record, failed, heldBack } of found.slice(0, SYNC_ALERTS_SHOWN)) {
       sets.push({

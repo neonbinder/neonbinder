@@ -392,6 +392,16 @@ describe("justCompleted", () => {
     ]);
   });
 
+  test("names the set with its brand, as its cards' listing titles do (NEO-464)", async () => {
+    const s = await setup();
+    // A set filed under Topps whose own name does not lead with it.
+    await s.t.run((ctx) => ctx.db.patch(s.fx.setId, { value: "Chrome" }));
+    await line(s, s.fx.gooden1, s.fx.baseId, { acquiredOn: "2026-10-01", lastUpdated: NOW - 2 * DAY });
+    await line(s, s.fx.strawberry2, s.fx.baseId, { acquiredOn: "2026-11-07", lastUpdated: NOW - 2 * DAY });
+    const done = await s.me.query(api.dashboard.justCompleted, { sinceMs: WINDOW });
+    expect(done.map((d) => d.setLabel)).toEqual(["2024 Topps Chrome"]);
+  });
+
   test("finished before the window: left out, even though a line was touched in it", async () => {
     const s = await setup();
     await line(s, s.fx.gooden1, s.fx.baseId, { acquiredOn: "2026-09-01", lastUpdated: NOW - DAY });
@@ -1654,6 +1664,16 @@ describe("syncAlerts", () => {
     expect(out.sets[0].cards).toHaveLength(SYNC_CARDS_NAMED);
     expect(out.sets[0].cards[1]).toEqual({ cardId: s.fx.gold1, reason: "rejected", detail: "Too blurry" });
     expect(typeof out.sets[0].setLabel).toBe("string");
+  });
+
+  test("a held-back set is named with its brand, as its cards' listing titles do (NEO-464)", async () => {
+    const s = await setup();
+    await s.t.run((ctx) => ctx.db.patch(s.fx.setId, { value: "Chrome" }));
+    await record(s, { platform: "ebay", variantId: s.fx.baseId, status: "idle", lastRunAt: NOW, lastSuccessAt: NOW, problems: [{ cardId: s.fx.gooden1, reason: "noPrice" }] });
+    await record(s, { platform: "bsc", variantId: s.fx.goldId, status: "error", lastRunAt: NOW - 1, lastError: "theirs" });
+    const out = await s.me.query(api.dashboard.syncAlerts, {});
+    // Base reads as the set alone; any other variant after it.
+    expect(out.sets.map((x) => x.setLabel)).toEqual(["2024 Topps Chrome", "2024 Topps Chrome Gold Refractor"]);
   });
 
   test(`at most SYNC_ALERTS_SHOWN (${SYNC_ALERTS_SHOWN}) sets, with more said`, async () => {
