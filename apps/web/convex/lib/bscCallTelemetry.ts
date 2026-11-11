@@ -575,8 +575,40 @@ export interface BscRecorder {
   respond(token: BscCallToken, response: Response): void;
   /** Record a failure. On a token already counted ok it converts that call to a failure. */
   fail(token: BscCallToken, info?: BscFailInfo): void;
+  /**
+   * PR 451 (NEO-487) — a wait on BSC that is not a call this recorder sends:
+   * the token read before the first call (a stale session is a BSC sign-in
+   * through the browser service, B2C login plus profile read, 10 s and more)
+   * and a 401's re-auth. It holds the wait open exactly as an in-flight call
+   * does, through the same edges, grace and `accumulatedMs`, so a token leg
+   * followed by the first call is ONE wait and no time is counted twice. It
+   * is not a call: no latency, no `bsc_call_summary`, no inflight count.
+   *
+   * Returns the end. Calling the end more than once ends it once. Without an
+   * `onWaitEdge` hook, or after `flush`, it does nothing. Never throws.
+   * Prefer {@link whileWaitingOnBsc}, which ends it on every path.
+   */
+  beginWait(): () => void;
   /** Await pending body reads, emit the summary line, return it. `null` when no call was started or already flushed. */
   flush(): Promise<BscFlushResult | null>;
+}
+
+/**
+ * PR 451 (NEO-487) — run `work` (a token read, a re-auth) as BSC wait time on
+ * `rec` ({@link BscRecorder.beginWait}): the wait opens when `work` starts and
+ * the span ends when it settles, success, failure or throw. No recorder: just
+ * runs `work`.
+ */
+export async function whileWaitingOnBsc<T>(
+  rec: BscRecorder | undefined,
+  work: () => Promise<T>,
+): Promise<T> {
+  const end = rec?.beginWait();
+  try {
+    return await work();
+  } finally {
+    end?.();
+  }
 }
 
 type CallState = {
@@ -877,6 +909,27 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
       } catch {
         // telemetry never throws into a call
       }
+    },
+
+    beginWait() {
+      if (flushed || !opts.onWaitEdge) return () => {};
+      try {
+        waitCallOpened(now());
+      } catch {
+        return () => {}; // telemetry never throws into a call
+      }
+      let ended = false;
+      return () => {
+        if (ended) return;
+        ended = true;
+        // After a flush the wait is already closed (and `openCalls` zeroed).
+        if (flushed) return;
+        try {
+          waitCallSettled(now());
+        } catch {
+          // telemetry never throws into a call
+        }
+      };
     },
 
     async flush() {

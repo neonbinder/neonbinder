@@ -76,6 +76,7 @@ import { BSC_API_BASE, bscHeaders } from "../lib/bscHttp";
 // recorder per action invocation, flushed once in its `finally`.
 import {
   createBscRecorder,
+  whileWaitingOnBsc,
   type BscCallToken,
   type BscRecorder,
 } from "../lib/bscCallTelemetry";
@@ -495,12 +496,15 @@ export const fetchBscSelectorOptions = action({
       ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
     });
     try {
-      // Get BSC token
+      // Get BSC token. PR 451 (NEO-487) — as BSC wait time: a stale session
+      // is a BSC sign-in through the browser service (seconds), and the
+      // status must show during it. A cached token is milliseconds and joins
+      // the first call's wait, below the client's 1.5 s announce.
       const tokenStart = Date.now();
-      const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
-        internal.adapters.buysportscards.getBscToken,
-        { requestId },
-      );
+      const tokenResult: { success: boolean; token?: string; error?: string } =
+        await whileWaitingOnBsc(rec, () =>
+          ctx.runAction(internal.adapters.buysportscards.getBscToken, { requestId }),
+        );
       tokenMs = Date.now() - tokenStart;
 
       if (!tokenResult.success || !tokenResult.token) {
@@ -1558,11 +1562,15 @@ async function bscChecklistWithSession(
       // NEO-278 backoff and the per-(user, site) credential lock apply here
       // exactly as they do to `getSiteToken`'s own refresh. A skip or a busy
       // lock answers `refreshed: false`, the same as a failed login.
+      // PR 451 (NEO-487) — the re-auth (a BSC sign-in) and the token read
+      // after it are BSC wait time, like the first token read. Nothing is
+      // awaited between the two, so with the 401 before them they are one wait.
       let refreshedLogin = false;
       try {
-        const reAuth: { refreshed: boolean } = await ctx.runAction(
-          internal.credentials.refreshSiteTokenAfterRejection,
-          { site: "buysportscards" },
+        const reAuth: { refreshed: boolean } = await whileWaitingOnBsc(rec, () =>
+          ctx.runAction(internal.credentials.refreshSiteTokenAfterRejection, {
+            site: "buysportscards",
+          }),
         );
         refreshedLogin = reAuth.refreshed;
       } catch (err) {
@@ -1594,7 +1602,9 @@ async function bscChecklistWithSession(
         };
       }
       const refreshed: { success: boolean; token?: string; error?: string } =
-        await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
+        await whileWaitingOnBsc(rec, () =>
+          ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+        );
       logMarketplaceLimiter({
         limiter: "bsc_token_reauth",
         platform: "bsc",
@@ -2025,10 +2035,12 @@ export const fetchBscChecklist = action({
       ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
     });
     try {
-      const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
-        internal.adapters.buysportscards.getBscToken,
-        {},
-      );
+      // PR 451 (NEO-487) — the token read is BSC wait time (see
+      // `fetchBscSelectorOptions`).
+      const tokenResult: { success: boolean; token?: string; error?: string } =
+        await whileWaitingOnBsc(rec, () =>
+          ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+        );
 
       if (!tokenResult.success || !tokenResult.token) {
         return {
@@ -2131,33 +2143,38 @@ export const probeBscChecklistBatch = internalAction({
       return results;
     }
 
-    let token: string | undefined;
-    try {
-      const tokenResult: { success: boolean; token?: string; error?: string } =
-        await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
-      token = tokenResult.success ? tokenResult.token : undefined;
-    } catch {
-      const results = allFailed("unknown");
-      log(results, "token_read_failed");
-      return results;
-    }
-    if (!token) {
-      const results = allFailed("no_sign_in");
-      log(results, "no_token");
-      return results;
-    }
-
-    const session: BscSession = { token };
-    // One budget for the whole batch, from the first request: an id it does
-    // not reach fails `timeout` without a request (NEO-325).
-    const deadlineAt = Date.now() + BSC_PROBE_DEADLINE_MS;
-    const results: BscProbeSummary[] = [];
+    // PR 451 (NEO-487) — the writer and recorder exist before the token read,
+    // so the read (which can be a BSC sign-in through the browser service) is
+    // BSC wait time on the same row as the requests after it.
     const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "probeBscChecklistBatch");
     const rec = createBscRecorder("probeBscChecklistBatch", {
       deployment: deploymentName(),
       ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
     });
+    const results: BscProbeSummary[] = [];
     try {
+      let token: string | undefined;
+      try {
+        const tokenResult: { success: boolean; token?: string; error?: string } =
+          await whileWaitingOnBsc(rec, () =>
+            ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+          );
+        token = tokenResult.success ? tokenResult.token : undefined;
+      } catch {
+        const failed = allFailed("unknown");
+        log(failed, "token_read_failed");
+        return failed;
+      }
+      if (!token) {
+        const failed = allFailed("no_sign_in");
+        log(failed, "no_token");
+        return failed;
+      }
+
+      const session: BscSession = { token };
+      // One budget for the whole batch, from the first request: an id it does
+      // not reach fails `timeout` without a request (NEO-325).
+      const deadlineAt = Date.now() + BSC_PROBE_DEADLINE_MS;
       for (const request of args.requests) {
         try {
           const res = await bscChecklistWithSession(
