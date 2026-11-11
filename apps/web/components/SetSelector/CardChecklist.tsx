@@ -54,7 +54,11 @@ import ChecklistSourceFilter, {
 import CrossListingImportModal from "./CrossListingImportModal";
 import CardAttentionWalker from "./CardAttentionWalker";
 import SkippedNamesPanel from "./SkippedNamesPanel";
-import { needsAttention } from "./card-attention";
+import {
+  isAwaitingTeamLookup,
+  needsAttention,
+  teamLookupStatusLine,
+} from "./card-attention";
 import ChecklistSearch, { searchEmptyText } from "./ChecklistSearch";
 import {
   cardSearchHaystack,
@@ -76,6 +80,7 @@ import { pausedSyncMessage } from "../../convex/selectorSyncStore";
 import { isKnownSite, sidesOfSites } from "../../convex/lib/marketplacePause";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
+import { useThrottledValue } from "@/src/hooks/useThrottledValue";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 import { streamedBatchSettled } from "@/lib/cards/streamed-batch";
 import {
@@ -620,6 +625,14 @@ const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
  * short enough that the announcement still lands with the change.
  */
 const ATTENTION_ANNOUNCE_DEBOUNCE_MS = 1500;
+
+/**
+ * PR 451 (NEO-487) — the "Still looking up teams" line moves its number at
+ * most this often. The background lookup answers cards one after another, a
+ * second or two apart; read out on every step, the line would talk over
+ * everything else on the page.
+ */
+const TEAM_LOOKUP_LINE_INTERVAL_MS = 5000;
 
 /** NEO-343: matches no term; never reached (every card has a haystack). */
 const NO_HAYSTACK: CardSearchHaystack = {
@@ -2600,6 +2613,27 @@ export default function CardChecklist({
     ATTENTION_ANNOUNCE_DEBOUNCE_MS,
   );
 
+  /**
+   * PR 451 (NEO-487) — cards still waiting on the background team lookup
+   * (`isAwaitingTeamLookup`, the walker's own count), off the same live
+   * subscription. They are nobody's to answer yet, so the attention count
+   * leaves them out, and a set whose only open cards are queued would show
+   * nothing at all. The status line below is their handle. Read from the
+   * stored rows only: no lookup is started or hurried by showing it.
+   */
+  const awaitingLookupCount = useMemo(
+    () => (cards ?? []).filter(isAwaitingTeamLookup).length,
+    [cards],
+  );
+  const throttledLookupCount = useThrottledValue(
+    awaitingLookupCount,
+    TEAM_LOOKUP_LINE_INTERVAL_MS,
+  );
+  // The number moves at the throttle's pace, but the line leaves the moment
+  // the last card is answered (or handed to the operator, when the pill takes
+  // over), so the two are never on screen saying different things for long.
+  const shownLookupCount = awaitingLookupCount === 0 ? 0 : throttledLookupCount;
+
   // NEO-312 — see `parallelParkRef`. Re-checked whenever the card list or the
   // notice moves, which is when the pressed button can disappear.
   const cardCount = cards?.length ?? 0;
@@ -3716,6 +3750,40 @@ export default function CardChecklist({
                 announcedAttentionCount === 1 ? "card needs" : "cards need"
               } you on this checklist`
             : ""}
+        </p>
+
+        {/* PR 451 (NEO-487) — "Still looking up teams for 3 cards. Nothing
+            for you to do yet." while any of this set's cards wait on the
+            background team lookup. Without it, a set whose only open cards
+            are queued shows no sign the lookups are still running: the
+            walker's done line says it, but the walker opens only from the
+            pill above, which is absent exactly then.
+
+            Shape follows `WaitingOnMarketplace`, its sibling a few lines up:
+            the role="status" paragraph is ALWAYS mounted (a live region that
+            appears with its text is often not read) and empty while idle, so
+            it takes no height; the layout sits on an inner wrapper rendered
+            only while there is something to say. The dot is blue rather than
+            the wait line's yellow: that one is a run the operator started and
+            is watching, this one is background work they can walk away from.
+
+            The number moves at most every 5 s (`useThrottledValue`) so a
+            screen reader is not read every card the lookup answers; the line
+            leaves at once when the last one is answered or given up on, and
+            a given-up card turns up in the pill. Blank while the walker is
+            open: its done line carries the same sentence, and one copy on
+            the page is enough for a reader and a text locator alike. Nothing
+            here names a marketplace. */}
+        <p role="status" data-team-lookup-status="">
+          {shownLookupCount > 0 && !walkerOpenedByHand && (
+            <span className="mb-3 flex items-center gap-2 text-sm text-ink-2">
+              <span
+                aria-hidden="true"
+                className="h-2 w-2 shrink-0 rounded-full bg-neon-blue-text shadow-[0_0_8px_var(--color-neon-blue)] motion-safe:animate-pulse"
+              />
+              <span>{teamLookupStatusLine(shownLookupCount)}</span>
+            </span>
+          )}
         </p>
 
         {/* NEO-343 — search, directly above the list it narrows. Shown once

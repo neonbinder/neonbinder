@@ -297,26 +297,12 @@ export function attentionWalkSubtitle(items: AttentionItem[]): string {
 }
 
 /**
- * NEO-335 — a card still waiting on the automatic BSC team lookup: linked to
- * BSC, no team on it, nobody has said it has none, and the lookup has not
- * stamped `teamCheckDoneAt` (it failed at fetch and is queued for a retry).
- *
- * These are exactly the cards `deriveCardAttention` holds back from
- * `missingTeam` while they wait (its clause 3), so they are not in the walk.
- * The walker counts them only to say, once the walk is done, that more may
- * yet arrive. Never a reason to badge or ask: the lookup answers most of them.
- *
- * Reads only the presence of the BSC ref, the same as the rule it mirrors.
+ * NEO-335 — a card still waiting on the automatic BSC team lookup. The rule
+ * lives in the pure `card-attention` seam (PR 451 moved it there so the
+ * checklist's status line can count with it without loading the fixers);
+ * re-exported here so the walker's imports stay where they were.
  */
-export function isAwaitingTeamLookup(row: CardChecklistRow): boolean {
-  return (
-    !!row.platformData?.bsc?.ref &&
-    !row.teamCheckDoneAt &&
-    !row.teamNoneConfirmedAt &&
-    (row.teamOnCardIds?.length ?? 0) === 0 &&
-    (row.pendingTeamNames?.length ?? 0) === 0
-  );
-}
+export { isAwaitingTeamLookup } from "./card-attention";
 
 /** Reason text for a card whose kinds this bundle has no fixer for. */
 export function unfixableReason(item: { kind: string } | undefined): string {

@@ -188,3 +188,4 @@
 - [react-hooks/refs flags helper arguments](reference_react_hooks_refs_flags_helper_arguments.md) — a ref-reading closure passed INTO renderRow() trips the lint; build it in the JSX prop instead
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
 - [axe radiogroup may wrap content](reference_axe_radiogroup_may_wrap_content.md) — no requiredOwned in axe 4.13; wrap the card in the radiogroup, keep the li plain
+- [Leak assertion matches the epoch](reference_leak_assertion_matches_the_epoch.md) — bscSeller.telemetry "555" check trips on the epoch-ms `at`; rerun before blaming

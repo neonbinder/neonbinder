@@ -274,6 +274,35 @@ export function needsAttention(row: AttentionCardRow): boolean {
 }
 
 /**
+ * NEO-335 — a card still waiting on the automatic BSC team lookup: linked to
+ * BSC, no team on it, nobody has said it has none, and the lookup has not
+ * stamped `teamCheckDoneAt`. PR 451 (NEO-487): that is a card on the
+ * one-slot `bscTeamPool` lane, queued or in flight; the lane stamps
+ * `teamCheckDoneAt` when it answers and when it gives up (the operator's
+ * turn), so the row alone says whether the lookup is still owed.
+ *
+ * These are exactly the cards `deriveCardAttention` holds back from
+ * `missingTeam` while they wait (its clause 3). Never a reason to badge or
+ * ask: the lookup answers most of them. Two readers: the walker's done line,
+ * and the checklist's "Still looking up teams" status line, which is the
+ * only handle on them while nothing else needs the operator.
+ *
+ * Reads only the presence of the BSC ref, the same as the rule it mirrors.
+ * Lives here, in the pure module, rather than beside the fixers in
+ * `cardAttentionRegistry.ts` (which re-exports it), so the checklist can count
+ * with it without loading the fixer components.
+ */
+export function isAwaitingTeamLookup(row: AttentionCardRow): boolean {
+  return (
+    !!row.platformData?.bsc?.ref &&
+    !row.teamCheckDoneAt &&
+    !row.teamNoneConfirmedAt &&
+    (row.teamOnCardIds?.length ?? 0) === 0 &&
+    (row.pendingTeamNames?.length ?? 0) === 0
+  );
+}
+
+/**
  * NEO-102 — the hard cap on how many teams one card can carry.
  *
  * eBay's Team aspect is single-select, so a listing only ever sends one team
