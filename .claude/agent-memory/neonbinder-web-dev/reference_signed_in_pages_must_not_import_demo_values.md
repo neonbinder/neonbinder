@@ -1,6 +1,6 @@
 ---
 name: signed-in-pages-must-not-import-demo-values
-description: A VALUE import from app/dashboard/fake-data (or the demo store) in a shared screen drags the demo store + seed into the signed-in chunk graph; check with a static-import trace of the built chunks
+description: A VALUE import from app/dashboard/fake-data (or the demo store) in a shared screen drags demo data into signed-in chunks; demo-only data goes in a side-effect sample module; how to trace built chunks
 metadata:
   type: reference
 ---
@@ -27,3 +27,14 @@ demo store into whatever shared chunk has the same importer set (it sat in the
 
 The prototypes' fake catalog (`_shared/catalog.ts`) is still reached from the
 signed-in graph through CardFace's chunk; growing it grows signed-in pages.
+
+**Growing the demo's data without growing signed-in pages:** the demo store
+(`app/collection/final/store.ts`) is ALSO loaded by the signed-in Collection
+and Inventory pages, so demo-only data cannot be imported from it or from the
+catalog. Put it in a side-effect module (NEO-464:
+`app/collection/final/data/sample/`) that calls `extendCatalog` +
+`refreshDataIndexes` and pushes to the collector seed, imported first thing by
+the demo entries only (`DashboardDemoLayout`, `PublicCollectionDemo`;
+`fake-data` imports it too). The store reads it through a lookup that returns
+null when it is not loaded. Lazily built indexes (demoStore, search) pick it
+up; the eager index maps in `_shared/data.ts` need the refresh.

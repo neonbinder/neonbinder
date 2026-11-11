@@ -636,9 +636,11 @@ describe("the empty shelf", () => {
 });
 
 describe("the demo's shelf", () => {
-  it("still stands its nine binders, every one laid out, within the shelf's cap", () => {
+  it("still stands its ten binders, every one laid out, within the shelf's cap", () => {
     const binders = demoBindersOf(getDashboard());
-    expect(binders.length).toBe(9);
+    // The seed's nine, and the sample's '89 Score binder.
+    expect(binders.length).toBe(10);
+    expect(binders.some((b) => b.name === "'89 Score")).toBe(true);
     expect(binders.length).toBeLessThanOrEqual(SHELF_CAP);
     expect(binders.every((b) => b.pockets.length > 0)).toBe(true);
     // The demo hands the screen its shelf, laid out by `bindersOf`: the screen

@@ -359,13 +359,18 @@ describe("New Listings (review round 4)", () => {
     draw(data);
     const listings = screen.getByRole("region", { name: "New Listings" });
     expect(before(heading("Fresh Pulls")!, heading("New Listings")!)).toBe(true);
+    // Six tiles; the rest of the demo's box lines wait behind Show all.
+    const shown = data.newListings.slice(0, 6);
+    expect(data.newListings.length).toBeGreaterThan(6);
     const links = within(listings).getAllByRole("link");
-    expect(links).toHaveLength(data.newListings.length);
+    expect(links).toHaveLength(shown.length);
     const first = data.newListings[0];
     expect(links[0].getAttribute("href")).toBe(`/demo?detail=${encodeURIComponent(first.id)}&side=inventory`);
     expect(links[0].textContent).toContain(`${first.quantity} in ${first.boxName}`);
-    // The demo store prices none of its box lines, and the tiles say so, as the panel does.
-    expect(within(listings).getAllByText("No price yet")).toHaveLength(data.newListings.length);
+    // Each tile says its own price, as the panel does: the demo prices its box lines but one.
+    shown.forEach((listing, i) => expect(links[i].textContent).toContain(priceWords(listing.priceCents, listing.quantity)));
+    expect(shown.filter((l) => l.priceCents === null)).toHaveLength(1);
+    expect(within(listings).getAllByText("No price yet")).toHaveLength(1);
   });
 
   it("more than six: the rest behind Show all", () => {
@@ -403,7 +408,9 @@ describe("the third shelf (review round 4)", () => {
     expect(spines()).toHaveLength(16);
     expect(screen.getByRole("button", { name: "Show all 20 binders" })).toBeTruthy();
     const boxes = screen.getByRole("list", { name: "Shelf 3, boxes" });
-    const show = within(boxes).getByRole("link", { name: "Show box, box, 5 cards for sale" });
+    const inShow = data.shelfBoxes!.find((b) => b.id === "box-show")!.cardCount;
+    expect(inShow).toBe(11);
+    const show = within(boxes).getByRole("link", { name: `Show box, box, ${inShow} cards for sale` });
     expect(show.getAttribute("href")).toBe("/demo/inventory?tab=boxes&b=box-show");
     expect(within(boxes).getAllByRole("link")).toHaveLength(data.shelfBoxes!.length);
     expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();

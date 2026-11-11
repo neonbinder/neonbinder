@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { initialCollectionState, MAIN_BINDER_ID } from "@/app/collection/final/store";
+import { cards as fixtureCards } from "@/app/collection/prototypes/_shared/data";
 import { bindersOf, getDashboard } from "./fake-data";
 
 // The demo dashboard opens each card's panel on the demo's collection store,
@@ -71,8 +72,29 @@ describe("the demo dashboard agrees with the demo store", () => {
     });
   });
 
-  it("cheers no finished checklist, since the store owns none whole", () => {
-    expect(data.justCompleted).toBeNull();
+  it("cheers the 1989 Score set the store owns whole, Barry Sanders last, today's pulls first", () => {
+    const done = data.justCompleted;
+    expect(done).not.toBeNull();
+    expect(done!.total).toBe(330);
+    expect(done!.lastCard.cardNumber).toBe("257");
+    expect(done!.cards.length).toBeGreaterThan(0);
+    expect(done!.cards.length).toBeLessThanOrEqual(9);
+    expect(done!.cards[0].id).toBe(done!.lastCard.id);
+    // Every card the cheer shows is one the store holds.
+    for (const card of done!.cards) expect(copiesOf(card.id).length, card.id).toBeGreaterThan(0);
+    // And the store holds every card of the set's base checklist.
+    const base = fixtureCards.filter((c) => c.setId === "1989-score-football" && c.variantPath.type === "Base");
+    expect(base).toHaveLength(330);
+    expect(base.every((c) => copiesOf(c.id).length > 0)).toBe(true);
+  });
+
+  it("files a Fresh Pull that is also on the Want List: today's Barry Sanders, wanted graded", () => {
+    const wanted = new Set(data.wantList.map((w) => w.id));
+    const today = data.additions[0];
+    expect(today.whenLabel).toBe("Today");
+    const barry = today.cards.find((c) => c.id === data.justCompleted?.lastCard.id);
+    expect(barry, "Barry Sanders among today's pulls").toBeDefined();
+    expect(wanted.has(barry!.id)).toBe(true);
   });
 
   it("stands the store's boxes in use on the shelf, each with what it holds", () => {

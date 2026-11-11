@@ -44,6 +44,19 @@ test(
       await expect(section(name), name).toBeVisible();
     }
 
+    // The fake collector finished the 1989 Score set today: the cheer names the
+    // card that closed it, and every card it shows opens its panel.
+    await expect(page.getByRole("heading", { level: 3, name: "Every bulb lit! 1989 Score is done." })).toBeVisible();
+    await expect(page.getByText(/^All 330 in the binder\./)).toBeVisible();
+    const cheered = page.getByRole("list", { name: "1989 Score, every card" });
+    await expect(cheered.getByRole("link").first()).toBeVisible();
+    // Today's pulls hold the card that closed it, and it is on the Want List (graded): the dashed pull.
+    const freshPulls = page.getByRole("region", { name: "Fresh Pulls" });
+    await expect(freshPulls.getByRole("link", { name: /^1989 Score Barry Sanders #257 .*On your Want List$/ })).toBeVisible();
+    // The demo's box lines carry their prices; one waits on a price.
+    const newListings = page.getByRole("region", { name: "New Listings" });
+    await expect(newListings.getByRole("link").filter({ hasText: /\$\d+\.\d{2}/ }).first()).toBeVisible();
+
     // The one ordering rule: orders are waiting to ship, so Out the Door comes before the boards.
     const sections = page.getByRole("heading", { level: 2 });
     const order = await sections.allInnerTexts();

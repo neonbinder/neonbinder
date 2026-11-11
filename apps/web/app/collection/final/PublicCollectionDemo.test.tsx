@@ -275,7 +275,9 @@ describe("the public demo never touches Convex", () => {
 
     const hunt = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
     fireEvent.change(hunt, { target: { value: "jim kelly" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Move here: / }));
+    // Two Jim Kellys answer (his '96 Contenders and his 1989 Score): move the Contenders one.
+    expect(screen.getAllByRole("button", { name: /^Move here: / }).length).toBeGreaterThan(1);
+    fireEvent.click(screen.getByRole("button", { name: /^Move here: .*#12 Jim Kelly/ }));
     await waitFor(() =>
       expect(
         screen.getAllByRole("status").some((s) => /^Moved #12 Jim Kelly from '96 Contenders to Bills PC, page 1, pocket 1\.$/.test(s.textContent ?? "")),

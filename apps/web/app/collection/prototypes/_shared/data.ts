@@ -37,7 +37,8 @@ import type {
 } from "./types";
 
 export * from "./types";
-export { brands, cards, players, sets, sports, teams, slugify } from "./catalog";
+export { brands, cards, extendCatalog, players, sets, sports, teams, slugify } from "./catalog";
+export type { Line, SetDef } from "./catalog";
 export { binders, buildingSetIds, myCopies } from "./collector";
 export { searchCards, normalizeSearchText } from "./search";
 export type { SearchHit, SearchOptions } from "./search";
@@ -50,12 +51,21 @@ export type { SearchHit, SearchOptions } from "./search";
 function indexBy<T extends { id: string }>(rows: T[]): Map<string, T> {
   return new Map(rows.map((r) => [r.id, r]));
 }
-const cardById = indexBy(cards);
-const playerById = indexBy(players);
-const teamById = indexBy(teams);
-const setById = indexBy(sets);
-const brandById = indexBy(brands);
+let cardById = indexBy(cards);
+let playerById = indexBy(players);
+let teamById = indexBy(teams);
+let setById = indexBy(sets);
+let brandById = indexBy(brands);
 const sportById = new Map<SportId, Sport>(sports.map((s) => [s.id, s]));
+
+/** Re-reads the catalog after `extendCatalog` added to it (the public demo's sample sets). */
+export function refreshDataIndexes(): void {
+  cardById = indexBy(cards);
+  playerById = indexBy(players);
+  teamById = indexBy(teams);
+  setById = indexBy(sets);
+  brandById = indexBy(brands);
+}
 
 function must<T>(row: T | undefined, kind: string, id: string): T {
   if (row === undefined) throw new Error(`prototype data: unknown ${kind} "${id}"`);

@@ -1,3 +1,5 @@
+// First: the demo's sample sets and cards (1989 Score, Reggie White), before anything reads the catalog.
+import "@/app/collection/final/data/sample";
 import { useMemo } from "react";
 import { Link } from "react-router";
 import { ArrowUturnLeftIcon } from "@heroicons/react/24/outline";

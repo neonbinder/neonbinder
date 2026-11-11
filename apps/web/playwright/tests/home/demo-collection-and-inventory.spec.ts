@@ -220,16 +220,21 @@ test(
     await expect(only.getByRole("button", { name: "Rookies" })).toBeVisible();
     await expect(only.getByRole("button", { name: /for sale/i })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /, for sale/ })).toHaveCount(0);
-    // The card is among the pockets (the pile turns in pages: a bounded walk to its page).
+    // The card is among the pockets (the pile turns in pages, and past its
+    // first window (the whole '89 Score set comes first) Show more cards
+    // loads the rest: a bounded walk to its page).
     const pile = page.getByRole("region", { name: "All my cards, open", exact: true });
     const pocket = // A plain-string name (a substring match), not a RegExp: inside .or(), a
     // RegExp holding an apostrophe ("Artist's Proof") breaks Playwright's selector parser.
     pile.getByRole("button", { name: label }).first();
     const turn = page.getByRole("button", { name: /^Next pages?$/ });
-    for (let i = 0; i < 12; i++) {
+    const more = page.getByRole("button", { name: "Show more cards" });
+    for (let i = 0; i < 60; i++) {
       await expect(pocket.or(turn).first()).toBeVisible();
       if (await pocket.isVisible()) break;
-      await turn.click();
+      // The last page of the window: load more, then keep turning.
+      if (await turn.isEnabled()) await turn.click();
+      else await more.click();
     }
     await expect(pocket).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, All my cards without a for-sale card" });

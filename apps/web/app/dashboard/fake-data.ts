@@ -34,8 +34,14 @@
  *   screen shows a section only when the data has something for it.
  *
  * Entry point: `getDashboard()`.
+ *
+ * The demo's sample (`final/data/sample`, loaded first) is what fills the
+ * cheer and the Reggie White binder: the 1989 Score set, finished today, and
+ * real Reggie White cards. Sample data from published checklists, not NB data.
  */
 
+// First: the sample adds its sets and copies before anything below reads them.
+import { SCORE_1989_FOOTBALL_ID, SCORE_1989_LAST_CARD, SCORE_1989_TODAY } from "@/app/collection/final/data/sample";
 import { demoCard } from "@/app/collection/final/data/demoStore";
 import { initialCollectionState, MAIN_BINDER_ID } from "@/app/collection/final/store";
 import { compareCardNumbers } from "@/app/collection/final/data/labels";
@@ -95,6 +101,7 @@ function pick(setId: SetId, variantName: string | null, cardNumber: string | num
 }
 
 const SET = {
+  score89: SCORE_1989_FOOTBALL_ID,
   contenders: "1996-playoff-contenders",
   udHockey: "1996-97-upper-deck-hockey",
   score: "2024-score-football",
@@ -202,6 +209,10 @@ function sale(id: string, marketplace: Marketplace, orderNumber: string, daysSin
 const YZERMAN = pick(SET.udHockey, null, 1);
 const SCORE_PROOF = pick(SET.score, "Artist's Proof", 301);
 const SKENES_AUTO = pick(SET.chrome, "Chrome Rookie Autographs", "RA-PS");
+const THURMAN = pick(SET.score89, null, 211);
+const GRIFFEY = pick(SET.finest, null, 2);
+/** In the Show box with no price yet, so the sync holds it back. */
+const RIPKEN = pick(SET.finest, null, 5);
 
 /**
  * Built in any order; sorted oldest first below. Every line sells a card the
@@ -213,6 +224,10 @@ const UNSHIPPED_AS_BUILT: UnshippedSale[] = [
     { card: YZERMAN, quantity: 4, problem: { kind: "oversold", sold: 4, inBoxes: inBoxes(YZERMAN.id) } },
   ]),
   sale("sale-ebay-1", "ebay", "14-12873-40211", 2, "Paid", [{ card: SKENES_AUTO, quantity: 1 }]),
+  sale("sale-bsc-3", "bsc", "BSC-3920877", 1, "Ready to ship", [
+    { card: THURMAN, quantity: 1 },
+    { card: GRIFFEY, quantity: 1 },
+  ]),
   sale("sale-bsc-2", "bsc", "BSC-3921456", 0, "Ready to ship", [
     { card: SCORE_PROOF, quantity: 1 },
     { card: null, quantity: 1, problem: { kind: "unmatched", listingTitle: "2024 Score #333 Rome Odunze RC" } },
@@ -274,6 +289,8 @@ function batch(id: string, whenLabel: string, daysAgo: number, sinceLastVisit: b
 /** The batches, newest first: cards the demo collector owns, filed where the demo files them. */
 const ADDITIONS: AdditionBatch[] = [
   batch("batch-today", "Today", 0, true, [
+    // The four that finished the 1989 Score set, the last card first.
+    ...SCORE_1989_TODAY.map((n) => pick(SET.score89, null, n)),
     pick(SET.score, "Gridiron Heritage", 1),
     pick(SET.score, "Gridiron Heritage", 2),
     pick(SET.score, "Gold Zone", 10),
@@ -406,19 +423,42 @@ export interface CompletedSet {
   total: number;
   /** The card that finished it. */
   lastCard: DashCard;
-  /** Every card in the checklist, in number order. */
+  /** At most nine of its cards for the cheer's thumbnails, the last to arrive first (as the signed-in page's `CHEER_CARDS`). */
   cards: DashCard[];
   /** Relative, like the batches: "Yesterday". */
   whenLabel: string;
 }
 
+/** The cheer's thumbnails, at most nine (the signed-in page's `CHEER_CARDS`). */
+const CHEER_CARDS = 9;
+
 /**
- * The demo collector has finished no checklist: the store owns two of the
- * three Topps Chrome Refractors and nothing whole. A cheer here would open a
- * panel saying otherwise, so the demo shows none (the signed-in page cheers
- * a real one).
+ * The demo collector finished the 1989 Score base set today: every card is in
+ * the '89 Score binder, Barry Sanders the last in. The cheer's cards are the
+ * last to arrive first: today's four, then the newest before them. Null if a
+ * card were missing (a panel would say otherwise).
  */
-const JUST_COMPLETED: CompletedSet | null = null;
+const JUST_COMPLETED: CompletedSet | null = (() => {
+  const base = variantCards(SET.score89, null).filter((c) => c.variation === null);
+  if (base.length === 0 || !base.every((c) => owned.has(c.id))) return null;
+  const inSet = new Set(base.map((c) => c.id));
+  const arrived = new Map(myCopies.filter((c) => inSet.has(c.cardId)).map((c) => [c.cardId, c.acquiredAt]));
+  const byArrival = [...base].sort((a, b) => (arrived.get(b.id) ?? "").localeCompare(arrived.get(a.id) ?? ""));
+  const today = SCORE_1989_TODAY.map((n) => base.find((c) => c.cardNumber === n)!);
+  const cards = [...today, ...byArrival.filter((c) => !today.includes(c))].slice(0, CHEER_CARDS).map((c) => dashCard(c.id));
+  const set = getFixtureSet(SET.score89);
+  const label = `${set.season} ${set.name}`;
+  return {
+    id: `done-${SET.score89}-base`,
+    label,
+    setLabel: label,
+    checklistName: null,
+    total: base.length,
+    lastCard: pick(SET.score89, null, SCORE_1989_LAST_CARD),
+    cards,
+    whenLabel: "Today",
+  };
+})();
 
 // ---------------------------------------------------------------------------
 // Smart binders
@@ -672,11 +712,13 @@ export interface NewListing extends DashCard {
   daysAgo: number;
 }
 
-/** Whole days ago for the store's box lines, newest first, in the store's order: the rest are a week old. */
-const LISTED_DAYS_AGO = [0, 1, 3];
+/** Whole days ago for the store's box lines, newest first: the rest are a week old. */
+const LISTED_DAYS_AGO = [0, 1, 1, 1, 1, 3, 5];
 
-/** The store's box lines, newest first: what the card panel shows in the box, price and all. */
-const NEW_LISTINGS: NewListing[] = BOX_LINES.map((line, i) => {
+/** The store's box lines, newest first (by when they came in; ties in the store's order): what the card panel shows in the box, price and all. */
+const NEW_LISTINGS: NewListing[] = [...BOX_LINES]
+  .sort((a, b) => b.acquiredAt.localeCompare(a.acquiredAt))
+  .map((line, i) => {
   const card = dashCard(line.cardId);
   const price = line.minPrice ?? STORE.commonPrices?.[card.card.variant.id];
   const box = CONTAINERS.get(line.homeId);
@@ -689,7 +731,7 @@ const NEW_LISTINGS: NewListing[] = BOX_LINES.map((line, i) => {
     boxName: box?.name ?? "",
     daysAgo: LISTED_DAYS_AGO[i] ?? 7,
   };
-});
+  });
 
 // ---------------------------------------------------------------------------
 // Sync status: what has not synced yet, and what keeps failing
@@ -738,7 +780,7 @@ const SYNC_STATUS: SyncStatusData = {
   pending: [{ marketplace: "bsc", cards: 3, more: false }],
   problems: [
     heldBackSet("sync-ebay-score-proof", "ebay", SCORE_PROOF, "eBay listings need a photo. Add one to a copy of this card and it goes up."),
-    heldBackSet("sync-ebay-ud-hockey", "ebay", YZERMAN, "No price yet. Set one on the card, or a common price for the set."),
+    heldBackSet("sync-ebay-finest", "ebay", RIPKEN, "No price yet. Set one on the card, or a common price for the set."),
   ],
   more: false,
 };

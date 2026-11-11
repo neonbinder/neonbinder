@@ -1,3 +1,5 @@
+// First: the demo's sample sets and cards (1989 Score, Reggie White), before anything reads the catalog.
+import "@/app/collection/final/data/sample";
 import { useSearchParams } from "react-router";
 import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "./data/demoStore";
 import FinalCollectionPage from "./FinalCollectionPage";
