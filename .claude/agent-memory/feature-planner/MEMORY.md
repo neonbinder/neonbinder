@@ -49,3 +49,5 @@
 - [Workpool lanes and throttle rows survive the E2E reset](workpool-lanes-and-throttle-rows-survive-the-e2e-reset.md) — reset drains allSteps only; add the table, cancelAll the pool, item reads its row before any cooldown wait
 - [Seller Send step past 7 s = seller-id read](seller-send-step-past-7s-is-the-seller-id-read.md) — spinning Send + sellerProfile timeout x2, or (NEO-482) seed hop "stalled on every sign-in (5 tries)" with 11-21 s logins; env, rerun
 - [Publisher checklist claim is per card](publisher-checklist-claim-is-per-card-omit-the-card-under-test.md) — omit the tested card's row (blank team keeps the lookup); Saved line carries the checklist tail
+- [Blank checklist team cell still asks BSC](checklist-fixture-blank-team-cell-still-asks-bsc.md) — blank/None/N/A/TBD = no claim, card looked up; a no-team card reads "No Team" (NEO-489); count from checklist_published_match
+- [Live-lookup 429 is a pass](live-lookup-429-is-a-pass-converge-by-operator-pick.md) — failed lookup withholds pre-fill; assert both via checked-role .or(), annotate, converge with check() (NEO-489)
