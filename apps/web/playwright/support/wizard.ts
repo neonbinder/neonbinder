@@ -181,6 +181,24 @@ export async function pickDisagreementSide(
   await expect(radio).toBeChecked();
 }
 
+/**
+ * The step's bulk answer (shown with two or more cards): one press sets every
+ * card's own radio, and each card can then be changed on its own. Contract:
+ * ENTRY the "Checklist says otherwise" step is open with two or more cards.
+ * EXIT every card's radio on that side is checked; nothing is pressed after it.
+ */
+export async function pickSideForAllCards(
+  page: Page,
+  side: "Keep the marketplace's" | "Use the checklist's",
+  numbers: readonly string[],
+): Promise<void> {
+  const group = reviewWizard(page).getByRole("group", { name: "Same answer for every card:" });
+  await group.getByRole("button", { name: `${side} on all`, exact: true }).click();
+  for (const number of numbers) {
+    await expect(disagreementOn(page, number).getByRole("radio", { name: side, exact: true })).toBeChecked();
+  }
+}
+
 /** The status the blocked Next shows while a card on the step has no side picked. */
 export function pickASideFirst(page: Page): Locator {
   return reviewWizard(page).getByText("Pick a side on every card first — then Next.").first();

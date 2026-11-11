@@ -1,9 +1,8 @@
 // NEO-487 (R1): when BuySportsCards stops answering for some cards during a
 // checklist fetch, the fetch still finishes inside the budget (a stall ends
-// within one wave of lookups, it is never waited out card by card), the cards
-// BSC did not answer reach the wizard's "Cards with no team" step, and after
-// the save they wait in the background queue for another try instead of asking
-// the operator.
+// within one wave of lookups, it is never waited out card by card), and after
+// the save the cards BSC did not answer wait in the background queue for
+// another try instead of being put to the operator.
 //
 // HOW THE STALL IS MADE (D7, Jason 2026-11-10). A test-only switch on the
 // deployment: it works only where TESTING_RESET_SECRET is set AND the env flag
@@ -16,8 +15,7 @@
 //   STALL_IDS: 96f9a87adeb7d02c275e117ef10d569c,9dba15716322d30fc94e4bd96034e4bf,adf14c41cda48abecf2b69b0faa399ae
 //
 // A deployment without the flag answers every card, so the spec goes RED at the
-// "Cards with no players (3)" assert, by name: that is the switch being unset,
-// not a product bug.
+// "23 need you" assert, by name: that is the switch being unset, not a product bug.
 //
 // WHAT IS DELIBERATELY NOT USED: the publisher's checklist. This spec is about
 // the per-card lookups a fetch makes WITHOUT one, so no file is uploaded.
@@ -27,22 +25,18 @@
 //      says it is "Waiting on BuySportsCards..." (`expectAfterMarketplace`). A
 //      stall that were retried card by card would blow the 7 s; a stall is
 //      instant, so the only time left is ours.
-//   2. The wizard's "Cards with no team" step lists exactly three cards. Every
-//      name is skipped, so the three share one "Cards with no players (3)" line;
-//      the other 23 cards got their team from BSC and are not on the step.
+//   2. Every name is skipped, so the wizard's "Cards with no team" step lists the
+//      whole set (it cannot tell a stalled card from an answered one whose team
+//      name was skipped); the spec only proves the step is reached.
 //   (A stalled card reaches the operator from the background lane only after
 //   about 6 minutes, so the spec asserts the queued state, never the give-up.)
-//   3. After the save the three cards are not put in front of the operator: the
-//      checklist's "N need you" control is absent (a card whose automatic team
-//      lookup has not come back is waiting, not the operator's; NEO-335), while
-//      the set's cards are on screen (the positive that keeps the absence honest).
-//
-// GAP (reported, not worked around): "waiting in the background queue" has no
-// handle of its own for a checklist whose only open cards are queued. The walker's
-// "Still looking up teams for 3 cards" line is the product's words for it, but it
-// is reachable only through the "N need you" control, which is absent exactly
-// when nothing else needs attention. So step 3 asserts the absence of that
-// control, not the queue's own text.
+//   3. After the save the split is on the checklist: the 23 cards BSC answered
+//      (their team name was skipped, so they end teamless) are the operator's,
+//      "23 need you", and the 3 it did not answer are not in that count: they
+//      wait in the queue, and the checklist says so in its own words, "Still
+//      looking up teams for 3 cards. Nothing for you to do yet." (a status line;
+//      its number moves at most every 5 s, so the first value after the save is
+//      the full three). Both are positives; neither can be read off a dead page.
 //
 // FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Halifax Mooseheads QMJHL",
 // one of the registered spares, needs Jason's approval to take): SOLE WRITER of
@@ -67,7 +61,7 @@ const CARDS = 26;
 const STALLED = 3;
 
 test(
-  "Checklist fetch — a BSC stall on some cards ends within one wave: the fetch lands, those cards reach Cards with no team, and wait in the background queue (NEO-487)",
+  "Checklist fetch — a BSC stall on some cards ends within one wave: the fetch lands and the unanswered cards wait in the background queue, not in the operator's count (NEO-487)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     await signIn("/set-selector");
@@ -85,27 +79,30 @@ test(
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
 
-    // ── 2. Every name skipped; the teams step holds the stalled cards, and only them ──
+    // ── 2. Every name skipped; the teams step is reached ──
     const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
     const next = wizard.getByRole("button", { name: "Next (Enter)", exact: true });
     await expect(skipRemaining.or(next).first()).toBeVisible();
     if (await skipRemaining.isVisible()) await skipRemaining.click();
     await expect(next).toBeVisible();
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
-    await expect(
-      wizard.getByText(`Cards with no players (${STALLED})`),
-      `the teams step is not holding ${STALLED} cards: the preview's NEONBINDER_TEST_BSC_STALL_CARD_IDS is unset or lists other ids`,
-    ).toBeVisible();
-    await expect(wizard.getByRole("button", { name: new RegExp(`^#.* · ${STALLED} cards`) })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Cards with no team after a BSC stall" });
 
-    // ── 3. Save: the three wait in the background, none is put to the operator ──
+    // ── 3. Save: the answered cards are the operator's, the three unanswered wait in the background ──
     await advanceToSave(page);
     await confirmSaveButton(page).click();
     await expect(page.getByText(new RegExp(`Saved ${CARDS} cards`))).toBeVisible();
     await expect(wizard).toBeHidden();
-    // The positive first: the set's cards are on screen, so the absence below is read off a live checklist.
+    // The set's cards are on screen, so what follows is read off a live checklist.
     await expect(editCardButton(page, "1")).toBeVisible();
-    await expect(page.getByText(/^[0-9]+ need you$/)).toHaveCount(0);
+    // The 23 BSC answered ended teamless and are the operator's; the 3 it did not answer are not in that count.
+    await expect(
+      page.getByRole("button", { name: `${CARDS - STALLED} need you` }),
+      `the attention count is not ${CARDS - STALLED}: the preview's NEONBINDER_TEST_BSC_STALL_CARD_IDS is unset or lists other ids`,
+    ).toBeVisible();
+    // The queue's own words: the status line names the three, and says it is not the operator's yet.
+    await expect(
+      page.getByRole("status").filter({ hasText: new RegExp(`^Still looking up teams for ${STALLED} cards\\.`) }),
+    ).toBeVisible();
   },
 );

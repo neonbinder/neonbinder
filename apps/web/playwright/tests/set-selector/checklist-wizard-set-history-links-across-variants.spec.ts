@@ -125,13 +125,15 @@ const BROWNS = "St. Louis Browns";
  * Each insert's captured publisher's checklist (NEO-478/482): BSC's own per-card
  * answers, uploaded before the Sync, so no fetch here asks BSC for a card one by
  * one. The whole flow's fetches read the same teams and names they always did;
- * the files are registered in SET-REGISTRY.md. NOT the Silk Collection: all 201
- * of its cards are numbered `NNO`, and a number pairs only when it is exactly one
- * on both sides (rule 7), so no upload could answer a card; its fetch keeps asking
- * BSC card by card, as it always did.
+ * the files are registered in SET-REGISTRY.md. The Silk Collection's 201 cards are
+ * all numbered `NNO`, which a checklist row keeps and pairs by player, one card to
+ * one row (rule 7's exactly-one guard on the only key an unnumbered card has). Every
+ * one of its players is on one card only, so each pairs and the line reads
+ * "Teams from your checklist: 201 of 201 cards" (N is read off the file).
  */
 const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
   [FIRST]: CHECKLISTS.teamBonus2010,
+  [SECOND]: CHECKLISTS.silkCollection2010,
   [THIRD]: CHECKLISTS.peakPerformance2010,
   [FOURTH]: CHECKLISTS.turkeyRed2010,
   [SIXTH]: CHECKLISTS.peakPerformanceRelics2010,
@@ -544,6 +546,16 @@ test(
     await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
     await fetchInsertToWizard(page, env, PRIOR, { reconcile: true, target: TARGET_2009, inserts: [PRIOR] });
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Two Chris Carpenters are on file (b. 1975, Cardinals 2004-2012; b. 1985, Cubs 2011 and Red Sox
+    // 2012) and Career Best has two of his cards, both "St. Louis Cardinals" in the uploaded file.
+    // The checklist's team reaches the name gate with the card, and only the b. 1975 Carpenter was on
+    // that club in 2009, so the name is answered for the operator and no "Which Chris Carpenter is
+    // this?" step is asked. A card left teamless (a row the file did not match, asked of BSC and
+    // not answered) would put both on the table, so this is where that shows, by name.
+    await expect(
+      wizard.getByRole("heading", { level: 3, name: /^Which Chris Carpenter is this\?$/ }),
+      "Chris Carpenter's pick step is open: the Cardinals on his Career Best cards did not reach the name gate",
+    ).toHaveCount(0);
     await walkToPlayerRow(page);
     await addAsFootballPlayer(page, WEEKS, "Entity review wizard, a 2009 name moved to Football");
     await skipEverythingLeft(page);

@@ -32,7 +32,14 @@ export const CHECKLISTS = {
   newHavenRavens: "1996-new-haven-ravens-rally-raffle-base",
   welcomeToTheClub: "2025-topps-welcome-to-the-club-3x-mvp-base",
   bbmRookieEditionPremium: "2024-bbm-rookie-edition-premium-base",
+  /**
+   * Baseball 2024 Topps Chrome Base, the seed's own fetch: 334 rows, card #300's row LEFT OUT
+   * so exactly one card (#300) is still asked of BSC live (D8). Seed only.
+   */
+  toppsChrome2024Base: "2024-topps-chrome-base",
   teamBonus2010: "2010-topps-insert-team-bonus",
+  /** Baseball 2010 Topps Insert Silk Collection: 201 cards, every one numbered `NNO`, so each pairs by player (exactly one card and one NNO row). */
+  silkCollection2010: "2010-topps-insert-silk-collection",
   peakPerformance2010: "2010-topps-insert-peak-performance",
   peakPerformanceRelics2010: "2010-topps-insert-peak-performance-relics",
   turkeyRed2010: "2010-topps-insert-turkey-red",
@@ -47,14 +54,14 @@ export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];
 export interface ChecklistFacts {
   /** The file's absolute path, for `setInputFiles`. */
   path: string;
-  /** Data rows: what the dialog's preview and the chip call "N rows". */
+  /** Data rows the dialog reads (a number with a digit, or NNO): what its preview and the chip call "N rows". */
   rows: number;
   /**
-   * The cards the file answers by number: rows whose number is on exactly one
+   * The cards the file answers: numbered rows whose number is on exactly one
    * row (rule 7; the cards of a captured set are one per row, so each such row
-   * meets exactly one card). This is N in "Teams from your checklist: N of M
-   * cards": a matched card takes its answer from the file even when the row
-   * names no team, so BSC is not asked about it.
+   * meets exactly one card) plus NNO rows whose player is on exactly one NNO
+   * row, each AND naming at least one team. This is N in "Teams from your
+   * checklist: N of M cards"; M is the set's card count.
    */
   matched: number;
 }
@@ -93,14 +100,49 @@ export function checklistRows(name: ChecklistName): ChecklistRow[] {
   return rows.map((r) => ({ number: r[at("number")] ?? "", player: r[at("player")] ?? "", team: r[at("team")] ?? "" }));
 }
 
+/** A person's or club's name as the product compares two sides: accents, case, dots and spacing set aside. */
+function nameKey(name: string): string {
+  return name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[.'’`]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** The names of a "; "-joined cell, as one order-free key ("" when the cell names nobody). */
+function namesKey(cell: string): string {
+  return [...new Set(cell.split(";").map(nameKey).filter(Boolean))].sort().join("|");
+}
+
 export function checklistFacts(name: ChecklistName): ChecklistFacts {
-  const rows = checklistRows(name);
-  const count = new Map<string, number>();
-  for (const r of rows) count.set(r.number.toUpperCase(), (count.get(r.number.toUpperCase()) ?? 0) + 1);
+  // A row is read when its number holds a digit, is an insert's letter code ("RA-MT": capitals on
+  // both sides of a hyphen), or is the unnumbered "NNO" (kept as a row; a card printed with no
+  // number is paired by player, below). Anything else is a skipped line.
+  const isNnoRow = (r: ChecklistRow) => r.number.trim().toUpperCase().replace(/[.:]$/, "") === "NNO";
+  const readable = (r: ChecklistRow) => /\d/.test(r.number) || /^[A-Z]{1,6}(?:-[A-Z]{1,6})+$/.test(r.number.trim()) || isNnoRow(r);
+  const rows = checklistRows(name).filter(readable);
+  const numbered = rows.filter((r) => !isNnoRow(r));
+  const unnumbered = rows.filter(isNnoRow);
+  const countOf = new Map<string, number>();
+  for (const r of numbered) countOf.set(r.number.toUpperCase(), (countOf.get(r.number.toUpperCase()) ?? 0) + 1);
+  const playerCountOf = new Map<string, number>();
+  for (const r of unnumbered) playerCountOf.set(namesKey(r.player), (playerCountOf.get(namesKey(r.player)) ?? 0) + 1);
+  // A numbered card is matched when its number is on exactly one row (rule 7). An unnumbered card
+  // is matched by player, only when exactly one such card and exactly one NNO row name that player
+  // (the captured set has one card per row, so the rows count for both sides). A matched card counts
+  // here only when its row names a team: a teamless matched row leaves BSC to be asked (B1).
+  const named = (r: ChecklistRow) => r.team.trim() !== "";
+  const matchedNumbered = numbered.filter((r) => countOf.get(r.number.toUpperCase()) === 1 && named(r)).length;
+  const matchedUnnumbered = unnumbered.filter((r) => {
+    const key = namesKey(r.player);
+    return key !== "" && playerCountOf.get(key) === 1 && named(r);
+  }).length;
   return {
     path: `${DIRECTORY}${name}.csv`,
     rows: rows.length,
-    matched: rows.filter((r) => count.get(r.number.toUpperCase()) === 1).length,
+    matched: matchedNumbered + matchedUnnumbered,
   };
 }
 
@@ -114,9 +156,13 @@ export function publishersChecklistDialog(page: Page): Locator {
   return page.getByRole("dialog", { name: "Publisher's checklist" });
 }
 
-/** The chip a used checklist leaves beside the Sync button: "Publisher's checklist: N rows". */
+/**
+ * The chip a used checklist leaves beside the Sync button: a button named
+ * "Publisher's checklist: N rows" (" · M skipped" follows when lines were), which
+ * reopens the dialog. Contract: a locator, nothing waited for.
+ */
 export function publishersChecklistChip(page: Page, rows: number): Locator {
-  return page.getByText(`Publisher's checklist: ${rows} ${rows === 1 ? "row" : "rows"}`).first();
+  return page.getByRole("button", { name: new RegExp(`^Publisher's checklist: ${rows} ${rows === 1 ? "row" : "rows"}\\b`) });
 }
 
 /** The preview's count, "N rows" (a row, singular, when it is one). */
@@ -151,11 +197,13 @@ export async function usePublishersChecklist(page: Page, name: ChecklistName): P
 
 /**
  * The Sync result line: "Teams from your checklist: N of M cards", appended to
- * the sync's message. N is `facts.matched` and M every card (`facts.rows`, as
- * the captured set has one card per row).
+ * the sync's message. N is `facts.matched`; M is the set's card count on the
+ * marketplace (it can differ from the file's rows: a card the checklist never
+ * listed has no row), so only N is pinned.
  */
 export async function expectTeamsFromChecklist(page: Page, facts: ChecklistFacts): Promise<void> {
   await expect(
-    page.getByText(`Teams from your checklist: ${facts.matched} of ${facts.rows} cards`).first(),
+    // N is read off the file; M is the set's card count on the marketplace, so it is not restated here.
+    page.getByText(new RegExp(`Teams from your checklist: ${facts.matched} of [0-9]+ cards`)).first(),
   ).toBeVisible();
 }

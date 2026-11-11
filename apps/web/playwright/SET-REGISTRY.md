@@ -3105,8 +3105,10 @@ set that is already registered above, and its owner spec is unchanged.
 (`number,player,team`; a cell with several names joins them with `; `), and
 `support/published-checklist.ts` (`CHECKLISTS`, `usePublishersChecklist`,
 `expectTeamsFromChecklist`) is the only place a spec names one. A spec asserts
-the result line `Teams from your checklist: N of M cards` with N and M read off
-the file (`checklistFacts`), never typed.
+the result line `Teams from your checklist: N of M cards` with N read off the
+file (`checklistFacts`: numbered rows whose number is on one row, and NNO rows
+whose player is on one NNO row, each naming a team), never typed; M is the
+set's card count on the marketplace and is not pinned.
 
 **How they are captured.** `playwright/tools/capture-bsc-checklist-teams.mjs`
 (read its header). It lists the set's cards from BSC's public storefront search,
@@ -3114,12 +3116,17 @@ reads each card's own `card-listing` answer, parses both the way the adapter
 does, and refuses a partial set. RUN IT FROM A LAPTOP only: never from a Convex
 deployment (Convex's shared egress is what BSC pushes back on), and never while
 a CI seller job is running (`gh run list --status in_progress`). It paces
-itself at 1 call a second and backs off on a 429; if a 429 outlasts its retries
+itself (`--rate`, calls a second, at most 2; the Topps Chrome capture used 0.5),
+writes every 429 to stderr with its UTC time and counts them, and backs off on a 429; if a 429 outlasts its retries
 it stops, writes nothing and reports how long the block lasted. Re-capture a
 file when its set changes on BSC; the spec that uses it fails by name on the
 `Teams from your checklist` line (or on the preview row count) if it is stale.
 
-**Measured, 2026-11-10 (laptop, 1 call a second): BSC answers 429 on the
+**Measured, 2026-11-10 (laptop, 1 call every 2 s, `--rate 0.5`; the Topps Chrome Base capture, 335 `card-listing` calls after 4 storefront pages): BSC still answered 429 six times, in five episodes, at calls 40, 77, 194 (twice, a retry after 15 s met it again, then a 30 s pause cleared it), 242 and 287, i.e. one episode per roughly 55 calls at half a call a second. Each cleared after 15 s but one (45 s). Times (US Central, CST): 20:33:42, 20:35:11, 20:39:20, 20:39:35, 20:41:41 and 20:43:27; the run took about 12 minutes. A pace of one call per 2 s lowers the rate of 429s, it does not remove them.**
+
+**Measured, 2026-11-10, a second capture at the same pace (Silk Collection, 201 `card-listing` calls after 3 storefront pages, about 8 minutes): five more 429s in four episodes, at calls 45 (twice: the 15 s retry was refused again, a 30 s pause cleared it), 88, 128 and 175, at 20:48:55, 20:49:10, 20:51:07, 20:52:42 and 20:54:31 US Central (CST). One episode per 40 to 47 calls; three episodes cleared after 15 s, one after 45 s. Across both captures: 11 429s in 9 episodes over 536 calls at one call per 2 s.**
+
+**Measured earlier, 2026-11-10 (laptop, 1 call a second): BSC answers 429 on the
 `card-listing` endpoint after about every 50 sustained calls, even at 1 call a
 second, and the block lasts about 45 s (the tool's 15 s then 30 s backoff
 clears it; the longest single episode was 330 s).** The tool recovered every time; no capture was stopped by a block (one run, Topps 2014 football, stopped on a request timeout and resumed from its cache).
@@ -3138,12 +3145,14 @@ the reason the specs upload instead of fetching card by card.
 | `2024-bbm-rookie-edition-premium-base` | BBM Rookie Edition Premium | 36 | 36 | `checklist-wizard-same-name-pick-step` |
 | `2010-topps-insert-team-bonus` | Baseball > 2010 > Topps > Insert > Team Bonus | 20 | 20 | `checklist-wizard-set-history-links-across-variants` |
 | `2010-topps-insert-peak-performance` | ... Peak Performance | 100 | 100 | same |
-| `2010-topps-insert-peak-performance-relics` | ... Peak Performance Relics | 158 | 158 (154 numbered once; 4 rows repeat a number and are asked of BSC, D2) | same |
+| `2010-topps-insert-peak-performance-relics` | ... Peak Performance Relics | 158 lines, 152 read as rows | 148 (the 6 lines numbered `PPR-DLa/b`, `PPR-GSOa/b`, `PPR-KFa/b` are skipped: "Card number isn't one we can read"; their cards, and 4 more cards whose number the file repeats, are asked of BSC, D2) | same |
+| `2010-topps-insert-silk-collection` | Baseball > 2010 > Topps > Insert > Silk Collection | 201, every number `NNO` (each card pairs by player: all 201 players are on one card each, so one card meets one row) | 201 | `checklist-wizard-set-history-links-across-variants`, phase 2 (uploaded before the Sync) |
 | `2010-topps-insert-turkey-red` | ... Turkey Red | 100 | 100 | same |
-| `2009-topps-insert-career-best-jumbo-jerseys` | Baseball > 2009 > Topps > Insert > Career Best Jumbo Jerseys | 54 | 54 | same |
+| `2009-topps-insert-career-best-jumbo-jerseys` | Baseball > 2009 > Topps > Insert > Career Best Jumbo Jerseys | 54 (letter codes such as `CBRJ-CJC` are read as numbers) | 54 | same; its two Chris Carpenter cards name the St. Louis Cardinals, which is what lets the name gate pick the b. 1975 player of the two on file |
 | `2026-football-bowman-base` | Football > 2026 > Bowman > Base | 200 | 200 | `inventory-bsc-listing-2026-bowman-chrome-prefix` (its Base build) |
 | `2014-football-topps-base` | Football > 2014 > Topps > Base | 554 | 553 | `checklist-team-leader-cards-pair-and-picked-name-saves` |
 | `1995-hockey-oklahoma-city-blazers-chl-base` | Hockey > 1995 > Oklahoma City Blazers CHL | 18 | 18 | the new `checklist-published-upload-skips-bsc-and-asks-on-disagreement` (below) |
+| `2024-topps-chrome-base` | Baseball > 2024 > Topps > Topps Chrome > Base (the seed's anchor) | 334 (335 cards; **card #300's row is left OUT**, so one card, Julio Rodriguez, is still asked of BSC live) | 334 | `setup` (the seed's Base fetch, D8 amended); #300's live lookup is the one `checklist-bsc-team-enrichment` proves. Re-capture with `--omit-number 300`. The seed asserts its result line and fails by name on a "Checklist says otherwise" step |
 
 **Why a published-checklist upload is not a different flow to the ones it
 replaced.** Every moved spec asserts the wizard's decisions, the saved cards or
@@ -3158,9 +3167,6 @@ the upload (not BSC) supplied the teams.
 * `checklist-one-marketplace-skips-match-dialog` (Roanoke Express ECHL):
   every card number on BSC is `NNO` (no number), so no checklist can pair
   by number; Roanoke's file was captured and deleted for that reason.
-* `2010 Topps > Insert > Silk Collection` inside `checklist-wizard-set-history-links-across-variants`:
-  all 201 of its cards are numbered `NNO`, so no row pairs (rule 7); it keeps
-  its live per-card fetch and no file was kept.
 * `checklist-bsc-team-enrichment`, the dual-team spec, `autograph-format` and
   `seed`: their point is the live per-card read, so they keep it (the
   coordinator's list).

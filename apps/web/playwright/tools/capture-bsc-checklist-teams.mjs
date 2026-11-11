@@ -23,8 +23,9 @@
 // RUN IT FROM A LAPTOP. Never from a Convex deployment (Convex's shared egress
 // is what BSC pushes back on), and never while a CI seller job runs:
 //   gh run list --status in_progress
-// It paces itself at no more than 2 calls a second (--rate), honours
-// Retry-After on a 429 and backs off (15 s, doubling), and when a 429 is still
+// It paces itself at no more than 2 calls a second (--rate; 0.5 is one call
+// every 2 s), honours Retry-After on a 429 and backs off (15 s, doubling), writes
+// EVERY 429 to stderr with its UTC time and counts them, and when a 429 is still
 // there after --max-429 retries it STOPS, writing nothing, and says how long
 // the block lasted. The answers it did get are kept in --cache so a re-run
 // resumes without asking BSC again.
@@ -32,7 +33,10 @@
 // USAGE
 //   node capture-bsc-checklist-teams.mjs --out <file.csv> --sport baseball \
 //     --year 2024 --set-name topps-stars-of-mlb-network --variant base \
-//     [--variant-name <slug> ...] [--cache <file.json>] [--rate 2] [--max-429 4]
+//     [--variant-name <slug> ...] [--cache <file.json>] [--rate 2] [--max-429 4] \
+//     [--omit-number <card number> ...]
+//   --omit-number leaves that card's row OUT of the file (a card left to a live
+//   lookup on purpose); the card is still read, so the count check holds.
 //   (slugs are the storefront facet slugs: lower-case, hyphenated)
 //
 // Prints a one-line summary on stdout; progress and 429 reports go to stderr.
@@ -56,7 +60,7 @@ const HEADERS = {
 };
 
 function parseArgs(argv) {
-  const args = { variantName: [], rate: 2, max429: 4 };
+  const args = { variantName: [], omitNumber: [], rate: 2, max429: 4 };
   for (let i = 2; i < argv.length; i++) {
     const key = argv[i];
     const value = argv[i + 1];
@@ -68,6 +72,7 @@ function parseArgs(argv) {
       case "--set-name": args.setName = value; i++; break;
       case "--variant": args.variant = value; i++; break;
       case "--variant-name": args.variantName.push(value); i++; break;
+      case "--omit-number": args.omitNumber.push(String(value)); i++; break;
       case "--rate": args.rate = Number(value); i++; break;
       case "--max-429": args.max429 = Number(value); i++; break;
       default:
@@ -86,6 +91,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** One 429 episode, kept so the run can say how long BSC pushed back. */
 const blocks = [];
+/** Every single 429 answer, with the UTC time it came back and the call it answered. */
+const all429 = [];
 
 function makeClient(rate, max429) {
   const gap = 1000 / rate;
@@ -110,10 +117,11 @@ function makeClient(rate, max429) {
       }
       if (response.status === 429) {
         blockedSince ??= Date.now();
+        all429.push({ at: new Date().toISOString(), label });
         const retryAfter = Number(response.headers.get("retry-after"));
         const pause = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : backoff;
         backoff = Math.min(backoff * 2, 240_000);
-        process.stderr.write(`429 on ${label}; pausing ${Math.round(pause / 1000)} s\n`);
+        process.stderr.write(`${all429[all429.length - 1].at} 429 #${all429.length} on ${label}; pausing ${Math.round(pause / 1000)} s\n`);
         if (attempt === max429) {
           blocks.push({ label, startedAt: blockedSince, lastsMs: Date.now() - blockedSince, ended: false });
           throw new Error("rate-limited");
@@ -265,8 +273,10 @@ async function main() {
   // 3. The CSV, in the storefront's card-number order.
   const lines = ["number,player,team"];
   let withTeam = 0;
+  let omitted = 0;
   for (const card of cache.cards) {
     const teams = cache.listings[card.id];
+    if (args.omitNumber.includes(card.number)) { omitted++; continue; }
     if (teams.length > 0) withTeam++;
     lines.push([card.number, card.players.join("; "), teams.join("; ")].map(csvCell).join(","));
   }
@@ -275,9 +285,10 @@ async function main() {
     process.stderr.write(`429 report: on ${b.label}, first seen ${new Date(b.startedAt).toISOString()}, lasted ${Math.round(b.lastsMs / 1000)} s (until the next answer)\n`);
   }
   const numbers = new Set(cache.cards.map((c) => c.number));
+  process.stderr.write(`429 total this run: ${all429.length}\n`);
   process.stdout.write(
-    `${args.out}: ${cache.cards.length} cards, ${numbers.size} distinct numbers, ${withTeam} with a team` +
-      (blocks.length ? `, ${blocks.length} 429 episode(s)` : "") + "\n",
+    `${args.out}: ${cache.cards.length} cards read, ${omitted} left out, ${numbers.size} distinct numbers, ${withTeam} rows with a team` +
+      `, ${all429.length} 429 answers in ${blocks.length} episode(s)\n`,
   );
 }
 
@@ -287,6 +298,7 @@ main().catch((error) => {
       process.stderr.write(`429 report: on ${b.label}, first seen ${new Date(b.startedAt).toISOString()}, ${b.ended ? "lasted" : "still there after"} ${Math.round(b.lastsMs / 1000)} s\n`);
     }
   }
+  process.stderr.write(`429 total this run: ${all429.length}\n`);
   process.stderr.write(`capture stopped: ${error.message}\n`);
   process.exit(error.message === "rate-limited" ? 3 : 1);
 });
