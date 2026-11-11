@@ -38,6 +38,12 @@
 // which is all this spec ever asked of them. Before this the two syncs made 50
 // live BSC lookups (25 cards twice), enough to get the next spec rate-limited.
 //
+// BOTH OUTCOMES OF THAT ONE LOOKUP PASS (NEO-489, Jason 2026-11-11): BSC rate-limits the live
+// card now and then, and a 429 or an already-open cooldown means the lookup is skipped and his
+// card is asked of the operator instead. STEP 6 accepts either (BSC answered: the career team is
+// pre-checked; skipped: it is offered and the spec picks it), annotates which one ran
+// (`bsc-lookup`), and every later assert is the same in both.
+//
 // Sole writer of the Roanoke Express ECHL set; fresh-only (it commits the
 // checklist). Re-seed before re-running.
 import type { Page } from "@playwright/test";
@@ -52,6 +58,7 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
+import { bscLookupOutcome, expectAfterMarketplace } from "../../support/marketplace-wait";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   CHECKLISTS,
@@ -207,7 +214,9 @@ test(
 
     // One live BSC round trip, and the solo path says what it kept (NEO-255).
     const kept = page.getByText(/Kept all [0-9]+ cards? from /);
-    await expect(kept).toBeVisible({ timeout: 60_000 });
+    // A live BSC round trip (the one lookup), waited at 7 s of our own time plus however long
+    // BuySportsCards held it (NEO-487); never a flat ceiling.
+    await expectAfterMarketplace(page, kept, { platform: "BuySportsCards", what: "the checklist fetch's Kept all line" });
     await expectTeamsFromChecklist(page, facts);
     const FETCHED = Number(((await kept.textContent()) ?? "").match(/[0-9]+/)?.[0]);
     expect(FETCHED).toBeGreaterThan(0);
@@ -355,9 +364,24 @@ test(
     // The created team joins card 2's row SELECTED.
     await expect(wizard.getByRole("radio", { name: new RegExp(`^${other} — #`) })).toBeChecked();
 
-    // THE PRE-FILL. The created player's line offers his one in-window career
-    // team and has it CHECKED by default; nobody touched it.
-    await expect(wizard.getByRole("radio", { name: new RegExp(`^${team} — `) })).toBeChecked();
+    // THE PRE-FILL, or invariant 8's hold-back (NEO-489, Jason 2026-11-11: a 429 or an open
+    // cooldown on the live card is a pass). The wizard opened behind the team fence (every
+    // lookup settled), so BSC's answer for his card is final here. The line ALWAYS offers his
+    // one in-window career team. Answered: it is CHECKED by default, nobody touched it.
+    // Cooldown: the lookup was skipped, the line rests on "Leave for later" and the operator
+    // picks the team. Either way he ends on the career team, so everything after is unconditional.
+    const careerTeamRadio = wizard.getByRole("radio", { name: `${team} — ${LIVE_PLAYER}`, exact: true });
+    const prefilled = wizard.getByRole("radio", { name: `${team} — ${LIVE_PLAYER}`, exact: true, checked: true });
+    const heldBack = wizard.getByRole("radio", { name: `Leave for later — ${LIVE_PLAYER}`, exact: true, checked: true });
+    await expect(careerTeamRadio).toBeVisible();
+    await expect(prefilled.or(heldBack)).toBeVisible();
+    const answered = await prefilled.isVisible();
+    bscLookupOutcome(answered ? "answered" : "cooldown", LIVE_PLAYER);
+    if (!answered) {
+      await expect(careerTeamRadio).not.toBeChecked();
+      await careerTeamRadio.check();
+    }
+    await expect(careerTeamRadio).toBeChecked();
 
     // What the checklist must say once this saves: every card left for later is
     // flagged; the one answered "no team" is not, nor the pre-filled one, nor the
@@ -477,9 +501,9 @@ test(
     // The same checklist again (the chip may still hold it): ONE live BSC lookup this time too.
     await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
     await syncChecklistButton(page).click();
-    // A live BSC fetch, then the diff: the 60 s ceiling STEP 5 has.
+    // A live BSC fetch, then the diff: 7 s of our own time plus BuySportsCards' (NEO-487).
     const skipChanges = page.getByRole("button", { name: "Skip reviewing changes and continue" });
-    await expect(skipChanges).toBeVisible({ timeout: 60_000 });
+    await expectAfterMarketplace(page, skipChanges, { platform: "BuySportsCards", what: "the re-sync's content review" });
     await expect(page.getByText(/^Match Cards/)).toBeHidden();
     await skipChanges.click();
 

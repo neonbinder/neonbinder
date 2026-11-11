@@ -45,8 +45,11 @@
 //      cards. Nothing for you to do yet." (a status line; its number moves at
 //      most every 5 s, so the first value after the save is the full three). The
 //      "23" is also the proof of the two live answers: had either met a BSC 429
-//      it would wait in the queue too, and the line would say 4 (or 5) cards.
-//      Both are positives; neither can be read off a dead page. Axe runs on the
+//      or an open cooldown it would wait in the queue too, and the line would
+//      say 4 (or 5) cards. NEO-489 (Jason, 2026-11-11): that is a pass, not a
+//      red. The spec reads M off the line (3 to 5), asserts exactly 26 - M need
+//      you, and annotates which branch ran (`bsc-lookup`). A missing line is the
+//      only red. Both are positives; neither can be read off a dead page. Axe runs on the
 //      saved checklist with the status line showing.
 //
 // FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Halifax Mooseheads QMJHL",
@@ -56,7 +59,7 @@
 // yet." by name. Every name is skipped: no player and no team is minted.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
-import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import { bscLookupOutcome, expectAfterMarketplace } from "../../support/marketplace-wait";
 import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
@@ -109,15 +112,23 @@ test(
     await expect(wizard).toBeHidden();
     // The set's cards are on screen, so what follows is read off a live checklist.
     await expect(editCardButton(page, "1")).toBeVisible();
-    // The 23 BSC answered ended teamless and are the operator's; the 3 it did not answer are not in that count.
+    // The queue's own words: the status line names the cards that wait, and says it is not the operator's yet.
+    // No line at all means the stall switch is unset (every card answered): red, by name.
+    const lookupStatus = page.getByRole("status").filter({ hasText: /^Still looking up teams for [0-9]+ cards?\./ });
     await expect(
-      page.getByRole("button", { name: `${CARDS - STALLED} need you` }),
-      `the attention count is not ${CARDS - STALLED}: the deployment's NEONBINDER_TEST_BSC_STALL_CARD_IDS is unset or lists other ids, or one of the two live lookups (#24, #25) met a BSC 429 and waits in the queue (read the status line's number)`,
+      lookupStatus,
+      "no 'Still looking up teams' line: the deployment's NEONBINDER_TEST_BSC_STALL_CARD_IDS is unset or lists other ids, so the three stalled cards were never queued",
     ).toBeVisible();
-    // The queue's own words: the status line names the three, and says it is not the operator's yet.
-    await expect(
-      page.getByRole("status").filter({ hasText: new RegExp(`^Still looking up teams for ${STALLED} cards\\.`) }),
-    ).toBeVisible();
+    // NEO-489 (Jason, 2026-11-11: a BSC 429 or an open cooldown on a live card is a pass). The three
+    // stalled cards always wait. The two live lookups (#24, #25) wait too when BSC rate-limits them
+    // or its cooldown is open, so M is 3 (both answered) up to 5 (neither). Whatever M is, the
+    // cards BSC DID answer end teamless and are the operator's, exactly CARDS - M.
+    const queued = Number((((await lookupStatus.textContent()) ?? "").match(/for ([0-9]+) cards?/) ?? [])[1]);
+    expect(queued, "the stalled cards plus at most the two live ones wait in the queue").toBeGreaterThanOrEqual(STALLED);
+    expect(queued, "the stalled cards plus at most the two live ones wait in the queue").toBeLessThanOrEqual(STALLED + 2);
+    bscLookupOutcome(queued === STALLED ? "answered" : "cooldown", `Halifax #24, #25 (${queued} cards waiting)`);
+    // Positive, exact: a count that is not CARDS - M fails by its number.
+    await expect(page.getByRole("button", { name: `${CARDS - queued} need you`, exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Halifax checklist saved, the unanswered cards waiting in the background" });
   },
 );
