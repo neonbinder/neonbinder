@@ -17,12 +17,14 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, type Locator, type Page } from "@playwright/test";
+// The product's own rules for a team cell, so this file cannot drift from the parser (NEO-489).
+import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
 
 const DIRECTORY = fileURLToPath(new URL("../fixtures/checklists/", import.meta.url));
 
 /** The captured files, by what they are. Each name is the file's, without `.csv`. */
 export const CHECKLISTS = {
-  /** Baseball 2024 Topps Stars of MLB Network Base: the default wizard fixture (10 cards, no team on any). */
+  /** Baseball 2024 Topps Stars of MLB Network Base: the default wizard fixture (10 cards, "No Team" on every row: the hosts and the show card have none). */
   starsOfMlbNetwork: "2024-topps-stars-of-mlb-network-base",
   tulsaOilers: "1995-hockey-tulsa-oilers-chl-base",
   memphisRiverKings: "1995-hockey-memphis-riverkings-chl-base",
@@ -63,8 +65,8 @@ export const CHECKLISTS = {
    */
   prospectDualAutographs2025: "2025-bowman-draft-insert-prospect-dual-autographs",
   /**
-   * Baseball 2026 Bowman Insert Anime: 35 rows read (the `TBD` row is no card number we can read, so
-   * that one card is still asked of BSC); six of the cards are football players.
+   * Baseball 2026 Bowman Insert Anime: all 36 rows read (a number column is trusted as printed, so
+   * the `TBD` row is a number too and no card is asked of BSC); six of the cards are football players.
    */
   bowmanAnime2026: "2026-bowman-insert-anime",
   /**
@@ -85,13 +87,14 @@ export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];
 export interface ChecklistFacts {
   /** The file's absolute path, for `setInputFiles`. */
   path: string;
-  /** Data rows the dialog reads (a number with a digit, or NNO): what its preview and the chip call "N rows". */
+  /** Data rows the dialog reads (a one-word number, or NNO; a row mixing "No Team" with a team is skipped): what its preview and the chip call "N rows". */
   rows: number;
   /**
    * The cards the file answers: numbered rows whose number is on exactly one
    * row (rule 7; the cards of a captured set are one per row, so each such row
    * meets exactly one card) plus NNO rows whose player is on exactly one NNO
-   * row, each AND naming at least one team. This is N in "Teams from your
+   * row, each AND answering the team: naming at least one, or saying "No Team".
+   * This is N in "Teams from your
    * checklist: N of M cards"; M is the set's card count.
    */
   matched: number;
@@ -147,28 +150,57 @@ function namesKey(cell: string): string {
   return [...new Set(cell.split(";").map(nameKey).filter(Boolean))].sort().join("|");
 }
 
+/**
+ * The names of a team cell ("; "-joined in the captured files). A whole cell that makes no
+ * claim ("None", "N/A", "TBD", a dash, blank: `isNoClaimTeamText`) names nobody, exactly as
+ * the parser reads it; "No Team" is a name here (the claim), kept apart by `isNoTeamText`.
+ */
+function teamNames(cell: string): string[] {
+  if (cell.trim() === "" || isNoClaimTeamText(cell)) return [];
+  return cell.split(";").map((n) => n.trim()).filter(Boolean);
+}
+
 export function checklistFacts(name: ChecklistName): ChecklistFacts {
-  // A row is read when its number holds a digit, is an insert's letter code ("RA-MT": capitals on
-  // both sides of a hyphen), or is the unnumbered "NNO" (kept as a row; a card printed with no
-  // number is paired by player, below). Anything else is a skipped line.
-  const isNnoRow = (r: ChecklistRow) => r.number.trim().toUpperCase().replace(/[.:]$/, "") === "NNO";
-  const readable = (r: ChecklistRow) => /\d/.test(r.number) || /^[A-Z]{1,6}(?:-[A-Z]{1,6})+$/.test(r.number.trim()) || isNnoRow(r);
-  const rows = checklistRows(name).filter(readable);
+  // A number cell is read when it is one word of letters, digits, "." and "-" (any case; "1a",
+  // "PPR-DLa", "TBD"), with a leading "#" and a trailing "." or ":" set aside (NEO-489, D6), or
+  // is the unnumbered "NNO" (kept as a row; a card printed with no number is paired by player,
+  // below). Anything else is a skipped line. A number is compared exactly as printed, case
+  // included; the product only pairs two numbers that differ by case when each is on one card
+  // and one row, which a captured set has no row to prove, so a file holding two such rows
+  // is refused here rather than guessed at.
+  const numberOf = (r: ChecklistRow) => r.number.trim().replace(/^#/, "").replace(/[.:]$/, "");
+  const isNnoRow = (r: ChecklistRow) => numberOf(r).toUpperCase() === "NNO";
+  const readable = (r: ChecklistRow) => /^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(numberOf(r)) || isNnoRow(r);
+  // "No Team" beside a real team in one cell is a row the product skips (it cannot say both).
+  const sayingBoth = (r: ChecklistRow) => {
+    const names = teamNames(r.team);
+    return names.some(isNoTeamText) && !names.every(isNoTeamText);
+  };
+  const rows = checklistRows(name).filter(readable).filter((r) => !sayingBoth(r));
   const numbered = rows.filter((r) => !isNnoRow(r));
   const unnumbered = rows.filter(isNnoRow);
   const countOf = new Map<string, number>();
-  for (const r of numbered) countOf.set(r.number.toUpperCase(), (countOf.get(r.number.toUpperCase()) ?? 0) + 1);
+  for (const r of numbered) countOf.set(numberOf(r), (countOf.get(numberOf(r)) ?? 0) + 1);
+  const byCase = new Map<string, string>();
+  for (const key of countOf.keys()) {
+    const seen = byCase.get(key.toUpperCase());
+    if (seen !== undefined && seen !== key) {
+      throw new Error(`${name}.csv has the numbers "${seen}" and "${key}", which differ only by case: the product pairs those by a rule the file cannot restate (NEO-489, D7).`);
+    }
+    byCase.set(key.toUpperCase(), key);
+  }
   const playerCountOf = new Map<string, number>();
   for (const r of unnumbered) playerCountOf.set(namesKey(r.player), (playerCountOf.get(namesKey(r.player)) ?? 0) + 1);
   // A numbered card is matched when its number is on exactly one row (rule 7). An unnumbered card
   // is matched by player, only when exactly one such card and exactly one NNO row name that player
   // (the captured set has one card per row, so the rows count for both sides). A matched card counts
-  // here only when its row names a team: a teamless matched row leaves BSC to be asked (B1).
-  const named = (r: ChecklistRow) => r.team.trim() !== "";
-  const matchedNumbered = numbered.filter((r) => countOf.get(r.number.toUpperCase()) === 1 && named(r)).length;
+  // here only when its row answers the team: it names a team or says "No Team" (a card with no team,
+  // the publisher's own claim). A BLANK cell, or one saying "None", "N/A", "TBD" or a dash, makes no claim, so BSC is still asked for that card.
+  const answered = (r: ChecklistRow) => teamNames(r.team).length > 0;
+  const matchedNumbered = numbered.filter((r) => countOf.get(numberOf(r)) === 1 && answered(r)).length;
   const matchedUnnumbered = unnumbered.filter((r) => {
     const key = namesKey(r.player);
-    return key !== "" && playerCountOf.get(key) === 1 && named(r);
+    return key !== "" && playerCountOf.get(key) === 1 && answered(r);
   }).length;
   return {
     path: `${DIRECTORY}${name}.csv`,

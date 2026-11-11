@@ -1938,7 +1938,7 @@ assertions are unchanged; nothing in them was Big League-specific.
 
 | | |
 | -- | -- |
-| BSC cards | **10** (read-only probe, BSC only, SportLots paused, 2026-11-09). The cards carry **no team** |
+| BSC cards | **10** (read-only probe, BSC only, SportLots paused, 2026-11-09). The cards carry **no team**; the uploaded file says so on every row (`No Team`, NEO-489), so BSC is asked for nothing per card and no card reaches "Cards with no team" |
 | unknown names | six names no sport holds: Lauren Shehadi #1, Robert Flores #2, Brian Kenny #4, Greg Amsinger #6, Lauren Gardner #9 and `Intentional Talk` #10 (a show, not a person). #7 Chris Young has two catalogue namesakes (b. 1979 and b. 1983), so his row is a same-name PICK step. The other cards resolve to catalogue players. MEASURED (own deployment, SportLots paused, 2026-11-09): the wizard opens `Step 1 of 9`, `Add remaining players as new (6)`, `Skip remaining names (7)` |
 | recording | the six are recorded no-matches; Chris Young's lookup is a recorded hit (dated MLB stints) |
 | first player row | **#7 Chris Young's pick step, not #1.** The presented row is pinned state (`EntityReviewWizard.tsx`, NEO-220 rule 1), and a pick step is inserted READY, so it is the first settled player and is pinned before #1's lookup lands, whatever the card order (the probe's "after the first player row" was wrong). So `career-team-entry` and `link-to-existing-player` walk with `walkToPlayerRow({ readyToCreate: true })`, which skips a pick step (and a preselect or a held create) and stops on the first truly unknown name (expected #1 Lauren Shehadi, the first in card order; the name it lands on is not asserted). The cards stage no team step |
@@ -3108,8 +3108,23 @@ set that is already registered above, and its owner spec is unchanged.
 `expectTeamsFromChecklist`) is the only place a spec names one. A spec asserts
 the result line `Teams from your checklist: N of M cards` with N read off the
 file (`checklistFacts`: numbered rows whose number is on one row, and NNO rows
-whose player is on one NNO row, each naming a team), never typed; M is the
-set's card count on the marketplace and is not pinned.
+whose player is on one NNO row, each answering the team: naming one, or saying
+`No Team`), never typed; M is the set's card count on the marketplace and is not
+pinned.
+
+**`No Team` (NEO-489, Jason 2026-11-11).** A card that has no team reads exactly
+`No Team` in its team cell. That is the publisher's claim, not a team name: the
+card counts in `Teams from your checklist: N of M`, is never asked of BSC, and
+never reaches "Cards with no team". A BLANK team cell makes no claim, so the
+card is still asked of BSC: never leave one blank in a file a spec uploads. The
+capture tool writes a card BSC gives no team as a blank cell, so `No Team` is
+hand-set after a capture and listed in the table below (Stars of MLB Network,
+the New Haven raffle card, 2014 Football #88): **a re-capture must put those
+cells back.** Numbers are read as printed, in any case (`checklistFacts`
+throws on two numbers in one file that differ only by case, which the product
+pairs by a rule the file cannot restate). The live per-card reads that remain are
+the deliberate ones: the one-marketplace card, the dual-team card, the stall
+spec's five, Topps Chrome #300, and Peak Performance Relics' four repeated numbers.
 
 **How they are captured.** `playwright/tools/capture-bsc-checklist-teams.mjs`
 (read its header). It lists the set's cards from BSC's public storefront search,
@@ -3136,22 +3151,22 @@ the reason the specs upload instead of fetching card by card.
 
 | file | set (registered above) | rows | rows with a team | spec |
 |---|---|---|---|---|
-| `2024-topps-stars-of-mlb-network-base` | Baseball > 2024 > Topps > Stars of MLB Network > Base | 10 | 0 | the default wizard fixture (`fetchChecklistToWizard`, no `target.set`) |
+| `2024-topps-stars-of-mlb-network-base` | Baseball > 2024 > Topps > Stars of MLB Network > Base | 10 | 10, every one `No Team` (hand-set, Jason 2026-11-11: the hosts and the show card have no team; BSC gave none, and the capture tool writes that as a blank cell, which makes no claim) | the default wizard fixture (`fetchChecklistToWizard`, no `target.set`); 10 matched, 0 live |
 | `1995-hockey-tulsa-oilers-chl-base` | Hockey > 1995 > Tulsa Oilers CHL | 18 | 18 | `checklist-wizard-skip-commits-and-unskip` |
 | `1995-hockey-memphis-riverkings-chl-base` | Memphis RiverKings CHL | 18 | 18 | `checklist-wizard-career-team-commits` |
 | `1995-hockey-san-antonio-iguanas-chl-base` | San Antonio Iguanas CHL | 18 | 18 | `checklist-wizard-link-commits` |
 | `1995-hockey-fort-worth-fire-chl-base` | Fort Worth Fire CHL | 18 | 18 | `checklist-wizard-skip-not-a-person`, `checklist-wizard-name-fragment-asks-operator` |
-| `1996-new-haven-ravens-rally-raffle-base` | Baseball > 1996 > Rally Raffle (via All Brands) | 9 | 8 | `checklist-wizard-link-team-saves-alias` |
+| `1996-new-haven-ravens-rally-raffle-base` | Baseball > 1996 > Rally Raffle (via All Brands) | 9 | 9 (the `NNO` raffle entry card's row says `No Team`, hand-set 2026-11-11; 8 name `New Haven Ravens`) | `checklist-wizard-link-team-saves-alias` |
 | `2025-topps-welcome-to-the-club-3x-mvp-base` | Baseball > 2025 > Topps > Welcome to the Club: 3X MVP | 36 | 36 | `checklist-wizard-past-era-team-link-commits` |
 | `2024-bbm-rookie-edition-premium-base` | BBM Rookie Edition Premium | 36 | 36 | `checklist-wizard-same-name-pick-step` |
 | `2010-topps-insert-team-bonus` | Baseball > 2010 > Topps > Insert > Team Bonus | 20 | 20 | `checklist-wizard-set-history-links-across-variants` |
 | `2010-topps-insert-peak-performance` | ... Peak Performance | 100 | 100 | same |
-| `2010-topps-insert-peak-performance-relics` | ... Peak Performance Relics | 158 lines, 152 read as rows | 148 (the 6 lines numbered `PPR-DLa/b`, `PPR-GSOa/b`, `PPR-KFa/b` are skipped: "Card number isn't one we can read"; their cards, and 4 more cards whose number the file repeats, are asked of BSC, D2) | same |
+| `2010-topps-insert-peak-performance-relics` | ... Peak Performance Relics | 158 lines, 158 read as rows (a number column is trusted as printed, any case, NEO-489: `PPR-DLa/b`, `PPR-GSOa/b`, `PPR-KFa/b` are read) | 154 (the 4 cards whose number the file repeats, `PPR-CR` twice and `PPR-DU` twice, are asked of BSC live: 4 live, down from 10; rule 7) | same |
 | `2010-topps-insert-silk-collection` | Baseball > 2010 > Topps > Insert > Silk Collection | 201, every number `NNO` (each card pairs by player: all 201 players are on one card each, so one card meets one row) | 201 | `checklist-wizard-set-history-links-across-variants`, phase 2 (uploaded before the Sync) |
 | `2010-topps-insert-turkey-red` | ... Turkey Red | 100 | 100 | same |
 | `2009-topps-insert-career-best-jumbo-jerseys` | Baseball > 2009 > Topps > Insert > Career Best Jumbo Jerseys | 54 (letter codes such as `CBRJ-CJC` are read as numbers) | 54 | same; its two Chris Carpenter cards name the St. Louis Cardinals, which is what lets the name gate pick the b. 1975 player of the two on file |
 | `2026-football-bowman-base` | Football > 2026 > Bowman > Base | 200 | 200 | `inventory-bsc-listing-2026-bowman-chrome-prefix` (its Base build) |
-| `2014-football-topps-base` | Football > 2014 > Topps > Base | 554 | 553 | `checklist-team-leader-cards-pair-and-picked-name-saves` |
+| `2014-football-topps-base` | Football > 2014 > Topps > Base | 554 | 554 (card #88, `2014 NFLPA Rookie Premiere`, says `No Team`, hand-set 2026-11-11) | `checklist-team-leader-cards-pair-and-picked-name-saves` |
 | `1995-hockey-oklahoma-city-blazers-chl-base` | Hockey > 1995 > Oklahoma City Blazers CHL | 18 | 18 | the new `checklist-published-upload-skips-bsc-and-asks-on-disagreement` (below) |
 | `2024-topps-chrome-base` | Baseball > 2024 > Topps > Topps Chrome > Base (the seed's anchor) | 334 (335 cards; **card #300's row is left OUT**, so one card, Julio Rodriguez, is still asked of BSC live) | 334 | `setup` (the seed's Base fetch, D8 amended); #300's live lookup is the one `checklist-bsc-team-enrichment` proves. Re-capture with `--omit-number 300`. The seed asserts its result line and fails by name on a "Checklist says otherwise" step |
 | `2024-topps-chrome-insert-future-stars` | Baseball > 2024 > Topps > Topps Chrome > Insert > Future Stars (the seed's anchor) | 20 (`FS-1`..`FS-20`) | 20 | `setup` (the seed's Future Stars fetch: no `card-listing` call; the seller listing specs read the set it builds) |
@@ -3159,7 +3174,7 @@ the reason the specs upload instead of fetching card by card.
 | `1995-hockey-roanoke-express-echl-base-one-live` | same | 24 (**Chris Pollack's row is left OUT**: his is the one card BSC is asked about, per sync) | 24 | `checklist-one-marketplace-skips-match-dialog`, uploaded before STEP 5 and again before the STEP 10 re-sync, so the spec makes 2 live BSC lookups, not 50. Made from the full file with no BSC call: `node playwright/tools/capture-bsc-checklist-teams.mjs --out <file> --cache <the full file's cache> --sport hockey --year 1995 --set-name roanoke-express-echl --variant base --omit-player "Chris Pollack"` |
 | `2025-bowman-draft-insert-bowman-draft-nights-autographs` | Baseball > 2025 > Bowman > Bowman Draft > Insert > Bowman Draft Nights Autographs | 5 (`BDNA-EW`, `-GF`, `-KA`, `-SH`, `-XN`) | 5 | `checklist-autograph-format-asked-applied-and-changeable` (the AU + SN99 tags come from BSC's checklist, not from the file) |
 | `2025-bowman-draft-insert-prospect-dual-autographs` | Baseball > 2025 > Bowman > Bowman Draft > Insert > Prospect Dual Autographs | 13 (14 cards; **`PDA-WW`'s row is left OUT**: its "Boston Red Sox, Detroit Tigers" value is the live read the spec is about) | 13 | `checklist-dual-team-card-links-both-teams`. Re-capture with `--omit-number PDA-WW` (`--set-name bowman-draft --variant insert --variant-name prospect-dual-autographs`) |
-| `2026-bowman-insert-anime` | Baseball > 2026 > Bowman > Insert > Anime | 36 lines, 35 read (the `TBD` line is no card number we can read, so that one card, Terrell Owens, is asked of BSC live); six of the cards are football players | 35 | `bowman-insert-grouping-builds-parallels`, PART 4 (Anime's fetch) |
+| `2026-bowman-insert-anime` | Baseball > 2026 > Bowman > Insert > Anime | 36 lines, all 36 read (`TBD` is a number as printed, NEO-489, so Terrell Owens' card pairs by it and no card is asked of BSC live); six of the cards are football players | 36 | `bowman-insert-grouping-builds-parallels`, PART 4 (Anime's fetch) |
 | `1995-hockey-halifax-mooseheads-qmjhl-base-full` | Hockey > 1995 > Halifax Mooseheads QMJHL > Base | 26 (cards 1-25 and one `NNO`) | 26 | none uploaded whole: the source of the next file |
 | `1995-hockey-halifax-mooseheads-qmjhl-base-five-live` | same | 21 (cards 1, 2, 3, 24 and 25 left OUT, so BSC is asked for exactly those five: #1-#3 are the stalled ids, #24 and #25 answer) | 21 | `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`. Made from the full file with no BSC call: `node playwright/tools/capture-bsc-checklist-teams.mjs --out <file> --cache <the full file's cache> --sport hockey --year 1995 --set-name halifax-mooseheads-qmjhl --variant base --omit-number 1 --omit-number 2 --omit-number 3 --omit-number 24 --omit-number 25` |
 
