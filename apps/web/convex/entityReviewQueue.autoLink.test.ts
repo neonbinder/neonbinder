@@ -147,7 +147,7 @@ async function insertAutoLinkRow(
   opts: {
     linked?: Id<"players">;
     candidates?: Array<Id<"players">>;
-    origin?: "setHistory" | "hallOfFame";
+    origin?: "setHistory" | "hallOfFame" | "careerTeam";
   } = {},
 ) {
   const linked = opts.linked ?? w.bo;
@@ -270,6 +270,93 @@ describe("startBatch: auto-links are born decided, ready and never looked up", (
       linkedPlayerId: w.otherBo,
       autoLinked: "hallOfFame",
     });
+  });
+
+  test("a career-team player link is accepted and carries its origin (NEO-490)", async () => {
+    const t = newT();
+    const w = await seed(t);
+
+    const batchId = await startBatch(t, w, {
+      autoLinks: [
+        {
+          kind: "player",
+          name: "Bo Jackson",
+          playerId: w.otherBo,
+          rowSportId: w.baseball,
+          origin: "careerTeam",
+        },
+      ],
+    });
+
+    expect((await rows(t, batchId))[0].decision).toMatchObject({
+      action: "link",
+      linkedPlayerId: w.otherBo,
+      autoLinked: "careerTeam",
+    });
+  });
+
+  test("a career-team team link is accepted and the decision's autoLinked is its origin (NEO-490)", async () => {
+    const t = newT();
+    const w = await seed(t);
+    const era = await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        location: "St. Louis",
+        name: "Browns",
+        nameNormalized: normalizeTeamName("St. Louis Browns"),
+        sportId: w.baseball,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const batchId = await startBatch(t, w, {
+      autoLinks: [
+        {
+          kind: "team",
+          name: "St. Louis Browns",
+          teamId: era,
+          rowSportId: w.baseball,
+          origin: "careerTeam",
+        },
+      ],
+    });
+
+    const [row] = await rows(t, batchId);
+    expect(row).toMatchObject({
+      kind: "team",
+      status: "ready",
+      decision: { action: "link", linkedTeamId: era, autoLinked: "careerTeam" },
+    });
+  });
+
+  test("a Hall of Fame team link is still refused as malformed (NEO-490)", async () => {
+    const t = newT();
+    const w = await seed(t);
+    const team = await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        name: "Some Team",
+        nameNormalized: normalizeTeamName("Some Team"),
+        sportId: w.baseball,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const batchId = await startBatch(t, w, {
+        playerNames: ["Travis Bazzana"],
+        autoLinks: [
+          {
+            kind: "team",
+            name: "Some Team",
+            teamId: team,
+            rowSportId: w.baseball,
+            origin: "hallOfFame",
+          },
+        ],
+      });
+      expect((await rows(t, batchId)).map((r) => r.name)).toEqual(["Travis Bazzana"]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("a team link is decided in the team's sport; only ordinary names are enqueued", async () => {
@@ -864,6 +951,18 @@ describe("clearDecision on an auto-link (D6)", () => {
     const row = (await getRow(t, rowId))!;
     expect(row.sportId).toBe(w.baseball);
     expect(row.enrichment?.preselect).toMatchObject({ playerId: w.otherBo, reason: "hallOfFame" });
+  });
+
+  test("a career-team link comes back with reason careerTeam (NEO-490)", async () => {
+    const t = newT();
+    const w = await seed(t);
+    const rowId = await insertAutoLinkRow(t, w, { linked: w.otherBo, origin: "careerTeam" });
+
+    await clear(t, rowId);
+
+    const row = (await getRow(t, rowId))!;
+    expect(row.decision).toBeUndefined();
+    expect(row.enrichment?.preselect).toMatchObject({ playerId: w.otherBo, reason: "careerTeam" });
   });
 
   test("the linked player deleted since: a pending new name, looked up", async () => {

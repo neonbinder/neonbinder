@@ -113,3 +113,4 @@
 - [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
 - [Checklist upload team claim blocks career prefill](patterns_checklist_upload_team_claim_blocks_career_prefill.md) — NEO-478: an uploaded row's team is a permanent claim; Roanoke spec cannot take the upload; aria-disabled Use via Enter; burst 429s
 - [Full local run on one account](patterns_full_local_run_on_one_account.md) — reds that are the single-account run: 12/hour cap, CI-only env switches, dirty reruns, box clutter, newest-N lists, near-budget photo step
+- [Name-fallback Match Cards solo + cancel confirm](patterns_name_fallback_match_cards_solo_and_modal_cancel_confirm.md) — NEO-490: nameFallbackFacts, Cancel opens a discard confirm, virtualized list, two-phase fresh-only spec

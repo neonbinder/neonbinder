@@ -3207,3 +3207,49 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ).toEqual({ accumulatedMs: 0 });
   });
 });
+
+describe("NEO-490: the operator's checklist links are admin-gated", () => {
+  /**
+   * `applyPublishedChecklistPairs` is a public action (the Match Cards dialog
+   * calls it) that reads team names from the set tree: `requireAdmin` before
+   * anything else, like `fetchCardChecklist`. It writes nothing.
+   */
+  test("applyPublishedChecklistPairs is a public action that calls requireAdmin first", () => {
+    const src = readFileSync(join(__dirname, "publishedChecklistPairs.ts"), "utf8");
+    expect(src).toContain("export const applyPublishedChecklistPairs = action({");
+    const start = src.indexOf("handler: async (ctx, args) => {");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start);
+    expect(body.indexOf("await requireAdmin(ctx)")).toBeGreaterThan(-1);
+    expect(body.indexOf("await requireAdmin(ctx)")).toBeLessThan(body.indexOf("args.pairs.length"));
+  });
+
+  test("applyPublishedChecklistPairs writes nothing: no mutation or db write in the module", () => {
+    const src = readFileSync(join(__dirname, "publishedChecklistPairs.ts"), "utf8");
+    expect(src).not.toContain("ctx.runMutation");
+    expect(src).not.toContain("ctx.db");
+  });
+
+  test("an anonymous call is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.action(api.publishedChecklistPairs.applyPublishedChecklistPairs, {
+        selectorOptionId: id,
+        pairs: [],
+      }),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+
+  test("a signed-in non-admin is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.withIdentity({ subject: "member", role: "member" }).action(
+        api.publishedChecklistPairs.applyPublishedChecklistPairs,
+        { selectorOptionId: id, pairs: [] },
+      ),
+    ).rejects.toThrow(/admin access required/i);
+  });
+});
+
