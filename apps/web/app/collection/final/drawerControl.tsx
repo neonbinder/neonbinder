@@ -27,8 +27,10 @@ import type { StatusLine } from "./statusLine";
 /**
  * What the opener knew that the URL does not carry: the list the drawer's
  * ↑ ↓ step through, the card as drawn, the copy to ring. Kept for the card
- * it was set for; a drawer reopened from the URL alone steps through the
- * list on its history entry (`DrawerHistoryState.list`), else just its card.
+ * it was set for, and dropped when the drawer closes. A drawer reopened from
+ * the URL alone (Forward, a refresh) steps through the list on its history
+ * entry (`DrawerHistoryState.list`), which every opener's push carries, else
+ * just its card.
  */
 interface DrawerExtras {
   cardId: CardId;
@@ -118,13 +120,27 @@ export function useCardDrawer(
   const replaceParams = useReplaceParams();
   const [extras, setExtras] = useState<DrawerExtras | null>(null);
   const drawerId = params.get(DRAWER_PARAM);
+  // The drawer closed (Close, Back, a link off it): what its opener or a step
+  // left behind goes with it, so the next open, a card link with a run of its
+  // own, never walks the last drawer's run. Only on open → closed: an opener's
+  // extras that land a moment before its URL does are kept.
+  const [shownId, setShownId] = useState(drawerId);
+  if (shownId !== drawerId) {
+    setShownId(drawerId);
+    if (drawerId === null && extras) setExtras(null);
+  }
   const ours = extras && extras.cardId === drawerId ? extras : null;
   const drawer: OpenDrawer | null = drawerId
     ? {
         cardId: drawerId,
+        // This open's own run first (what its opener or a step handed over;
+        // an open from inside the drawer replaces the entry and keeps its
+        // state, so that run may be stale), then the run on the entry (a card
+        // link or an `openCard` push put it there, ↑ ↓ keep it, Forward and a
+        // refresh bring it back), else just the card.
         listIds:
-          extras && extras.listIds.includes(drawerId)
-            ? extras.listIds
+          ours && ours.listIds.includes(drawerId)
+            ? ours.listIds
             : (stateList(location.state, drawerId) ?? [drawerId]),
         seed: ours?.seed,
         mode:
@@ -164,7 +180,13 @@ export function useCardDrawer(
         write(p);
         onCardChange?.(p, cardId, location.state);
       });
-    else pushParams(write, { drawer: true } satisfies DrawerHistoryState);
+    else {
+      // The run rides on the entry too, as on a dashboard card link, so Back
+      // then Forward (or a refresh) reopens the card with ↑ ↓ through it.
+      const state: DrawerHistoryState = { drawer: true };
+      if (opts.list && opts.list.length > 1 && opts.list.includes(cardId)) state.list = [...new Set(opts.list)];
+      pushParams(write, { ...state });
+    }
   };
   const closeDrawer = () => {
     if (pushedDrawer) void navigate(-1);
