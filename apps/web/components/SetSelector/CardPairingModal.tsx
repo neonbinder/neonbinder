@@ -2152,7 +2152,11 @@ function ConflictRadioGroup({
       className="flex flex-col items-start gap-1.5 border-l-2 border-neon-pink-text pl-2 py-1"
       {...{ [handleAttr]: handleKey }}
     >
-      <span id={warningId} className="text-xs text-neon-pink-text">
+      {/* The sentence is ink, not pink: these groups sit on the Matched
+          row's tile, and pink text misses 4.5:1 on a dark tile (3.2:1). The
+          pink rail beside it (3.2:1 there, 5.9:1 on light's white tile, past
+          the 3:1 a mark needs) still says "decide this". */}
+      <span id={warningId} className="text-xs text-ink">
         {/* Decorative — the sentence itself carries the meaning, so AT
             shouldn't also be made to announce "warning sign" first. */}
         <span aria-hidden="true">⚠</span> {warning}
@@ -2206,17 +2210,22 @@ function ConflictRadioGroup({
             // "click <value>" has to match what is actually announced.
             aria-label={option.ariaLabel}
             onClick={() => onChoose(option.side, false)}
-            className={`text-xs rounded px-2 py-1.5 ${
+            // The committed-selection pattern (DESIGN.md, Lists and
+            // pickers): the cards columns' own blue pick plus
+            // `selection-edge`. At rest a pill is `chip-strong`, the step for
+            // "a tag sitting on a row tile": plain `chip` equals the Matched
+            // row's own fill in dark and would vanish into it.
+            className={`text-xs rounded border px-2 py-1.5 ${
               chosen === option.side
-                ? "bg-selection/20 text-ink ring-2 ring-selection"
-                : "bg-chip/60 text-ink-2"
+                ? "bg-pick-blue border-pick-blue-rule text-pick-blue-ink selection-edge"
+                : "bg-chip-strong border-row-rule text-ink-2"
             }`}
           >
-            {/* 1.4.1 Use of Color — the cyan/gray fill pair differs by hue
-                only (~1:1 lightness contrast), indistinguishable to a
-                colour-blind operator deciding which value wins. The checkmark
-                + ring give a non-colour cue for the state colour alone was
-                carrying. */}
+            {/* 1.4.1 Use of Color — the blue/grey fill pair differs by hue
+                more than lightness, indistinguishable to a colour-blind
+                operator deciding which value wins. The checkmark is the
+                non-colour cue in both modes, and light adds the
+                `selection-edge` line. */}
             {chosen === option.side && <span aria-hidden="true">✓ </span>}
             {option.label}
           </button>
@@ -3632,7 +3641,12 @@ export default function CardPairingModal({
                     return (
                     <li
                       key={candidateKey(m.card)}
-                      className="flex flex-col gap-1 text-sm text-ink-2 bg-raised/60 rounded px-2 py-1"
+                      // A tile row, like the columns' rows. Not a control, so
+                      // no hover fill. On a dark tile ink-3 and pink text
+                      // miss 4.5:1, so quiet text here is ink-2, an error is
+                      // notice-danger-ink, and Unlink fills pink under the
+                      // pointer (DESIGN.md: Rows, chips and neutral buttons).
+                      className="flex flex-col gap-1 text-sm text-ink-2 bg-row border border-row-rule rounded px-2 py-1"
                     >
                       {/* NEO-490 (S5): both levels wrap, so at 320px the
                           checklist chip drops under the title and the row's
@@ -3649,7 +3663,7 @@ export default function CardPairingModal({
                                   and it is not the operator's to edit: it is
                                   BSC's number, and `candidateKey`, `domKey` and
                                   `compareCards` are all derived from it. */}
-                              <span className="text-ink-3 shrink-0">
+                              <span className="text-ink-2 shrink-0">
                                 #{m.card.cardNumber}
                               </span>
                               <Input
@@ -3749,7 +3763,7 @@ export default function CardPairingModal({
                                 onBlur={() => finishEdit(true)}
                               />
                               {m.card.cardVariation && (
-                                <span className="text-ink-3 shrink-0">
+                                <span className="text-ink-2 shrink-0">
                                   · {m.card.cardVariation}
                                 </span>
                               )}
@@ -3763,7 +3777,7 @@ export default function CardPairingModal({
                                 <span
                                   id={`name-edit-error-${domKey(m.card)}`}
                                   role="alert"
-                                  className="text-xs text-neon-pink-text"
+                                  className="text-xs text-notice-danger-ink"
                                 >
                                   {nameError.message}
                                 </span>
@@ -3810,7 +3824,7 @@ export default function CardPairingModal({
                           {checklistLinkButton(m.card)}
                           <button
                             type="button"
-                            className="text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
+                            className="rounded text-xs text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink px-2 py-1.5"
                             onClick={() => {
                               dispatch({ type: "UNLINK", index: i });
                               refocus(matchedToggleRef.current);
@@ -3966,7 +3980,7 @@ export default function CardPairingModal({
                               owning the answer is exactly what stops a
                               marketplace becoming the source of truth. */}
                           {m.playersConflict.preferred && (
-                            <span className="text-xs text-ink-3">
+                            <span className="text-xs text-ink-2">
                               NeonBinder currently stores:{" "}
                               {joinPlayers(
                                 m.playersConflict.preferred === "sportlots"
@@ -4079,7 +4093,7 @@ export default function CardPairingModal({
                             <span
                               id={`players-edit-error-${domKey(m.card)}`}
                               role="alert"
-                              className="text-xs text-neon-pink-text"
+                              className="text-xs text-notice-danger-ink"
                             >
                               {playersError.message}
                             </span>
