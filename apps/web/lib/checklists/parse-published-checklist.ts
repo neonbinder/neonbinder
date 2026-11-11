@@ -49,6 +49,8 @@
  * not a card, and is skipped as `LOOKS_LIKE_A_TITLE`.
  */
 
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
+
 export type PublishedChecklistRow = {
   number: string;
   players: string[];
@@ -183,10 +185,17 @@ function columnOf(header: string): Column | null {
   return null;
 }
 
+/** One whitespace character, as `String.prototype.trim` counts it. */
+const WHITESPACE = /^\s$/;
+
 /** Split one delimited line, honouring double quotes ("" is a literal quote). */
 export function splitDelimited(line: string, delimiter: "," | "\t"): string[] {
   const cells: string[] = [];
   let cell = "";
+  // Whether `cell` is still all whitespace. Tracked per character rather
+  // than by `cell.trim()` at each quote, which re-reads the cell every time
+  // and is quadratic on a cell of many quotes.
+  let blank = true;
   let quoted = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
@@ -194,21 +203,25 @@ export function splitDelimited(line: string, delimiter: "," | "\t"): string[] {
       if (ch === '"') {
         if (line[i + 1] === '"') {
           cell += '"';
+          blank = false;
           i++;
         } else {
           quoted = false;
         }
       } else {
         cell += ch;
+        if (blank && !WHITESPACE.test(ch)) blank = false;
       }
-    } else if (ch === '"' && cell.trim() === "") {
+    } else if (ch === '"' && blank) {
       quoted = true;
       cell = "";
     } else if (ch === delimiter) {
       cells.push(cell);
       cell = "";
+      blank = true;
     } else {
       cell += ch;
+      if (blank && !WHITESPACE.test(ch)) blank = false;
     }
   }
   cells.push(cell);
@@ -220,17 +233,37 @@ export function splitDelimited(line: string, delimiter: "," | "\t"): string[] {
  * `andToo` (players only), a spaced "&" or "and" splits as well; "Anderson"
  * stays whole because the word must stand alone.
  */
-function splitNames(cell: string, andToo = false): string[] {
-  return cell
-    .split(andToo ? / & | and |[/;]/ : /[/;]/)
-    .map((name) =>
-      name
-        .replace(/\s+/g, " ")
-        // A comma left at either end by a dropped marker ("Trout, RC").
-        .replace(/^[\s,]+|[\s,]+$/g, "")
-        .trim(),
-    )
-    .filter((name) => name.length > 0);
+function splitNames(
+  cell: string,
+  andToo = false,
+  keep: (name: string) => boolean = () => true,
+  max = Infinity,
+): string[] {
+  const names: string[] = [];
+  for (const part of cell.split(andToo ? / & | and |[/;]/ : /[/;]/)) {
+    // A comma left at either end by a dropped marker ("Trout, RC").
+    const name = trimEndSpacesAndCommas(part.replace(/\s+/g, " ").replace(/^[\s,]+/, ""));
+    if (name.length === 0 || !keep(name)) continue;
+    names.push(name);
+    // One past `max` is enough for `overLimit` to skip the row; the rest of
+    // a 900-name cell is never cleaned or held.
+    if (names.length > max) break;
+  }
+  return names;
+}
+
+/** One character that `[\s,]` matches. */
+const SPACE_OR_COMMA = /^[\s,]$/;
+
+/**
+ * Trailing whitespace and commas go. An index loop, never `/[\s,]+$/`: the
+ * regex retries the run from every start in it and is quadratic on a cell
+ * like "a , , , … x" (a 2 MB file of such cells took 31 s).
+ */
+function trimEndSpacesAndCommas(text: string): string {
+  let end = text.length;
+  while (end > 0 && SPACE_OR_COMMA.test(text[end - 1])) end--;
+  return end === text.length ? text : text.slice(0, end);
 }
 
 /** Bracketed notes — "(Future Stars)", "[SP]", "{photo variation}" — go. */
@@ -290,12 +323,14 @@ function isNotAPerson(name: string): boolean {
   return NOT_A_PERSON_SHAPES.some((shape) => shape.test(trimmed));
 }
 
+/** At most one past `MAX_CARD_PLAYERS`: enough for `overLimit` to skip the row. */
 function playersFrom(cell: string): string[] {
-  return splitNames(cleanNamePart(cell), true).filter((name) => !isNotAPerson(name));
+  return splitNames(cleanNamePart(cell), true, (name) => !isNotAPerson(name), MAX_CARD_PLAYERS);
 }
 
+/** At most one past `MAX_CARD_TEAMS`: enough for `overLimit` to skip the row. */
 function teamsFrom(cell: string): string[] {
-  return splitNames(cleanNamePart(cell));
+  return splitNames(cleanNamePart(cell), false, () => true, MAX_CARD_TEAMS);
 }
 
 /** The subject of a player cell or part, for the "not a person" test. */
@@ -361,9 +396,16 @@ function fourDigitYear(year: string | number | null | undefined): string | null 
   return match ? match[1] : null;
 }
 
-/** Which limit, if any, a row breaks. */
+/**
+ * Which limit, if any, a row breaks. The name counts are the server's own
+ * caps (`checkPublishedChecklist` refuses the WHOLE checklist over either),
+ * and skipping such a row also keeps a file of 900-name cells from holding
+ * a million names in the preview.
+ */
 function overLimit(row: PublishedChecklistRow): string | null {
   if (row.number.length > PUBLISHED_CHECKLIST_MAX_NAME) return "Card number is too long";
+  if (row.players.length > MAX_CARD_PLAYERS) return `More than ${MAX_CARD_PLAYERS} players on one card`;
+  if (row.teams.length > MAX_CARD_TEAMS) return `More than ${MAX_CARD_TEAMS} teams on one card`;
   if (row.players.some((p) => p.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
     return "A player name is too long";
   }
@@ -433,7 +475,10 @@ function parseLine(
   text: string,
   setYear: string | null,
 ): PublishedChecklistRow | { reason: string } {
-  const match = /^\s*(\S+)\s*(.*)$/.exec(text);
+  // `[\s\S]*`, not `.*`: a "\u2028" left in the line stops `.*` short of
+  // the end, and the failed `$` then retries every shorter first word
+  // (quadratic per line; a 2 MB file of such lines took over 2 s).
+  const match = /^\s*(\S+)\s*([\s\S]*)$/.exec(text);
   if (match && readsAsTitle(match[1], setYear)) return { reason: LOOKS_LIKE_A_TITLE };
   const noNumber = match !== null && isNno(match[1]);
   const number = noNumber ? NO_NUMBER : match ? cleanNumber(match[1]) : null;
@@ -592,8 +637,14 @@ export function parsePublishedChecklist(
         noNumber = isNno(cell);
         number = noNumber ? NO_NUMBER : cleanNumber(cell);
       } else if (column === "players") {
-        players.push(...playersFrom(cell));
-        if (cell.trim() !== "" && isNotAPerson(subjectOf(cell))) notAPerson = true;
+        const named = playersFrom(cell);
+        players.push(...named);
+        // Read only when no player column names a person (a cell that names
+        // one makes `players` non-empty, and the flag is then never read), so
+        // a long cell is not split a second time.
+        if (named.length === 0 && cell.trim() !== "" && isNotAPerson(subjectOf(cell))) {
+          notAPerson = true;
+        }
       } else if (column === "teams") {
         teams.push(...teamsFrom(cell));
       } else if (column === "subset" && subset === "") {

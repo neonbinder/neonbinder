@@ -200,6 +200,23 @@ describe("parsePublishedChecklist — CSV and TSV with a header", () => {
 });
 
 describe("parsePublishedChecklist — caps", () => {
+  it("skips a row naming more players or teams than one card holds (the server's caps)", () => {
+    const names = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`).join("/");
+    const out = parsePublishedChecklist(
+      [
+        "#,Player,Team",
+        `1,${names("P", 20)},${names("T", 8)}`,
+        `2,${names("P", 21)},T`,
+        `3,P,${names("T", 9)}`,
+      ].join("\n"),
+    );
+    expect(out.rows.map((r) => [r.number, r.players.length, r.teams.length])).toEqual([["1", 20, 8]]);
+    expect(out.skipped.map((s) => [s.line, s.reason])).toEqual([
+      [3, "More than 20 players on one card"],
+      [4, "More than 8 teams on one card"],
+    ]);
+  });
+
   it("skips a row whose player name is over the limit", () => {
     const long = "x".repeat(PUBLISHED_CHECKLIST_MAX_NAME + 1);
     const out = parsePublishedChecklist(`1 ${long} - Team A\n2 Fine - Team B`);
@@ -279,6 +296,90 @@ describe("parsePublishedChecklist — adversarial input", () => {
     const { out, ms } = timed(text);
     expect(ms).toBeLessThan(FAST_MS);
     expect(out).toEqual({ rows: [], skipped: [], format: "lines", tooBig: true });
+  });
+
+  describe("a whole file at the size cap, one adversarial line repeated", () => {
+    // A per-line cap does not bound the whole parse: lines x quadratic-per-line
+    // still stalls. Before the fix, `/[\s,]+$/` in the name trim made a 2 MB
+    // headered CSV of "a , , , … x" cells take ~9-31 s. Each file here fills
+    // the 2 MB cap with one line just under the line cap, repeated.
+    const WHOLE_FILE_MS = 2000;
+    const commaRun = (length: number) => `a${" ,".repeat(Math.floor((length - 2) / 2))}x`;
+    const fillToCap = (head: string, line: string) => {
+      const count = Math.floor((PUBLISHED_CHECKLIST_MAX_TEXT - head.length) / (line.length + 1));
+      return { text: head + Array(count).fill(line).join("\n"), count };
+    };
+    const parsesWholeFileFast = (head: string, line: string) => {
+      expect(line.length).toBeLessThanOrEqual(PUBLISHED_CHECKLIST_MAX_LINE);
+      const { text, count } = fillToCap(head, line);
+      expect(text.length).toBeGreaterThan(PUBLISHED_CHECKLIST_MAX_TEXT - 2 * PUBLISHED_CHECKLIST_MAX_LINE);
+      expect(text.length).toBeLessThanOrEqual(PUBLISHED_CHECKLIST_MAX_TEXT);
+      const { out, ms } = timed(text);
+      expect(out.tooBig).toBeUndefined();
+      // Every line was read: each is a row or a skipped entry.
+      expect(out.rows.length + out.skipped.length).toBe(count);
+      expect(ms).toBeLessThan(WHOLE_FILE_MS);
+      return out;
+    };
+
+    it("a 2 MB headered CSV whose player cell is 'a , , , … x' on every line", () => {
+      const out = parsesWholeFileFast("#,Player,Team\n", `1,"${commaRun(1900)}",Royals`);
+      expect(out.format).toBe("csv");
+    });
+
+    it("a 2 MB headered CSV whose team cell is 'a , , , … x' on every line", () => {
+      const out = parsesWholeFileFast("#,Player,Team\n", `1,Mike Trout,"${commaRun(1900)}"`);
+      expect(out.format).toBe("csv");
+    });
+
+    it("a 2 MB line-format file whose team is 'a , , , … x' on every line", () => {
+      const out = parsesWholeFileFast("", `1 Mike Trout - ${commaRun(1900)}`);
+      expect(out.format).toBe("lines");
+    });
+
+    it("a 2 MB line-format file whose players are 'a , , , … x' on every line", () => {
+      const out = parsesWholeFileFast("", `1 ${commaRun(1900)}`);
+      expect(out.format).toBe("lines");
+    });
+
+    it("a 2 MB headerless TSV whose player cell is 'a , , , … x' on every line", () => {
+      const out = parsesWholeFileFast("", `1\t${commaRun(1900)}\tRoyals`);
+      expect(out.format).toBe("tsv");
+    });
+
+    it("a 2 MB line-format file of long first words before a U+2028", () => {
+      // `.*$` stopped at the U+2028 and retried every shorter first word.
+      parsesWholeFileFast("", `1${"a".repeat(999)} ${"b".repeat(900)} c`);
+    });
+
+    it("a 2 MB headered CSV whose player cell names 900 players on every line", () => {
+      // Each row was kept with its 900 names: a million strings held for the
+      // preview (~2 s, mostly GC). The server's per-card caps now skip them.
+      const out = parsesWholeFileFast("#,Player,Team\n", `1,${"A/".repeat(900)},${"B/".repeat(40)}`);
+      expect(out.rows).toEqual([]);
+      expect(out.skipped[0].reason).toBe("More than 20 players on one card");
+    });
+
+    it("a 2 MB headered CSV whose cell is a long run of quotes", () => {
+      const out = parsesWholeFileFast("#,Player,Team\n", `1,${" ".repeat(900)}a${'"'.repeat(1000)},Royals`);
+      expect(out.format).toBe("csv");
+    });
+  });
+
+  it("a comma left at either end of a name still goes", () => {
+    const out = parsePublishedChecklist('#,Player,Team\n1," , Mike Trout , , ,\t","Angels , "');
+    expect(out.rows).toEqual([{ number: "1", players: ["Mike Trout"], teams: ["Angels"] }]);
+  });
+
+  it("a U+2028 inside a line no longer stops the line being read", () => {
+    const out = parsePublishedChecklist("1 Mike Trout - Angels");
+    expect(out.rows).toEqual([{ number: "1", players: ["Mike Trout"], teams: ["Angels"] }]);
+  });
+
+  it("a quote after a blank quoted cell still opens a quote", () => {
+    expect(splitDelimited(`1,"" "a,b",c`, ",")).toEqual(["1", "a,b", "c"]);
+    expect(splitDelimited(`1,x"a,b",c`, ",")).toEqual(["1", 'x"a', 'b"', "c"]);
+    expect(splitDelimited(`1,"""a",c`, ",")).toEqual(["1", '"a', "c"]);
   });
 
   it("text exactly at the cap is read", () => {

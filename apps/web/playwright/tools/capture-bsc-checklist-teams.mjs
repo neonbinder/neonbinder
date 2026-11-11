@@ -27,8 +27,12 @@
 // every 2 s), honours Retry-After on a 429 and backs off (15 s, doubling), writes
 // EVERY 429 to stderr with its UTC time and counts them, and when a 429 is still
 // there after --max-429 retries it STOPS, writing nothing, and says how long
-// the block lasted. The answers it did get are kept in --cache so a re-run
-// resumes without asking BSC again.
+// the block lasted. A Retry-After over 10 minutes is held to 10 minutes. The
+// answers it did get are kept in --cache so a re-run resumes without asking
+// BSC again. Without --cache the file goes in the OS temp directory (a
+// per-user folder, keyed by the resolved --out path), never beside --out, so
+// it cannot be committed with the fixture; a cache an older run left at
+// `<out>.cache.json` is still picked up when no --cache is given.
 //
 // USAGE
 //   node capture-bsc-checklist-teams.mjs --out <file.csv> --sport baseball \
@@ -42,7 +46,10 @@
 // Prints a one-line summary on stdout; progress and 429 reports go to stderr.
 // No token, header or cookie value is ever read or printed: both endpoints are
 // public.
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const API = "https://api-prod.buysportscards.com";
 const SHOP_BODY = {
@@ -52,6 +59,8 @@ const SHOP_BODY = {
   inStock: false,
   productCriteria: { condition: null, priceRangeStart: null, priceRangeEnd: null },
 };
+/** The longest Retry-After honoured; a longer one is held to this. */
+const MAX_RETRY_AFTER_MS = 10 * 60_000;
 const HEADERS = {
   accept: "application/json",
   "content-type": "application/json",
@@ -83,8 +92,32 @@ function parseArgs(argv) {
     if (!args[need]) throw new Error(`--${need.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)} is required`);
   }
   if (!(args.rate > 0 && args.rate <= 2)) throw new Error("--rate must be above 0 and at most 2 calls a second");
-  args.cache ??= `${args.out}.cache.json`;
+  args.cache ??= defaultCachePath(args.out);
   return args;
+}
+
+/**
+ * Where the resume cache goes when no --cache is given: a per-user folder in
+ * the OS temp directory, one file per resolved --out path. A cache an older
+ * run of this tool left beside --out is used instead, so a capture started
+ * before the default moved still resumes.
+ */
+function defaultCachePath(out) {
+  const legacy = `${out}.cache.json`;
+  if (existsSync(legacy)) {
+    process.stderr.write(`resuming from the cache beside --out (${legacy}); delete it once the capture is done\n`);
+    return legacy;
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const dir = join(tmpdir(), `nb-bsc-capture${uid === undefined ? "" : `-${uid}`}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  // A shared /tmp: refuse a folder someone else made, or a link to one.
+  if (!stat.isDirectory() || (uid !== undefined && stat.uid !== uid)) {
+    throw new Error(`${dir} is not a folder of this user's; pass --cache <file.json>`);
+  }
+  const key = createHash("sha256").update(resolve(out)).digest("hex").slice(0, 16);
+  return join(dir, `${key}.cache.json`);
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,7 +152,8 @@ function makeClient(rate, max429) {
         blockedSince ??= Date.now();
         all429.push({ at: new Date().toISOString(), label });
         const retryAfter = Number(response.headers.get("retry-after"));
-        const pause = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : backoff;
+        const pause =
+          Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS) : backoff;
         backoff = Math.min(backoff * 2, 240_000);
         process.stderr.write(`${all429[all429.length - 1].at} 429 #${all429.length} on ${label}; pausing ${Math.round(pause / 1000)} s\n`);
         if (attempt === max429) {
@@ -253,7 +287,7 @@ async function main() {
   for (const card of cache.cards) {
     if (cache.listings[card.id] === undefined) {
       const response = await call(`card-listing ${card.id}`, () =>
-        fetch(`${API}/marketplace/card/${card.id}/card-listing`, {
+        fetch(`${API}/marketplace/card/${encodeURIComponent(card.id)}/card-listing`, {
           headers: { accept: "application/json" },
           signal: AbortSignal.timeout(20_000),
         }),

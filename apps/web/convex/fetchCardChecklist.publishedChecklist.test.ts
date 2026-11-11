@@ -476,7 +476,7 @@ describe("fetchCardChecklist with a publisher checklist: more comma team texts t
 
 describe("fetchCardChecklist with a publisher checklist: the server re-checks the caps", () => {
   const rejects = async (
-    published: { rows: { number: string; players: string[]; teams: string[] }[] },
+    published: { rows: { number: string; players: string[]; teams: string[]; subset?: string }[] },
     message: RegExp,
   ) => {
     mockState.bscCards = [bsc("1", { players: ["A One"] })];
@@ -510,6 +510,25 @@ describe("fetchCardChecklist with a publisher checklist: the server re-checks th
       { rows: [{ number: "1", players: [], teams: [] }, { number: "2", players: [long], teams: [] }] },
       /Row 2 of the publisher's checklist has a player name over 120/,
     );
+  });
+
+  test("refuses a subset label over the name cap, naming the row by position only", async () => {
+    await rejects(
+      {
+        rows: [
+          { number: "1", players: [], teams: [], subset: "Base" },
+          { number: "2", players: [], teams: [], subset: "S".repeat(121) },
+        ],
+      },
+      /Row 2 of the publisher's checklist has a set name over 120/,
+    );
+  });
+
+  test("accepts a subset label at the cap and drops it from the checked rows", () => {
+    const checked = checkPublishedChecklist({
+      rows: [{ number: "1", players: ["A One"], teams: [], subset: `  ${"S".repeat(120)}  ` }],
+    })!;
+    expect(checked.rows).toEqual([{ number: "1", players: ["A One"], teams: [] }]);
   });
 
   test("refuses a row naming more than 20 players", async () => {

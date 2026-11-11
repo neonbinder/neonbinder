@@ -28,3 +28,4 @@ Checks to repeat on any "operator pastes a file" feature:
 - A client-supplied "answered by X" outcome literal that permanently
   suppresses a re-ask is admin-forgeable on commit; same class as
   [[patterns_attention_flag_suppression]].
+- A per-line cap does not bound a parser's total cost: lines × quadratic-per-line still stalls (PR 451: `/[\s,]+$/` trim, 2 MB CSV = 31 s). Benchmark the WHOLE file at the size cap with one adversarial line repeated, on every format path (the CSV path runs the name helpers 2–3 times per cell).
