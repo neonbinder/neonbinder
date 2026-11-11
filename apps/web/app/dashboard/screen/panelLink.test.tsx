@@ -96,10 +96,10 @@ function LocationProbe() {
   );
 }
 
-function renderDashboard(entry: string, data: DashboardData = getDashboard()) {
+function renderDashboard(entry: string, data: DashboardData = getDashboard(), before: string[] = []) {
   render(
     <Theme>
-      <MemoryRouter initialEntries={[entry]}>
+      <MemoryRouter initialEntries={[...before, entry]} initialIndex={before.length}>
         <Routes>
           <Route
             path="/demo"
@@ -164,6 +164,21 @@ describe("a card opens its panel over the dashboard", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Close card detail" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(pageUrl()).toBe("/demo");
+  });
+
+  it("Close on an entry the click pushed steps Back off it: one more Back leaves the dashboard, no extra entry left behind", async () => {
+    const data = renderDashboard("/demo", getDashboard(), ["/demo/collection"]);
+    const pull = data.additions[0].cards[0];
+    const pulls = screen.getByRole("region", { name: "Fresh Pulls" });
+    fireEvent.click(within(pulls).getAllByRole("link", { name: new RegExp(`^${escape(pull.title)}`) })[0]);
+    const panel = await screen.findByRole("dialog");
+    await settle();
+    fireEvent.click(within(panel).getByRole("button", { name: "Close card detail" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(pageUrl()).toBe("/demo");
+    // Had Close replaced the entry instead, this Back would land on /demo again.
+    fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    await waitFor(() => expect(screen.getByText("Collection page")).toBeTruthy());
   });
 
   it("a held-back card's panel says why above Your copies, puts the keyboard on the fix, and ↑ ↓ carry each card's own reason", async () => {
@@ -251,6 +266,32 @@ describe("↑ ↓ step through the run of cards the panel was opened from", () =
     fireEvent.click(screen.getByRole("button", { name: "Browser Back", hidden: true }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(pageUrl()).toBe("/demo");
+  });
+
+  it("the ends of the batch: stepping ↓ stops at the last card (no Next), stepping ↑ stops at the first (no Previous)", async () => {
+    const data = renderDashboard("/demo");
+    const batch = data.additions[0];
+    expect(batch.cards.length).toBeGreaterThan(2);
+    const pulls = screen.getByRole("region", { name: "Fresh Pulls" });
+    fireEvent.click(within(pulls).getAllByRole("link", { name: new RegExp(`^${escape(batch.cards[1].title)}`) })[0]);
+    await screen.findByRole("dialog");
+    await settle();
+    const button = (name: string) => within(screen.getByRole("dialog")).getByRole("button", { name });
+    const total = batch.cards.length;
+    for (let at = 2; at < total; at++) {
+      expect(button("Next card").getAttribute("aria-disabled"), `Next at ${at}`).toBeNull();
+      fireEvent.click(button("Next card"));
+      await waitFor(() => expect(within(screen.getByRole("dialog")).getByText(new RegExp(`^Card ${at + 1} of ${total}`))).toBeTruthy());
+    }
+    expect(button("Next card").getAttribute("aria-disabled")).toBe("true");
+    expect(button("Previous card").getAttribute("aria-disabled")).toBeNull();
+    for (let at = total; at > 1; at--) {
+      expect(button("Previous card").getAttribute("aria-disabled"), `Previous at ${at}`).toBeNull();
+      fireEvent.click(button("Previous card"));
+      await waitFor(() => expect(within(screen.getByRole("dialog")).getByText(new RegExp(`^Card ${at - 1} of ${total}`))).toBeTruthy());
+    }
+    expect(button("Previous card").getAttribute("aria-disabled")).toBe("true");
+    expect(button("Next card").getAttribute("aria-disabled")).toBeNull();
   });
 
   it("a shared link carries no list: the panel holds just its card", async () => {
