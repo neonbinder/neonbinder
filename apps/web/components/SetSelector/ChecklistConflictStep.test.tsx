@@ -456,15 +456,38 @@ describe("ChecklistConflictStep — No Team (NEO-489)", () => {
     },
   ];
 
-  it("reads an empty checklist side as 'No team', and an empty marketplace side as 'No team listed'", () => {
+  it("reads an empty checklist side as 'No team on the card', and an empty marketplace side as 'No team listed'", () => {
     renderStep({ rows: noTeamRows });
-    expect(CHECKLIST_NO_TEAM).toBe("No team");
+    expect(CHECKLIST_NO_TEAM).toBe("No team on the card");
     const g70 = screen.getByRole("radiogroup", { name: disagreementLabel("70") });
-    expect(within(g70).getByText("No team")).toBeTruthy();
+    expect(within(g70).getByText("No team on the card")).toBeTruthy();
     expect(within(g70).getByText("Cincinnati Reds")).toBeTruthy();
     expect(within(g70).queryByText("No team listed")).toBeNull();
     const g71 = screen.getByRole("radiogroup", { name: disagreementLabel("71") });
     expect(within(g71).getByText("No team listed")).toBeTruthy();
-    expect(within(g71).queryByText("No team")).toBeNull();
+    expect(within(g71).queryByText("No team on the card")).toBeNull();
+  });
+
+  it("sets the checklist's No Team at full ink even unpicked; an empty marketplace side keeps the unpicked tone", () => {
+    renderStep({ rows: noTeamRows });
+    const g70 = screen.getByRole("radiogroup", { name: disagreementLabel("70") });
+    const claim = within(g70).getByText("No team on the card");
+    expect(claim.className).toContain("text-ink");
+    expect(claim.className).not.toContain("text-ink-2");
+    const g71 = screen.getByRole("radiogroup", { name: disagreementLabel("71") });
+    const gap = within(g71).getByText("No team listed");
+    expect(gap.className).toContain("text-ink-2");
+  });
+
+  it("keeps each radio's name distinct and exactly its label when a team side is empty", () => {
+    renderStep({ rows: noTeamRows });
+    for (const n of ["70", "71"]) {
+      const radios = within(group(n)).getAllByRole("radio");
+      const names = radios.map((r) => r.textContent);
+      expect(names).toEqual([KEEP_MARKETPLACE_LABEL, USE_CHECKLIST_LABEL]);
+      expect(new Set(names).size).toBe(radios.length);
+      expect(keep(n)).toBe(radios[0]);
+      expect(use(n)).toBe(radios[1]);
+    }
   });
 });

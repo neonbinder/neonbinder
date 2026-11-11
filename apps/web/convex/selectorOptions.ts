@@ -14372,6 +14372,9 @@ const publishedChecklistValidator = v.object({
 });
 type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
 
+/** The characters a publisher checklist's card number may hold. */
+const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
+
 /**
  * The server's re-check of a publisher checklist (the client's parser applies
  * the same limits): at most `MAX_PUBLISHED_CHECKLIST_ROWS` rows, every number,
@@ -14387,7 +14390,7 @@ type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
  * (`isNoTeamText`, the parser's own test), so "No Team" never reaches the
  * fetch as a team name. A row that says No Team and also names a team
  * contradicts itself and refuses the whole checklist. A team string that
- * says nothing ("None", "N/A", "No team listed", "-": `isNoClaimTeamText`,
+ * says nothing ("None", "N/A", a dash, "TBD": `isNoClaimTeamText`,
  * the parser's own list) as the row's only team is dropped, the same as a
  * blank cell, so a caller cannot plant a team named "None". Beside another
  * team it is kept as sent, exactly as the parser keeps it.
@@ -14406,6 +14409,12 @@ export function checkPublishedChecklist(
     const number = row.number.trim();
     if (number.length > MAX_PLAYER_NAME_LENGTH) {
       throw new ConvexError(`${where} has a card number over ${MAX_PLAYER_NAME_LENGTH} characters.`);
+    }
+    // Defence in depth (NEO-489 security audit): the client parser only ever
+    // sends letters, digits, ".", "-" (and "NNO"); "#" and spaces are what a
+    // hand-written number may still carry. Anything else is refused.
+    if (!PUBLISHED_CHECKLIST_NUMBER_CHARS.test(number)) {
+      throw new ConvexError(`${where} has a card number with characters a card number never has.`);
     }
     // The subset is dropped below, but it still crossed the wire: held to the
     // same cap as a name, so an unread field cannot carry an unbounded string.
@@ -19295,6 +19304,11 @@ function settleCardTeamAnswer(a: {
   /** The row already carries `teamCheckDoneAt`. */
   teamCheckDone: boolean;
   teamNone: boolean;
+  /**
+   * NEO-489 — `teamNone` came from the publisher checklist saying "No Team",
+   * not from the operator. Recorded as `teamCheckOutcome: "checklist"`.
+   */
+  teamNoneFromChecklist?: boolean;
   teamLookup?: "answered" | "failed" | "checklist";
   bscTeamHint?: string;
   operatorUserId?: string;
@@ -19306,7 +19320,15 @@ function settleCardTeamAnswer(a: {
       fields: {
         teamNoneConfirmedAt: a.now,
         teamNoneConfirmedByUserId: a.operatorUserId,
-        ...(a.teamCheckDone ? {} : { teamCheckDoneAt: a.now }),
+        // NEO-489 — provenance: a checklist's "No Team" records the outcome
+        // the checklist branch below would, beside the stamp it goes with
+        // (never over an earlier check's outcome).
+        ...(a.teamCheckDone
+          ? {}
+          : {
+              teamCheckDoneAt: a.now,
+              ...(a.teamNoneFromChecklist ? { teamCheckOutcome: "checklist" as const } : {}),
+            }),
       },
       enqueue: false,
     };
@@ -19418,6 +19440,9 @@ const commitChunkCardValidator = v.object({
   // The operator answered "No team on this card". Set by the action only when
   // the card resolved to no team and no pending team name — teams win.
   teamNone: v.optional(v.literal(true)),
+  // NEO-489 — `teamNone` is the publisher checklist's "No Team", not the
+  // operator's answer. Only provenance: stamps `teamCheckOutcome: "checklist"`.
+  teamNoneFromChecklist: v.optional(v.literal(true)),
   // The card's team string that resolved to nothing and was not left pending
   // (the operator skipped it). Stored as `bscTeamName`, the hint the
   // missing-team fixer shows, on an answered card. Capped in the handler.
@@ -19917,6 +19942,7 @@ export const commitCardChecklistChunk = internalMutation({
           noneConfirmed: !!noneConfirmedAfter,
           teamCheckDone: !!existing.teamCheckDoneAt,
           teamNone: card.teamNone === true,
+          teamNoneFromChecklist: card.teamNoneFromChecklist === true,
           teamLookup: card.teamLookup,
           bscTeamHint: card.bscTeamHint,
           operatorUserId: args.operatorUserId,
@@ -20026,6 +20052,7 @@ export const commitCardChecklistChunk = internalMutation({
           noneConfirmed: false,
           teamCheckDone: false,
           teamNone: card.teamNone === true,
+          teamNoneFromChecklist: card.teamNoneFromChecklist === true,
           teamLookup: card.teamLookup,
           bscTeamHint: card.bscTeamHint,
           operatorUserId: args.operatorUserId,
@@ -22983,6 +23010,9 @@ export const commitCardChecklist = action({
         (c.teamNone === true || checklistClaimsNoTeam(c)) &&
         teamOnCardIds.length === 0 &&
         pendingTeamNames.length === 0;
+      // Provenance only: the answer is the checklist's, not the operator's.
+      const teamNoneFromChecklist =
+        teamNone && c.teamNone !== true && checklistClaimsNoTeam(c);
       // Reconciliation markers live in `attributes` so they are visible on the
       // card itself, not only in a log. NEO-203 adds `ref-collision`: this
       // card resolved to a row another incoming card had already claimed, so
@@ -23051,6 +23081,7 @@ export const commitCardChecklist = action({
           ...(operatorTeamIds.length > 0 ? { operatorTeamIds } : {}),
           ...(c.teamLookup ? { teamLookup: c.teamLookup } : {}),
           ...(teamNone ? { teamNone: true as const } : {}),
+          ...(teamNoneFromChecklist ? { teamNoneFromChecklist: true as const } : {}),
           ...(bscTeamHint ? { bscTeamHint } : {}),
           // NEO-335 — the "Card titles" answer, for a card this commit
           // INSERTS only: a re-synced row's title is NB content the step never

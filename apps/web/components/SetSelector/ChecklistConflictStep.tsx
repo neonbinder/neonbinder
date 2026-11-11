@@ -39,7 +39,8 @@ import {
  *
  * A checklist row that said "No Team" against a card the marketplace gave a
  * team (NEO-489) is a teams disagreement whose checklist side is empty; that
- * side reads "No team" (`CHECKLIST_NO_TEAM`), the checklist's answer. An empty
+ * side reads "No team on the card" (`CHECKLIST_NO_TEAM`) at full ink, picked
+ * or not, because it is the checklist's answer rather than a gap. An empty
  * marketplace side still reads "No team listed": the listing named none.
  *
  * With two or more cards, "Keep the marketplace's on all" and "Use the
@@ -210,7 +211,7 @@ const NO_TEAM = "No team listed";
  * it reads as the answer it is. ("Use the checklist's" then saves the card
  * with no team; `applyChecklistChoice`.)
  */
-export const CHECKLIST_NO_TEAM = "No team";
+export const CHECKLIST_NO_TEAM = "No team on the card";
 
 const OTHER: Record<ChecklistChoice, ChecklistChoice> = {
   marketplace: "checklist",
@@ -268,7 +269,14 @@ function Side({
         {conflict.teams && (
           <>
             <dt className="text-ink-3">{conflict.teams[side].length > 1 ? "Teams" : "Team"}</dt>
-            <dd className={picked ? "text-ink" : "text-ink-2"}>
+            <dd
+              className={
+                // The checklist's No Team is an answer, not a gap: full ink.
+                picked || (side === "checklist" && conflict.teams.checklist.length === 0)
+                  ? "text-ink"
+                  : "text-ink-2"
+              }
+            >
               <SideNames
                 sides={conflict.teams}
                 side={side}

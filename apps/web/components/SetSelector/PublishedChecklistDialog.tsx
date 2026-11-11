@@ -62,9 +62,11 @@ import {
  * A team cell that says exactly "No Team" (any case, any spacing) is the
  * checklist saying the card shows no team. The row keeps `teams: []` and
  * carries `noTeam: true`; its Teams cell reads "No team" at a team's
- * strength, where a blank cell (no claim, so the team is looked up) reads a
- * muted "None". The sync takes the claim as the card's answer and never asks
- * about it. "No Team" beside a real team is a contradiction the parser will
+ * strength. A blank cell, or one that only says "nothing here" (None, N/A,
+ * a dash; `NO_CLAIM_TEAM_CELLS`), makes no claim, so the team is looked up:
+ * its cell reads a muted "We'll look it up" (`TEAM_LOOKED_UP_CELL`). The
+ * meaning is in the words, never in the tint alone (WCAG 1.4.1). The sync
+ * takes the claim as the card's answer and never asks about it. "No Team" beside a real team is a contradiction the parser will
  * not settle: the line is skipped with the parser's own reason
  * (`NO_TEAM_AND_A_TEAM`), shown under Skipped lines like every other.
  *
@@ -153,6 +155,11 @@ export const PICK_A_SUBSET = "Tick at least one subset first — then use it.";
 
 /** NEO-489 — the team cell of a row whose checklist said "No Team". */
 export const NO_TEAM_CELL = "No team";
+/**
+ * NEO-489 — the team cell of a row whose checklist named no team and made no
+ * No Team claim (blank, None, N/A, a dash): the sync looks the team up.
+ */
+export const TEAM_LOOKED_UP_CELL = "We'll look it up";
 /** How long the paste must hold still before its count is announced. */
 export const COUNT_ANNOUNCE_DEBOUNCE_MS = 1500;
 
@@ -374,8 +381,9 @@ export default function PublishedChecklistDialog({
             </h2>
             <p id={leadId} className="mt-0.5 text-sm text-ink-2">
               Paste it straight off the checklist page, or pick a file. We line it up by card
-              number and only look up teams your list leaves out. Card with no team? Write
-              “No Team” where its team goes.
+              number and only look up teams your list leaves out. Card with no team, like a
+              promo or a raffle card? Type “No Team” in its team spot. Leave it blank and
+              we&apos;ll look it up.
             </p>
           </header>
 
@@ -587,7 +595,10 @@ export default function PublishedChecklistDialog({
                                 // team's strength, unlike a blank cell.
                                 NO_TEAM_CELL
                               ) : (
-                                <span className="text-ink-3">None</span>
+                                // No claim: the sync looks the team up. Said
+                                // in words, so the muted tint is not the
+                                // only sign it differs from "No team".
+                                <span className="text-ink-3">{TEAM_LOOKED_UP_CELL}</span>
                               )}
                             </td>
                           </tr>

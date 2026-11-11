@@ -763,7 +763,23 @@ describe("checkPublishedChecklist and the client's parse agree on No Team rows (
 });
 
 describe("checkPublishedChecklist and the parser agree on no-claim team cells (NEO-489)", () => {
-  test.each(["None", "none", "N/A", "n/a", "No team listed", "-"])(
+  test.each([
+    "None",
+    "none",
+    "N/A",
+    "n/a",
+    "No team listed",
+    "-",
+    // Audit additions: the server reads the same list, so it follows.
+    "\u2014",
+    "\u2013",
+    "TBD",
+    "Unknown",
+    "?",
+    "NA",
+    "n/a.",
+    "None.",
+  ])(
     "a team list of exactly [%j] makes no claim on the server, as in the parser",
     (cell) => {
       const checked = checkPublishedChecklist({
@@ -773,6 +789,16 @@ describe("checkPublishedChecklist and the parser agree on no-claim team cells (N
       expect(checked.rows).toEqual(parsed.rows);
       expect(checked.rows[0].teams).toEqual([]);
       expect("noTeam" in checked.rows[0]).toBe(false);
+    },
+  );
+
+  test.each(["TBD", "\u2014", "n/a."])(
+    "keeps [%j] beside a real team on the server, as the parser keeps it",
+    (word) => {
+      const checked = checkPublishedChecklist({
+        rows: [{ number: "1", players: ["A One"], teams: ["Boston Red Sox", word] }],
+      })!;
+      expect(checked.rows[0].teams).toEqual(["Boston Red Sox", word]);
     },
   );
 

@@ -13,6 +13,7 @@ import PublishedChecklistDialog, {
   NOTHING_TO_USE,
   PICK_A_SUBSET,
   SUBSET_QUESTION,
+  TEAM_LOOKED_UP_CELL,
   PublishedChecklistChip,
   checklistTeamsLine,
   chipText,
@@ -484,19 +485,49 @@ describe("the copy helpers and the chip", () => {
 });
 
 describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
-  it("shows a No Team row's team cell as 'No team', not the muted 'None' of a blank cell", async () => {
+  it("shows a No Team row's team cell as 'No team' at a team's strength, and a blank one as a muted \"We'll look it up\"", async () => {
     open();
     await paste("1 Host One - No Team\n2 Rhett Lowder\n3 Pat Smith - Cincinnati Reds");
     await waitFor(() => expect(screen.getByText("3 rows")).toBeTruthy());
     const table = screen.getByRole("table");
     expect(NO_TEAM_CELL).toBe("No team");
+    expect(TEAM_LOOKED_UP_CELL).toBe("We'll look it up");
     const rows = within(table).getAllByRole("row");
     const cellsOf = (n: string) =>
       within(rows.find((r) => within(r).queryByText(n))!).getAllByRole("cell");
-    expect(cellsOf("Host One")[2].textContent).toBe("No team");
-    // A blank team cell is no claim: still the muted None.
-    expect(cellsOf("Rhett Lowder")[2].textContent).toBe("None");
+    const noTeam = cellsOf("Host One")[2];
+    expect(noTeam.textContent).toBe("No team");
+    // The claim reads at a team's strength: no muted wrapper around it.
+    expect(noTeam.querySelector(".text-ink-3")).toBeNull();
+    // A blank team cell is no claim: the sync looks it up, said in words
+    // (WCAG 1.4.1: not the tint alone), and muted.
+    const blank = cellsOf("Rhett Lowder")[2];
+    expect(blank.textContent).toBe("We'll look it up");
+    expect(blank.querySelector(".text-ink-3")?.textContent).toBe("We'll look it up");
     expect(cellsOf("Pat Smith")[2].textContent).toBe("Cincinnati Reds");
+    // "None" is never a team cell's word any more.
+    expect(within(table).queryByText("None")).toBeNull();
+  });
+
+  it.each(["None", "N/A", "No team listed", "-", "\u2014", "TBD", "Unknown", "?", "n/a."])(
+    "shows a %j team cell as \"We'll look it up\", never as a team",
+    async (cell) => {
+      open();
+      await paste(`#,Player,Team\n1,Rhett Lowder,"${cell}"`);
+      await waitFor(() => expect(screen.getByText("1 row")).toBeTruthy());
+      const table = screen.getByRole("table");
+      const cells = within(within(table).getAllByRole("row")[1]).getAllByRole("cell");
+      expect(cells[2].textContent).toBe(TEAM_LOOKED_UP_CELL);
+    },
+  );
+
+  it("keeps the Players column's muted None for a row with no player", async () => {
+    open();
+    await paste("#,Player,Team\n5,,Cincinnati Reds");
+    await waitFor(() => expect(screen.getByText("1 row")).toBeTruthy());
+    const cells = within(within(screen.getByRole("table")).getAllByRole("row")[1]).getAllByRole("cell");
+    expect(cells[1].textContent).toBe("None");
+    expect(cells[2].textContent).toBe("Cincinnati Reds");
   });
 
   it("hands a No Team row on with noTeam and no teams", async () => {
@@ -516,8 +547,14 @@ describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
     expect(screen.getByText(NO_TEAM_AND_A_TEAM)).toBeTruthy();
   });
 
-  it("tells the operator how to mark a card that has no team", () => {
+  it("tells the operator how to mark a card that has no team, and what a blank cell does, in the dialog's description", () => {
     open();
-    expect(screen.getAllByText(/No Team/).length).toBeGreaterThan(0);
+    const dialog = screen.getByRole("dialog");
+    const lead = document.getElementById(dialog.getAttribute("aria-describedby")!)!;
+    expect(lead.textContent!.replace(/\s+/g, " ").trim()).toBe(
+      "Paste it straight off the checklist page, or pick a file. We line it up by card number and only look up teams your list leaves out. Card with no team, like a promo or a raffle card? Type “No Team” in its team spot. Leave it blank and we'll look it up.",
+    );
+    expect(dialog.getAttribute("aria-labelledby")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Publisher's checklist" })).toBe(dialog);
   });
 });

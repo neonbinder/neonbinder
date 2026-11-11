@@ -8,8 +8,9 @@
  * it re-checks the upload.
  *
  * Only the words "No Team" make the claim. "None", "N/A", "No team listed",
- * "-" and a blank cell make no claim; the card's team is then still unknown
- * and is looked up or asked for as usual.
+ * a dash, "TBD", "Unknown", "?" and a blank cell make no claim
+ * (`NO_CLAIM_TEAM_CELLS`); the card's team is then still unknown and is
+ * looked up or asked for as usual.
  *
  * Once a checklist row has been applied to a fetched card, the card records
  * the claim without a new field: `teamLookup: "checklist"` with no team
@@ -21,7 +22,7 @@
  */
 
 /** Skip reason for a row whose team cell(s) say "No Team" and name a team. */
-export const NO_TEAM_AND_A_TEAM = "No Team and a team in one cell";
+export const NO_TEAM_AND_A_TEAM = "Says No Team and names a team — pick one.";
 
 /** True when `text` is exactly "No Team", ignoring case and spacing. */
 export function isNoTeamText(text: string): boolean {
@@ -31,21 +32,35 @@ export function isNoTeamText(text: string): boolean {
 
 /**
  * Whole team cells that mean "nothing here": no claim at all, the same as a
- * blank cell. Compared folded (NFKC, whitespace collapsed, trimmed, lower
- * case). Without this "N/A" would split on its "/" into two teams, and
+ * blank cell. Compared folded (`foldNoClaim`: NFKC, whitespace collapsed,
+ * trimmed, lower case, one trailing period dropped, so "N/A." and "None."
+ * count). Without this "N/A" would split on its "/" into two teams, and
  * "None" would read as a team named None. Only "No Team" is the No Team
  * claim. The client parser and the server re-check both read it.
  */
 export const NO_CLAIM_TEAM_CELLS: ReadonlySet<string> = new Set([
   "none",
   "n/a",
+  "na",
   "no team listed",
+  "tbd",
+  "unknown",
+  "?",
   "-",
+  "\u2013", // en dash
+  "\u2014", // em dash
 ]);
+
+/** The folded form `NO_CLAIM_TEAM_CELLS` holds. */
+function foldNoClaim(text: string): string {
+  const folded = text.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+  // "n/a." is "n/a"; a lone "." stays itself, never the empty string.
+  return folded.length > 1 && folded.endsWith(".") ? folded.slice(0, -1).trimEnd() : folded;
+}
 
 /** True when a whole team cell says nothing (`NO_CLAIM_TEAM_CELLS`). */
 export function isNoClaimTeamText(text: string): boolean {
-  return NO_CLAIM_TEAM_CELLS.has(text.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase());
+  return NO_CLAIM_TEAM_CELLS.has(foldNoClaim(text));
 }
 
 /**

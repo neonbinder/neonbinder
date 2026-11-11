@@ -798,7 +798,7 @@ describe("parsePublishedChecklist — NEO-489: a team cell reading No Team", () 
     ]);
   });
 
-  it.each(["None", "N/A", "No team listed", "-", ""])(
+  it.each(["None", "N/A", "No team listed", "-", "\u2014", "TBD", "Unknown", "?", "n/a.", ""])(
     "does not read %j as No Team: it makes no claim",
     (cell) => {
       const out = parsePublishedChecklist(`#,Player,Team\n1,Mike Trout,"${cell}"`);
@@ -874,13 +874,45 @@ describe("parsePublishedChecklist — NEO-489: the number column is trusted, as 
 });
 
 describe("parsePublishedChecklist — NEO-489: a whole team cell that makes no claim", () => {
-  it.each(["none", "None", "NONE", "n/a", "N/A", "No team listed", "no  team  listed", "-"])(
-    "reads %j as no team and no claim",
+  /** Every whole-cell no-claim spelling, including the audit additions. */
+  const NO_CLAIM_CELLS = [
+    "none",
+    "None",
+    "NONE",
+    "n/a",
+    "N/A",
+    "No team listed",
+    "no  team  listed",
+    "-",
+    "\u2014",
+    "\u2013",
+    "TBD",
+    "Unknown",
+    "?",
+    "NA",
+    "n/a.",
+    "None.",
+  ];
+
+  it.each(NO_CLAIM_CELLS)("reads %j as no team and no claim", (cell) => {
+    const out = parsePublishedChecklist(`#,Player,Team\n1,Mike Trout,"${cell}"`);
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual([{ number: "1", players: ["Mike Trout"], teams: [] }]);
+    expect(out.rows[0].noTeam).toBeUndefined();
+  });
+
+  it.each(NO_CLAIM_CELLS)("reads %j in a positional TSV team column as no team and no claim", (cell) => {
+    const out = parsePublishedChecklist(`1\tMike Trout\t${cell}\n2\tJuan Soto\tNew York Mets`);
+    expect(out.skipped).toEqual([]);
+    expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: [] });
+    expect(out.rows[1].teams).toEqual(["New York Mets"]);
+  });
+
+  it.each(["TBD Reds", "Unknown Soldiers", "St. Louis Cardinals"])(
+    "keeps %j as a team: only the whole placeholder word makes no claim",
     (cell) => {
       const out = parsePublishedChecklist(`#,Player,Team\n1,Mike Trout,"${cell}"`);
-      expect(out.skipped).toEqual([]);
-      expect(out.rows).toEqual([{ number: "1", players: ["Mike Trout"], teams: [] }]);
-      expect(out.rows[0].noTeam).toBeUndefined();
+      expect(out.rows[0].teams).toEqual([cell]);
     },
   );
 

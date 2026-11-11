@@ -1567,9 +1567,29 @@ describe("commitCardChecklist — a checklist's No Team answer (NEO-489)", () =>
     expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
     expect(row.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
     expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
-    expect(row.teamCheckOutcome).toBeUndefined();
+    // Provenance (security audit): the answer was the checklist's.
+    expect(row.teamCheckOutcome).toBe("checklist");
     expect(row.teamOnCardIds).toBeUndefined();
     expect((await settle(t)).has(row._id)).toBe(false);
+  });
+
+  test("an operator's own No team on a checklist card records no checklist outcome", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+
+    await commit(t, sportId, leafId, [
+      card({ cardNumber: "1", bscRef: "B1", teamLookup: "checklist", teamNone: true }),
+      card({ cardNumber: "2", bscRef: "B2", teamNone: true }),
+    ]);
+
+    const rows = await rowsByNumber(t, leafId);
+    for (const n of ["1", "2"]) {
+      const row = rows.get(n)!;
+      expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
+      expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+      expect(row.teamCheckOutcome).toBeUndefined();
+    }
+    await settle(t);
   });
 
   test("a checklist card whose only team string was ruled not a team is not stamped: it still named a team", async () => {

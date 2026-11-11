@@ -9,7 +9,7 @@ describe("isNoTeamText", () => {
     },
   );
 
-  it.each(["None", "N/A", "No team listed", "-", "", "  ", "NoTeam", "No Teams", "No Team Card", "No Team / Mets", "Team"])(
+  it.each(["None", "N/A", "No team listed", "-", "—", "TBD", "Unknown", "?", "No Team.", "", "  ", "NoTeam", "No Teams", "No Team Card", "No Team / Mets", "Team"])(
     "does not read %j as No Team",
     (text) => {
       expect(isNoTeamText(text)).toBe(false);
@@ -17,7 +17,7 @@ describe("isNoTeamText", () => {
   );
 
   it("exports the skip reason", () => {
-    expect(NO_TEAM_AND_A_TEAM).toBe("No Team and a team in one cell");
+    expect(NO_TEAM_AND_A_TEAM).toBe("Says No Team and names a team — pick one.");
   });
 });
 
@@ -45,14 +45,57 @@ describe("checklistClaimsNoTeam", () => {
 });
 
 describe("isNoClaimTeamText", () => {
-  it.each(["none", "None", "N/A", "n/a", "No team listed", " no  team  listed ", "-", "Ｎ／Ａ"])(
+  it.each([
+    "none",
+    "None",
+    "N/A",
+    "n/a",
+    "No team listed",
+    " no  team  listed ",
+    "-",
+    "Ｎ／Ａ",
+    // Audit additions: dashes, placeholders, and a trailing period.
+    "—",
+    "–",
+    " — ",
+    "TBD",
+    "tbd",
+    "Unknown",
+    "UNKNOWN",
+    "?",
+    "NA",
+    "na",
+    "n/a.",
+    "N/A.",
+    "None.",
+    "TBD.",
+    "Unknown.",
+    "No team listed.",
+    "n/a .",
+  ])(
     "reads %j as a cell that says nothing",
     (text) => {
       expect(isNoClaimTeamText(text)).toBe(true);
     },
   );
 
-  it.each(["No Team", "Reds", "", "N/A / Reds", "--", "None of them"])(
+  it.each([
+    "No Team",
+    "No Team.",
+    "Reds",
+    "",
+    ".",
+    "N/A / Reds",
+    "--",
+    "——",
+    "??",
+    "None of them",
+    "n/a..",
+    "Unknown Soldiers",
+    "TBD Reds",
+    "Nationals",
+    "St. Louis Cardinals",
+  ])(
     "does not read %j as a no-claim cell",
     (text) => {
       expect(isNoClaimTeamText(text)).toBe(false);
