@@ -1853,9 +1853,12 @@ export const listForPicker = query({
  *
  * Same cap and the same `truncated` report as the unscoped window, newest
  * first within the league (`by_league_id` orders by `_creationTime` inside
- * one key). When both arguments are given the league read wins and the sport
- * narrows its rows — a real league belongs to one sport, so that only ever
- * matters for "No league"; no caller passes both today.
+ * one key).
+ *
+ * `leagueId` and `sportId` together are REFUSED. Applied after the capped
+ * league read, a sport filter could drop rows the cap had already spent, and
+ * `truncated` would then say "complete" about a list that is not. A real league
+ * belongs to one sport anyway, and no caller passes both.
  */
 
 export const listForManagement = query({
@@ -1870,6 +1873,11 @@ export const listForManagement = query({
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    if (args.leagueId !== undefined && args.sportId !== undefined) {
+      throw new ConvexError(
+        "Pass a league or a sport to listForManagement, not both.",
+      );
+    }
 
     let rows: Doc<"teams">[];
     if (args.leagueId !== undefined) {
@@ -1879,9 +1887,6 @@ export const listForManagement = query({
         .withIndex("by_league_id", (q) => q.eq("leagueId", leagueKey))
         .order("desc")
         .take(TEAM_MANAGEMENT_CAP + 1);
-      if (args.sportId) {
-        rows = rows.filter((team) => team.sportId === args.sportId);
-      }
     } else if (args.sportId) {
       rows = await ctx.db
         .query("teams")

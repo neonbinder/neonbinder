@@ -1240,12 +1240,18 @@ export function teamCounterSentence({
  * live region fed that would announce a count that is about to be wrong. And
  * it leaves out the need-attention count, which is about the rows rather than
  * the filter and would double the length of every announcement.
+ *
+ * NEO-495 — and it names the league the count is scoped to ("112 teams in
+ * MLB", "14 teams with no league"). A sighted operator sees the dropdown
+ * beside the counter; a screen-reader user hearing only "112 teams" after
+ * changing it has no way to tell that number from the whole window's.
  */
 export function teamCounterAnnouncement({
   typed,
   matched,
   answered,
   serverTruncated,
+  scope = null,
 }: {
   /** The filter box's text, trimmed. */
   typed: string;
@@ -1255,13 +1261,30 @@ export function teamCounterAnnouncement({
   answered: boolean;
   /** The server's answer ran past its limit. */
   serverTruncated: boolean;
+  /** The league phrase from `leagueScopePhrase`, or null for every league. */
+  scope?: string | null;
 }): string | null {
   if (typed.length >= SEARCH_MIN_CHARS && !answered) return null;
-  return teamCounterSentence({
+  const sentence = teamCounterSentence({
     typed,
     matched,
     serverTruncated: answered && serverTruncated,
   });
+  return scope ? `${sentence} ${scope}` : sentence;
+}
+
+/**
+ * NEO-495 — the league filter as the tail of a spoken count: "in MLB" (the
+ * dropdown's own label, abbreviation before name), "with no league", or null
+ * for "All leagues" and for an id the league list does not hold.
+ */
+export function leagueScopePhrase(
+  leagueFilter: string,
+  league: { abbreviation?: string; name: string } | undefined,
+): string | null {
+  if (leagueFilter === ALL_LEAGUES) return null;
+  if (leagueFilter === "none") return "with no league";
+  return league ? `in ${league.abbreviation ?? league.name}` : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1645,6 +1668,7 @@ export default function TeamManagement() {
           matched: visible.length,
           answered: searchAnswer !== undefined,
           serverTruncated: searchAnswer?.truncated ?? false,
+          scope: leagueScopePhrase(leagueFilter, leagueById.get(leagueFilter)),
         });
   const counterText = countPending
     ? ""
@@ -1773,6 +1797,16 @@ export default function TeamManagement() {
             <p className="p-3 text-sm text-ink-3">Searching…</p>
           ) : visible.length === 0 && listPending ? (
             <p className="p-3 text-sm text-ink-3">Loading teams…</p>
+          ) : visible.length === 0 &&
+            filter.trim() === "" &&
+            leagueFilter !== ALL_LEAGUES ? (
+            // NEO-495 — an empty LEAGUE, not a filter that missed: with
+            // nothing typed there is no filter to blame.
+            <p className="p-3 text-sm text-ink-3">
+              {leagueFilter === "none"
+                ? "Every team has a league. Nothing to file here."
+                : "No teams in this league yet."}
+            </p>
           ) : visible.length === 0 ? (
             <p className="p-3 text-sm text-ink-3">
               No teams match that filter.

@@ -270,6 +270,24 @@ describe("listForManagement scoped to a league (NEO-495)", () => {
     expect(result.teams.some((team) => team.name === "Club 0")).toBe(false);
   }, 60_000);
 
+  test("refuses a league and a sport together, rather than under-report truncation", async () => {
+    // A sport filter after the capped league read could drop rows the cap had
+    // already spent, so `truncated: false` would describe an incomplete list.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const mlb = await seedLeague(t, sportId, "Major League Baseball");
+    const asAdmin = t.withIdentity(ADMIN);
+
+    for (const leagueId of [mlb, "none" as const]) {
+      await expect(
+        asAdmin.query(api.teams.listForManagement, { leagueId, sportId }),
+      ).rejects.toThrow(/league or a sport/);
+    }
+    // Each on its own still answers.
+    await expect(asAdmin.query(api.teams.listForManagement, { leagueId: mlb })).resolves.toBeTruthy();
+    await expect(asAdmin.query(api.teams.listForManagement, { sportId })).resolves.toBeTruthy();
+  });
+
   test("requires admin, with or without a league", async () => {
     const t = convexTest(schema, modules);
     const asMember = t.withIdentity(MEMBER);

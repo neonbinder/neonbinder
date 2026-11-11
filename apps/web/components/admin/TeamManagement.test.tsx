@@ -342,6 +342,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import TeamManagement, {
+  leagueScopePhrase,
   resolveSelectedTeam,
   teamCounterAnnouncement,
   teamCounterSentence,
@@ -1152,6 +1153,83 @@ describe("TeamManagement — the league filter is answered by the server (NEO-49
 
     expect(listCalls.at(-1)).toEqual({});
     expect(row("Seattle Mariners")).toBeTruthy();
+  });
+
+  it("lets a server search answer stand while the league's list is in flight", async () => {
+    // The typed filter is answered by `searchForManagement`, which takes the
+    // league too; its answer does not wait on the list and must not be hidden
+    // behind the list's "Loading teams…" or a blank counter.
+    const EXPOS = {
+      _id: "t-expos",
+      _creationTime: 0,
+      name: "Expos",
+      location: "Montreal",
+      nameNormalized: "expos montreal",
+      sportId: "sport-baseball",
+      leagueId: "l-mlb",
+      colors: { primary: "#003087" },
+    };
+    searchAnswer = { teams: [EXPOS], truncated: false };
+    pendingLeagues.add("l-mlb");
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "Expos" },
+    });
+    expect(await screen.findByRole("button", { name: "Montreal Expos" })).toBeTruthy();
+
+    fireEvent.change(select("league-filter")!, { target: { value: "l-mlb" } });
+
+    expect(listCalls.at(-1)).toEqual({ leagueId: "l-mlb" });
+    expect(searchCalls).toContainEqual({ query: "Expos", leagueId: "l-mlb" });
+    expect(row("Montreal Expos")).toBeTruthy();
+    expect(screen.queryByText("Loading teams…")).toBeNull();
+    expect(counter().textContent).toBe("1 match");
+    expect(screen.getByRole("status").textContent).toBe("1 match in MLB");
+  });
+
+  it("names the league in the announced count, and only there", () => {
+    leagueOnlyTeams = [PIRATES];
+    renderAt("/admin/teams");
+    expect(screen.getByRole("status").textContent).toBe("5 teams");
+
+    fireEvent.change(select("league-filter")!, { target: { value: "l-mlb" } });
+    expect(screen.getByRole("status").textContent).toBe("2 teams in MLB");
+    // The visible counter sits beside the dropdown that already says MLB.
+    expect(counter().textContent).toBe("2 teams");
+
+    fireEvent.change(select("league-filter")!, { target: { value: "none" } });
+    // Four fixtures carry no league: Mariners, Aztecs and both Giants.
+    expect(screen.getByRole("status").textContent).toBe(
+      "4 teams with no league",
+    );
+  });
+
+  it("says a league is empty, not that a filter missed, with nothing typed", () => {
+    renderAt("/admin/teams");
+
+    fireEvent.change(select("league-filter")!, { target: { value: "l-npb" } });
+    expect(screen.getByText("No teams in this league yet.")).toBeTruthy();
+    expect(screen.queryByText("No teams match that filter.")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("0 teams in NPB");
+
+    // With something typed, a miss is the filter's again.
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "z" },
+    });
+    expect(screen.getByText("No teams match that filter.")).toBeTruthy();
+    expect(screen.queryByText("No teams in this league yet.")).toBeNull();
+  });
+
+  it("says every team has a league when No league is empty", () => {
+    currentTeams = [TEAMS[0]];
+    renderAt("/admin/teams");
+
+    fireEvent.change(select("league-filter")!, { target: { value: "none" } });
+
+    expect(
+      screen.getByText("Every team has a league. Nothing to file here."),
+    ).toBeTruthy();
+    expect(screen.queryByText("No teams match that filter.")).toBeNull();
   });
 
   it("keeps the controls, and their focus, while the league's list is in flight", () => {
@@ -2120,6 +2198,40 @@ describe("teamCounterSentence (NEO-330)", () => {
     expect(teamCounterSentence({ typed: "new", matched: 50, serverTruncated: true })).toBe(
       "50+ matches",
     );
+  });
+});
+
+describe("leagueScopePhrase (NEO-495)", () => {
+  const mlb = { name: "Major League Baseball", abbreviation: "MLB" };
+  it("names the league by the dropdown's label, abbreviation first", () => {
+    expect(leagueScopePhrase("l-mlb", mlb)).toBe("in MLB");
+    expect(leagueScopePhrase("l-x", { name: "Atlantic League" })).toBe(
+      "in Atlantic League",
+    );
+  });
+  it("says 'with no league' for No league, and nothing for every league", () => {
+    expect(leagueScopePhrase("none", undefined)).toBe("with no league");
+    expect(leagueScopePhrase("all", undefined)).toBeNull();
+    // An id the league list does not hold names nothing rather than guessing.
+    expect(leagueScopePhrase("l-gone", undefined)).toBeNull();
+  });
+  it("is appended to the settled sentence, and never to a pending one", () => {
+    const base = { typed: "", matched: 112, answered: false, serverTruncated: false };
+    expect(teamCounterAnnouncement({ ...base, scope: "in MLB" })).toBe("112 teams in MLB");
+    expect(
+      teamCounterAnnouncement({ ...base, matched: 14, scope: "with no league" }),
+    ).toBe("14 teams with no league");
+    expect(
+      teamCounterAnnouncement({
+        ...base,
+        typed: "ex",
+        answered: true,
+        matched: 50,
+        serverTruncated: true,
+        scope: "in MLB",
+      }),
+    ).toBe("50+ matches in MLB");
+    expect(teamCounterAnnouncement({ ...base, typed: "ex", scope: "in MLB" })).toBeNull();
   });
 });
 
