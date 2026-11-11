@@ -169,6 +169,7 @@ import type * as preprocessAudience from "../preprocessAudience.js";
 import type * as preprocessCapacity from "../preprocessCapacity.js";
 import type * as publicCollection from "../publicCollection.js";
 import type * as publicProfile from "../publicProfile.js";
+import type * as publishedChecklistPairs from "../publishedChecklistPairs.js";
 import type * as referenceSeed from "../referenceSeed.js";
 import type * as rekeyEntityNames from "../rekeyEntityNames.js";
 import type * as repairSportHallOfFameQids from "../repairSportHallOfFameQids.js";
@@ -368,6 +369,7 @@ declare const fullApi: ApiFromModules<{
   preprocessCapacity: typeof preprocessCapacity;
   publicCollection: typeof publicCollection;
   publicProfile: typeof publicProfile;
+  publishedChecklistPairs: typeof publishedChecklistPairs;
   referenceSeed: typeof referenceSeed;
   rekeyEntityNames: typeof rekeyEntityNames;
   repairSportHallOfFameQids: typeof repairSportHallOfFameQids;

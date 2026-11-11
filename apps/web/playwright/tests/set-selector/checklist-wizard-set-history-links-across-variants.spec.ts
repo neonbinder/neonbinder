@@ -19,8 +19,9 @@
 //   3. Peak Performance (Hall of Fame tie-break): Bob Gibson and Joe Morgan, two
 //      on file each and none active in 2010, arrive linked as "the Hall of
 //      Famer"; Change on Joe Morgan lists both namesakes, then re-links; the
-//      St. Louis Browns are LINKED to the catalogue's 1902-1953 row from the
-//      team step.
+//      Washington Senators, Philadelphia Athletics and St. Louis Browns arrive
+//      LINKED for the operator (NEO-490, rule 2b: the era is read off the stints of
+//      the player on the card, "<player> played there"), so no team step is asked.
 //   4. Turkey Red (team rule): the St. Louis Browns arrive linked from the set's
 //      history; every other name is already answered, so the wizard opens on its
 //      Save step for that one link ("This name was linked for you. Give it a look
@@ -121,6 +122,12 @@ const BRANTLEY = "Michael Brantley";
 const GIBSON = "Bob Gibson";
 const MORGAN = "Joe Morgan";
 const BROWNS = "St. Louis Browns";
+/** The clubs the batch links by the stint of the player on the card (rule 2b), with that player. */
+const HISTORIC_CLUBS: ReadonlyArray<readonly [string, string]> = [
+  ["Washington Senators", "Walter Johnson"],
+  ["Philadelphia Athletics", "Jimmie Foxx"],
+  [BROWNS, "George Sisler"],
+];
 /**
  * Each insert's captured publisher's checklist (NEO-478/482): BSC's own per-card
  * answers, uploaded before the Sync, so no fetch here asks BSC for a card one by
@@ -463,30 +470,26 @@ test(
     // (only the pick row's accessible name speaks "born").
     await readBackDecision(page, new RegExp(`^Linked to ${MORGAN}, b\\. 1943`), { resume: true });
 
-    // The St. Louis Browns: LINKED to the catalogue's row of that exact name
-    // (the 1902-1953 era), from the team step. The remember-box is unticked so
-    // no alias is written, and the decision line carries no "remembered as".
-    await skipUntilRow(page, BROWNS);
-    await expect(wizard.getByRole("heading", { level: 3, name: `New Team: ${BROWNS}` })).toBeVisible();
-    const remember = wizard.getByRole("checkbox", { name: `Remember “${BROWNS}” as a name for this team` });
-    await remember.uncheck();
-    await expect(remember).not.toBeChecked();
-    await wizard.getByRole("combobox", { name: "Search all teams" }).click();
-    await page.getByRole("option", { name: /same name . [A-Z]+ . 1902.1953/ }).click();
-
-    // The other historic clubs and every other name are skipped; nothing else is minted.
-    await skipEverythingLeft(page);
+    // NEO-490 (rule 2b): the three historic clubs (the Senators, the Athletics and the Browns) are no
+    // longer asked about. Each club's era is read off the stints of the player on the card (Walter
+    // Johnson, Jimmie Foxx, George Sisler), so the wizard LINKS each to the catalogue's row for that
+    // era and says why on its Decided line; no team step, no alias, no "remembered as" tail. Morgan's
+    // re-link above was the last name answered, so the walk goes straight to the Save step.
     await advanceToSave(page);
-    // Read the link back where a user reads it: the Save step's Decided list,
-    // opened first (this batch had names to answer, so the list starts closed
-    // past five rows). A FULL match: no "remembered as" tail.
+    // Read the links back where a user reads them: the Save step's Decided list, opened first (the
+    // list starts closed past five rows). A FULL match: no "remembered as" tail.
     const savedDecided = await openDecidedList(page);
-    await expect(
-      savedDecided
-        .getByRole("listitem")
-        .filter({ has: page.getByText(BROWNS, { exact: true }) })
-        .getByText(`Linked to ${BROWNS}`, { exact: true }),
-    ).toBeVisible();
+    for (const [club, player] of HISTORIC_CLUBS) {
+      await expect(
+        savedDecided
+          .getByRole("listitem")
+          .filter({ has: page.getByText(club, { exact: true }) })
+          .getByText(`Linked to ${club} · ${player} played there`, { exact: true }),
+        `${club} is linked for the operator from ${player}'s stint`,
+      ).toBeVisible();
+    }
+    await expect(wizard.getByRole("heading", { level: 3, name: /^New Team: / })).toHaveCount(0);
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, historic clubs linked from the player's stint" });
     await confirmSaveButton(page).click();
     await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
 
