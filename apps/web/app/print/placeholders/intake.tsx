@@ -431,8 +431,8 @@ export default function CardIntake() {
                 aria-hidden="true"
                 className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-neon-blue"
               />
-              A few of these need a closer look, which takes a couple of minutes
-              the first time. The rest keep coming in below.
+              A few of these need a closer look, which can take a minute the
+              first time. The rest keep coming in below.
             </p>
           )}
 
