@@ -37,3 +37,4 @@
 - [NEO-452 held intake test patterns](reference_neo452_held_intake_test_patterns.md) — realZone switch, two-frame pick, double-layer guards, aria-disabled "false", break-check by inverse replace
 - [RealAddCardsTab harness](reference_realaddcardstab_test_harness.md) — mocked Dropzone, status-role noise, runExtract fetch stub shape
 - [Axe break-check plant](reference_axe_break_check_plant.md) — plant aria-live="bogus" not aria-hidden (RTL skips hidden); hash-guarded restore in shared worktrees
+- [NEO-487 lane/wait test patterns](reference_neo487_bsc_lane_wait_test_patterns.md) — stop-rule/cooldown/wait-edge recipes, ledger chain timing, safe shared-worktree mutation runner

@@ -90,8 +90,10 @@ describe("taking eBay's return off the address", () => {
     setURL("/profile/ebay?code=c1&state=n1");
     takeEbayReturnOffAddress();
     expect(renderApp({ signedIn: false })).toMatchObject({ pathname: "/signin", state: null });
-    // The quoted token: the router's random 8-character `key` can hold "c1" inside it, never as a whole value.
-    expect(JSON.stringify(window.history.state)).not.toContain('"c1"');
+    // Check the entry's own state (`usr`) and address, not the whole history
+    // state: the router's random `key` can contain "c1" by chance.
+    expect(JSON.stringify(window.history.state?.usr ?? null)).not.toContain("c1");
+    expect(window.location.href).not.toContain("c1");
   });
 
   it("anything else on the address stays, and existing history state is kept", () => {

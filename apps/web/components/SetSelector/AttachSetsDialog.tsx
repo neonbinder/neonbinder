@@ -5,6 +5,8 @@ import { useAction, useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { Input } from "../primitives/Input";
 import {
@@ -214,6 +216,9 @@ export default function AttachSetsDialog({
   const [bscPaused, setBscPaused] = useState(false);
   const [slPaused, setSlPaused] = useState(false);
   const [bscLoading, setBscLoading] = useState(false);
+  // PR 451 (NEO-487) — the BSC pane's current fetch's run key for the wait
+  // line; a fresh one per rung change.
+  const [bscWaitKey, setBscWaitKey] = useState<string | null>(null);
   const [slLoading, setSlLoading] = useState(false);
   // Per-pane, not shared: one marketplace being down must not blank the other,
   // and the operator needs to know WHICH one failed.
@@ -334,10 +339,13 @@ export default function AttachSetsDialog({
     setBscError(null);
     setBscSkipNote(null);
     setBscPaused(false);
+    const waitKey = mintWaitKey();
+    setBscWaitKey(waitKey);
     (async () => {
       try {
         const result = await fetchBscAttachOptions({
           selectorOptionId,
+          waitKey,
           view: bscView,
           ...(bscSetSlug ? { setSlug: bscSetSlug } : {}),
         });
@@ -648,6 +656,14 @@ export default function AttachSetsDialog({
             onSearch={setBscSearch}
             searchAriaLabel="Search BSC sets"
             loading={bscLoading}
+            waiting={
+              <WaitingOnMarketplaceRun
+                runKey={bscWaitKey}
+                active={bscLoading}
+                marketplace="BuySportsCards"
+                className="mb-2"
+              />
+            }
             error={bscError}
             emptyText={bscEmptyText}
             emptyNote={bscSkipNote}
@@ -838,6 +854,7 @@ function Pane({
   emptyNote,
   paused = false,
   isEmpty,
+  waiting,
   children,
 }: {
   /** Which marketplace this pane lists — names the paused sentence. */
@@ -856,6 +873,12 @@ function Pane({
    */
   subtitle?: string;
   breadcrumb?: React.ReactNode;
+  /**
+   * PR 451 (NEO-487) — the pane's "Waiting on BuySportsCards…" line, under
+   * the header and above the search box. Rendered unconditionally (the line
+   * handles its own idle state, taking no height).
+   */
+  waiting?: React.ReactNode;
   /**
    * A standing explanation of the pane's STATE, shown whether or not the list
    * is empty — unlike `emptyNote`, which only speaks when there is nothing to
@@ -916,6 +939,7 @@ function Pane({
           {notice}
         </p>
       )}
+      {waiting}
       {!paused && (
         <Input
           bare

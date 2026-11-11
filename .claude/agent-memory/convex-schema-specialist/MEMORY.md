@@ -26,3 +26,4 @@
 - [Workpool cancel does not stop running work](workpool-cancel-does-not-stop-running-work.md) — cancel only blocks retries; the running attempt's real result or 'canceled' still hits onComplete later; reset-in-place rows need a generation guard (workId or context gen)
 - [Reference-seed tests run under vitest](reference-seed-tests-run-under-vitest.md) — `node --test` on scripts/reference-seed dies at import even on main; use `npx vitest run scripts/reference-seed`
 - [Edit counter allocates write-once versions](edit-counter-allocates-write-once-versions.md) — reserve bumps the cap counter = version; commit first-wins on expectVersion/token; lineage on the row
+- [Live status rows: one writer per row](live-status-rows-one-writer-per-row.md) — hot-loop UI status: row per action invocation, patch by _id, op-keyed, no shared counter, expiry at insert

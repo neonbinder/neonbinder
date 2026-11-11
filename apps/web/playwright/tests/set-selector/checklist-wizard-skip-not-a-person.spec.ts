@@ -1,5 +1,6 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-skip-not-a-person.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { CHECKLISTS } from "../../support/published-checklist";
 import { setBuilderReady } from "../../support/set-builder";
 import {
   advanceToSave,
@@ -29,7 +30,7 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET, checklist: CHECKLISTS.fortWorthFire });
     const wizard = reviewWizard(page);
     // Nothing else touches this set, so there is no sibling batch to resume.
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);

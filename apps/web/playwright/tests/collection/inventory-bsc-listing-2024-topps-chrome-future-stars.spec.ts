@@ -73,9 +73,13 @@
 // steps: "Read Excellent, done"). So the spec walks the run (`followRunToRest`):
 // every wait is the standard 7 s for exactly ONE step to land, never for the
 // whole trip or for several steps at once (GUIDE hard rule 3; Jason,
-// 2026-11-02), then for the set's result line. The only waits above 7 s are the
-// signed-off ceiling on a BSC read (`bscReadCeiling`) and the seed hop's sign-in
-// when the sign-in is saved again (`saveBscSignIn`).
+// 2026-11-02), then for the set's result line. Two waits go past 7 s. A BSC read
+// or double-check keeps the signed-off ceiling (`bscReadCeiling`, support/
+// marketplace-wait.ts). Every other step of the walk (NEO-487) waits 7 s of our
+// own time plus the seconds BSC is visibly holding it ("Waiting on
+// BuySportsCards...": if BSC took n s, the step gets n + 7 s, never a flat
+// bump; `expectAfterMarketplace` records n in the report). The seed hop's
+// sign-in when the sign-in is saved again (`saveBscSignIn`) is the other.
 //
 // Two triggers (NEO-433). A set's sync is set going by the press of the
 // checklist's Sync and by the 15-minute sales poll, and the poll can list a
@@ -177,6 +181,7 @@ import {
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { bscReadCeiling } from "../../support/marketplace-wait";
 import { EDIT_LANDED, EDIT_LANDS, photoViewer } from "../../support/photo-viewer";
 
 /** The Send step's label. */
@@ -220,16 +225,6 @@ const HELD_PHOTOS = ["01-mcfadden-front.jpg", "02-mcfadden-back.jpg"].map((n) =>
   path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", n),
 );
 
-/**
- * A BSC read step's longer budget, a ceiling Jason signed off on 2026-11-05
- * (GUIDE hard rule 3). "Read" and "Double-check" are each one call to BSC's
- * seller sheet, so the step lasts as long as that call. Measured: usually 4-5 s,
- * 6.98 s in the CI run that went red with the step landing just past 7 s, up to
- * 9.6 s elsewhere; our own work in the step is well under a second. Every other
- * step keeps 7 s, "Send changes" included. Void it if a read step gains any work
- * of ours, or holds more than one call.
- */
-const bscReadCeiling = (label: string): number | undefined => (/^(Read|Double-check) /.test(label) ? 15_000 : undefined);
 
 /**
  * NEO-432. On the Collection Checklists tab with the Main binder picked: click
@@ -419,7 +414,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         const zeroing = syncStatus(clean);
         const zeroingRun = syncRun(zeroing.platform, SET_LABEL, BSC);
         cleanupFailure = await walkForCleanup(async () => {
-          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL), bscReadCeiling);
+          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL), bscReadCeiling, BSC);
           await expect(zeroing.row.getByText(/^0 listed/)).toBeVisible();
         });
       }
@@ -832,7 +827,7 @@ test(
     // would be a held-back card.
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
     const listedNoSend = row.getByText("2 listed", { exact: true });
-    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL), bscReadCeiling);
+    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL), bscReadCeiling, BSC);
     // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
     await expect(run.last).toBeVisible();
     await expect(run.gathered()).toBeVisible();
@@ -982,7 +977,7 @@ test(
     // finished row (see "The ledger's steps" above), so that is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
-    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), bscReadCeiling);
+    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), bscReadCeiling, BSC);
     // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
     await expect(takeDown.last).toBeVisible();
     await expect(takeDown.gathered()).toBeVisible();

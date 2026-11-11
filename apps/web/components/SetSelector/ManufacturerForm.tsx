@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { useSelectorSync } from "./useSelectorSync";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 
 export default function ManufacturerForm({
   yearId,
@@ -24,7 +25,7 @@ export default function ManufacturerForm({
   const sportValue = ancestorChain?.find((a: { level: string }) => a.level === "sport")?.value;
   const yearValue = ancestorChain?.find((a: { level: string }) => a.level === "year")?.value;
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (waitKey: string) => {
     if (!sportValue || !yearValue) return undefined;
     return fetchAggregatedOptions({
       level: "manufacturer",
@@ -33,10 +34,11 @@ export default function ManufacturerForm({
         sport: sportValue,
         year: yearValue,
       },
+      waitKey,
     });
   }, [fetchAggregatedOptions, sportValue, yearValue, yearId]);
 
-  const { loading, hasError, message, retry, start } = useSelectorSync({
+  const { loading, hasError, message, retry, start, waitKey } = useSelectorSync({
     level: "manufacturer",
     onDone,
     run,
@@ -70,6 +72,15 @@ export default function ManufacturerForm({
           from all connected platforms...
         </p>
       )}
+
+      {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while this
+          sync is held up by a BSC call. Always mounted; idle it is empty. */}
+      <WaitingOnMarketplaceRun
+        runKey={waitKey}
+        active={loading}
+        marketplace="BuySportsCards"
+        className="mb-4"
+      />
 
       {message &&
         (hasError ? (

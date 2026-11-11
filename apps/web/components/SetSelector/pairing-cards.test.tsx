@@ -111,6 +111,25 @@ describe("candidatesToPairingCards", () => {
     expect("playersConflict" in card).toBe(false);
   });
 
+  test("carries a checklist disagreement through: it is not a cross-marketplace conflict (NEO-478)", () => {
+    const checklistConflict = {
+      players: { marketplace: ["Rhett Lowder"], checklist: ["Rhett Loder"] },
+      teams: { marketplace: ["Reds"], checklist: ["Cincinnati Reds"] },
+    };
+    const [card] = candidatesToPairingCards([
+      { ...FULL, bucket: "bscOnly", checklistConflict, teamLookup: "checklist" },
+    ]);
+    expect(card.checklistConflict).toEqual(checklistConflict);
+    expect(card.teamLookup).toBe("checklist");
+    // Marketplace conflicts are still dropped beside it.
+    expect(card.playersConflict).toBeUndefined();
+  });
+
+  test("a candidate with no checklist disagreement gets no key at all", () => {
+    const [card] = candidatesToPairingCards([{ ...FULL, bucket: "bscOnly" }]);
+    expect("checklistConflict" in card).toBe(false);
+  });
+
   test("everything else is identical to the dialog's own mapping", () => {
     const candidate: ReadyCandidate = { ...FULL, bucket: "slOnly" };
     const viaDialog = candidateToPairingCard(candidate);

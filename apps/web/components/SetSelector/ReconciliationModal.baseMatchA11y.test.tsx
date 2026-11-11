@@ -105,6 +105,14 @@ function fake(opts: FakeOptions = {}) {
           if (mode === "auto") resolve(answerFor(call));
         }),
     ),
+    // PR 451 (NEO-487) — the dialog's "Waiting on BuySportsCards…" line
+    // subscribes to `marketplaceWaits.forRun` while a BSC call is in flight.
+    // No wait is ever open here: the watch never has a result.
+    watchQuery: vi.fn(() => ({
+      onUpdate: () => () => undefined,
+      localQueryResult: () => undefined,
+      journal: () => undefined,
+    })),
   };
   return {
     client,
@@ -192,13 +200,16 @@ const readyCount = (n: number) => screen.queryByText(new RegExp(`Ready \\(${n}\\
 /**
  * The dialog's live line for the check: a screen-reader-only `role="status"`.
  * dnd-kit's own announcer and the footer's save notice are other regions the
- * dialog always had; the first test below pins that they are the only others.
+ * dialog always had, and the shared "Waiting on BuySportsCards…" line (PR 451,
+ * `data-marketplace-wait`) speaks for a BSC call held up, not for the check;
+ * the first test below pins that they are the only others.
  */
 const allStatuses = () => screen.queryAllByRole("status");
 const isDndRegion = (el: HTMLElement) => el.id.startsWith("DndLiveRegion");
 const isSaveNotice = (el: HTMLElement) => el.className.includes("text-neon-pink-text");
+const isWaitLine = (el: HTMLElement) => el.hasAttribute("data-marketplace-wait");
 const ourStatuses = () =>
-  allStatuses().filter((el) => !isDndRegion(el) && !isSaveNotice(el));
+  allStatuses().filter((el) => !isDndRegion(el) && !isSaveNotice(el) && !isWaitLine(el));
 
 const SL_A = item("Sl A", "sl-a");
 const SL_B = item("Sl B", "sl-b");
@@ -380,7 +391,13 @@ describe("ReconciliationModal Base check — one live line", () => {
     expect(lines[0].textContent).toBe("");
     // Everything else with a status role was there before the check.
     const others = allStatuses().filter((el) => !lines.includes(el));
-    expect(others.every((el) => isDndRegion(el) || isSaveNotice(el))).toBe(true);
+    expect(others.every((el) => isDndRegion(el) || isSaveNotice(el) || isWaitLine(el))).toBe(
+      true,
+    );
+    // PR 451 — one wait line for the whole dialog, idle (empty) at mount.
+    const waits = others.filter(isWaitLine);
+    expect(waits).toHaveLength(1);
+    expect(waits[0].textContent).toBe("");
   });
 
   test("a dialog that was not asked to check has no live line of ours", async () => {

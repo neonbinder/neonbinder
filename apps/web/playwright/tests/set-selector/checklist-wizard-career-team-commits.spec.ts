@@ -1,5 +1,6 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-career-team-commits.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { CHECKLISTS, checklistFacts, expectTeamsFromChecklist } from "../../support/published-checklist";
 import { setBuilderReady } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
 import { recordedNoMatchName } from "../../support/recorded-names";
@@ -34,7 +35,7 @@ test(
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET, checklist: CHECKLISTS.memphisRiverKings });
     const wizard = reviewWizard(page);
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
     // readyToCreate: this spec creates the player, so the walk also passes any
@@ -91,6 +92,8 @@ test(
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
+    // The result line stays on screen after the save too.
+    await expectTeamsFromChecklist(page, checklistFacts(CHECKLISTS.memphisRiverKings));
 
     // The staged team is now a real row in Team Management.
     await page.goto("/admin/teams");
