@@ -767,6 +767,14 @@ export const seedBscReloginClock = {
 type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: string };
 
 /**
+ * NEO-489: the reason a listing-on BSC seed reports when its listing save
+ * left the row dormant on a seller conflict (another NB owner already lists
+ * from the same BSC seller account). Carries no id.
+ */
+export const SEED_BSC_SELLER_CONFLICT_REASON =
+  "BuySportsCards listing not started (sellerConflict): this seller account already lists from another NeonBinder account.";
+
+/**
  * NEO-482 — a listing-on BuySportsCards seed must leave the caller's BSC
  * seller id saved, or report why not.
  *
@@ -806,6 +814,12 @@ type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: s
  *   printing the reason. Either way the run is red.
  * - a login that fails (`success: false` or a throw) stops at once, with that
  *   login's message as the reason.
+ * - NEO-489: every listing save above runs with the id saved, so
+ *   `listingSync.setUpListing` checks one NB owner per seller account and can
+ *   leave the row dormant on `sellerConflict`. After each save the row is
+ *   read (`listingSync.listingSettings`); a conflict reports stored false
+ *   with {@link SEED_BSC_SELLER_CONFLICT_REASON}, so the seed hop names it
+ *   instead of a later step missing its "Listing your boxes" line.
  *
  * Logs one line per sign-in: `{msg: "seed_bsc_relogin", attempt, idSaved,
  * elapsedMs, waitedMs}` (attempt 1 is the first sign-in; `waitedMs` is the
@@ -842,6 +856,13 @@ async function seedBscWithSellerId(
       return { success: false, message: error instanceof Error ? error.message : String(error) };
     }
   };
+  /** After a listing save: stored, unless the save left the row on a seller conflict. */
+  const listingSaved = async (): Promise<SeededSite> => {
+    const settings = await ctx.runQuery(api.listingSync.listingSettings, {});
+    return settings.bsc.sellerConflict
+      ? { site, stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON }
+      : { site, stored: true };
+  };
 
   if (await sellerIdSaved()) {
     if (args.alreadyPresent) {
@@ -852,10 +873,10 @@ async function seedBscWithSellerId(
         needsReauth: false,
         listing: "save",
       });
-      return { site, stored: true };
+      return await listingSaved();
     }
     const stored = await store(true);
-    return stored.success ? { site, stored: true } : { site, stored: false, reason: stored.message };
+    return stored.success ? await listingSaved() : { site, stored: false, reason: stored.message };
   }
 
   let attempt = 0;
@@ -879,7 +900,7 @@ async function seedBscWithSellerId(
         needsReauth: false,
         listing: "save",
       });
-      return { site, stored: true };
+      return await listingSaved();
     }
     const stalled = {
       site,

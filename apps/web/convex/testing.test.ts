@@ -11,7 +11,7 @@ import schema from "./schema";
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { __resetContractCache } from "./credentials";
-import { SEED_BSC_RELOGIN_SPACING_MS, seedBscReloginClock } from "./testing";
+import { SEED_BSC_RELOGIN_SPACING_MS, SEED_BSC_SELLER_CONFLICT_REASON, seedBscReloginClock } from "./testing";
 import { insertTestCard } from "../lib/testing/card-row";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -1421,6 +1421,67 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     expect(row.listingStartedAt).toBeUndefined();
     expect(await listingWalks(t)).toEqual([]);
     expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+    await drainScheduled(t);
+  });
+
+  /** Another NB owner who already lists from the BSC seller account `accountId`. */
+  const otherOwnerListsFrom = (t: ReturnType<typeof convexTest>, accountId: string) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: USER_B,
+        platform: "bsc",
+        platformAccountId: accountId,
+        listingStartedAt: Date.now() - 60_000,
+        lastUpdated: Date.now() - 60_000,
+      });
+    });
+
+  /** USER_A's BSC listing row. */
+  const ownBscRow = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", USER_A).eq("platform", "bsc"))
+        .first(),
+    );
+
+  test("NEO-489: id missing, the listing save meets a seller conflict: stored false naming it, no listing run", async () => {
+    const t = convexTest(schema, modules);
+    await otherOwnerListsFrom(t, SELLER);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([
+      { site: "buysportscards", stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON },
+    ]);
+    expect(SEED_BSC_SELLER_CONFLICT_REASON).toContain("sellerConflict");
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    const row = await ownBscRow(t);
+    expect(row?.dormant).toBe("sellerConflict");
+    expect(row?.listingStartedAt).toBeUndefined();
+    expect(await listingWalks(t)).toEqual([]);
+    await drainScheduled(t);
+  });
+
+  test.each([
+    ["flag-only", SIGNED_IN, 0],
+    ["store", 404 as const, 1],
+  ])("NEO-489: id already saved (%s branch), a seller conflict: stored false naming it, no listing run", async (_name, metadata, logins) => {
+    const t = convexTest(schema, modules);
+    await preseedSellerId(t, "seller-kept");
+    await otherOwnerListsFrom(t, "seller-kept");
+    const { state, fetchFn } = loginStub({ metadata, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([
+      { site: "buysportscards", stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON },
+    ]);
+
+    expect(state.logins).toBe(logins);
+    expect((await ownBscRow(t))?.dormant).toBe("sellerConflict");
+    expect(await listingWalks(t)).toEqual([]);
     await drainScheduled(t);
   });
 
