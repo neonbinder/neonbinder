@@ -6,17 +6,34 @@
  * this returns, and the same rows go to `fetchCardChecklist`'s
  * `publishedChecklist`, which re-checks every limit on the server.
  *
- * Two shapes are read:
+ * Three shapes are read:
  *
  *  - **CSV / TSV with a header row.** Columns are found by header name (card
- *    number, player, team, each with several spellings). A cell naming
- *    several players or teams is split on "/" or ";".
+ *    number, player, team, and the subset a row belongs to, each with several
+ *    spellings). A cell naming several players or teams is split on "/" or
+ *    ";"; players also on a spaced "&" or "and".
+ *  - **CSV / TSV without a header.** When most lines carry two or more tabs
+ *    (or commas) after a one-word first cell, the columns are read by
+ *    position: number, player, team.
  *  - **The published line format** a checklist page prints:
  *      `60 Rhett Lowder - Cincinnati Reds (Future Stars)`
  *      `11 Alonso/Schwarber/Soto (League Leaders)`
  *      `34 Team Card - Kansas City Royals`
- *    The number leads, then the players, then " - " and the team. RC
- *    markers and bracketed notes are dropped.
+ *      `1 Shohei Ohtani, Los Angeles Dodgers`
+ *      `1 Mike Trout ..... Los Angeles Angels`
+ *    The number leads, then the players, then the team after the last spaced
+ *    dash, a run of three or more dots, or an unspaced em/en dash between
+ *    words. With none of those, a line of exactly two ", " parts (a "Jr." /
+ *    "Sr." / "III" suffix stays with its name) is player, team; three or
+ *    more is a list of players with no team. A trailing " - SP" style
+ *    segment and a bracketed note ("(League Leaders)") are notes, never the
+ *    team.
+ *
+ * Hobby markers (RC, SP, SSP, VAR, HOF, AU, 1st, print runs "/99" and
+ * "#/99") and bracketed notes are dropped from players and teams; "®" and
+ * "™" from both. A subject that is not a person ("Checklist 1-100", "Royals
+ * Team Card", "Mets TC", "Team Leaders") keeps the row's number but names no
+ * player, so it never fills one.
  *
  * Every non-blank line that does not give a row is listed in `skipped` with
  * the reason, never dropped silently. A card number is NOT treated as unique
@@ -32,6 +49,13 @@ export type PublishedChecklistRow = {
   number: string;
   players: string[];
   teams: string[];
+  /**
+   * The subset ("card set", "set", "subset" or "insert" column) the row
+   * belongs to, when the file has such a column and the cell is not blank.
+   * Never sent to the server as data: `filterRowsBySubsets` chooses rows by
+   * it, and the fetch ignores it.
+   */
+  subset?: string;
 };
 
 export type SkippedLine = {
@@ -45,6 +69,12 @@ export type PublishedChecklistParse = {
   rows: PublishedChecklistRow[];
   skipped: SkippedLine[];
   format: "lines" | "csv" | "tsv";
+  /**
+   * Present only when the file's header has a subset column: the distinct
+   * non-blank subsets of the kept rows, in file order. The dialog lets the
+   * operator pick which belong to this set (`filterRowsBySubsets`).
+   */
+  subsets?: string[];
   /**
    * The text was over `PUBLISHED_CHECKLIST_MAX_TEXT` and was not read at all:
    * `rows` and `skipped` are empty. The dialog says so instead of a preview.
@@ -69,8 +99,10 @@ export const PUBLISHED_CHECKLIST_MAX_LINE = 2000;
  */
 export const PUBLISHED_CHECKLIST_MAX_TEXT = 2 * 1024 * 1024;
 
+type Column = "number" | "players" | "teams" | "subset";
+
 /** The words a header cell may use for each column, compared folded. */
-const HEADER_SPELLINGS: Record<"number" | "players" | "teams", readonly string[]> = {
+const HEADER_SPELLINGS: Record<Column, readonly string[]> = {
   number: [
     "#",
     "no",
@@ -100,6 +132,8 @@ const HEADER_SPELLINGS: Record<"number" | "players" | "teams", readonly string[]
     "subject",
     "athlete",
     "athletes",
+    "description",
+    "card description",
   ],
   teams: [
     "team",
@@ -110,6 +144,16 @@ const HEADER_SPELLINGS: Record<"number" | "players" | "teams", readonly string[]
     "team_name",
     "club",
     "franchise",
+  ],
+  subset: [
+    "card set",
+    "set",
+    "set name",
+    "subset",
+    "sub set",
+    "subset name",
+    "insert",
+    "insert name",
   ],
 };
 
@@ -122,9 +166,9 @@ function foldHeader(cell: string): string {
     .replace(/\s+/g, " ");
 }
 
-function columnOf(header: string): "number" | "players" | "teams" | null {
+function columnOf(header: string): Column | null {
   const folded = foldHeader(header);
-  for (const key of ["number", "players", "teams"] as const) {
+  for (const key of ["number", "players", "teams", "subset"] as const) {
     if (HEADER_SPELLINGS[key].includes(folded)) return key;
   }
   return null;
@@ -162,11 +206,21 @@ export function splitDelimited(line: string, delimiter: "," | "\t"): string[] {
   return cells.map((c) => c.trim());
 }
 
-/** "Alonso / Schwarber; Soto" → ["Alonso", "Schwarber", "Soto"]. */
-function splitNames(cell: string): string[] {
+/**
+ * "Alonso / Schwarber; Soto" → ["Alonso", "Schwarber", "Soto"]. With
+ * `andToo` (players only), a spaced "&" or "and" splits as well; "Anderson"
+ * stays whole because the word must stand alone.
+ */
+function splitNames(cell: string, andToo = false): string[] {
   return cell
-    .split(/[/;]/)
-    .map((name) => name.replace(/\s+/g, " ").trim())
+    .split(andToo ? / & | and |[/;]/ : /[/;]/)
+    .map((name) =>
+      name
+        .replace(/\s+/g, " ")
+        // A comma left at either end by a dropped marker ("Trout, RC").
+        .replace(/^[\s,]+|[\s,]+$/g, "")
+        .trim(),
+    )
     .filter((name) => name.length > 0);
 }
 
@@ -182,32 +236,90 @@ function dropBracketed(text: string): string {
   return out;
 }
 
-/** "RC", "(RC)", "RC," as a whole word go; a name that merely contains "rc" stays. */
-function dropRookieMarkers(text: string): string {
-  return text.replace(/(^|[\s,/;])RC(?=$|[\s,/;])/g, "$1");
+/**
+ * Hobby markers as whole tokens go: RC, SP, SSP, VAR, HOF, AU, 1st, and the
+ * print runs "/99" and "#/99". A name that merely contains the letters
+ * ("Marcus Arcos", "Austin", "Spencer") stays. The letter markers are matched
+ * in capitals only, as checklists print them.
+ */
+function dropMarkers(text: string): string {
+  return text
+    .replace(/(^|[\s,;])#?\/\d+(?=$|[\s,;/])/g, "$1")
+    .replace(/(^|[\s,/;])(?:RC|SP|SSP|VAR|HOF|AU|1[sS][tT])(?=$|[\s,/;])/g, "$1");
+}
+
+/** "®" and "™" are never part of a name. */
+function dropTrademarks(text: string): string {
+  return text.replace(/[®™]/g, "");
+}
+
+/** A cell or line part as a name list reads it: notes, markers and ®/™ gone. */
+function cleanNamePart(text: string): string {
+  return dropTrademarks(dropMarkers(dropBracketed(text)));
 }
 
 /** Player names that are the card's subject, not a person. */
 const NOT_A_PERSON = new Set(["team card", "checklist", "team checklist", "header card"]);
+/**
+ * Subjects that are not a person by their shape: "Checklist 1-100", "Kansas
+ * City Royals Team", "Royals Team Card", "Mets TC", "Team Leaders", "AL
+ * Team Leaders".
+ */
+const NOT_A_PERSON_SHAPES: readonly RegExp[] = [
+  /^checklist\b/i,
+  /\bteam$/i,
+  /\bteam card$/i,
+  /\bTC$/,
+  /^team leaders\b/i,
+  /\bteam leaders$/i,
+];
+
+function isNotAPerson(name: string): boolean {
+  const folded = name.replace(/\s+/g, " ").trim().toLowerCase();
+  if (NOT_A_PERSON.has(folded)) return true;
+  const trimmed = name.replace(/\s+/g, " ").trim();
+  return NOT_A_PERSON_SHAPES.some((shape) => shape.test(trimmed));
+}
 
 function playersFrom(cell: string): string[] {
-  return splitNames(dropRookieMarkers(dropBracketed(cell))).filter(
-    (name) => !NOT_A_PERSON.has(name.toLowerCase()),
-  );
+  return splitNames(cleanNamePart(cell), true).filter((name) => !isNotAPerson(name));
 }
 
 function teamsFrom(cell: string): string[] {
-  return splitNames(dropRookieMarkers(dropBracketed(cell)));
+  return splitNames(cleanNamePart(cell));
+}
+
+/** The subject of a player cell or part, for the "not a person" test. */
+function subjectOf(cell: string): string {
+  return splitNames(cleanNamePart(cell)).join(" / ");
 }
 
 /** A card number: one token with at least one digit ("60", "BDC-12", "US1", "T-34"). */
 const NUMBER_TOKEN = /^#?([A-Za-z0-9][A-Za-z0-9.-]*)$/;
+/**
+ * An insert's letter code, capitals on both sides of a hyphen: "RA-MT",
+ * "DA-TJ", "CPA-JH". Capitals only, so a hyphenated name leading a line
+ * ("Jean-Carlos") is never taken for a number.
+ */
+const LETTER_CODE = /^[A-Z]{1,6}(?:-[A-Z]{1,6})+$/;
 
 function cleanNumber(raw: string): string | null {
   const token = numberToken(raw);
-  if (!token || !/\d/.test(token) || !NUMBER_TOKEN.test(token)) return null;
+  if (!token || !NUMBER_TOKEN.test(token)) return null;
+  if (!/\d/.test(token) && !LETTER_CODE.test(token)) return null;
   return token;
 }
+
+/** Said for a card printed with no number ("NNO"): there is nothing to pair by. */
+export const NO_NUMBER_ON_THE_CARD = "No number on the card — we match by number";
+/** Said for a line that counts the set ("200 cards"). */
+export const LOOKS_LIKE_A_COUNT = "Looks like a count, not a card";
+
+function isNno(raw: string): boolean {
+  return numberToken(raw).toUpperCase() === "NNO";
+}
+
+const COUNT_LINE = /^\d+ cards?\.?$/i;
 
 /** The raw number cell or first word, without a leading "#" or a trailing "." / ":". */
 function numberToken(raw: string): string {
@@ -249,7 +361,59 @@ function overLimit(row: PublishedChecklistRow): string | null {
   if (row.teams.some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
     return "A team name is too long";
   }
+  if (row.subset !== undefined && row.subset.length > PUBLISHED_CHECKLIST_MAX_NAME) {
+    return "The set name is too long";
+  }
   return null;
+}
+
+/** A name suffix a ", " may come before without starting the team. */
+const NAME_SUFFIX = /^(?:jr|sr|ii|iii|iv|v)\.?(?=$|[\s,])/i;
+
+/**
+ * The players text and the team text of a line, after its number. Bracketed
+ * notes go first, so a dash or comma inside a note never splits. Separators,
+ * in order: the last spaced dash (a run of 3+ dots and an unspaced em/en dash
+ * between words count as one); else, with the name-suffix parts ("Jr.")
+ * joined back, exactly two ", " parts are player and team, and three or more
+ * are a player list with no team. A part after the first that holds only
+ * markers (" - SP", ", RC") is a note, never the team.
+ */
+function splitPlayerAndTeam(rest: string): { playerPart: string; teamPart: string } {
+  // Whitespace runs collapse to one space first: splitting on
+  // `\s+[-–—]\s+` directly backtracks over every run and is quadratic in
+  // its length (100k spaces took seconds on the main thread).
+  const text = dropBracketed(rest)
+    .replace(/\s+/g, " ")
+    .replace(/ ?(?:\.{3,}|…+) ?/g, " - ")
+    .replace(/(\p{L})[–—](\p{L})/gu, "$1 - $2")
+    .trim();
+  const parts = text
+    .split(/ [-–—] /)
+    .map((part) => part.replace(/^[-–—] ?| ?[-–—]$/g, "").trim())
+    .filter((part, i) => i === 0 || cleanNamePart(part).trim() !== "");
+  if (parts.length > 1) {
+    // The team follows the LAST spaced dash, so a hyphenated name
+    // ("Jean-Carlos", "Ryu Hyun-jin") stays in one piece.
+    return { playerPart: parts.slice(0, -1).join(" - "), teamPart: parts[parts.length - 1] };
+  }
+  // No dash: the ", " parts decide. A suffix part ("Jr.") joins the name
+  // before it; a part after the first holding only markers (", RC") is a note.
+  const commaParts: string[] = [];
+  for (const piece of (parts[0] ?? "").split(", ")) {
+    if (commaParts.length > 0 && NAME_SUFFIX.test(piece)) {
+      commaParts[commaParts.length - 1] += `, ${piece}`;
+    } else if (commaParts.length === 0 || cleanNamePart(piece).trim() !== "") {
+      commaParts.push(piece);
+    }
+  }
+  // Exactly two: player, team ("Shohei Ohtani, Los Angeles Dodgers"). Three
+  // or more is a list of players ("Alonso, Schwarber, Soto") and names no
+  // team: a wrong team would be a claim that holds back the BSC lookup
+  // (wrapper rule 8), so a list is never read as one.
+  if (commaParts.length === 2) return { playerPart: commaParts[0], teamPart: commaParts[1] };
+  if (commaParts.length >= 3) return { playerPart: commaParts.join(" / "), teamPart: "" };
+  return { playerPart: commaParts[0] ?? "", teamPart: "" };
 }
 
 /**
@@ -262,38 +426,67 @@ function parseLine(
 ): PublishedChecklistRow | { reason: string } {
   const match = /^\s*(\S+)\s*(.*)$/.exec(text);
   if (match && readsAsTitle(match[1], setYear)) return { reason: LOOKS_LIKE_A_TITLE };
+  if (match && isNno(match[1])) return { reason: NO_NUMBER_ON_THE_CARD };
   const number = match ? cleanNumber(match[1]) : null;
   if (!match || !number) return { reason: "No card number at the start" };
-  // Whitespace runs collapse to one space first: splitting on
-  // `\s+[-–—]\s+` directly backtracks over every run and is quadratic in
-  // its length (100k spaces took seconds on the main thread).
-  const rest = match[2].replace(/\s+/g, " ");
-  // The team follows the LAST spaced dash, so a hyphenated name
-  // ("Jean-Carlos", "Ryu Hyun-jin") stays in one piece.
-  const parts = rest.split(/ [-–—] /);
-  const playerPart = parts.length > 1 ? parts.slice(0, -1).join(" - ") : rest;
-  const teamPart = parts.length > 1 ? parts[parts.length - 1] : "";
+  const { playerPart, teamPart } = splitPlayerAndTeam(match[2]);
   const players = playersFrom(playerPart);
   const teams = teamsFrom(teamPart);
-  const subject = dropBracketed(playerPart).trim().toLowerCase();
-  if (players.length === 0 && teams.length === 0 && !NOT_A_PERSON.has(subject)) {
+  if (players.length === 0 && teams.length === 0 && !isNotAPerson(subjectOf(playerPart))) {
     return { reason: "No player or team after the number" };
   }
   return { number, players, teams };
 }
 
-function detectDelimited(firstLine: string): {
-  delimiter: "," | "\t";
-  columns: Array<"number" | "players" | "teams" | null>;
-} | null {
+type Delimited = { delimiter: "," | "\t"; columns: Array<Column | null>; header: boolean };
+
+function detectDelimited(firstLine: string): Delimited | null {
   for (const delimiter of ["\t", ","] as const) {
     if (!firstLine.includes(delimiter)) continue;
     const columns = splitDelimited(firstLine, delimiter).map(columnOf);
     if (columns.includes("number") && (columns.includes("players") || columns.includes("teams"))) {
-      return { delimiter, columns };
+      return { delimiter, columns, header: true };
     }
   }
   return null;
+}
+
+/**
+ * No header: when most non-blank lines carry two or more of one delimiter
+ * after a one-word first cell ("1\tMike Trout\tLos Angeles Angels",
+ * `1,Mike Trout,"Los Angeles Angels"`), the columns are number, player,
+ * team. Tabs are tried first. Over-long lines don't count either way.
+ */
+function detectPositional(lines: readonly string[], from: number): Delimited | null {
+  for (const delimiter of ["\t", ","] as const) {
+    let content = 0;
+    let shaped = 0;
+    for (let i = from; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.trim() === "" || line.length > PUBLISHED_CHECKLIST_MAX_LINE) continue;
+      content++;
+      if (!line.includes(delimiter)) continue;
+      const cells = splitDelimited(line, delimiter);
+      if (cells.length >= 3 && /^\S+$/.test(cells[0])) shaped++;
+    }
+    if (content > 0 && shaped * 2 > content) {
+      return { delimiter, columns: ["number", "players", "teams"], header: false };
+    }
+  }
+  return null;
+}
+
+/**
+ * Rows a file with a subset column carries, narrowed to the subsets the
+ * operator chose. A row with no subset (its cell was blank) is kept: nothing
+ * says it belongs elsewhere. Pure; the input is not touched.
+ */
+export function filterRowsBySubsets<T extends { subset?: string }>(
+  rows: readonly T[],
+  chosen: readonly string[],
+): T[] {
+  const keep = new Set(chosen);
+  return rows.filter((row) => row.subset === undefined || keep.has(row.subset));
 }
 
 /** What the caller knows about the set the checklist is for. */
@@ -327,9 +520,9 @@ export function parsePublishedChecklist(
   // An over-long first line is not a header; it is skipped below like any
   // other over-long line.
   const header =
-    lines[firstIndex].length > PUBLISHED_CHECKLIST_MAX_LINE
+    (lines[firstIndex].length > PUBLISHED_CHECKLIST_MAX_LINE
       ? null
-      : detectDelimited(lines[firstIndex]);
+      : detectDelimited(lines[firstIndex])) ?? detectPositional(lines, firstIndex);
   const format: PublishedChecklistParse["format"] = header
     ? header.delimiter === "\t"
       ? "tsv"
@@ -351,7 +544,7 @@ export function parsePublishedChecklist(
     }
   };
 
-  for (let i = firstIndex + (header ? 1 : 0); i < lines.length; i++) {
+  for (let i = firstIndex + (header?.header ? 1 : 0); i < lines.length; i++) {
     const raw = lines[i];
     if (raw.trim() === "") continue;
     if (raw.length > PUBLISHED_CHECKLIST_MAX_LINE) {
@@ -363,15 +556,23 @@ export function parsePublishedChecklist(
       });
       continue;
     }
-    if (!header) {
+    if (COUNT_LINE.test(raw.trim())) {
+      skipped.push({ line: i + 1, text: raw, reason: LOOKS_LIKE_A_COUNT });
+      continue;
+    }
+    const cells = header ? splitDelimited(raw, header.delimiter) : [];
+    // Without a header, a line that has no second cell is read as a line
+    // (a title, or a card written the published way).
+    if (!header || (!header.header && cells.length < 2)) {
       const parsed = parseLine(raw, setYear);
       if ("reason" in parsed) skipped.push({ line: i + 1, text: raw, reason: parsed.reason });
       else keep(i, raw, parsed);
       continue;
     }
-    const cells = splitDelimited(raw, header.delimiter);
     let number: string | null = null;
     let numberCell = "";
+    let subset = "";
+    let notAPerson = false;
     const players: string[] = [];
     const teams: string[] = [];
     header.columns.forEach((column, c) => {
@@ -381,12 +582,19 @@ export function parsePublishedChecklist(
         number = cleanNumber(cell);
       } else if (column === "players") {
         players.push(...playersFrom(cell));
+        if (cell.trim() !== "" && isNotAPerson(subjectOf(cell))) notAPerson = true;
       } else if (column === "teams") {
         teams.push(...teamsFrom(cell));
+      } else if (column === "subset" && subset === "") {
+        subset = cell.replace(/\s+/g, " ").trim();
       }
     });
     if (numberCell !== "" && readsAsTitle(numberCell, setYear)) {
       skipped.push({ line: i + 1, text: raw, reason: LOOKS_LIKE_A_TITLE });
+      continue;
+    }
+    if (numberCell !== "" && isNno(numberCell)) {
+      skipped.push({ line: i + 1, text: raw, reason: NO_NUMBER_ON_THE_CARD });
       continue;
     }
     if (!number) {
@@ -397,11 +605,15 @@ export function parsePublishedChecklist(
       });
       continue;
     }
-    if (players.length === 0 && teams.length === 0) {
+    if (players.length === 0 && teams.length === 0 && !notAPerson) {
       skipped.push({ line: i + 1, text: raw, reason: "No player or team on this line" });
       continue;
     }
-    keep(i, raw, { number, players, teams });
+    keep(i, raw, { number, players, teams, ...(subset ? { subset } : {}) });
+  }
+  if (header?.columns.includes("subset")) {
+    const subsets = [...new Set(rows.flatMap((r) => (r.subset === undefined ? [] : [r.subset])))];
+    return { rows, skipped, format, subsets };
   }
   return { rows, skipped, format };
 }

@@ -9,12 +9,16 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import ChecklistConflictStep, {
+  BULK_ANSWER_LABEL,
   CHECKLIST_NEXT_BLOCKED,
   CHECKLIST_STEP_HEADING,
+  KEEP_MARKETPLACE_ALL_LABEL,
   KEEP_MARKETPLACE_LABEL,
+  USE_CHECKLIST_ALL_LABEL,
   USE_CHECKLIST_LABEL,
   checklistPickedText,
   checklistStepLead,
+  differingRuns,
   disagreementLabel,
   type ChecklistConflictRow,
 } from "./ChecklistConflictStep";
@@ -288,6 +292,145 @@ describe("ChecklistConflictStep", () => {
     const ref = React.createRef<HTMLButtonElement>();
     renderStep({ choices: { 2: "checklist" }, firstOpenRef: ref });
     expect(ref.current).toBe(keep("61"));
+  });
+
+  it("heads each card with its number alone, never one side's name", () => {
+    renderStep();
+    const heading = group("60").querySelector("p")!;
+    expect(heading.textContent).toContain("#60");
+    expect(heading.textContent).not.toContain("Rhett Lowder");
+    // The group's name is unchanged.
+    expect(group("60").getAttribute("aria-label")).toBe("Disagreement on #60");
+  });
+
+  it("labels one player 'Player' and several 'Players', like Team / Teams", () => {
+    render(
+      <ChecklistConflictStep
+        rows={[
+          {
+            index: 0,
+            cardNumber: "11",
+            cardName: "League Leaders",
+            conflict: {
+              players: { marketplace: ["Alonso"], checklist: ["Alonso", "Schwarber"] },
+            },
+          },
+        ]}
+        choices={{}}
+        onChoose={vi.fn()}
+        headingId="h"
+        hintId="hint"
+      />,
+    );
+    const terms = Array.from(group("11").querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(terms).toEqual(["Player", "Players"]);
+  });
+
+  it("marks the characters that differ on both sides, with an underline as well as a tint", () => {
+    render(
+      <ChecklistConflictStep
+        rows={[
+          {
+            index: 0,
+            cardNumber: "2",
+            cardName: "Trevor Burgess",
+            conflict: { players: { marketplace: ["Trevor Burgess"], checklist: ["Trevor Bugress"] } },
+          },
+        ]}
+        choices={{}}
+        onChoose={vi.fn()}
+        headingId="h"
+        hintId="hint"
+      />,
+    );
+    const marks = Array.from(group("2").querySelectorAll("[data-name-differs]"));
+    expect(marks.map((m) => m.textContent)).toEqual(["r", "r"]);
+    for (const mark of marks) expect(mark.className).toContain("underline");
+    // Each name still reads whole.
+    const dds = Array.from(group("2").querySelectorAll("dd")).map((dd) => dd.textContent);
+    expect(dds).toEqual(["Trevor Burgess", "Trevor Bugress"]);
+  });
+
+  it("differingRuns marks only what the other name lacks, and leaves unrelated names plain", () => {
+    const { a, b } = differingRuns("Trevor Burgess", "Trevor Bugress");
+    expect(a.map((r) => r.text).join("")).toBe("Trevor Burgess");
+    expect(b.map((r) => r.text).join("")).toBe("Trevor Bugress");
+    expect(a.filter((r) => r.differs).map((r) => r.text)).toEqual(["r"]);
+    expect(b.filter((r) => r.differs).map((r) => r.text)).toEqual(["r"]);
+    expect(differingRuns("Rhett Lowder", "Rhett Loder").a.filter((r) => r.differs)).toEqual([
+      { text: "w", differs: true },
+    ]);
+    expect(differingRuns("Rhett Lowder", "Rhett Loder").b).toEqual([
+      { text: "Rhett Loder", differs: false },
+    ]);
+    // Different names, not a misread: no marks.
+    expect(differingRuns("Mike Trout", "Shohei Ohtani").a).toEqual([
+      { text: "Mike Trout", differs: false },
+    ]);
+    expect(differingRuns("Reds", "Cincinnati Reds").b).toEqual([
+      { text: "Cincinnati Reds", differs: false },
+    ]);
+    expect(differingRuns("Same", "Same").a).toEqual([{ text: "Same", differs: false }]);
+  });
+
+  it("marks the picked column with the selection edge and a neutral tint, not a ring", () => {
+    renderStep({ choices: { 2: "checklist" } });
+    const column = use("60").closest("div.flex-col")!;
+    expect(column.className).toContain("shadow-[inset_4px_0_0_var(--color-selection)]");
+    expect(column.className).toContain("bg-list-hover-raised");
+    expect(column.className).not.toContain("inset_0_0_0_2px");
+    const other = keep("60").closest("div.flex-col")!;
+    expect(other.className).not.toContain("--color-selection");
+  });
+
+  describe("bulk answers (S5)", () => {
+    const bulk = () => screen.getByRole("group", { name: BULK_ANSWER_LABEL });
+
+    it("answers every card with one press, then each card can be changed on its own", () => {
+      render(<Hosted />);
+      fireEvent.click(within(bulk()).getByRole("button", { name: KEEP_MARKETPLACE_ALL_LABEL }));
+      expect(keep("60").getAttribute("aria-checked")).toBe("true");
+      expect(keep("61").getAttribute("aria-checked")).toBe("true");
+      expect(hint().textContent).toBe("Picked 2 of 2 cards. All answered — hit Next!");
+      fireEvent.click(use("61"));
+      expect(use("61").getAttribute("aria-checked")).toBe("true");
+      expect(keep("60").getAttribute("aria-checked")).toBe("true");
+      fireEvent.click(within(bulk()).getByRole("button", { name: USE_CHECKLIST_ALL_LABEL }));
+      expect(use("60").getAttribute("aria-checked")).toBe("true");
+      expect(use("61").getAttribute("aria-checked")).toBe("true");
+    });
+
+    it("is reachable by keyboard: plain buttons in the Tab order, outside the cards", () => {
+      renderStep();
+      const keepAll = within(bulk()).getByRole("button", { name: KEEP_MARKETPLACE_ALL_LABEL });
+      const useAll = within(bulk()).getByRole("button", { name: USE_CHECKLIST_ALL_LABEL });
+      expect(keepAll.tabIndex).toBe(0);
+      expect(useAll.tabIndex).toBe(0);
+      for (const item of screen.getAllByRole("listitem")) {
+        expect(item.contains(keepAll)).toBe(false);
+      }
+      // The radios' names stay exactly their labels.
+      expect(KEEP_MARKETPLACE_ALL_LABEL).toBe("Keep the marketplace's on all");
+      expect(USE_CHECKLIST_ALL_LABEL).toBe("Use the checklist's on all");
+    });
+
+    it("reports only the cards whose answer changes", () => {
+      const { onChoose } = renderStep({ choices: { 2: "checklist" } });
+      fireEvent.click(within(bulk()).getByRole("button", { name: USE_CHECKLIST_ALL_LABEL }));
+      expect(onChoose).toHaveBeenCalledTimes(1);
+      expect(onChoose).toHaveBeenCalledWith(5, "checklist");
+    });
+
+    it("a disabled step answers nothing in bulk", () => {
+      const { onChoose } = renderStep({ disabled: true });
+      fireEvent.click(within(bulk()).getByRole("button", { name: KEEP_MARKETPLACE_ALL_LABEL }));
+      expect(onChoose).not.toHaveBeenCalled();
+    });
+
+    it("is not offered for a single card", () => {
+      renderStep({ rows: [rows[0]] });
+      expect(screen.queryByRole("group", { name: BULK_ANSWER_LABEL })).toBeNull();
+    });
   });
 
   it("the lead says one card or N cards", () => {

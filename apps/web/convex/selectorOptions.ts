@@ -14245,6 +14245,10 @@ const publishedChecklistValidator = v.object({
       number: v.string(),
       players: v.array(v.string()),
       teams: v.array(v.string()),
+      // The parser's subset label (a file's "set" / "insert" column). The
+      // client chooses rows by it; the fetch never reads it and drops it in
+      // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
+      subset: v.optional(v.string()),
     }),
   ),
 });
@@ -14506,7 +14510,7 @@ export const fetchCardChecklist = action({
      * client (`lib/checklists/parse-published-checklist.ts`) and re-checked
      * here (`checkPublishedChecklist`). Cards it matches by number (exactly
      * one on both sides, rule 7) take their teams from it and are not looked
-     * up on BSC; the rest are. Never stored.
+     * up on BSC when their row names a team; the rest are. Never stored.
      */
     publishedChecklist: v.optional(publishedChecklistValidator),
     /**
@@ -15537,11 +15541,12 @@ export const fetchCardChecklist = action({
       // 3c. PR 451 (NEO-478) — the operator's publisher checklist.
       //
       //     Each card it matches by number (exactly one card and exactly one
-      //     row, rule 7; one letter-prefix-strip fallback) takes its team
-      //     answer from the row: the row's teams, through the same
-      //     whole-name-first resolution BSC's raw value takes, or none when
-      //     the row names none. Those cards are written `ready` with
-      //     `teamLookup: "checklist"` and BSC is never asked about them. A
+      //     row, rule 7; one letter-prefix-strip fallback) whose row names a
+      //     team takes its team answer from the row: the row's teams, through
+      //     the same whole-name-first resolution BSC's raw value takes. Those
+      //     cards are written `ready` with `teamLookup: "checklist"` and BSC
+      //     is never asked about them. A row naming no team is no claim, so
+      //     its card keeps the BSC lookup (players still fill). A
       //     player or team that disagrees with the marketplace becomes
       //     `checklistConflict` for the operator; the card keeps the
       //     marketplace's values. Players fill in where the marketplace has
@@ -15640,7 +15645,12 @@ export const fetchCardChecklist = action({
           // until the operator picks (and the card already has a team, so it
           // needs no lookup either way).
           if (conflict?.teams) continue;
-          if (teams.length > 0) card.teams = teams;
+          // A row that names no team makes no claim about it (wrapper rule
+          // 8): its players still fill or compare above, but the card is not
+          // checklist-answered, is not counted in `checklistTeams`, and keeps
+          // its BSC lookup like an unmatched card.
+          if (teams.length === 0) continue;
+          card.teams = teams;
           card.teamLookup = "checklist";
           checklistAnswered.add(card);
         }
@@ -19098,11 +19108,14 @@ function settleCardTeamAnswer(a: {
     };
   }
   if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
-  // PR 451 (NEO-478) — the publisher checklist answered this card at fetch
-  // (it matched by number, exactly one on both sides) and named no team the
-  // card kept. BSC was never asked and is not asked now: the lookup is done,
+  // PR 451 (NEO-478) — the publisher checklist answered this card at fetch:
+  // it matched by number (exactly one on both sides) and its row named a team.
+  // A row naming no team is no claim and never sets "checklist" (B1); that
+  // card kept its BSC lookup. So a card here carries a checklist team that
+  // did not land as an NB team on the row (still a pending name, for
+  // example). BSC was never asked and is not asked now: the lookup is done,
   // its outcome is the checklist's, and no "Listed as:" hint is kept (no
-  // marketplace said anything). The card goes to the operator teamless.
+  // marketplace said anything).
   if (a.teamLookup === "checklist") {
     return {
       fields: { teamCheckDoneAt: a.now, teamCheckOutcome: "checklist" },

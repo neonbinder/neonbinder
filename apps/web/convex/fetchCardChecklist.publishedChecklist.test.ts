@@ -5,7 +5,8 @@
  * What is pinned here (the pairing's own rules are in
  * `lib/checklists/match-published-checklist.test.ts`):
  *  - a card the checklist matched makes ZERO BSC card-listing calls; only the
- *    cards it did not match are looked up (D2);
+ *    cards it did not match are looked up (D2), and the matched cards whose
+ *    row names no team (no claim, wrapper rule 8; B1);
  *  - `checklistTeams` {matched, total}; players fill where the marketplace has
  *    none; player and team disagreements become `checklistConflict` and keep
  *    the marketplace's values (product rules 3 and 8);
@@ -196,7 +197,9 @@ beforeEach(() => {
 });
 
 async function run(
-  publishedChecklist?: { rows: { number: string; players: string[]; teams: string[] }[] },
+  publishedChecklist?: {
+    rows: { number: string; players: string[]; teams: string[]; subset?: string }[];
+  },
   extra: { waitKey?: string } = {},
 ) {
   const t = convexTest(schema, modules);
@@ -263,14 +266,54 @@ describe("fetchCardChecklist with a publisher checklist: who gets looked up", ()
     expect(result.checklistTeams).toEqual({ matched: 0, total: 2 });
   });
 
-  test("a row that names no team still answers the card: no lookup, no team", async () => {
+  test("a row that names no team is no claim: the card keeps its BSC lookup and is not counted (B1)", async () => {
     mockState.bscCards = [bsc("1", { players: ["A One"] })];
+    mockState.teamNamesResult = {
+      "bsc-1": { rawTeamName: "Boston Red Sox", teamNames: ["Boston Red Sox"] },
+    };
     const { t, result } = await run({ rows: [{ number: "1", players: ["A One"], teams: [] }] });
-    expect(mockState.teamLookupCalls).toEqual([]);
+    expect(mockState.teamLookupCalls).toEqual([["bsc-1"]]);
     const row = (await candidates(t)).get("1");
-    expect(row?.teamLookup).toBe("checklist");
-    expect(row?.teams ?? []).toEqual([]);
-    expect(result.checklistTeams).toEqual({ matched: 1, total: 1 });
+    expect(row?.teamLookup).toBe("answered");
+    expect(row?.teams).toEqual(["Boston Red Sox"]);
+    expect(result.checklistTeams).toEqual({ matched: 0, total: 1 });
+  });
+
+  test("a teamless row still fills the players of a card the marketplace gave none, and the card is looked up (B1)", async () => {
+    mockState.bscCards = [bsc("1", { players: [] }), bsc("2", { players: ["B Two"] })];
+    const { t, result } = await run({
+      rows: [
+        { number: "1", players: ["Juan Soto"], teams: [] },
+        { number: "2", players: ["B Two"], teams: ["New York Mets"] },
+      ],
+    });
+    expect(mockState.teamLookupCalls).toEqual([["bsc-1"]]);
+    const rows = await candidates(t);
+    expect(rows.get("1")?.players).toEqual(["Juan Soto"]);
+    expect(rows.get("1")?.teamLookup).not.toBe("checklist");
+    expect(rows.get("2")).toMatchObject({ teams: ["New York Mets"], teamLookup: "checklist" });
+    expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
+  });
+
+  test("a teamless row still compares players: a disagreement is carried and the card is looked up (B1)", async () => {
+    mockState.bscCards = [bsc("3", { players: ["Pete Alonso"] })];
+    const { t } = await run({ rows: [{ number: "3", players: ["Kyle Schwarber"], teams: [] }] });
+    expect(mockState.teamLookupCalls).toEqual([["bsc-3"]]);
+    expect((await candidates(t)).get("3")?.checklistConflict).toEqual({
+      players: { marketplace: ["Pete Alonso"], checklist: ["Kyle Schwarber"] },
+    });
+  });
+
+  test("a row's subset label is accepted and never read", async () => {
+    mockState.bscCards = [bsc("1", { players: ["A One"] })];
+    const { t, result } = await run({
+      rows: [{ number: "1", players: ["A One"], teams: ["Cincinnati Reds"], subset: "Base" }],
+    });
+    expect(result.success).toBe(true);
+    expect((await candidates(t)).get("1")).toMatchObject({
+      teams: ["Cincinnati Reds"],
+      teamLookup: "checklist",
+    });
   });
 
   test("without a checklist nothing is reported and every teamless card is looked up", async () => {
@@ -296,6 +339,18 @@ describe("fetchCardChecklist with a publisher checklist: fills and disagreements
     const row = (await candidates(t)).get("1");
     expect(row?.players).toEqual(["Soto", "Judge"]);
     expect(row?.checklistConflict).toBeUndefined();
+  });
+
+  test("checklist surnames agree with the marketplace's full names: no conflict, full names kept (S4)", async () => {
+    mockState.bscCards = [
+      bsc("11", { players: ["Pete Alonso", "Kyle Schwarber", "Juan Soto"] }),
+    ];
+    const { t } = await run({
+      rows: [{ number: "11", players: ["Alonso", "Schwarber", "Soto"], teams: ["New York Mets"] }],
+    });
+    const row = (await candidates(t)).get("11");
+    expect(row?.checklistConflict).toBeUndefined();
+    expect(row?.players).toEqual(["Pete Alonso", "Kyle Schwarber", "Juan Soto"]);
   });
 
   test("a player disagreement keeps the marketplace's player and carries both sides", async () => {

@@ -1702,6 +1702,35 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await waitFor(() => expect(document.activeElement).toBe(add));
     });
 
+    it("the chip reopens the dialog on what was pasted; Use replaces the rows and focus comes back to the chip", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      const chip = screen.getByRole("button", { name: "Publisher's checklist: 2 rows" });
+      fireEvent.click(chip);
+      const box = (await screen.findByLabelText("Paste the checklist")) as HTMLTextAreaElement;
+      expect(box.value).toBe(PASTE);
+      expect(screen.getByText("2 rows")).toBeTruthy();
+      await act(async () => {
+        fireEvent.change(box, { target: { value: "1 Solo One - Solo Team" } });
+      });
+      await waitFor(() => expect(screen.getByText("1 row")).toBeTruthy());
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+      });
+      const reopened = screen.getByRole("button", { name: "Publisher's checklist: 1 row" });
+      await waitFor(() => expect(document.activeElement).toBe(reopened));
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist.mock.calls[0][0].publishedChecklist).toEqual({ rows: [ROWS[0]] });
+    });
+
+    it("the chip says how many lines were skipped", async () => {
+      renderChecklist();
+      await addChecklist(`${PASTE}\nBase Set`);
+      expect(
+        screen.getByRole("button", { name: "Publisher's checklist: 2 rows · 1 skipped" }),
+      ).toBeTruthy();
+    });
+
     it("the next sync passes the rows and a valid waitKey to fetchCardChecklist", async () => {
       const { rerender } = renderChecklist();
       await addChecklist();

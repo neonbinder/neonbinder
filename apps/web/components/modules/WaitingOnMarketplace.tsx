@@ -92,7 +92,7 @@ export function WaitingOnMarketplace({
         <span className={`flex items-center gap-2 text-sm text-ink-2 ${className}`}>
           <span
             aria-hidden="true"
-            className="h-2 w-2 shrink-0 rounded-full bg-neon-yellow-text shadow-[0_0_8px_var(--color-neon-yellow)] motion-safe:animate-pulse"
+            className="h-2 w-2 shrink-0 rounded-full bg-neon-yellow-text shadow-[0_0_8px_rgb(255_230_0/var(--glow))] motion-safe:animate-pulse"
           />
           <span>{waitingText(marketplace)}</span>
           <span aria-hidden="true" className="tabular-nums text-ink-3">

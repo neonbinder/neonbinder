@@ -1,4 +1,5 @@
 import { useId, useState, type KeyboardEvent, type Ref } from "react";
+import NeonButton from "../modules/NeonButton";
 import {
   sideText,
   type ChecklistChoice,
@@ -14,20 +15,32 @@ import {
  * silently, so each card is put to the operator with both answers side by
  * side:
  *
+ *   Same answer for every card: [Keep the marketplace's on all] [Use the checklist's on all]
  *   ┌ #60 ─────────────────────────────────────────────────────────┐
- *   │  MARKETPLACE                    │  YOUR CHECKLIST            │
- *   │  Players  Rhett Lowder          │  Players  Rhett Loder      │
+ *   │  Marketplace                    │  Your checklist            │
+ *   │  Player   Rhett Lowder          │  Player   Rhett Loder      │
  *   │  Team     Reds                  │  Team     Cincinnati Reds  │
  *   │  [Keep the marketplace's]       │  [Use the checklist's]     │
  *   └──────────────────────────────────────────────────────────────┘
  *
  * Each column IS its choice: the radio sits under the answer it keeps, and
- * the column the operator picked is lit (border, a tint and a ✓ beside the
+ * the column the operator picked carries the selection mark (a 4px edge in
+ * the selection colour down its left, a neutral tint, and a ✓ beside the
  * radio, so "picked" is never colour alone; the column turned down keeps
  * full strength, so both answers stay readable). Nothing is pre-picked — a
  * default here would be the silent settlement the rule forbids — and the
  * wizard holds Next until every card has an answer. The answer is applied to
  * the card on the client and is never stored.
+ *
+ * The heading is the card number alone, "#60": the card's stored name is one
+ * side's spelling, and putting it on top took that side. Where the two
+ * spellings differ, the characters that differ are underlined and tinted on
+ * both sides (Burgess / Bugress), so a one-letter misread is seen at a glance.
+ *
+ * With two or more cards, "Keep the marketplace's on all" and "Use the
+ * checklist's on all" answer every card in one press (the operator has just
+ * pressed the button, so this is no default); each card can then be changed
+ * on its own. Either one updates the "Picked N of M" status.
  *
  * ## Semantics
  *
@@ -89,8 +102,131 @@ export function disagreementLabel(cardNumber: string): string {
   return `Disagreement on #${cardNumber}`;
 }
 
+/** The bulk answers, shown with two or more cards. */
+export const KEEP_MARKETPLACE_ALL_LABEL = "Keep the marketplace's on all";
+export const USE_CHECKLIST_ALL_LABEL = "Use the checklist's on all";
+/** The bulk answers' group label. */
+export const BULK_ANSWER_LABEL = "Same answer for every card:";
+
+/** One run of a name: characters the other side shares, or ones it does not. */
+export type NameSegment = { text: string; differs: boolean };
+
+/** Longer than this, a name is shown plain: the comparison is quadratic. */
+const DIFF_MAX = 400;
+/**
+ * Below this share of the longer name in common, two names are simply
+ * different names ("Reds" / "Cincinnati Reds", "Mike Trout" / "Shohei
+ * Ohtani"), not one misread: scattered marks there would be noise.
+ */
+const DIFF_MIN_SHARED = 0.6;
+
+function runs(text: string, keep: boolean[]): NameSegment[] {
+  const out: NameSegment[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const differs = !keep[i];
+    const last = out[out.length - 1];
+    if (last && last.differs === differs) last.text += text[i];
+    else out.push({ text: text[i], differs });
+  }
+  return out;
+}
+
+/**
+ * The characters each of two names does not share with the other, as runs:
+ * "Trevor Burgess" / "Trevor Bugress" marks the "r" each has where the other
+ * does not. Read off a longest common subsequence, character by character
+ * and case-sensitive. Two equal names, an empty side, a name over
+ * `DIFF_MAX` characters, or two names sharing under `DIFF_MIN_SHARED` of the
+ * longer one come back as one plain run each.
+ */
+export function differingRuns(a: string, b: string): { a: NameSegment[]; b: NameSegment[] } {
+  const plain = (t: string): NameSegment[] => (t === "" ? [] : [{ text: t, differs: false }]);
+  if (a === b || a === "" || b === "" || a.length > DIFF_MAX || b.length > DIFF_MAX) {
+    return { a: plain(a), b: plain(b) };
+  }
+  const n = a.length;
+  const m = b.length;
+  // lcs[i][j]: the common subsequence of a[i..] and b[j..], flattened.
+  const lcs = new Uint16Array((n + 1) * (m + 1));
+  const at = (i: number, j: number) => i * (m + 1) + j;
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[at(i, j)] =
+        a[i] === b[j] ? lcs[at(i + 1, j + 1)] + 1 : Math.max(lcs[at(i + 1, j)], lcs[at(i, j + 1)]);
+    }
+  }
+  if (lcs[at(0, 0)] < DIFF_MIN_SHARED * Math.max(n, m)) return { a: plain(a), b: plain(b) };
+  const keepA = new Array<boolean>(n).fill(false);
+  const keepB = new Array<boolean>(m).fill(false);
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      keepA[i++] = true;
+      keepB[j++] = true;
+    } else if (lcs[at(i + 1, j)] >= lcs[at(i, j + 1)]) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  return { a: runs(a, keepA), b: runs(b, keepB) };
+}
+
+/**
+ * A name with its differing runs marked. Not colour alone: an underline, and
+ * a tint behind. Plain spans, so the name still reads as one word.
+ */
+function MarkedName({ segments }: { segments: readonly NameSegment[] }) {
+  return (
+    <>
+      {segments.map((seg, i) =>
+        seg.differs ? (
+          <span
+            key={i}
+            data-name-differs=""
+            className="rounded-sm bg-chip font-semibold text-ink underline decoration-neon-pink-text decoration-2 underline-offset-[3px]"
+          >
+            {seg.text}
+          </span>
+        ) : (
+          <span key={i}>{seg.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 const NOBODY = "Nobody listed";
 const NO_TEAM = "No team listed";
+
+const OTHER: Record<ChecklistChoice, ChecklistChoice> = {
+  marketplace: "checklist",
+  checklist: "marketplace",
+};
+
+/** One side's names, with the runs the other side does not share marked. */
+function SideNames({
+  sides,
+  side,
+  empty,
+}: {
+  sides: { marketplace: string[]; checklist: string[] };
+  side: ChecklistChoice;
+  empty: string;
+}) {
+  const mine = sides[side];
+  const theirs = sides[OTHER[side]];
+  if (mine.length === 0) return <>{empty}</>;
+  if (theirs.length === 0) return <>{sideText(mine, empty)}</>;
+  // Always marketplace first, so both sides read off the SAME alignment
+  // (the two orders can break a tie differently: Burgess / Bugress).
+  const runsOf = differingRuns(
+    sideText(sides.marketplace, empty),
+    sideText(sides.checklist, empty),
+  );
+  return <MarkedName segments={side === "marketplace" ? runsOf.a : runsOf.b} />;
+}
 
 function Side({
   title,
@@ -109,9 +245,11 @@ function Side({
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         {conflict.players && (
           <>
-            <dt className="text-ink-3">Players</dt>
+            <dt className="text-ink-3">
+              {conflict.players[side].length > 1 ? "Players" : "Player"}
+            </dt>
             <dd className={picked ? "text-ink" : "text-ink-2"}>
-              {sideText(conflict.players[side], NOBODY)}
+              <SideNames sides={conflict.players} side={side} empty={NOBODY} />
             </dd>
           </>
         )}
@@ -119,7 +257,7 @@ function Side({
           <>
             <dt className="text-ink-3">{conflict.teams[side].length > 1 ? "Teams" : "Team"}</dt>
             <dd className={picked ? "text-ink" : "text-ink-2"}>
-              {sideText(conflict.teams[side], NO_TEAM)}
+              <SideNames sides={conflict.teams} side={side} empty={NO_TEAM} />
             </dd>
           </>
         )}
@@ -160,6 +298,7 @@ export default function ChecklistConflictStep({
   showBlockedHint?: boolean | number;
 }) {
   const leadId = useId();
+  const bulkLabelId = useId();
   /**
    * The last pick made on this step, and the blocked-press signal it was
    * made under: a press AFTER it (a new signal) wins the status line, a pick
@@ -184,6 +323,15 @@ export default function ChecklistConflictStep({
     document.querySelector<HTMLButtonElement>(
       `[data-checklist-conflict="${row.index}"] [data-checklist-side="${side}"]`,
     );
+
+  /** One press answers every card the same way; each can be changed after. */
+  const pickAll = (choice: ChecklistChoice) => {
+    if (disabled) return;
+    for (const row of rows) {
+      if (choices[row.index] !== choice) onChoose(row.index, choice);
+    }
+    setLastPick({ under: showBlockedHint });
+  };
 
   const pick = (row: ChecklistConflictRow, choice: ChecklistChoice, walk: boolean) => {
     if (disabled) return;
@@ -240,6 +388,42 @@ export default function ChecklistConflictStep({
           {checklistStepLead(rows.length)}
         </p>
       </div>
+      {rows.length > 1 && (
+        // Buttons, not a third radio: each sets every card's own radio, and
+        // the cards stay the answer. Outside the list, so a card's first
+        // button is still its "Keep the marketplace's" radio.
+        <div
+          role="group"
+          aria-labelledby={bulkLabelId}
+          className="flex flex-wrap items-center gap-x-3 gap-y-2"
+        >
+          <span id={bulkLabelId} className="text-xs text-ink-2">
+            {BULK_ANSWER_LABEL}
+          </span>
+          <NeonButton
+            size="1"
+            variant="secondary"
+            outline
+            onClick={() => pickAll("marketplace")}
+            aria-disabled={disabled || undefined}
+            aria-describedby={hintId}
+            className="max-sm:min-h-11"
+          >
+            {KEEP_MARKETPLACE_ALL_LABEL}
+          </NeonButton>
+          <NeonButton
+            size="1"
+            variant="secondary"
+            outline
+            onClick={() => pickAll("checklist")}
+            aria-disabled={disabled || undefined}
+            aria-describedby={hintId}
+            className="max-sm:min-h-11"
+          >
+            {USE_CHECKLIST_ALL_LABEL}
+          </NeonButton>
+        </div>
+      )}
       <ul className="space-y-3" aria-describedby={leadId}>
         {rows.map((row) => {
           const chosen = choices[row.index];
@@ -252,11 +436,12 @@ export default function ChecklistConflictStep({
                 aria-required="true"
                 className="rounded-lg border border-rule-strong bg-raised"
               >
+                {/* The number alone: the card's name is one side's
+                    spelling, and the heading must not take a side. */}
                 <p className="flex items-baseline gap-2 border-b border-rule px-3 py-1.5 text-sm">
                   <span className="font-semibold tabular-nums text-neon-green-text">
                     #{row.cardNumber}
                   </span>
-                  <span className="min-w-0 truncate text-ink-2">{row.cardName}</span>
                   {chosen === undefined && (
                     <span className="ml-auto shrink-0 text-xs text-neon-pink-text">Needs a pick</span>
                   )}
@@ -270,7 +455,14 @@ export default function ChecklistConflictStep({
                         key={side}
                         className={`flex flex-col justify-between gap-2 p-3 ${
                           side === "checklist" ? "border-t border-rule sm:border-t-0 sm:border-l" : ""
-                        } ${picked ? "bg-neon-green/10 shadow-[inset_0_0_0_2px_var(--color-neon-green-text)]" : ""}`}
+                        } ${
+                          // The selection role's mark, not the keyboard
+                          // highlight's full ring: a 4px edge down the left
+                          // and a neutral tint (the ✓ says it in words).
+                          picked
+                            ? "bg-list-hover-raised shadow-[inset_4px_0_0_var(--color-selection)]"
+                            : ""
+                        }`}
                       >
                         <Side
                           title={side === "marketplace" ? "Marketplace" : "Your checklist"}

@@ -9,6 +9,8 @@ import { describe, expect, it, vi } from "vitest";
 import PublishedChecklistDialog, {
   NOTHING_READS,
   NOTHING_TO_USE,
+  PICK_A_SUBSET,
+  SUBSET_QUESTION,
   PublishedChecklistChip,
   checklistTeamsLine,
   chipText,
@@ -101,35 +103,55 @@ describe("PublishedChecklistDialog", () => {
     expect(onUse).not.toHaveBeenCalled();
   });
 
-  /** The one status region the count, the bad-paste line and a blocked press share. */
-  const countStatus = () => {
+  /** The visible count line: what the paste box and Use are described by. */
+  const countLine = () => {
     const id = box().getAttribute("aria-describedby")!;
     return document.getElementById(id)!;
   };
+  /** The one live region the count, the bad-paste line and a blocked press share. */
+  const countStatus = () =>
+    document.querySelector<HTMLElement>("[data-checklist-count-status]")!;
 
-  it("says the row count and the skipped lines in ONE always-mounted status region", async () => {
+  it("shows the count on a line the paste box and Use are described by, which is NOT a live region", async () => {
     open();
-    const region = countStatus();
-    expect(region.getAttribute("role")).toBe("status");
-    expect(region.textContent).toBe("0 rows.");
-    // The button is described by the same region.
+    const line = countLine();
+    expect(line.getAttribute("role")).toBeNull();
+    expect(line.getAttribute("aria-live")).toBeNull();
+    expect(line.textContent).toBe("0 rows.");
     expect(screen.getByRole("button", { name: "Use this checklist" }).getAttribute("aria-describedby")).toBe(
-      region.id,
+      line.id,
     );
     await paste(PASTE);
-    await waitFor(() => expect(countStatus().textContent).toBe("2 rows. 1 line skipped."));
-    // The same node, never remounted: a live region must exist before it speaks.
-    expect(countStatus()).toBe(region);
+    await waitFor(() => expect(countLine().textContent).toBe("2 rows. 1 line skipped."));
     expect(skippedLinesText(3)).toBe("3 lines skipped.");
     expect(skippedLinesText(1)).toBe("1 line skipped.");
   });
 
-  it("says why nothing reads in that region, once, not again in the preview", async () => {
+  it("announces the count in ONE always-mounted sr-only status, once the paste holds still", async () => {
+    open();
+    const region = countStatus();
+    expect(region.getAttribute("role")).toBe("status");
+    expect(region.className).toContain("sr-only");
+    expect(region.textContent).toBe("0 rows.");
+    await paste(PASTE);
+    // On screen at once; not said yet.
+    await waitFor(() => expect(countLine().textContent).toBe("2 rows. 1 line skipped."));
+    expect(countStatus().textContent).toBe("0 rows.");
+    await waitFor(() => expect(countStatus().textContent).toBe("2 rows. 1 line skipped."), {
+      timeout: 3000,
+    });
+    // The same node, never remounted: a live region must exist before it speaks.
+    expect(countStatus()).toBe(region);
+  });
+
+  it("says why nothing reads at once, in the status and on the count line, not again in the preview", async () => {
     open();
     await paste("nothing readable here");
     await waitFor(() => expect(countStatus().textContent).toBe(NOTHING_READS));
+    expect(countLine().textContent).toBe(NOTHING_READS);
     expect(NOTHING_READS).toBe("Nothing reads as a card yet. Each line starts with its card number.");
-    expect(screen.getAllByText(/Nothing reads as a card/)).toHaveLength(1);
+    // The count line and its live region: nowhere else.
+    expect(screen.getAllByText(/Nothing reads as a card/)).toHaveLength(2);
     expect(screen.getByText(/Try a line like/)).toBeTruthy();
   });
 
@@ -148,7 +170,8 @@ describe("PublishedChecklistDialog", () => {
     fireEvent.click(use);
     expect(countStatus().textContent).toBe(NOTHING_TO_USE);
     await paste("1 A Guy - Team A");
-    await waitFor(() => expect(countStatus().textContent).toBe("1 row."));
+    await waitFor(() => expect(countLine().textContent).toBe("1 row."));
+    expect(countStatus().textContent).not.toBe(NOTHING_TO_USE);
   });
 
   it("the file note never flips its role on a mounted node, and carries no explicit aria-live", async () => {
@@ -252,6 +275,116 @@ describe("PublishedChecklistDialog", () => {
     expect(onUse).not.toHaveBeenCalled();
   });
 
+  it("opens with the subhead's copy and an example labelled as one, never a placeholder", () => {
+    open();
+    expect(
+      screen.getByText(
+        "Paste it straight off the checklist page, or pick a file. We line it up by card number and only look up teams your list leaves out.",
+      ),
+    ).toBeTruthy();
+    expect(box().getAttribute("placeholder")).toBeNull();
+    expect(screen.getByText("Example lines")).toBeTruthy();
+  });
+
+  it("paints Choose a file as the secondary outline button: a 1px edge, the cyan fill on hover", () => {
+    open();
+    const face = screen.getByLabelText("Choose a file").closest("label")!;
+    expect(face.className).toContain("border-neon-blue-text");
+    expect(face.className).not.toContain("border-2");
+    expect(face.className).toContain("hover:bg-neon-blue");
+    expect(face.className).toContain("hover:text-on-neon-blue");
+  });
+
+  describe("subsets (S6)", () => {
+    const SUBSETS = [
+      "Number,Player,Team,Subset",
+      "1,Mike Trout,Los Angeles Angels,Base",
+      "2,Shohei Ohtani,Los Angeles Dodgers,Base",
+      "RA-1,Jackson Holliday,Baltimore Orioles,Rookie Autographs",
+    ].join("\n");
+    const question = () => screen.getByRole("group", { name: SUBSET_QUESTION });
+
+    it("asks which subsets belong, none ticked, and holds Use until one is", async () => {
+      const { onUse } = open();
+      await paste(SUBSETS);
+      await waitFor(() => expect(question()).toBeTruthy());
+      const base = within(question()).getByRole("checkbox", { name: "Base" }) as HTMLInputElement;
+      const autos = within(question()).getByRole("checkbox", {
+        name: "Rookie Autographs",
+      }) as HTMLInputElement;
+      expect(base.checked).toBe(false);
+      expect(autos.checked).toBe(false);
+      // Each box is described by its row count.
+      expect(document.getElementById(base.getAttribute("aria-describedby")!)!.textContent).toBe(
+        "2 rows",
+      );
+      expect(countLine().textContent).toBe("0 rows.");
+      expect(screen.queryByRole("table")).toBeNull();
+      const use = screen.getByRole("button", { name: "Use this checklist" });
+      expect(use.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(use);
+      expect(onUse).not.toHaveBeenCalled();
+      // A held press says why at once and lands on the first box.
+      expect(countStatus().textContent).toBe(PICK_A_SUBSET);
+      expect(document.activeElement).toBe(base);
+    });
+
+    it("uses only the ticked subsets' rows, and hands the ticks on", async () => {
+      const { onUse } = open();
+      await paste(SUBSETS);
+      await waitFor(() => expect(question()).toBeTruthy());
+      fireEvent.click(within(question()).getByRole("checkbox", { name: "Base" }));
+      await waitFor(() => expect(countLine().textContent).toBe("2 rows."));
+      const table = screen.getByRole("table");
+      expect(within(table).getByText("Mike Trout")).toBeTruthy();
+      expect(within(table).queryByText("Jackson Holliday")).toBeNull();
+      const use = screen.getByRole("button", { name: "Use this checklist" });
+      expect(use.getAttribute("aria-disabled")).toBeNull();
+      fireEvent.click(use);
+      expect(onUse).toHaveBeenCalledTimes(1);
+      const used = onUse.mock.calls[0][0];
+      expect(used.rows.map((r: { number: string }) => r.number)).toEqual(["1", "2"]);
+      expect(used.subsets).toEqual(["Base"]);
+      expect(used.text).toBe(SUBSETS);
+    });
+
+    it("unticking the last subset holds Use again", async () => {
+      open();
+      await paste(SUBSETS);
+      await waitFor(() => expect(question()).toBeTruthy());
+      const base = within(question()).getByRole("checkbox", { name: "Base" });
+      fireEvent.click(base);
+      await waitFor(() => expect(countLine().textContent).toBe("2 rows."));
+      fireEvent.click(base);
+      await waitFor(() => expect(countLine().textContent).toBe("0 rows."));
+      expect(
+        screen.getByRole("button", { name: "Use this checklist" }).getAttribute("aria-disabled"),
+      ).toBe("true");
+    });
+
+    it("reopening shows the ticks it was used with", async () => {
+      open({
+        initial: { rows: [], text: SUBSETS, format: "csv", skippedCount: 0, subsets: ["Rookie Autographs"] },
+      });
+      await waitFor(() => expect(question()).toBeTruthy());
+      expect(
+        (within(question()).getByRole("checkbox", { name: "Rookie Autographs" }) as HTMLInputElement)
+          .checked,
+      ).toBe(true);
+      expect((within(question()).getByRole("checkbox", { name: "Base" }) as HTMLInputElement).checked).toBe(
+        false,
+      );
+      await waitFor(() => expect(countLine().textContent).toBe("1 row."));
+    });
+
+    it("never asks when the paste has no subset column", async () => {
+      open();
+      await paste(PASTE);
+      await waitFor(() => expect(countLine().textContent).toBe("2 rows. 1 line skipped."));
+      expect(screen.queryByRole("group", { name: SUBSET_QUESTION })).toBeNull();
+    });
+  });
+
   it("puts focus back on the opener when it closes", async () => {
     const opener = document.createElement("button");
     document.body.appendChild(opener);
@@ -268,6 +401,8 @@ describe("the copy helpers and the chip", () => {
     expect(rowCountText(1)).toBe("1 row");
     expect(rowCountText(1234)).toBe("1,234 rows");
     expect(chipText(248)).toBe("Publisher's checklist: 248 rows");
+    expect(chipText(18, 0)).toBe("Publisher's checklist: 18 rows");
+    expect(chipText(18, 2)).toBe("Publisher's checklist: 18 rows · 2 skipped");
     expect(checklistTeamsLine(240, 248)).toBe("Teams from your checklist: 240 of 248 cards");
     expect(checklistTeamsLine(1, 1)).toBe("Teams from your checklist: 1 of 1 card");
   });
@@ -278,6 +413,34 @@ describe("the copy helpers and the chip", () => {
     expect(screen.getByText("Publisher's checklist: 248 rows")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
     expect(onRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it("the chip's text is a button that reopens the dialog, and says what was skipped", () => {
+    const onOpen = vi.fn();
+    render(<PublishedChecklistChip rowCount={18} skippedCount={2} onOpen={onOpen} onRemove={vi.fn()} />);
+    const reopen = screen.getByRole("button", { name: "Publisher's checklist: 18 rows · 2 skipped" });
+    expect(reopen.getAttribute("aria-haspopup")).toBe("dialog");
+    fireEvent.click(reopen);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    // Its touch extension is not clipped: the truncation is on the text inside.
+    expect(reopen.className).not.toContain("truncate");
+  });
+
+  it("a disabled chip does not reopen", () => {
+    const onOpen = vi.fn();
+    render(<PublishedChecklistChip rowCount={3} onOpen={onOpen} onRemove={vi.fn()} disabled />);
+    fireEvent.click(screen.getByRole("button", { name: "Publisher's checklist: 3 rows" }));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("Remove is quiet at rest and pink with its own ink under the pointer or focus", () => {
+    render(<PublishedChecklistChip rowCount={3} onRemove={vi.fn()} />);
+    const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
+    expect(remove.className).toContain("text-ink-2");
+    expect(remove.className).not.toMatch(/(^|\s)text-neon-pink-text/);
+    expect(remove.className).toContain("hover:bg-neon-pink");
+    expect(remove.className).toContain("hover:text-on-neon-pink");
+    expect(remove.className).toContain("focus-visible:bg-neon-pink");
   });
 
   it("a disabled chip does not remove", () => {

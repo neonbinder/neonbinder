@@ -19,6 +19,11 @@
  * ## Disagreements are surfaced, never settled
  *
  *  - The players differ on both sides (both non-empty): `conflict.players`.
+ *    Two lists of the same length agree when each checklist name is a
+ *    marketplace name, or the end of one ("Alonso/Schwarber/Soto" against
+ *    "Pete Alonso", "Kyle Schwarber", "Juan Soto"): checklists print surnames.
+ *    That is a comparison only; nothing is written from it, and the card
+ *    keeps the marketplace's full names (`playersAgree`).
  *  - The card already carries a team (BSC's bulk parse, or SportLots) and the
  *    row names a different one: `conflict.teams`.
  *  - A card left unmatched whose players appear on a row at a DIFFERENT
@@ -119,6 +124,43 @@ function namesKey(names: readonly string[]): string {
   return [...new Set(names.map(checklistNameKey).filter(Boolean))].sort().join("|");
 }
 
+/** A suffix a surname comparison passes over ("Ken Griffey Jr" ends "griffey"). */
+const SURNAME_SUFFIX = /(?: (?:jr|sr|ii|iii|iv|v))+$/;
+
+/**
+ * Do the checklist's players name the marketplace's? The same names, or the
+ * same count with each checklist name equal to a marketplace name or to its
+ * last word(s), each marketplace name used once. Exact names are paired
+ * first, so a full name never takes a surname's partner.
+ *
+ * A comparison for the conflict check only: never used to write a name.
+ */
+export function playersAgree(
+  marketplace: readonly string[],
+  checklist: readonly string[],
+): boolean {
+  if (namesKey(marketplace) === namesKey(checklist)) return true;
+  const market = marketplace.map(checklistNameKey).filter(Boolean);
+  const listed = checklist.map(checklistNameKey).filter(Boolean);
+  if (market.length !== listed.length || market.length === 0) return false;
+  const open = [...market];
+  const surnameLeft: string[] = [];
+  for (const key of listed) {
+    const at = open.indexOf(key);
+    if (at === -1) surnameLeft.push(key);
+    else open.splice(at, 1);
+  }
+  for (const key of surnameLeft) {
+    const at = open.findIndex((full) => {
+      const bare = full.replace(SURNAME_SUFFIX, "");
+      return bare.endsWith(` ${key}`);
+    });
+    if (at === -1) return false;
+    open.splice(at, 1);
+  }
+  return true;
+}
+
 function nonEmpty(names: readonly string[] | undefined): string[] {
   return (names ?? []).map((n) => n.trim()).filter(Boolean);
 }
@@ -205,7 +247,7 @@ export function matchPublishedChecklist(
     const cardTeams = nonEmpty(card.teams);
     const rowTeams = nonEmpty(row.teams);
     const conflict: ChecklistConflict = {};
-    if (cardPlayers.length > 0 && rowPlayers.length > 0 && namesKey(cardPlayers) !== namesKey(rowPlayers)) {
+    if (cardPlayers.length > 0 && rowPlayers.length > 0 && !playersAgree(cardPlayers, rowPlayers)) {
       conflict.players = { marketplace: cardPlayers, checklist: rowPlayers };
     }
     if (cardTeams.length > 0 && rowTeams.length > 0 && namesKey(cardTeams) !== namesKey(rowTeams)) {

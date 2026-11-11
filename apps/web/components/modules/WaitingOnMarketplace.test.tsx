@@ -77,6 +77,9 @@ describe("WaitingOnMarketplace", () => {
     const wrapper = region().firstElementChild as HTMLElement;
     expect(wrapper.className).toContain("flex");
     expect(wrapper.className).toContain("mb-3");
+    // The dot's glow is scaled by --glow: lit in dark, none on light's paper.
+    const dot = wrapper.firstElementChild as HTMLElement;
+    expect(dot.className).toContain("var(--glow)");
   });
 
   it("counts seconds on the client's clock, never from the server timestamp", () => {

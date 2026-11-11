@@ -739,8 +739,9 @@ export function buildTeamsGroups(input: {
     const listedNames = listedClaims(card, view);
     const lookupFailed = card.teamLookup === "failed";
     // NEO-478 — a team the operator's published checklist settled is a data
-    // claim exactly like a failed lookup's: the teamless card is the
-    // checklist's answer ("no team"), so no inference may fill one over it.
+    // claim exactly like a failed lookup's: the card's team is the one its
+    // checklist row named, so no inference may fill another over it. A row
+    // that names no team makes no claim and never sets "checklist" (B1).
     const checklistClaim = card.teamLookup === "checklist";
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +

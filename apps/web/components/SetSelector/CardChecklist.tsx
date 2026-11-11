@@ -1165,6 +1165,13 @@ export default function CardChecklist({
    * lands here instead of on a button that is gone.
    */
   const publishedRemoveRef = useRef<HTMLButtonElement>(null);
+  /**
+   * The chip's own text, a button that reopens the dialog on the checklist in
+   * use. Opened from there, the dialog hands focus back to it on close.
+   */
+  const publishedChipRef = useRef<HTMLButtonElement>(null);
+  /** Where the dialog was opened from, read when it closes. */
+  const publishedRestoreRef = useRef<HTMLElement | null>(null);
   /** The set's year, so the dialog reads a "1995 …" heading line as a title. */
   const setYearValue = ancestorChain?.find((c) => c.level === "year")?.value ?? null;
   /**
@@ -3209,7 +3216,10 @@ export default function CardChecklist({
       ref={publishedOpenerRef}
       variant="tertiary"
       outline
-      onClick={() => setPublishedDialogOpen(true)}
+      onClick={() => {
+        publishedRestoreRef.current = publishedOpenerRef.current;
+        setPublishedDialogOpen(true);
+      }}
       disabled={busy}
       aria-haspopup="dialog"
     >
@@ -3288,7 +3298,14 @@ export default function CardChecklist({
         {activePublished && (
           <PublishedChecklistChip
             rowCount={activePublished.rows.length}
+            skippedCount={activePublished.skippedCount}
             disabled={busy}
+            openRef={publishedChipRef}
+            onOpen={() => {
+              // Reopens on what was pasted; "Use this checklist" replaces it.
+              publishedRestoreRef.current = publishedChipRef.current;
+              setPublishedDialogOpen(true);
+            }}
             removeRef={publishedRemoveRef}
             onRemove={() => {
               setPublishedChecklist(null);
@@ -3807,7 +3824,7 @@ export default function CardChecklist({
             <span className="mb-3 flex items-center gap-2 text-sm text-ink-2">
               <span
                 aria-hidden="true"
-                className="h-2 w-2 shrink-0 rounded-full bg-neon-blue-text shadow-[0_0_8px_var(--color-neon-blue)] motion-safe:animate-pulse"
+                className="h-2 w-2 shrink-0 rounded-full bg-neon-blue-text shadow-[0_0_8px_rgb(0_194_255/var(--glow))] motion-safe:animate-pulse"
               />
               <span>{teamLookupStatusLine(shownLookupCount)}</span>
             </span>
@@ -4071,12 +4088,16 @@ export default function CardChecklist({
           onUse={(checklist) => {
             setPublishedChecklist({ variantId, checklist });
             setPublishedDialogOpen(false);
-            // The opener goes with the dialog (the chip replaces it), so the
-            // dialog's own restore has nothing to land on: Remove takes it.
-            requestAnimationFrame(() => publishedRemoveRef.current?.focus());
+            // Opened from "Add the publisher's checklist": that button goes
+            // with the dialog (the chip replaces it), so the dialog's own
+            // restore has nothing to land on and Remove takes it. Opened
+            // from the chip, the chip stays and the restore lands on it.
+            if (publishedRestoreRef.current !== publishedChipRef.current) {
+              requestAnimationFrame(() => publishedRemoveRef.current?.focus());
+            }
           }}
           onCancel={() => setPublishedDialogOpen(false)}
-          restoreFocusRef={publishedOpenerRef}
+          restoreFocusRef={publishedRestoreRef}
         />
       )}
 

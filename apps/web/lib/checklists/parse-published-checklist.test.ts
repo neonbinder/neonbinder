@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  LOOKS_LIKE_A_COUNT,
+  NO_NUMBER_ON_THE_CARD,
+  filterRowsBySubsets,
   PUBLISHED_CHECKLIST_MAX_LINE,
   PUBLISHED_CHECKLIST_MAX_NAME,
   PUBLISHED_CHECKLIST_MAX_ROWS,
@@ -285,5 +288,362 @@ describe("parsePublishedChecklist — adversarial input", () => {
     const out = parsePublishedChecklist(text);
     expect(out.tooBig).toBeUndefined();
     expect(out.rows).toHaveLength(1);
+  });
+});
+
+describe("parsePublishedChecklist — collector review B2: team separators", () => {
+  it("a comma separates the team when there is no spaced dash", () => {
+    const out = parsePublishedChecklist("1 Shohei Ohtani, Los Angeles Dodgers");
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"] },
+    ]);
+  });
+
+  it("a comma before a name suffix is part of the name, the next one starts the team", () => {
+    const out = parsePublishedChecklist("1 Ken Griffey, Jr., Seattle Mariners");
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Ken Griffey, Jr."], teams: ["Seattle Mariners"] },
+    ]);
+  });
+
+  it("three or more comma parts are a player list with no team, the note dropped", () => {
+    const out = parsePublishedChecklist("11 Alonso, Schwarber, Soto (League Leaders)");
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual([
+      { number: "11", players: ["Alonso", "Schwarber", "Soto"], teams: [] },
+    ]);
+  });
+
+  it("a name suffix does not count as a comma part", () => {
+    const out = parsePublishedChecklist(
+      ["1 Ken Griffey, Jr., Seattle Mariners", "2 Ken Griffey, Jr., Ken Griffey, Sr., Barry Bonds"].join("\n"),
+    );
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Ken Griffey, Jr."], teams: ["Seattle Mariners"] },
+      { number: "2", players: ["Ken Griffey, Jr.", "Ken Griffey, Sr.", "Barry Bonds"], teams: [] },
+    ]);
+  });
+
+  it("a marker-only comma part does not count either", () => {
+    const out = parsePublishedChecklist("1 Shohei Ohtani, Los Angeles Dodgers, RC");
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"] },
+    ]);
+  });
+
+  it("exactly two comma parts stay player, team", () => {
+    const out = parsePublishedChecklist("27 Aaron Judge, New York Yankees");
+    expect(out.rows).toEqual([
+      { number: "27", players: ["Aaron Judge"], teams: ["New York Yankees"] },
+    ]);
+  });
+
+  it("a spaced dash still wins over a comma", () => {
+    const out = parsePublishedChecklist("3 Bobby Witt Jr. - Kansas City Royals, AL");
+    expect(out.rows[0]).toEqual({
+      number: "3",
+      players: ["Bobby Witt Jr."],
+      teams: ["Kansas City Royals, AL"],
+    });
+  });
+
+  it("reads a headerless TSV by position: number, player, team", () => {
+    const out = parsePublishedChecklist("1\tMike Trout\tLos Angeles Angels");
+    expect(out.format).toBe("tsv");
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] },
+    ]);
+  });
+
+  it("reads a headerless CSV by position instead of skipping every line", () => {
+    const out = parsePublishedChecklist(
+      ["1,Mike Trout,Los Angeles Angels", "2,Shohei Ohtani,Los Angeles Dodgers"].join("\n"),
+    );
+    expect(out.format).toBe("csv");
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] },
+      { number: "2", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"] },
+    ]);
+  });
+
+  it("a headerless file reads a title line without the delimiter as a line", () => {
+    const out = parsePublishedChecklist(
+      ["2024 Topps Series 1", "1,Mike Trout,Los Angeles Angels", "2,Shohei Ohtani,"].join("\n"),
+      { setYear: 2024 },
+    );
+    expect(out.format).toBe("csv");
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] },
+      { number: "2", players: ["Shohei Ohtani"], teams: [] },
+    ]);
+    expect(out.skipped).toEqual([{ line: 1, text: "2024 Topps Series 1", reason: LOOKS_LIKE_A_TITLE }]);
+  });
+
+  it("does not read lines as positional when most carry fewer than two delimiters", () => {
+    const out = parsePublishedChecklist(
+      ["1 Shohei Ohtani, Los Angeles Dodgers", "2 Mike Trout, Los Angeles Angels"].join("\n"),
+    );
+    expect(out.format).toBe("lines");
+    expect(out.rows.map((r) => r.teams)).toEqual([["Los Angeles Dodgers"], ["Los Angeles Angels"]]);
+  });
+
+  it("a run of three or more dots is a separator (dot leaders)", () => {
+    const out = parsePublishedChecklist(
+      ["1 Mike Trout ..... Los Angeles Angels", "2 Shohei Ohtani...Los Angeles Dodgers"].join("\n"),
+    );
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] },
+      { number: "2", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"] },
+    ]);
+  });
+
+  it("an unspaced em or en dash between words is a separator (S7)", () => {
+    const out = parsePublishedChecklist(
+      ["1 Mike Trout—Los Angeles Angels", "2 Shohei Ohtani–Los Angeles Dodgers"].join("\n"),
+    );
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] },
+      { number: "2", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"] },
+    ]);
+  });
+
+  it("an unspaced plain hyphen is still part of a name", () => {
+    const out = parsePublishedChecklist("7 Ryu Hyun-jin - Toronto Blue Jays");
+    expect(out.rows[0].players).toEqual(["Ryu Hyun-jin"]);
+  });
+});
+
+describe("parsePublishedChecklist — collector review S1: hobby markers", () => {
+  it("drops SP, SSP, VAR, HOF, AU, RC and 1st as whole tokens", () => {
+    const out = parsePublishedChecklist(
+      [
+        "1 Mike Trout SP - Los Angeles Angels",
+        "2 Shohei Ohtani SSP - Los Angeles Dodgers",
+        "3 Aaron Judge VAR - New York Yankees",
+        "4 Ken Griffey Jr. HOF - Seattle Mariners",
+        "5 Paul Skenes AU - Pittsburgh Pirates",
+        "6 Jackson Holliday RC 1st - Baltimore Orioles",
+        "7 Spencer Strider - Atlanta Braves",
+        "8 Austin Riley - Atlanta Braves",
+      ].join("\n"),
+    );
+    expect(out.rows.map((r) => r.players)).toEqual([
+      ["Mike Trout"],
+      ["Shohei Ohtani"],
+      ["Aaron Judge"],
+      ["Ken Griffey Jr."],
+      ["Paul Skenes"],
+      ["Jackson Holliday"],
+      ["Spencer Strider"],
+      ["Austin Riley"],
+    ]);
+  });
+
+  it("drops print runs /99 and #/99", () => {
+    const out = parsePublishedChecklist(
+      ["1 Mike Trout /99 - Los Angeles Angels", "2 Shohei Ohtani #/25 - Los Angeles Dodgers"].join("\n"),
+    );
+    expect(out.rows.map((r) => [r.players, r.teams])).toEqual([
+      [["Mike Trout"], ["Los Angeles Angels"]],
+      [["Shohei Ohtani"], ["Los Angeles Dodgers"]],
+    ]);
+  });
+
+  it("a trailing ' - <marker>' segment is a note, never the team", () => {
+    const out = parsePublishedChecklist(
+      [
+        "1 Mike Trout - Los Angeles Angels - SP",
+        "2 Jackson Holliday - RC",
+        "3 Paul Skenes - Pittsburgh Pirates - #/99",
+      ].join("\n"),
+    );
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] },
+      { number: "2", players: ["Jackson Holliday"], teams: [] },
+      { number: "3", players: ["Paul Skenes"], teams: ["Pittsburgh Pirates"] },
+    ]);
+  });
+
+  it("a trailing ', <marker>' is a note, never the team", () => {
+    const out = parsePublishedChecklist("2 Jackson Holliday, RC");
+    expect(out.rows).toEqual([{ number: "2", players: ["Jackson Holliday"], teams: [] }]);
+  });
+
+  it("drops markers in CSV cells too", () => {
+    const out = parsePublishedChecklist("#,Player,Team\n1,Mike Trout SP /99,Los Angeles Angels");
+    expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] });
+  });
+});
+
+describe("parsePublishedChecklist — collector review S2: insert codes and NNO", () => {
+  it("accepts letter-hyphen-letter insert numbers", () => {
+    const out = parsePublishedChecklist(
+      [
+        "RA-MT Mike Trout - Los Angeles Angels",
+        "DA-TJ Judge/Trout - New York Yankees",
+        "CPA-JH Jackson Holliday - Baltimore Orioles",
+      ].join("\n"),
+    );
+    expect(out.skipped).toEqual([]);
+    expect(out.rows.map((r) => r.number)).toEqual(["RA-MT", "DA-TJ", "CPA-JH"]);
+  });
+
+  it("does not take a hyphenated name for a letter code", () => {
+    const out = parsePublishedChecklist("Jean-Carlos Ruiz - Detroit Tigers");
+    expect(out.rows).toEqual([]);
+    expect(out.skipped[0].reason).toBe("No card number at the start");
+  });
+
+  it("skips NNO with its own reason, in lines and in CSV", () => {
+    expect(NO_NUMBER_ON_THE_CARD).toBe("No number on the card — we match by number");
+    const lines = parsePublishedChecklist("NNO Mike Trout - Los Angeles Angels\nnno Header Card");
+    expect(lines.rows).toEqual([]);
+    expect(lines.skipped.map((s) => s.reason)).toEqual([NO_NUMBER_ON_THE_CARD, NO_NUMBER_ON_THE_CARD]);
+    const csv = parsePublishedChecklist("#,Player,Team\nNNO,Mike Trout,Los Angeles Angels");
+    expect(csv.rows).toEqual([]);
+    expect(csv.skipped).toEqual([
+      { line: 2, text: "NNO,Mike Trout,Los Angeles Angels", reason: NO_NUMBER_ON_THE_CARD },
+    ]);
+  });
+});
+
+describe("parsePublishedChecklist — collector review S3: counts and subjects that are not people", () => {
+  it("skips a count line with its own reason", () => {
+    expect(LOOKS_LIKE_A_COUNT).toBe("Looks like a count, not a card");
+    const out = parsePublishedChecklist(["200 cards", "1 card", "330 Cards.", "1 Mike Trout - Angels"].join("\n"));
+    expect(out.rows.map((r) => r.number)).toEqual(["1"]);
+    expect(out.skipped.map((s) => [s.line, s.reason])).toEqual([
+      [1, LOOKS_LIKE_A_COUNT],
+      [2, LOOKS_LIKE_A_COUNT],
+      [3, LOOKS_LIKE_A_COUNT],
+    ]);
+  });
+
+  it("keeps the number of a checklist, team card, TC or team leaders row but names no player", () => {
+    const out = parsePublishedChecklist(
+      [
+        "1 Checklist 1-100",
+        "2 Kansas City Royals Team",
+        "3 Royals Team Card",
+        "4 Mets TC",
+        "5 Team Leaders",
+        "6 AL Team Leaders",
+        "7 Checklist",
+      ].join("\n"),
+    );
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual(
+      ["1", "2", "3", "4", "5", "6", "7"].map((number) => ({ number, players: [], teams: [] })),
+    );
+  });
+
+  it("a not-a-person subject keeps the team after the dash, still with no player", () => {
+    const out = parsePublishedChecklist("34 Royals Team Card - Kansas City Royals");
+    expect(out.rows).toEqual([{ number: "34", players: [], teams: ["Kansas City Royals"] }]);
+  });
+
+  it("a not-a-person subject in a CSV player cell keeps the row with no player", () => {
+    const out = parsePublishedChecklist("#,Player,Team\n34,Mets TC,\n35,Checklist 1-100,");
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual([
+      { number: "34", players: [], teams: [] },
+      { number: "35", players: [], teams: [] },
+    ]);
+  });
+
+  it("a person whose name merely contains 'team' or 'checklist' is kept", () => {
+    const out = parsePublishedChecklist("9 Teams Teamerson - Boston Red Sox");
+    expect(out.rows[0].players).toEqual(["Teams Teamerson"]);
+  });
+});
+
+describe("parsePublishedChecklist — collector review S4: & and 'and'", () => {
+  it("splits players on a spaced & and 'and', but not inside a name", () => {
+    const out = parsePublishedChecklist(
+      ["1 Mike Trout & Shohei Ohtani - Los Angeles Angels", "2 Brett Anderson and Andy Pettitte - New York Yankees"].join(
+        "\n",
+      ),
+    );
+    expect(out.rows.map((r) => r.players)).toEqual([
+      ["Mike Trout", "Shohei Ohtani"],
+      ["Brett Anderson", "Andy Pettitte"],
+    ]);
+  });
+
+  it("does not split a team on '&' or 'and'", () => {
+    const out = parsePublishedChecklist("#,Player,Team\n1,A & B,Texas A & M");
+    expect(out.rows[0]).toEqual({ number: "1", players: ["A", "B"], teams: ["Texas A & M"] });
+  });
+});
+
+describe("parsePublishedChecklist — collector review S6: subsets", () => {
+  const file = [
+    "Card Set,Card #,Player,Team",
+    "Base,1,Mike Trout,Los Angeles Angels",
+    "Rookie Autographs,RA-JH,Jackson Holliday,Baltimore Orioles",
+    "Base,2,Shohei Ohtani,Los Angeles Dodgers",
+    ",3,Aaron Judge,New York Yankees",
+  ].join("\n");
+
+  it("carries each row's subset and the distinct subsets in file order", () => {
+    const out = parsePublishedChecklist(file);
+    expect(out.format).toBe("csv");
+    expect(out.subsets).toEqual(["Base", "Rookie Autographs"]);
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"], subset: "Base" },
+      {
+        number: "RA-JH",
+        players: ["Jackson Holliday"],
+        teams: ["Baltimore Orioles"],
+        subset: "Rookie Autographs",
+      },
+      { number: "2", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"], subset: "Base" },
+      { number: "3", players: ["Aaron Judge"], teams: ["New York Yankees"] },
+    ]);
+  });
+
+  it("reads 'set', 'subset' and 'insert' headers as the subset column", () => {
+    for (const header of ["Set", "Subset", "Insert"]) {
+      const out = parsePublishedChecklist(`${header}\tNo.\tPlayer\nBase\t1\tMike Trout`);
+      expect(out.subsets).toEqual(["Base"]);
+      expect(out.rows[0].subset).toBe("Base");
+    }
+  });
+
+  it("has no subsets without a subset column", () => {
+    expect(parsePublishedChecklist("#,Player\n1,Mike Trout").subsets).toBeUndefined();
+    expect(parsePublishedChecklist("1 Mike Trout - Angels").subsets).toBeUndefined();
+  });
+
+  it("filterRowsBySubsets keeps the chosen subsets and rows with no subset", () => {
+    const { rows } = parsePublishedChecklist(file);
+    expect(filterRowsBySubsets(rows, ["Base"]).map((r) => r.number)).toEqual(["1", "2", "3"]);
+    expect(filterRowsBySubsets(rows, ["Rookie Autographs"]).map((r) => r.number)).toEqual([
+      "RA-JH",
+      "3",
+    ]);
+    expect(filterRowsBySubsets(rows, []).map((r) => r.number)).toEqual(["3"]);
+    expect(rows).toHaveLength(4);
+  });
+});
+
+describe("parsePublishedChecklist — collector review S7: header spellings and trademarks", () => {
+  it("reads 'Description' and 'Card Description' as the player column", () => {
+    for (const header of ["Description", "Card Description"]) {
+      const out = parsePublishedChecklist(`Card #,${header},Team\n1,Mike Trout,Los Angeles Angels`);
+      expect(out.rows).toEqual([
+        { number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] },
+      ]);
+    }
+  });
+
+  it("strips ® and ™ from team names", () => {
+    const out = parsePublishedChecklist(
+      ["1 Mike Trout - Los Angeles Angels®", "2 Shohei Ohtani - Los Angeles Dodgers™"].join("\n"),
+    );
+    expect(out.rows.map((r) => r.teams)).toEqual([["Los Angeles Angels"], ["Los Angeles Dodgers"]]);
   });
 });

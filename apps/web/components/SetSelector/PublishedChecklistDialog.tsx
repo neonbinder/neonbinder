@@ -15,8 +15,11 @@ import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
+import { Checkbox } from "../primitives/Checkbox";
 import { inertBackground } from "@/lib/dom/inert-background";
+import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import {
+  filterRowsBySubsets,
   parsePublishedChecklist,
   type PublishedChecklistParse,
   type PublishedChecklistRow,
@@ -34,9 +37,11 @@ import {
  * ## What the dialog does
  *
  *   ┌ Publisher's checklist ─────────────────────────────────────────────┐
- *   │ Paste it, or pick a file. Rows line up by card number.             │
+ *   │ Paste it, or pick a file. We line it up by card number…            │
  *   ├──────────────────────────────┬─────────────────────────────────────┤
- *   │ Paste the checklist          │ 248 rows                            │
+ *   │ Paste the checklist          │ ┌ Which of these belong to this set?│
+ *   │                              │ │ [ ] Base Set  [ ] Future Stars    │
+ *   │                              │ 248 rows                            │
  *   │ ┌──────────────────────────┐ │ ┌ #  │ Players       │ Team ───────┐ │
  *   │ │60 Rhett Lowder - Reds    │ │ │ 60 │ Rhett Lowder  │ Cincinnati…│ │
  *   │ │…                         │ │ │ …                               │ │
@@ -49,6 +54,23 @@ import {
  * The preview IS the parse: what the table shows is exactly what the sync
  * gets. Every line that did not become a row is listed under "Skipped lines"
  * with the reason, so nothing is dropped behind the operator's back.
+ *
+ * ## Subsets
+ *
+ * A checklist page often carries several subsets under one heading (Base Set,
+ * Future Stars, a parallel run). When the parse finds two or more, the
+ * preview asks "Which of these belong to this set?" with one checkbox each,
+ * none ticked: guessing which subset is this leaf would be the parser
+ * deciding for the operator. "Use this checklist" is held until one is
+ * ticked, and only the ticked subsets' rows (`filterRowsBySubsets`) are
+ * counted, previewed and used.
+ *
+ * ## Announcements
+ *
+ * The visible count is NOT a live region: read out on every keystroke, it
+ * talked over the typing. An always-mounted sr-only status says it once the
+ * paste has held still for 1.5 s. Why nothing reads, and why a press of "Use
+ * this checklist" did nothing, go in the same status at once.
  *
  * ## State
  *
@@ -73,6 +95,11 @@ export type PublishedChecklist = {
   text: string;
   format: PublishedChecklistParse["format"];
   skippedCount: number;
+  /**
+   * The subsets ticked, when the paste carried two or more; `rows` holds only
+   * theirs. Kept so reopening the dialog shows the same ticks.
+   */
+  subsets?: string[];
 };
 
 /** The largest file read, in bytes — a real checklist is a few dozen KB. */
@@ -87,9 +114,13 @@ export function rowCountText(n: number): string {
   return `${n.toLocaleString("en-US")} ${n === 1 ? "row" : "rows"}`;
 }
 
-/** The chip's text: "Publisher's checklist: 248 rows". */
-export function chipText(n: number): string {
-  return `Publisher's checklist: ${rowCountText(n)}`;
+/**
+ * The chip's text: "Publisher's checklist: 248 rows", and " · 2 skipped" when
+ * any line of the paste was.
+ */
+export function chipText(n: number, skipped = 0): string {
+  const base = `Publisher's checklist: ${rowCountText(n)}`;
+  return skipped > 0 ? `${base} · ${skipped.toLocaleString("en-US")} skipped` : base;
 }
 
 /** The sync result's line: "Teams from your checklist: 240 of 248 cards". */
@@ -102,6 +133,12 @@ export const NOTHING_READS =
   "Nothing reads as a card yet. Each line starts with its card number.";
 /** Said when "Use this checklist" is pressed with no rows to use. */
 export const NOTHING_TO_USE = "Nothing to use yet — paste lines that start with a card number.";
+/** The subset question's legend. */
+export const SUBSET_QUESTION = "Which of these belong to this set?";
+/** Said when "Use this checklist" is pressed before any subset is ticked. */
+export const PICK_A_SUBSET = "Tick at least one subset first — then use it.";
+/** How long the paste must hold still before its count is announced. */
+export const COUNT_ANNOUNCE_DEBOUNCE_MS = 1500;
 
 /** "3 lines skipped." — the count's second half, when any line was. */
 export function skippedLinesText(n: number): string {
@@ -120,11 +157,16 @@ const HEAD_CELL =
 /** A preview row: a rule under every cell but the last row's. */
 const BODY_ROW = "[&>td]:border-b [&>td]:border-rule [&:last-child>td]:border-b-0";
 
-const PLACEHOLDER = [
+/**
+ * What a readable line looks like, shown in the empty preview under an
+ * "Example" label. Not the paste box's placeholder: grey text in the box read
+ * like a checklist already pasted.
+ */
+const EXAMPLE_LINES = [
   "60 Rhett Lowder - Cincinnati Reds (Future Stars)",
   "11 Alonso/Schwarber/Soto (League Leaders)",
   "34 Team Card - Kansas City Royals",
-].join("\n");
+];
 
 export default function PublishedChecklistDialog({
   initial,
@@ -149,7 +191,10 @@ export default function PublishedChecklistDialog({
   const leadId = useId();
   const fileHintId = useId();
   const countId = useId();
+  const subsetBaseId = useId();
   const [text, setText] = useState(initial?.text ?? "");
+  /** The subsets ticked, in tick order; read against the parse's own list. */
+  const [ticked, setTicked] = useState<string[]>(initial?.subsets ?? []);
   const [fileNote, setFileNote] = useState<{ tone: "status" | "error"; text: string } | null>(
     null,
   );
@@ -160,6 +205,7 @@ export default function PublishedChecklistDialog({
   const [blockedFor, setBlockedFor] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
+  const firstSubsetRef = useRef<HTMLInputElement>(null);
 
   // A 2,000-line paste re-parses off the keystroke's own render.
   const deferredText = useDeferredValue(text);
@@ -169,7 +215,40 @@ export default function PublishedChecklistDialog({
   );
   const stale = deferredText !== text;
   const hasText = text.trim() !== "";
-  const canUse = !stale && parsed.rows.length > 0;
+  /** Two or more subsets: the operator says which belong before any row is used. */
+  const subsets = useMemo(
+    () => ((parsed.subsets?.length ?? 0) >= 2 ? (parsed.subsets ?? []) : []),
+    [parsed.subsets],
+  );
+  const asksSubsets = subsets.length > 0;
+  /** Ticks that still name one of this parse's subsets, in the parse's order. */
+  const chosen = useMemo(() => subsets.filter((s) => ticked.includes(s)), [subsets, ticked]);
+  const subsetPending = asksSubsets && chosen.length === 0;
+  /** What the sync gets: every row, or only the ticked subsets' rows. */
+  const usedRows = useMemo(
+    () =>
+      !asksSubsets
+        ? parsed.rows
+        : chosen.length === 0
+          ? []
+          : filterRowsBySubsets(parsed.rows, chosen),
+    [asksSubsets, chosen, parsed.rows],
+  );
+  /** Rows per subset, for the count beside each tick. */
+  const subsetRowCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!asksSubsets) return counts;
+    for (const row of parsed.rows) {
+      if (row.subset !== undefined) counts.set(row.subset, (counts.get(row.subset) ?? 0) + 1);
+    }
+    return counts;
+  }, [asksSubsets, parsed.rows]);
+  /**
+   * Painted from the (deferred) parse alone, so the button does not flash
+   * grey on every keystroke while the parse catches up; a press while it is
+   * still catching up is ignored by `applyChecklist`.
+   */
+  const canUse = usedRows.length > 0;
 
   // Inert the page behind, focus the paste box; on close, put focus back.
   useEffect(() => {
@@ -186,19 +265,28 @@ export default function PublishedChecklistDialog({
   }, [restoreFocusRef]);
 
   const applyChecklist = () => {
+    // A parse still catching up is not "nothing": the press is just early.
+    if (stale) return;
     if (!canUse) {
-      // A parse still catching up is not "nothing": the press is just early.
-      if (stale) return;
       setBlockedFor(text);
-      pasteRef.current?.focus();
+      // Held for a tick: the first subset is what needs doing. Otherwise the paste.
+      if (subsetPending) firstSubsetRef.current?.focus();
+      else pasteRef.current?.focus();
       return;
     }
     onUse({
-      rows: parsed.rows,
+      rows: usedRows,
       text,
       format: parsed.format,
       skippedCount: parsed.skipped.length,
+      ...(asksSubsets ? { subsets: chosen } : {}),
     });
+  };
+
+  const toggleSubset = (subset: string, on: boolean) => {
+    setTicked((prev) =>
+      on ? (prev.includes(subset) ? prev : [...prev, subset]) : prev.filter((s) => s !== subset),
+    );
   };
 
   const onFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -234,11 +322,22 @@ export default function PublishedChecklistDialog({
     }
   };
 
-  const blocked = blockedFor !== null && blockedFor === text;
+  // A blocked press holds until the paste changes, or (when it was a
+  // missing tick) until a subset is ticked.
+  const blocked = blockedFor !== null && blockedFor === text && !canUse;
   const unreadable = hasText && !stale && !parsed.tooBig && parsed.rows.length === 0;
 
-  const shownRows = parsed.rows.slice(0, PREVIEW_ROWS);
+  const shownRows = usedRows.slice(0, PREVIEW_ROWS);
   const shownSkipped = parsed.skipped.slice(0, PREVIEW_SKIPPED);
+
+  /** "248 rows. 3 lines skipped." — the count as a sentence, for the status. */
+  const countSentence = `${rowCountText(usedRows.length)}.${
+    hasText && parsed.skipped.length > 0 ? ` ${skippedLinesText(parsed.skipped.length)}` : ""
+  }`;
+  const announcedCount = useDebouncedValue(countSentence, COUNT_ANNOUNCE_DEBOUNCE_MS);
+  const blockedMessage = subsetPending ? PICK_A_SUBSET : NOTHING_TO_USE;
+  /** The status: why not, at once; otherwise the count once it holds still. */
+  const statusText = blocked ? blockedMessage : unreadable ? NOTHING_READS : announcedCount;
 
   return createPortal(
     // createPortal(document.body) escapes the root Theme's CSS scope.
@@ -258,8 +357,8 @@ export default function PublishedChecklistDialog({
               Publisher&apos;s checklist
             </h2>
             <p id={leadId} className="mt-0.5 text-sm text-ink-2">
-              Paste it straight off the checklist page, or pick a file. Rows line up by card
-              number — the marketplace only gets asked about cards your list skips.
+              Paste it straight off the checklist page, or pick a file. We line it up by card
+              number and only look up teams your list leaves out.
             </p>
           </header>
 
@@ -279,7 +378,6 @@ export default function PublishedChecklistDialog({
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                     onKeyDown={onPasteKeyDown}
-                    placeholder={PLACEHOLDER}
                     spellCheck={false}
                     aria-describedby={countId}
                     className="min-h-48 w-full resize-y px-3 py-2 font-mono text-xs leading-relaxed md:min-h-72"
@@ -289,8 +387,11 @@ export default function PublishedChecklistDialog({
                   {/* The visible label IS the control's face: the file input
                       sits inside it, visually hidden but focusable, so Tab
                       lands here and Enter/Space opens the picker. The ring
-                      follows focus-within. */}
-                  <label className="inline-flex cursor-pointer items-center rounded-md border-2 border-neon-blue-text px-3 py-1.5 text-sm font-semibold text-neon-blue-text transition-colors hover:bg-neon-blue/10 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus max-sm:min-h-11">
+                      follows focus-within. Painted as NeonButton's secondary
+                      outline (`neonButtonPaint("secondary", true)`): a 1px
+                      edge in the hue, filling with it (and its ink) under the
+                      pointer, so it reads as the button it acts as. */}
+                  <label className="inline-flex h-8 cursor-pointer items-center rounded-md border border-neon-blue-text px-3 text-sm font-medium text-neon-blue-text transition-colors hover:border-neon-blue hover:bg-neon-blue hover:text-on-neon-blue focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus max-sm:min-h-11">
                     Choose a file
                     <Input
                       bare
@@ -325,19 +426,60 @@ export default function PublishedChecklistDialog({
 
               {/* Right: what the sync will get. */}
               <div className="flex min-w-0 flex-col gap-3">
+                {/* Two or more subsets: which belong to this set. Nothing is
+                    ticked to start, and nothing is used until one is. */}
+                {asksSubsets && (
+                  <fieldset className="rounded-md border border-rule-strong px-3 pb-3 pt-1">
+                    <legend className="px-1 text-sm font-semibold text-ink">
+                      {SUBSET_QUESTION}
+                    </legend>
+                    <p className="mb-2 text-xs text-ink-3">
+                      This checklist has {subsets.length} subsets. Only the ones you tick are used.
+                    </p>
+                    <ul className="flex flex-wrap gap-x-4 gap-y-1">
+                      {subsets.map((subset, i) => {
+                        const countOf = `${subsetBaseId}-${i}`;
+                        const on = chosen.includes(subset);
+                        return (
+                          <li key={subset}>
+                            {/* The whole row is the target; the box's own
+                                name is the subset's, and its row count is
+                                its description. */}
+                            <label className="flex cursor-pointer items-center gap-2 py-1 text-sm text-ink max-sm:min-h-11">
+                              <Checkbox
+                                ref={i === 0 ? firstSubsetRef : undefined}
+                                checked={on}
+                                onChange={(e) => toggleSubset(subset, e.target.checked)}
+                                aria-label={subset}
+                                aria-describedby={countOf}
+                                className="items-center"
+                              />
+                              <span>{subset}</span>
+                              <span id={countOf} className="tabular-nums text-xs text-ink-3">
+                                {rowCountText(subsetRowCounts.get(subset) ?? 0)}
+                              </span>
+                            </label>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </fieldset>
+                )}
+
                 {/* Wraps phrase by phrase: each half of the count, and "Read as
                     …", is `whitespace-nowrap`, so a narrow column (a phone)
                     moves a whole phrase to the next line instead of splitting
                     "2 lines skipped." */}
                 <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                  {/* ONE always-mounted status region for what the paste
-                      reads as: "248 rows. 3 lines skipped.", or why nothing
-                      does, or why "Use this checklist" did nothing. The paste
-                      box and that button are described by it. */}
-                  <p id={countId} role="status" className="min-w-0">
+                  {/* What the paste reads as: "248 rows. 3 lines skipped.", or
+                      why nothing does, or why "Use this checklist" did
+                      nothing. The paste box and that button are described by
+                      it. Not a live region: the sr-only status below speaks
+                      for it. */}
+                  <p id={countId} className="min-w-0">
                     {blocked ? (
                       <span className="text-sm font-semibold text-neon-pink-text">
-                        {NOTHING_TO_USE}
+                        {blockedMessage}
                       </span>
                     ) : unreadable ? (
                       <span className="text-sm text-neon-pink-text">{NOTHING_READS}</span>
@@ -345,10 +487,10 @@ export default function PublishedChecklistDialog({
                       <>
                         <span
                           className={`whitespace-nowrap text-2xl font-semibold tabular-nums ${
-                            parsed.rows.length > 0 ? "text-neon-green-text" : "text-ink-3"
+                            usedRows.length > 0 ? "text-neon-green-text" : "text-ink-3"
                           }`}
                         >
-                          {rowCountText(parsed.rows.length)}
+                          {rowCountText(usedRows.length)}
                         </span>
                         <span className="sr-only">.</span>
                         {hasText && parsed.skipped.length > 0 && (
@@ -368,8 +510,16 @@ export default function PublishedChecklistDialog({
                     </p>
                   )}
                 </div>
+                {/* The one live region for the count: always mounted, after
+                    the visible count (so a text locator's first match is the
+                    one on screen). The count is said once the paste holds
+                    still for 1.5 s; a blocked press and an unreadable paste
+                    are said at once. */}
+                <p role="status" className="sr-only" data-checklist-count-status="">
+                  {statusText}
+                </p>
 
-                {parsed.rows.length > 0 ? (
+                {usedRows.length > 0 ? (
                   // `overflow-clip`, not `hidden`: it rounds the header's corners
                   // without becoming a scroll container, so the header still
                   // sticks to the dialog body, the element that scrolls.
@@ -423,27 +573,42 @@ export default function PublishedChecklistDialog({
                         ))}
                       </tbody>
                     </table>
-                    {parsed.rows.length > shownRows.length && (
+                    {usedRows.length > shownRows.length && (
                       <p className="border-t border-rule px-3 py-1.5 text-xs text-ink-3">
-                        Showing the first {shownRows.length}. All {parsed.rows.length.toLocaleString("en-US")} go to the sync.
+                        Showing the first {shownRows.length}. All {usedRows.length.toLocaleString("en-US")} go to the sync.
                       </p>
                     )}
                   </div>
                 ) : (
-                  <p className="rounded-md border border-dashed border-rule-strong px-3 py-6 text-center text-sm text-ink-3">
+                  <div className="rounded-md border border-dashed border-rule-strong px-3 py-6 text-center text-sm text-ink-3">
                     {parsed.tooBig ? (
-                      <span role="alert" className="text-neon-pink-text">
+                      <p role="alert" className="text-neon-pink-text">
                         Whoa, that&apos;s a lot. A pasted checklist is under 2 MB — paste just this
                         set&apos;s list.
-                      </span>
+                      </p>
+                    ) : subsetPending ? (
+                      <p>Tick the subsets that belong to this set, and their rows show up here.</p>
                     ) : hasText ? (
-                      // Why nothing reads is said once, in the status above;
+                      // Why nothing reads is said once, in the count above;
                       // here, what a line that does read looks like.
-                      "Try a line like “60 Rhett Lowder - Cincinnati Reds”."
+                      <p>Try a line like “60 Rhett Lowder - Cincinnati Reds”.</p>
                     ) : (
-                      "Your rows show up here as you paste."
+                      <>
+                        <p>Your rows show up here as you paste.</p>
+                        {/* Labelled as an example and kept out of the paste
+                            box, so it never reads as a checklist already
+                            pasted. */}
+                        <figure className="mx-auto mt-4 w-fit max-w-full text-left">
+                          <figcaption className="text-xs font-semibold text-ink-2">
+                            Example lines
+                          </figcaption>
+                          <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-ink-3">
+                            {EXAMPLE_LINES.join("\n")}
+                          </pre>
+                        </figure>
+                      </>
                     )}
-                  </p>
+                  </div>
                 )}
 
                 {hasText && !parsed.tooBig && (
@@ -501,30 +666,64 @@ export default function PublishedChecklistDialog({
 
 /**
  * The chip beside the checklist header once a publisher's checklist is in
- * use: "Publisher's checklist: 248 rows" and its Remove. While it shows, the
- * chip is the checklist's handle: "Add the publisher's checklist" is gone, and
- * Remove brings it back.
+ * use: "Publisher's checklist: 248 rows" (" · 2 skipped" when lines were) and
+ * its Remove. While it shows, the chip is the checklist's handle: "Add the
+ * publisher's checklist" is gone, Remove brings it back, and the chip's text
+ * is itself a button that reopens the dialog on what was pasted, to edit it.
  *
  * One line at every width, so it stays a pill: the text truncates, and
  * Remove's 44px touch target is an invisible 10px extension above and below
  * the 24px button (`after:`), not a taller chip (a 44px-tall chip read as an
  * oval on a phone).
+ *
+ * Remove is quiet-destructive: neutral ink at rest (pink text on the chip was
+ * 4.1:1 in dark), the pink fill with its own ink under the pointer or focus.
  */
 export function PublishedChecklistChip({
   rowCount,
+  skippedCount = 0,
+  onOpen,
   onRemove,
   disabled = false,
+  openRef,
   removeRef,
 }: {
   rowCount: number;
+  /** Lines of the paste that did not become rows. */
+  skippedCount?: number;
+  /** Reopens the dialog on the checklist in use. */
+  onOpen?: () => void;
   onRemove: () => void;
   disabled?: boolean;
+  /** The chip's text button, so focus can come back to it from the dialog. */
+  openRef?: Ref<HTMLButtonElement>;
   /** Remove, so focus can land on it when the chip appears. */
   removeRef?: Ref<HTMLButtonElement>;
 }) {
+  const label = chipText(rowCount, skippedCount);
   return (
-    <div className="mb-3 inline-flex max-w-full items-center gap-2 rounded-full border border-neon-purple-text/70 bg-neon-purple/10 py-1 pl-3 pr-1 text-sm">
-      <span className="min-w-0 truncate text-ink">{chipText(rowCount)}</span>
+    <div className="mb-3 inline-flex max-w-full items-center gap-1 rounded-full border border-neon-purple-text/70 py-1 pl-1 pr-1 text-sm">
+      {onOpen ? (
+        <button
+          ref={openRef}
+          type="button"
+          onClick={() => {
+            if (!disabled) onOpen();
+          }}
+          aria-disabled={disabled || undefined}
+          aria-haspopup="dialog"
+          title="Open it to check or change it"
+          className={`relative flex min-h-6 min-w-0 rounded-full px-2 py-0.5 text-left text-ink underline-offset-2 transition-colors after:absolute after:inset-x-0 after:-inset-y-2.5 after:content-[''] hover:bg-hover-raised hover:underline focus-outline ${
+            disabled ? "cursor-not-allowed opacity-60" : ""
+          }`}
+        >
+          {/* Truncated inside, never on the button: overflow on the button
+              would clip its touch extension. */}
+          <span className="min-w-0 truncate">{label}</span>
+        </button>
+      ) : (
+        <span className="min-w-0 truncate px-2 text-ink">{label}</span>
+      )}
       <button
         ref={removeRef}
         type="button"
@@ -533,8 +732,10 @@ export function PublishedChecklistChip({
         }}
         aria-disabled={disabled || undefined}
         aria-label="Remove the publisher's checklist"
-        className={`relative min-h-6 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold text-neon-pink-text transition-colors after:absolute after:inset-x-0 after:-inset-y-2.5 after:content-[''] hover:bg-neon-pink/15 focus-outline ${
-          disabled ? "cursor-not-allowed opacity-60" : ""
+        className={`relative min-h-6 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold text-ink-2 transition-colors after:absolute after:inset-x-0 after:-inset-y-2.5 after:content-[''] focus-outline ${
+          disabled
+            ? "cursor-not-allowed opacity-60"
+            : "hover:bg-neon-pink hover:text-on-neon-pink focus-visible:bg-neon-pink focus-visible:text-on-neon-pink"
         }`}
       >
         Remove

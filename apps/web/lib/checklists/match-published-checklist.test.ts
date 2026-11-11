@@ -8,6 +8,7 @@ import {
   MAX_CHECKLIST_MISREADS,
   matchPublishedChecklist,
   normalizeChecklistNumber,
+  playersAgree,
   stripLetterPrefix,
 } from "./match-published-checklist";
 
@@ -153,6 +154,58 @@ describe("matchPublishedChecklist: disagreements and fills", () => {
   test("a card with a team and a row with none is no team conflict", () => {
     const r = matchPublishedChecklist([card("4", ["A"], ["Mets"])], [row("4", ["A"])]);
     expect(r.matches[0].conflict).toBeUndefined();
+  });
+});
+
+describe("matchPublishedChecklist: checklist surnames (collector review S4)", () => {
+  test("Alonso/Schwarber/Soto against the marketplace's full names is agreement, and nothing is written", () => {
+    const r = matchPublishedChecklist(
+      [card("11", ["Pete Alonso", "Kyle Schwarber", "Juan Soto"])],
+      [row("11", ["Alonso", "Schwarber", "Soto"])],
+    );
+    expect(r.matches).toEqual([{ cardIndex: 0, rowIndex: 0, via: "number" }]);
+  });
+
+  test("a one-player card agrees with its surname, suffixes and multi-word surnames included", () => {
+    expect(playersAgree(["Pete Alonso"], ["Alonso"])).toBe(true);
+    expect(playersAgree(["Ken Griffey Jr."], ["Griffey"])).toBe(true);
+    expect(playersAgree(["Elly De La Cruz"], ["De La Cruz"])).toBe(true);
+    expect(playersAgree(["Elly De La Cruz"], ["Cruz"])).toBe(true);
+  });
+
+  test("a mix of full names and surnames agrees, full names paired first", () => {
+    expect(playersAgree(["Will Smith", "Dominic Smith"], ["Smith", "Will Smith"])).toBe(true);
+    expect(playersAgree(["Will Smith", "Dominic Smith"], ["Will Smith", "Smith"])).toBe(true);
+  });
+
+  test("different counts are a disagreement, even when every surname appears", () => {
+    expect(playersAgree(["Pete Alonso", "Kyle Schwarber", "Juan Soto"], ["Alonso", "Soto"])).toBe(
+      false,
+    );
+    const r = matchPublishedChecklist(
+      [card("11", ["Pete Alonso", "Kyle Schwarber", "Juan Soto"])],
+      [row("11", ["Alonso", "Soto"])],
+    );
+    expect(r.matches[0].conflict?.players).toEqual({
+      marketplace: ["Pete Alonso", "Kyle Schwarber", "Juan Soto"],
+      checklist: ["Alonso", "Soto"],
+    });
+  });
+
+  test("a surname that is not a marketplace name's ending is a disagreement", () => {
+    expect(playersAgree(["Pete Alonso", "Juan Soto"], ["Alonso", "Judge"])).toBe(false);
+    // A name's first word is not its surname.
+    expect(playersAgree(["Pete Alonso"], ["Pete"])).toBe(false);
+    // Part of a word is not a word.
+    expect(playersAgree(["Pete Alonso"], ["lonso"])).toBe(false);
+  });
+
+  test("one marketplace name answers one surname only", () => {
+    expect(playersAgree(["Will Smith", "Pete Alonso"], ["Smith", "Smith"])).toBe(false);
+  });
+
+  test("the comparison runs one way: a full checklist name against a marketplace surname disagrees", () => {
+    expect(playersAgree(["Alonso"], ["Pete Alonso"])).toBe(false);
   });
 });
 
