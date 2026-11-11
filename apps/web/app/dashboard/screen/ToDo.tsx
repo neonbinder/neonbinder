@@ -1,15 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { ArchiveBoxIcon, CheckCircleIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
-import {
-  daysAgoLabel,
-  isLate,
-  MARKETPLACES,
-  type DashboardData,
-  type SaleLine,
-  type SaleProblem,
-  type SalesData,
-  type UnshippedSale,
-} from "../fake-data";
+import type { DashboardData, SaleLine, SaleProblem, SalesData, UnshippedSale } from "../fake-data";
+import { daysAgoLabel, isLate, MARKETPLACES } from "../dash-labels";
 import { CardTitle, count, MarketBadge, orderAnchor, Thumb } from "./bits";
 import { PanelLink } from "./panelLink";
 

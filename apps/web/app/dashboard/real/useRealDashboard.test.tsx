@@ -641,8 +641,9 @@ describe("the demo's shelf", () => {
     expect(binders.length).toBe(9);
     expect(binders.length).toBeLessThanOrEqual(SHELF_CAP);
     expect(binders.every((b) => b.pockets.length > 0)).toBe(true);
-    // The demo hands the screen no shelf of its own: it is derived.
-    expect(getDashboard().binders).toBeUndefined();
+    // The demo hands the screen its shelf, laid out by `bindersOf`: the screen
+    // derives none (so the signed-in page never loads the demo's data).
+    expect(getDashboard().binders).toEqual(binders);
   });
 });
 

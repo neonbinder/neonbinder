@@ -41,6 +41,7 @@ import { initialCollectionState, MAIN_BINDER_ID } from "@/app/collection/final/s
 import { compareCardNumbers } from "@/app/collection/final/data/labels";
 import type { CardId, SetId, VariantKind } from "@/app/collection/final/data/types";
 import { toDash, type DashCard } from "./dash-card";
+import type { Marketplace } from "./dash-labels";
 import { DEFAULT_SPINE_FONT_ID } from "@/lib/print/spine-fonts";
 import { labelOf, PLAIN_LABEL } from "@/app/collection/final/binders/label";
 import type { ContainerLabel } from "@/app/collection/final/data/types";
@@ -132,14 +133,9 @@ function binderOf(cardId: CardId): string | null {
 // Sales (dealer only)
 // ---------------------------------------------------------------------------
 
-export type Marketplace = "bsc" | "sportlots" | "ebay";
-
-/** How a marketplace badge reads. `short` fits a small pill; `name` is for an accessible name. */
-export const MARKETPLACES: Record<Marketplace, { name: string; short: string }> = {
-  bsc: { name: "BuySportsCards", short: "BSC" },
-  sportlots: { name: "SportLots", short: "SportLots" },
-  ebay: { name: "eBay", short: "eBay" },
-};
+// The shared words (badges, "3 days ago") live in `./dash-labels`, which the
+// signed-in page imports without loading this file's demo store and catalog.
+export { daysAgoLabel, isLate, MARKETPLACES, type Marketplace } from "./dash-labels";
 
 /**
  * What is wrong with one line of an order.
@@ -184,18 +180,6 @@ export interface UnshippedSale {
 export interface SalesData {
   /** Every order not shipped yet, OLDEST FIRST. Empty means "All shipped. Nice." */
   unshipped: UnshippedSale[];
-}
-
-/** A row turns the warning colour from day 2. */
-export function isLate(sale: Pick<UnshippedSale, "daysSinceSold">): boolean {
-  return sale.daysSinceSold >= 2;
-}
-
-/** "Today", "Yesterday", "3 days ago". */
-export function daysAgoLabel(days: number): string {
-  if (days <= 0) return "Today";
-  if (days === 1) return "Yesterday";
-  return `${days} days ago`;
 }
 
 function sale(id: string, marketplace: Marketplace, orderNumber: string, daysSinceSold: number, statusText: string, lines: SaleLine[]): UnshippedSale {
@@ -826,9 +810,9 @@ export interface DashboardData {
    */
   totals: { cards: number; binders: number; boxes?: number; exact?: boolean };
   /**
-   * The binders on the shelf, each with its pockets already laid out. The
-   * signed-in page supplies them from the collection store; absent (the
-   * demo), the screen derives the demo's shelf from the rest (`bindersOf`).
+   * The binders on the shelf, each with its pockets already laid out: the
+   * signed-in page's from the collection store, the demo's from `bindersOf`
+   * (`getDashboard` fills it in). Absent or empty: no binders on the shelf.
    */
   binders?: ShelfBinder[];
 }
@@ -855,8 +839,12 @@ const DASHBOARD: DashboardData = {
   totals: { cards: CARD_COUNT, binders: BINDER_COUNT, boxes: SHELF_BOXES.length },
 };
 
-/** The fake collector's dashboard, every section filled. Built once at load: the same object every call. */
+/**
+ * The fake collector's dashboard, every section filled, its shelf laid out
+ * (`bindersOf`). Built once, on the first call: the same object every call.
+ */
 export function getDashboard(): DashboardData {
+  DASHBOARD.binders ??= bindersOf(DASHBOARD);
   return DASHBOARD;
 }
 

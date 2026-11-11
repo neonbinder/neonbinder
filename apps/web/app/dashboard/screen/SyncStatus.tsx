@@ -1,6 +1,7 @@
 import { ArrowPathIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import { Link, useLocation } from "react-router";
-import { MARKETPLACES, type SyncProblemSet, type SyncStatusData } from "../fake-data";
+import type { SyncProblemSet, SyncStatusData } from "../fake-data";
+import { MARKETPLACES } from "../dash-labels";
 import { CardTitle, count, MarketBadge, sideHref, Thumb } from "./bits";
 import { PanelLink } from "./panelLink";
 import { useOpen } from "./useOpen";

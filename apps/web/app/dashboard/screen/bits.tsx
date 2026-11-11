@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
 import "@/app/collection/final/cards/cards.css";
 import type { Side } from "@/app/collection/final/data/types";
-import { MARKETPLACES, type DashCard, type Marketplace } from "../fake-data";
+import type { DashCard } from "../fake-data";
+import { MARKETPLACES, type Marketplace } from "../dash-labels";
 import { PanelLink } from "./panelLink";
 
 /**

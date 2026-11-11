@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router";
-import { bindersOf, type DashboardData } from "../fake-data";
+import type { DashboardData } from "../fake-data";
 import { BlockHeading, count } from "./bits";
 import Hopper from "./Hopper";
 import Boards, { boardItems } from "./Boards";
@@ -99,13 +99,14 @@ function wantIds(data: DashboardData): Set<string> {
 /**
  * The dashboard screen. Pure of its source: the caller passes the data (fake,
  * from `demo/`; or the signed-in account's, from `real/`), and the screen
- * draws the sections that data fills. The shelf is `data.binders` when the
- * caller lays it out; the demo leaves it to `bindersOf`.
+ * draws the sections that data fills. The shelf is `data.binders`, laid
+ * out by the caller (the demo's by `bindersOf` in `../fake-data`, so this
+ * screen, which the signed-in page loads, never loads the demo's data).
  */
 export default function DashboardScreen({ data }: { data: DashboardData }) {
   const [params, setParams] = useSearchParams();
   const wanted = useMemo(() => wantIds(data), [data]);
-  const binders = useMemo(() => shelfOrder(data.binders ?? bindersOf(data)), [data]);
+  const binders = useMemo(() => shelfOrder(data.binders ?? []), [data]);
   const boards = useMemo(() => boardItems(data.building, binders), [data.building, binders]);
 
   const open = binders.find((b) => b.id === params.get(BINDER_PARAM)) ?? null;

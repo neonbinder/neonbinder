@@ -78,29 +78,28 @@ import type {
 } from "@/app/collection/final/data/types";
 import { problemSentence } from "@/app/collection/final/inventory/listing/copy";
 import { toDash, type DashCard } from "../dash-card";
-import {
-  daysAgoLabel,
-  type AddedCard,
-  type AdditionBatch,
-  type BuildingSet,
-  type CompletedSet,
-  type DashboardData,
-  type IntakeInProgress,
-  type IntakeScan,
-  type IntakeUpload,
-  type Marketplace,
-  type NewListing,
-  type NewSet,
-  type SaleLine,
-  type SalesData,
-  type ShelfBox,
-  type SmartBinderSummary,
-  type SyncStatusData,
-  type TradePile,
-  type UnlistedBox,
-  type UnshippedSale,
-  type WantCard,
+import type {
+  AddedCard,
+  AdditionBatch,
+  BuildingSet,
+  CompletedSet,
+  DashboardData,
+  IntakeInProgress,
+  IntakeScan,
+  IntakeUpload,
+  NewListing,
+  NewSet,
+  SaleLine,
+  SalesData,
+  ShelfBox,
+  SmartBinderSummary,
+  SyncStatusData,
+  TradePile,
+  UnlistedBox,
+  UnshippedSale,
+  WantCard,
 } from "../fake-data";
+import { daysAgoLabel, type Marketplace } from "../dash-labels";
 import { NEED_NAMED } from "../screen/Boards";
 import { COULD_FIT_PREVIEW } from "../screen/CouldFit";
 import type { Pocket, ShelfBinder } from "../screen/shelf-model";

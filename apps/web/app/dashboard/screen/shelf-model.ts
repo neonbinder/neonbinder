@@ -4,7 +4,8 @@
  * your cards COULD FIT a smart binder (block 5).
  *
  * The shape only. Each binder arrives with its pockets already laid out by
- * whoever built it: the demo's fake shelf (`bindersOf` in `../fake-data`) or
+ * whoever built it: the demo's fake shelf (`bindersOf` in `../fake-data`, via
+ * `getDashboard`) or
  * the signed-in collection (`../real/useRealDashboard`). Nothing here reads
  * a source of its own.
  */
