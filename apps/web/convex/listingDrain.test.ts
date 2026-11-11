@@ -1702,12 +1702,23 @@ describe("drainOwner: the run's steps (NEO-415)", () => {
     const s = await setup();
     const { v } = await twoCards(s);
     let duringSignIn: string[] | null = null;
+    let waitingSinceDuringSignIn: number | undefined;
     creds.onToken = async () => {
       duringSignIn = await stepsOf(s, v.variantId);
-      // Long enough to tell the sign-in from the first call's own wait.
-      await new Promise((r) => setTimeout(r, 80));
+      // The wait edge's write is chained behind the step writes and lands
+      // asynchronously, so poll the stored step for the live wait line (the
+      // sleep doubles as the 80 ms that tells the sign-in from the first
+      // call's own wait).
+      const deadline = Date.now() + 80;
+      do {
+        await new Promise((r) => setTimeout(r, 5));
+        waitingSinceDuringSignIn = (await record(s, v.variantId))?.progress?.steps[0]?.marketplaceWaitingSince;
+      } while (waitingSinceDuringSignIn === undefined && Date.now() < deadline);
+      const rest = deadline - Date.now();
+      if (rest > 0) await new Promise((r) => setTimeout(r, rest));
     };
     await drain(s);
+    expect(waitingSinceDuringSignIn).toBeTypeOf("number");
     expect(duringSignIn).toEqual(["read Mint/Near Mint: working", "read Excellent: waiting", "send: waiting"]);
     const first = (await record(s, v.variantId))?.progress?.steps[0];
     expect(first).toMatchObject({ kind: "read", status: "done" });

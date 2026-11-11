@@ -358,6 +358,23 @@ describe("saveCredentials — the BSC seller id is saved before listing turns on
     expect(row?.platformAccountId).toBeUndefined();
     await drainScheduled(t);
   });
+
+  test("a login that fails writes no listing save and starts no listing", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    stubFetch(async (url) =>
+      String(url).includes("/login/bsc")
+        ? jsonResponse({ success: false, message: "bad password", sellerId: "seller-489" })
+        : (() => {
+            throw new Error(`unexpected fetch: ${url}`);
+          })(),
+    );
+
+    expect((await save(t)).success).toBe(false);
+
+    expect(calls.filter((c) => c.listing === "save")).toEqual([]);
+    expect((await bscListingRow(t))?.listingStartedAt).toBeUndefined();
+    await drainScheduled(t);
+  });
 });
 
 describe("saveCredentials — clear branch (atomic flag update, replaces deleteSiteCredentials)", () => {
