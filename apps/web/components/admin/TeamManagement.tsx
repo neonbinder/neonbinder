@@ -102,6 +102,8 @@ const NO_LEAGUE = "";
 const ADD_LEAGUE = "__add__";
 /** The league filter's "every team" value — not an id, so it is never a param. */
 const ALL_LEAGUES = "all";
+/** One empty list, so a memo keyed on the master list's rows stays put. */
+const NO_TEAMS: readonly Team[] = [];
 
 /** NEO-254 — the franchise field's "not on a thread" value. */
 const NO_FRANCHISE = "";
@@ -1267,13 +1269,42 @@ export function teamCounterAnnouncement({
 // ---------------------------------------------------------------------------
 
 export default function TeamManagement() {
-  const management = useQuery(api.teams.listForManagement, {});
   const leagues = useQuery(api.leagues.list, {});
 
   const [filter, setFilter] = useState("");
   const [debouncedFilter, setDebouncedFilter] = useState("");
   const [leagueFilter, setLeagueFilter] = useState<string>(ALL_LEAGUES);
   const [selectedId, setSelectedId] = useState<Id<"teams"> | null>(null);
+
+  /**
+   * NEO-495 — the master list, read FOR the league the dropdown names.
+   *
+   * It used to be the newest-2000 window with the league applied in the
+   * browser, so a league's older rows — every real MLB club — were never in
+   * it, and MLB answered with whichever handful of MLB-tagged rows happened to
+   * be recent. The server now reads the league's own rows (`by_league_id`),
+   * "No league" included; "All leagues" is still the newest-first window.
+   *
+   * Changing the league changes the query's arguments, so for one round trip
+   * `listAnswer` is `undefined`. The last answer is HELD so the screen does not
+   * drop back to its first-load "Loading teams…" and unmount the controls the
+   * operator is using (the select would lose focus mid-keyboard). `listPending`
+   * marks the held answer as belonging to the league just left: the list says
+   * it is loading rather than show the old league's rows under the new name.
+   * Adjusted during render, the pattern the `?team=` follower below uses.
+   */
+  const listAnswer = useQuery(
+    api.teams.listForManagement,
+    leagueFilter === ALL_LEAGUES
+      ? {}
+      : { leagueId: leagueFilter as Id<"leagues"> | "none" },
+  );
+  const [heldList, setHeldList] = useState(listAnswer);
+  if (listAnswer !== undefined && listAnswer !== heldList) {
+    setHeldList(listAnswer);
+  }
+  const management = listAnswer ?? heldList;
+  const listPending = listAnswer === undefined && heldList !== undefined;
 
   useEffect(() => {
     const timer = setTimeout(
@@ -1505,7 +1536,10 @@ export default function TeamManagement() {
    * NEO-330 — the rows the master list filters: the server's answer to the
    * typed filter once it has one, the loaded window otherwise.
    */
-  const base = searchAnswer?.teams ?? teams;
+  // NEO-495 — while the list for a newly picked league is in flight, the held
+  // rows belong to the league just left, so they are not shown under the new
+  // one; the list says it is loading instead (see `listPending`).
+  const base = searchAnswer?.teams ?? (listPending ? NO_TEAMS : teams);
   const filterReadings = useMemo(() => teamFilterReadings(filter), [filter]);
 
   const visible = useMemo(() => {
@@ -1521,12 +1555,11 @@ export default function TeamManagement() {
       // typed filter too, so the window's answer and the server's agree. The
       // server's rows are already matched (an exact alias included), so they
       // are not re-tested.
-      if (!searchAnswer && !teamMatchesFilter(team, filterReadings)) {
-        return false;
-      }
-      if (leagueFilter === ALL_LEAGUES) return true;
-      if (leagueFilter === "none") return !team.leagueId;
-      return team.leagueId === leagueFilter;
+      // NEO-495 — no league test here any more: both server answers are
+      // already scoped to the dropdown's league (`listForManagement` and
+      // `searchForManagement` each take it), so a check in the browser could
+      // only ever hide a bug in what the screen asked for.
+      return searchAnswer !== undefined || teamMatchesFilter(team, filterReadings);
     });
     return matched.sort(
       (a, b) =>
@@ -1540,7 +1573,7 @@ export default function TeamManagement() {
         // with work outstanding, not the row the history starts with.
         (a.yearsActive?.from ?? Infinity) - (b.yearsActive?.from ?? Infinity),
     );
-  }, [base, searchAnswer, filterReadings, leagueFilter]);
+  }, [base, searchAnswer, filterReadings]);
 
   /**
    * NEO-330 — the open team, read by id.
@@ -1599,8 +1632,13 @@ export default function TeamManagement() {
    * interim browser-side count. Adjusted during render (the "state from a
    * changing value" pattern the `?team=` follower uses), not in an effect.
    */
+  // NEO-495 — while a newly picked league's list is in flight (and no server
+  // search answer stands in for it) there is no count to give: the rows on
+  // hand belong to the league just left. The counter goes blank for that round
+  // trip and the live region holds its last settled sentence.
+  const countPending = listPending && searchAnswer === undefined;
   const settledAnnouncement =
-    management === undefined
+    management === undefined || countPending
       ? null
       : teamCounterAnnouncement({
           typed: filter.trim(),
@@ -1608,15 +1646,16 @@ export default function TeamManagement() {
           answered: searchAnswer !== undefined,
           serverTruncated: searchAnswer?.truncated ?? false,
         });
-  const counterText =
-    teamCounterSentence({
-      typed: filter.trim(),
-      matched: visible.length,
-      serverTruncated: searchAnswer?.truncated ?? false,
-    }) +
-    (needingAttention > 0
-      ? ` · ${formatCount(needingAttention)} need attention`
-      : "");
+  const counterText = countPending
+    ? ""
+    : teamCounterSentence({
+        typed: filter.trim(),
+        matched: visible.length,
+        serverTruncated: searchAnswer?.truncated ?? false,
+      }) +
+      (needingAttention > 0
+        ? ` · ${formatCount(needingAttention)} need attention`
+        : "");
   const [announcement, setAnnouncement] = useState("");
   if (settledAnnouncement !== null && settledAnnouncement !== announcement) {
     setAnnouncement(settledAnnouncement);
@@ -1732,6 +1771,8 @@ export default function TeamManagement() {
         <div className="rounded-lg border border-rule max-h-[32rem] overflow-y-auto">
           {visible.length === 0 && awaitingSearch ? (
             <p className="p-3 text-sm text-ink-3">Searching…</p>
+          ) : visible.length === 0 && listPending ? (
+            <p className="p-3 text-sm text-ink-3">Loading teams…</p>
           ) : visible.length === 0 ? (
             <p className="p-3 text-sm text-ink-3">
               No teams match that filter.

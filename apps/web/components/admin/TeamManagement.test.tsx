@@ -140,6 +140,57 @@ let currentTeams: Array<Record<string, unknown>>;
 let offWindowTeams: Array<Record<string, unknown>>;
 /** NEO-330 — `listForManagement`'s `truncated` flag. */
 let listTruncated: boolean;
+/** NEO-495 — every argument set `teams.listForManagement` was subscribed with. */
+let listCalls: unknown[];
+/**
+ * NEO-495 — leagues whose list is still in flight: `listForManagement` answers
+ * `undefined` for them, as the real hook does for one round trip after its
+ * arguments change.
+ */
+let pendingLeagues: Set<string>;
+/**
+ * NEO-495 — teams a league's OWN read returns that the "All leagues" window
+ * does not: the older rows the newest-first window drops.
+ */
+let leagueOnlyTeams: Array<Record<string, unknown>>;
+let listAnswerCache: Map<
+  string,
+  { from: [unknown, unknown, boolean]; answer: unknown }
+>;
+
+/**
+ * NEO-495 — `listForManagement` as the server answers it: the window for no
+ * league, that league's rows (window and older) for an id, and the rows with
+ * no league for `"none"`.
+ *
+ * Referentially STABLE per arguments, as the real `useQuery` is: the screen
+ * holds the last answer across a league change by identity, and a mock that
+ * minted a new object on every render would read as a new answer every time.
+ */
+function listAnswerFor(args: { leagueId?: string }) {
+  const key = args.leagueId ?? "";
+  if (key && pendingLeagues.has(key)) return undefined;
+  // A test that swaps `currentTeams` mid-render is a reactive update: a new
+  // answer, so a new object.
+  const from: [unknown, unknown, boolean] = [
+    currentTeams,
+    leagueOnlyTeams,
+    listTruncated,
+  ];
+  const cached = listAnswerCache.get(key);
+  if (cached && cached.from.every((part, i) => part === from[i])) {
+    return cached.answer;
+  }
+  const teams =
+    key === ""
+      ? currentTeams
+      : [...currentTeams, ...leagueOnlyTeams].filter((team) =>
+          key === "none" ? !team.leagueId : team.leagueId === key,
+        );
+  const answer = { teams, truncated: key === "" ? listTruncated : false };
+  listAnswerCache.set(key, { from, answer });
+  return answer;
+}
 
 const TEAMS = [
   {
@@ -259,7 +310,8 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "teams.listForManagement") {
-      return { teams: currentTeams, truncated: listTruncated };
+      listCalls.push(args);
+      return listAnswerFor(args as { leagueId?: string });
     }
     if (ref === "teams.searchForManagement") {
       searchCalls.push(args);
@@ -344,6 +396,10 @@ beforeEach(() => {
   currentTeams = TEAMS;
   offWindowTeams = [];
   listTruncated = false;
+  listCalls = [];
+  pendingLeagues = new Set();
+  leagueOnlyTeams = [];
+  listAnswerCache = new Map();
   sharedAliases = undefined;
   searchAnswer = undefined;
   searchCalls = [];
@@ -1027,6 +1083,114 @@ describe("TeamManagement — the ?league deep link", () => {
     expect(screen.getByTestId("search").textContent).toBe(
       "?team=t-yankees&league=l-mlb",
     );
+  });
+});
+
+/**
+ * NEO-495 — the league dropdown asks the SERVER for that league's teams.
+ *
+ * The list used to be the newest-2000 window with the league applied in the
+ * browser, so on production MLB answered with 17 recent MLB-tagged rows and
+ * none of the real clubs, which were all older than the window. These pin the
+ * wiring: what the screen subscribes with, that a row only the league's own
+ * read holds is listed, and what the screen shows for the one round trip
+ * between picking a league and its answer.
+ */
+describe("TeamManagement — the league filter is answered by the server (NEO-495)", () => {
+  /** An MLB club the "All leagues" window does not hold. */
+  const PIRATES = {
+    _id: "t-pirates",
+    _creationTime: 0,
+    name: "Pirates",
+    location: "Pittsburgh",
+    nameNormalized: "pirates pittsburgh",
+    sportId: "sport-baseball",
+    leagueId: "l-mlb",
+    colors: { primary: "#fdb827" },
+  };
+  /** A team with no league, also outside the window. */
+  const CUBANS = {
+    _id: "t-cubans",
+    _creationTime: 0,
+    name: "Cubans",
+    location: "New York",
+    nameNormalized: "cubans new york",
+    sportId: "sport-baseball",
+  };
+
+  it("subscribes with the picked league and lists a club the window does not hold", () => {
+    leagueOnlyTeams = [PIRATES];
+    renderAt("/admin/teams");
+    expect(screen.queryByRole("button", { name: /Pittsburgh Pirates/ })).toBeNull();
+
+    fireEvent.change(select("league-filter")!, { target: { value: "l-mlb" } });
+
+    expect(listCalls.at(-1)).toEqual({ leagueId: "l-mlb" });
+    expect(row("Pittsburgh Pirates")).toBeTruthy();
+    expect(row("New York Yankees")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Seattle Mariners/ })).toBeNull();
+    expect(counter().textContent).toBe("2 teams");
+  });
+
+  it("asks for 'none' under No league, and lists only teams without one", () => {
+    leagueOnlyTeams = [CUBANS];
+    renderAt("/admin/teams");
+
+    fireEvent.change(select("league-filter")!, { target: { value: "none" } });
+
+    expect(listCalls.at(-1)).toEqual({ leagueId: "none" });
+    expect(row("New York Cubans")).toBeTruthy();
+    expect(row("Seattle Mariners")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /New York Yankees/ })).toBeNull();
+  });
+
+  it("asks for the whole window again, with no league argument, under All leagues", () => {
+    renderAt("/admin/teams?league=l-mlb");
+    expect(listCalls.at(-1)).toEqual({ leagueId: "l-mlb" });
+
+    fireEvent.change(select("league-filter")!, { target: { value: "all" } });
+
+    expect(listCalls.at(-1)).toEqual({});
+    expect(row("Seattle Mariners")).toBeTruthy();
+  });
+
+  it("keeps the controls, and their focus, while the league's list is in flight", () => {
+    pendingLeagues.add("l-mlb");
+    const view = renderAt("/admin/teams");
+    const league = select("league-filter")!;
+    league.focus();
+
+    fireEvent.change(league, { target: { value: "l-mlb" } });
+
+    // Not the screen's first-load "Loading teams…" with nothing else on it:
+    // the select is the same element, still focused, still saying MLB.
+    expect(select("league-filter")).toBe(league);
+    expect(document.activeElement).toBe(league);
+    expect(league.value).toBe("l-mlb");
+    expect(screen.getByLabelText("Filter teams")).toBeTruthy();
+    // The rows on hand belong to "All leagues"; none is shown under MLB.
+    expect(screen.queryByRole("button", { name: /Seattle Mariners/ })).toBeNull();
+    expect(screen.getByText("Loading teams…")).toBeTruthy();
+    // No count to give yet, and the live region keeps its last settled one.
+    expect(
+      screen.queryAllByText(/^[\d,]+\+? teams?/).filter(
+        (el) => !el.classList.contains("sr-only"),
+      ),
+    ).toEqual([]);
+    expect(screen.getByRole("status").textContent).toBe("5 teams");
+
+    pendingLeagues.delete("l-mlb");
+    view.rerender(
+      <MemoryRouter initialEntries={["/admin/teams"]}>
+        <TeamManagement />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("Loading teams…")).toBeNull();
+    expect(row("New York Yankees")).toBeTruthy();
+    expect(counter().textContent).toBe("1 team");
+    expect(document.activeElement).toBe(league);
   });
 });
 

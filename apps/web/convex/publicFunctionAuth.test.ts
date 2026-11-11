@@ -270,6 +270,10 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // instead of the capped list. It stands in for `teams.listForManagement`,
     // so it carries that list's gate.
     ["teams.searchForManagement", (t) => t.query(api.teams.searchForManagement, { query: "Yankees" })],
+    // NEO-495. The list it stands in for, now that it also answers the league
+    // dropdown from the league's own rows. Admin-only since NEO-156; pinned
+    // here when its arguments grew.
+    ["teams.listForManagement", (t) => t.query(api.teams.listForManagement, { leagueId: "none" })],
     // NEO-301: both bulk fast paths are public ACTIONS now (a query picks the
     // page, an internal mutation writes it), and the admin gate runs in the
     // action before either half is reached. The create twin was never pinned
