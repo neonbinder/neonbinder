@@ -1673,3 +1673,63 @@ describe("commitCardChecklist — a checklist's No Team answer (NEO-489)", () =>
     await settle(t);
   });
 });
+
+describe("commitCardChecklist: a dual-team BSC value stays two teams (NEO-489)", () => {
+  const BOS = "Boston Red Sox";
+  const DET = "Detroit Tigers";
+
+  test("both clubs held: the card links both, in BSC's order, and no combined team is made", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const det = await seedTeam(t, sportId, DET);
+    const bos = await seedTeam(t, sportId, BOS);
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({
+          cardNumber: "PDA-WW",
+          bscRef: "B1",
+          teams: [DET, BOS],
+          rawTeamName: `${DET}, ${BOS}`,
+          teamLookup: "answered",
+        }),
+      ],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("PDA-WW")!;
+    expect(row.teamOnCardIds).toEqual([det, bos]);
+    expect(row.pendingTeamNames).toBeUndefined();
+    const teamRows = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teamRows.map((r) => r.name).sort()).toEqual([BOS, DET]);
+    await settle(t);
+  });
+
+  test("neither club held: the pending names are the two clubs, never the comma-joined string", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+
+    const result = await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({
+          cardNumber: "PDA-WW",
+          bscRef: "B1",
+          teams: [DET, BOS],
+          rawTeamName: `${DET}, ${BOS}`,
+          teamLookup: "answered",
+        }),
+      ],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("PDA-WW")!;
+    expect([...(row.pendingTeamNames ?? [])].sort()).toEqual([BOS, DET]);
+    expect(row.pendingTeamNames).not.toContain(`${DET}, ${BOS}`);
+    expect(JSON.stringify(result)).not.toContain(`${DET}, ${BOS}`);
+    const teamRows = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teamRows).toHaveLength(0);
+    await settle(t);
+  });
+});
