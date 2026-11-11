@@ -55,7 +55,7 @@ const modules = (import.meta as unknown as {
  */
 beforeEach(() => {
   // Fake timers file-wide: `processBscTeamEnrichmentQueue` walks the card list
-  // by RESCHEDULING ITSELF after BSC_TEAM_ENRICH_DELAY_MS (300ms) per card. On
+  // by RESCHEDULING ITSELF after BSC_TEAM_ENRICH_DELAY_MS (now 1.7 s) per card. On
   // real timers only the head runs inside the test — every remaining card is a
   // pending timeout that fires during whichever test happens to be running
   // next. That, not the head call, is what made this leak cross-test and

@@ -5,8 +5,10 @@
  * pool's `enqueueAction` (`captureBscTeamLane`): every item it is handed lands
  * in the returned list instead. `runBscTeamLane` then plays the pool's one
  * slot. It runs the items in `runAt` order, moving the fake clock to each
- * (`vi.setSystemTime`, so the caller needs fake timers; `shouldAdvanceTime`
- * lets the item's own pacing pause elapse), and hands each result to the REAL
+ * (`vi.setSystemTime`, so the caller needs fake timers), and while an item
+ * runs it steps the fake clock (`settleOnFakeClock`), so the item's own pacing
+ * pause (`BSC_TEAM_ENRICH_DELAY_MS`, 1.7 s since NEO-482) passes on the fake
+ * clock instead of in real time. It hands each result to the REAL
  * completion (`bscTeamPool.onBscTeamCheckComplete`), which re-enqueues the
  * card or gives up on it. A throwing item reaches the completion as `failed`,
  * as the pool reports it.
@@ -17,6 +19,32 @@ import { vi } from "vitest";
 import type { convexTest } from "convex-test";
 import { internal } from "../../convex/_generated/api";
 import { bscTeamPool, type BscTeamCheckItem } from "../../convex/bscTeamPool";
+
+/** Fake-clock step while an item runs: small, so timers fire in order. */
+const FAKE_CLOCK_STEP_MS = 50;
+
+/**
+ * Awaits `work`, stepping the fake clock until it settles, so a `setTimeout`
+ * inside it (the lane's pacing pause, a lookup's retry pause) passes without
+ * real waiting. With real timers it is a plain await. The result is captured
+ * rather than chained, so a rejection is never left unhandled while the
+ * clock steps.
+ */
+export async function settleOnFakeClock<T>(work: Promise<T>): Promise<T> {
+  if (!vi.isFakeTimers()) return work;
+  let settled: { ok: true; value: T } | { ok: false; error: unknown } | undefined;
+  void work.then(
+    (value) => {
+      settled = { ok: true, value };
+    },
+    (error: unknown) => {
+      settled = { ok: false, error };
+    },
+  );
+  while (settled === undefined) await vi.advanceTimersByTimeAsync(FAKE_CLOCK_STEP_MS);
+  if (!settled.ok) throw settled.error;
+  return settled.value;
+}
 
 export type BscTeamLaneItem = { item: BscTeamCheckItem; runAt: number; seq: number };
 
@@ -49,9 +77,8 @@ export async function runBscTeamLane(
     if (next.runAt > Date.now()) vi.setSystemTime(next.runAt);
     let result: { kind: "success"; returnValue: unknown } | { kind: "failed"; error: string };
     try {
-      const returnValue = await t.action(
-        internal.adapters.buysportscards.runBscTeamCheckItem,
-        next.item,
+      const returnValue = await settleOnFakeClock(
+        t.action(internal.adapters.buysportscards.runBscTeamCheckItem, next.item),
       );
       result = { kind: "success", returnValue };
     } catch (error) {

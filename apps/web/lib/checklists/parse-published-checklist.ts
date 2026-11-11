@@ -40,6 +40,10 @@
  * (product rule 7): two rows with the same number are both kept, and the
  * server's exactly-one guard decides what they can match.
  *
+ * A card printed with no number ("NNO") is kept as a row numbered "NNO" and
+ * flagged `noNumber`: the matcher pairs it by player, and only when exactly
+ * one unnumbered card and exactly one NNO row name that player.
+ *
  * A line whose leading "number" is a season ("1995-96 Fort Worth Fire team
  * set") or the set's own year (`options.setYear`) is the checklist's title,
  * not a card, and is skipped as `LOOKS_LIKE_A_TITLE`.
@@ -49,6 +53,11 @@ export type PublishedChecklistRow = {
   number: string;
   players: string[];
   teams: string[];
+  /**
+   * The publisher printed no number on this card ("NNO"); `number` is "NNO".
+   * The matcher pairs such a row by player only.
+   */
+  noNumber?: true;
   /**
    * The subset ("card set", "set", "subset" or "insert" column) the row
    * belongs to, when the file has such a column and the cell is not blank.
@@ -310,8 +319,8 @@ function cleanNumber(raw: string): string | null {
   return token;
 }
 
-/** Said for a card printed with no number ("NNO"): there is nothing to pair by. */
-export const NO_NUMBER_ON_THE_CARD = "No number on the card — we match by number";
+/** The number an unnumbered card's row carries, as checklists print it. */
+export const NO_NUMBER = "NNO";
 /** Said for a line that counts the set ("200 cards"). */
 export const LOOKS_LIKE_A_COUNT = "Looks like a count, not a card";
 
@@ -426,8 +435,8 @@ function parseLine(
 ): PublishedChecklistRow | { reason: string } {
   const match = /^\s*(\S+)\s*(.*)$/.exec(text);
   if (match && readsAsTitle(match[1], setYear)) return { reason: LOOKS_LIKE_A_TITLE };
-  if (match && isNno(match[1])) return { reason: NO_NUMBER_ON_THE_CARD };
-  const number = match ? cleanNumber(match[1]) : null;
+  const noNumber = match !== null && isNno(match[1]);
+  const number = noNumber ? NO_NUMBER : match ? cleanNumber(match[1]) : null;
   if (!match || !number) return { reason: "No card number at the start" };
   const { playerPart, teamPart } = splitPlayerAndTeam(match[2]);
   const players = playersFrom(playerPart);
@@ -435,7 +444,7 @@ function parseLine(
   if (players.length === 0 && teams.length === 0 && !isNotAPerson(subjectOf(playerPart))) {
     return { reason: "No player or team after the number" };
   }
-  return { number, players, teams };
+  return { number, players, teams, ...(noNumber ? { noNumber: true as const } : {}) };
 }
 
 type Delimited = { delimiter: "," | "\t"; columns: Array<Column | null>; header: boolean };
@@ -570,6 +579,7 @@ export function parsePublishedChecklist(
       continue;
     }
     let number: string | null = null;
+    let noNumber = false;
     let numberCell = "";
     let subset = "";
     let notAPerson = false;
@@ -579,7 +589,8 @@ export function parsePublishedChecklist(
       const cell = cells[c] ?? "";
       if (column === "number" && numberCell === "") {
         numberCell = cell;
-        number = cleanNumber(cell);
+        noNumber = isNno(cell);
+        number = noNumber ? NO_NUMBER : cleanNumber(cell);
       } else if (column === "players") {
         players.push(...playersFrom(cell));
         if (cell.trim() !== "" && isNotAPerson(subjectOf(cell))) notAPerson = true;
@@ -591,10 +602,6 @@ export function parsePublishedChecklist(
     });
     if (numberCell !== "" && readsAsTitle(numberCell, setYear)) {
       skipped.push({ line: i + 1, text: raw, reason: LOOKS_LIKE_A_TITLE });
-      continue;
-    }
-    if (numberCell !== "" && isNno(numberCell)) {
-      skipped.push({ line: i + 1, text: raw, reason: NO_NUMBER_ON_THE_CARD });
       continue;
     }
     if (!number) {
@@ -609,7 +616,13 @@ export function parsePublishedChecklist(
       skipped.push({ line: i + 1, text: raw, reason: "No player or team on this line" });
       continue;
     }
-    keep(i, raw, { number, players, teams, ...(subset ? { subset } : {}) });
+    keep(i, raw, {
+      number,
+      players,
+      teams,
+      ...(noNumber ? { noNumber: true as const } : {}),
+      ...(subset ? { subset } : {}),
+    });
   }
   if (header?.columns.includes("subset")) {
     const subsets = [...new Set(rows.flatMap((r) => (r.subset === undefined ? [] : [r.subset])))];

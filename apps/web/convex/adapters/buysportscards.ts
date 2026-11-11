@@ -132,12 +132,14 @@ export const BSC_TEAM_LOOKUP_MAX_ATTEMPTS = 2;
 export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MIN_MS = 250;
 export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS = 500;
 // Delay after each card's call on the `bscTeamPool` lane (PR 451; it was the
-// gap between cards in processBscTeamEnrichmentQueue's chain). BSC has no
-// confirmed rate limit, but this stays conservative against the same
-// CDN/bot-detection this file already works around for the bulk
-// endpoint (see bscHeaders below). Much shorter than Wikidata's 3s gap
-// since there's no known limit to respect here — just don't hammer it.
-const BSC_TEAM_ENRICH_DELAY_MS = 300;
+// gap between cards in processBscTeamEnrichmentQueue's chain, at 300 ms).
+// BSC limits by volume (it answers 429 when we send too much; no published
+// figure), so the lane paces itself below that: 1.7 s after each call, plus
+// the call itself, is about one card-listing call every 2 s, deployment wide
+// (PR 451 / NEO-482). With no 429 a 300-card backlog drains in ~10 min; the
+// lane's 30-minute deadline (`bscTeamPool.BSC_TEAM_CHECK_OPERATOR_AFTER_MS`)
+// is read only when a card is deferred by a 429 or an open cooldown.
+export const BSC_TEAM_ENRICH_DELAY_MS = 1_700;
 // NEO-330 — the queue's bound on a card whose lookup keeps FAILING (network,
 // non-2xx, timeout; never "BSC has no team", which is an answer). Each pass
 // walks the whole queue; the cards that failed in it are walked again after

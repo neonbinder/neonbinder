@@ -70,6 +70,27 @@ describe("PublishedChecklistDialog", () => {
     expect(screen.getByText("“Base Set”")).toBeTruthy();
   });
 
+  it("shows an NNO line as a row numbered NNO, not as a skipped line (PR 451 D-B)", async () => {
+    const text = "NNO Chris Potter - Roanoke Express\n7 Jon Larson - Roanoke Express";
+    const { onUse } = open();
+    await paste(text);
+    await waitFor(() => expect(screen.getByText("2 rows")).toBeTruthy());
+    const table = screen.getByRole("table");
+    expect(within(table).getByText("NNO")).toBeTruthy();
+    expect(within(table).getByText("Chris Potter")).toBeTruthy();
+    expect(screen.getByText(/every line made it/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+    expect(onUse).toHaveBeenCalledWith({
+      rows: [
+        { number: "NNO", players: ["Chris Potter"], teams: ["Roanoke Express"], noNumber: true },
+        { number: "7", players: ["Jon Larson"], teams: ["Roanoke Express"] },
+      ],
+      text,
+      format: "lines",
+      skippedCount: 0,
+    });
+  });
+
   it("says nothing was skipped when every line made it", async () => {
     open();
     await paste("1 A Guy - Team A");

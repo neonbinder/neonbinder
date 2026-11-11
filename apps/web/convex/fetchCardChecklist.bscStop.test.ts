@@ -11,6 +11,10 @@
  * lookup is what makes the commit queue the card on the `bscTeamPool` lane
  * (commitCardChecklist.teamAnswers.test.ts pins that half).
  *
+ * Since D-A (PR 451) a fetch asks BSC about at most 40 cards, fewer than one
+ * chunk, so a stop now always lands inside that one ask; the cards past it
+ * are recorded failed whether a stop or the cap left them unasked.
+ *
  * Both marketplaces are module-mocked (no live server; NEO-247); the mock
  * mirrors teamsSettled's, plus the `skipped` field and `waitKey` arg.
  */
@@ -20,6 +24,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { BSC_FETCH_TIME_LOOKUP_CAP } from "./selectorOptions";
 
 type Card = {
   cardNumber: string;
@@ -226,18 +231,66 @@ async function fetchWith(count: number) {
   return { t, rowId, result, after: await view(t, rowId) };
 }
 
-describe("fetchCardChecklist — the team lookup stops asking BSC once a chunk stops early (PR 451)", () => {
-  test("control: with no stop every chunk is asked", async () => {
-    const { after } = await fetchWith(CHUNK + 10);
-    expect(mockState.chunksAsked.map((c) => c.length)).toEqual([CHUNK, 10]);
+// PR 451 (D-A, Jason) — at most BSC_FETCH_TIME_LOOKUP_CAP (40) cards are asked
+// live per fetch; the rest are recorded as failed lookups, which is what makes
+// the commit queue them on the background lane (that half is pinned in
+// commitCardChecklist.teamAnswers.test.ts).
+describe("fetchCardChecklist — at most 40 cards are asked live per fetch (PR 451 D-A)", () => {
+  test("the cap is 40, and smaller than one chunk", () => {
+    expect(BSC_FETCH_TIME_LOOKUP_CAP).toBe(40);
+    expect(BSC_FETCH_TIME_LOOKUP_CAP).toBeLessThan(CHUNK);
+  });
+
+  test("a 60-card fetch asks exactly 40 and records the other 20 for the lane", async () => {
+    const { after, result } = await fetchWith(60);
+
+    expect(mockState.chunksAsked.flat()).toHaveLength(40);
+    // The first 40 in checklist order, once each.
+    expect(mockState.chunksAsked.flat()).toEqual(
+      Array.from({ length: 40 }, (_, i) => `bsc-${i + 1}`),
+    );
+    expect(after).toMatchObject({ total: 60, ready: 60 });
+    expect(result.readyAfterTeams).toBe(60);
+    const answered = after.cards.filter((c) => c.teamLookup === "answered");
+    const deferred = after.cards.filter((c) => c.teamLookup === "failed");
+    expect(answered).toHaveLength(40);
+    expect(deferred).toHaveLength(20);
+    // Deferred, never guessed: no team on any of them.
+    expect(deferred.every((c) => c.teams === undefined)).toBe(true);
+    expect(deferred.map((c) => Number(c.cardNumber)).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 20 }, (_, i) => i + 41),
+    );
+  });
+
+  test("a 110-card fetch still asks only 40, across every chunk", async () => {
+    const { after } = await fetchWith(CHUNK * 2 + 10);
+    expect(mockState.chunksAsked.map((c) => c.length)).toEqual([40]);
+    expect(after.cards.filter((c) => c.teamLookup === "failed")).toHaveLength(CHUNK * 2 + 10 - 40);
+  });
+
+  test("a fetch under the cap asks every card", async () => {
+    const { after } = await fetchWith(40);
+    expect(mockState.chunksAsked.map((c) => c.length)).toEqual([40]);
     expect(after.cards.every((c) => c.teamLookup === "answered")).toBe(true);
   });
 
-  test("a chunk answered with skipped cards means the next chunk is never asked", async () => {
+  test("the summary log says how many were asked and how many deferred", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await fetchWith(60);
+    const line = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.startsWith("[fetchCardChecklist]"))
+      .at(-1);
+    expect(line).toMatch(/team lookups: 40 asked, 20 deferred to the background lane \(cap 40\)/);
+  });
+});
+
+describe("fetchCardChecklist — the team lookup stops asking BSC once a lookup stops early (PR 451)", () => {
+  test("a lookup answered with skipped cards: the rest of the fetch is never asked, every card settles failed", async () => {
     mockState.behave = () => "skipAll";
     const { after, result } = await fetchWith(CHUNK + 10);
 
-    expect(mockState.chunksAsked.map((c) => c.length)).toEqual([CHUNK]);
+    expect(mockState.chunksAsked.map((c) => c.length)).toEqual([BSC_FETCH_TIME_LOOKUP_CAP]);
     // Every card, asked or not, settles as a FAILED lookup with no team.
     expect(after).toMatchObject({ total: CHUNK + 10, ready: CHUNK + 10 });
     expect(result.readyAfterTeams).toBe(CHUNK + 10);
@@ -260,7 +313,7 @@ describe("fetchCardChecklist — the team lookup stops asking BSC once a chunk s
     expect(byNumber(CHUNK + 5).teamLookup).toBe("failed");
   });
 
-  test("a chunk whose lookup throws stops the rest too, and the fetch still succeeds with every row settled", async () => {
+  test("a lookup that throws: the fetch still succeeds with every row settled failed", async () => {
     mockState.behave = () => "throw";
     const { after, result } = await fetchWith(CHUNK + 10);
 
@@ -268,14 +321,5 @@ describe("fetchCardChecklist — the team lookup stops asking BSC once a chunk s
     expect(mockState.chunksAsked).toHaveLength(1);
     expect(after).toMatchObject({ total: CHUNK + 10, ready: CHUNK + 10 });
     expect(after.cards.every((c) => c.teamLookup === "failed")).toBe(true);
-  });
-
-  test("a stop in the second chunk leaves the first chunk's answers alone", async () => {
-    mockState.behave = (call) => (call === 1 ? "answer" : "skipAll");
-    const { after } = await fetchWith(CHUNK * 2 + 10);
-
-    expect(mockState.chunksAsked.map((c) => c.length)).toEqual([CHUNK, CHUNK]);
-    expect(after.cards.filter((c) => c.teamLookup === "answered")).toHaveLength(CHUNK);
-    expect(after.cards.filter((c) => c.teamLookup === "failed")).toHaveLength(CHUNK + 10);
   });
 });

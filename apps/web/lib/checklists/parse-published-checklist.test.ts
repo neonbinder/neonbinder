@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   LOOKS_LIKE_A_COUNT,
-  NO_NUMBER_ON_THE_CARD,
+  NO_NUMBER,
   filterRowsBySubsets,
   PUBLISHED_CHECKLIST_MAX_LINE,
   PUBLISHED_CHECKLIST_MAX_NAME,
@@ -497,16 +497,30 @@ describe("parsePublishedChecklist — collector review S2: insert codes and NNO"
     expect(out.skipped[0].reason).toBe("No card number at the start");
   });
 
-  it("skips NNO with its own reason, in lines and in CSV", () => {
-    expect(NO_NUMBER_ON_THE_CARD).toBe("No number on the card — we match by number");
-    const lines = parsePublishedChecklist("NNO Mike Trout - Los Angeles Angels\nnno Header Card");
-    expect(lines.rows).toEqual([]);
-    expect(lines.skipped.map((s) => s.reason)).toEqual([NO_NUMBER_ON_THE_CARD, NO_NUMBER_ON_THE_CARD]);
-    const csv = parsePublishedChecklist("#,Player,Team\nNNO,Mike Trout,Los Angeles Angels");
-    expect(csv.rows).toEqual([]);
-    expect(csv.skipped).toEqual([
-      { line: 2, text: "NNO,Mike Trout,Los Angeles Angels", reason: NO_NUMBER_ON_THE_CARD },
+  it("keeps an NNO line as a row flagged noNumber, in lines and in CSV (PR 451 D-B)", () => {
+    expect(NO_NUMBER).toBe("NNO");
+    const lines = parsePublishedChecklist(
+      "NNO Mike Trout - Los Angeles Angels\nnno Header Card\n#NNO. Shohei Ohtani, Los Angeles Dodgers",
+    );
+    expect(lines.skipped).toEqual([]);
+    expect(lines.rows).toEqual([
+      { number: "NNO", players: ["Mike Trout"], teams: ["Los Angeles Angels"], noNumber: true },
+      // Not a person: kept with no player, like a numbered header card.
+      { number: "NNO", players: [], teams: [], noNumber: true },
+      { number: "NNO", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"], noNumber: true },
     ]);
+    const csv = parsePublishedChecklist("#,Player,Team\nNNO,Mike Trout,Los Angeles Angels\n7,Juan Soto,New York Mets");
+    expect(csv.skipped).toEqual([]);
+    expect(csv.rows).toEqual([
+      { number: "NNO", players: ["Mike Trout"], teams: ["Los Angeles Angels"], noNumber: true },
+      { number: "7", players: ["Juan Soto"], teams: ["New York Mets"] },
+    ]);
+  });
+
+  it("an NNO line with nothing after the number is still skipped for that reason", () => {
+    const out = parsePublishedChecklist("NNO");
+    expect(out.rows).toEqual([]);
+    expect(out.skipped.map((s) => s.reason)).toEqual(["No player or team after the number"]);
   });
 });
 

@@ -1230,7 +1230,7 @@ export const enqueueBscTeamBackfill = internalMutation({
     // action file and this one isn't; cross-runtime imports of a directive
     // file are unsupported in Convex's bundler. Keep in sync with
     // BSC_TEAM_ENRICH_DELAY_MS there.
-    const BSC_TEAM_ENRICH_DELAY_MS = 300;
+    const BSC_TEAM_ENRICH_DELAY_MS = 1_700;
     const enqueued = dryRun ? 0 : candidateIds.length;
     console.log(
       JSON.stringify({

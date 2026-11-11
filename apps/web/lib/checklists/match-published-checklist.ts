@@ -16,6 +16,16 @@
  * ("BCP-12", "US12") is stripped on both sides and the same exactly-one guard
  * applies again ("BCP-12" on BSC against "12" in the publisher's list).
  *
+ * ## Cards with no number ("NNO") pair by player, never by a tie
+ *
+ * A row the publisher printed as "NNO" (`noNumber`) never takes part in the
+ * number passes, and neither does a card whose number is blank or "NNO". Such
+ * a row pairs with such a card only when the players (`namesKey`, the same
+ * key the misread check uses) name exactly one no-number card AND exactly one
+ * no-number row. Two cards or two rows for one player stay unmatched (the
+ * card keeps its marketplace lookup). An NNO row never pairs with a numbered
+ * card, and a numbered row never pairs by player.
+ *
  * ## Disagreements are surfaced, never settled
  *
  *  - The players differ on both sides (both non-empty): `conflict.players`.
@@ -43,6 +53,12 @@ export type ChecklistRowInput = {
   number: string;
   players: readonly string[];
   teams: readonly string[];
+  /**
+   * The publisher printed no number for this card ("NNO"). Such a row pairs
+   * by player only (see the header). A row whose number is blank or "NNO"
+   * counts as one whether or not the flag is set.
+   */
+  noNumber?: boolean;
 };
 
 export type ChecklistCardInput = {
@@ -60,8 +76,11 @@ export type ChecklistConflict = {
 export type ChecklistCardMatch = {
   cardIndex: number;
   rowIndex: number;
-  /** How the number matched: as written, or after the letter-prefix strip. */
-  via: "number" | "prefixStripped";
+  /**
+   * How the pair was made: the number as written, the number after the
+   * letter-prefix strip, or (a no-number card and an NNO row) the players.
+   */
+  via: "number" | "prefixStripped" | "player";
   /** Present only when the two disagree. */
   conflict?: ChecklistConflict;
   /** The row's players, when the card has none. */
@@ -107,6 +126,20 @@ export function stripLetterPrefix(normalized: string): string | null {
   if (!m) return null;
   const rest = normalized.slice(m[0].length);
   return rest.length > 0 ? rest : null;
+}
+
+/**
+ * A card number that is no number: blank, or "NNO" ("#NNO", "nno.") as
+ * checklists and marketplaces print an unnumbered card.
+ */
+export function isNoNumber(raw: string): boolean {
+  const n = normalizeChecklistNumber(raw).replace(/[.:]$/, "");
+  return n === "" || n === "NNO";
+}
+
+/** Whether a checklist row is a no-number row: flagged, or its number is none. */
+export function rowHasNoNumber(row: Pick<ChecklistRowInput, "number" | "noNumber">): boolean {
+  return row.noNumber === true || isNoNumber(row.number);
 }
 
 /** A person's or team's name as the two sides compare it. */
@@ -196,15 +229,17 @@ export function matchPublishedChecklist(
   cards: readonly ChecklistCardInput[],
   rows: readonly ChecklistRowInput[],
 ): ChecklistMatchResult {
+  // A no-number card or row has no key here: it pairs by player below, and
+  // only there. The misread check reads a missing number as "".
   const cardNumbers = new Map<number, string>();
   cards.forEach((c, i) => {
-    const n = normalizeChecklistNumber(c.cardNumber);
-    if (n) cardNumbers.set(i, n);
+    if (isNoNumber(c.cardNumber)) return;
+    cardNumbers.set(i, normalizeChecklistNumber(c.cardNumber));
   });
   const rowNumbers = new Map<number, string>();
   rows.forEach((r, i) => {
-    const n = normalizeChecklistNumber(r.number);
-    if (n) rowNumbers.set(i, n);
+    if (rowHasNoNumber(r)) return;
+    rowNumbers.set(i, normalizeChecklistNumber(r.number));
   });
 
   const paired = new Map<number, { rowIndex: number; via: ChecklistCardMatch["via"] }>();
@@ -230,6 +265,26 @@ export function matchPublishedChecklist(
     // Both sides as written already failed the first pass; only a pair the
     // strip actually created is new.
     paired.set(p.cardIndex, { rowIndex: p.rowIndex, via: "prefixStripped" });
+    usedRows.add(p.rowIndex);
+  }
+
+  // No-number cards against NNO rows, by players: exactly one card and
+  // exactly one row per players key, or neither pairs (rule 7's guard, on the
+  // only key these cards have). A card or row with no players has no key.
+  const noNumberCards = new Map<number, string>();
+  cards.forEach((c, i) => {
+    if (!isNoNumber(c.cardNumber)) return;
+    const k = namesKey(nonEmpty(c.players));
+    if (k) noNumberCards.set(i, k);
+  });
+  const noNumberRows = new Map<number, string>();
+  rows.forEach((r, i) => {
+    if (!rowHasNoNumber(r)) return;
+    const k = namesKey(nonEmpty(r.players));
+    if (k) noNumberRows.set(i, k);
+  });
+  for (const p of pairUnique(noNumberCards, noNumberRows)) {
+    paired.set(p.cardIndex, { rowIndex: p.rowIndex, via: "player" });
     usedRows.add(p.rowIndex);
   }
 

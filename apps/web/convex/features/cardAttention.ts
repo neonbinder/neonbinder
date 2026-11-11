@@ -180,10 +180,10 @@ export type AttentionCardRow = {
  *      for one piece of work.
  *
  * Clause 3 is the one worth explaining. A card with a `platformData.bsc.ref`
- * has an automatic source for its team: `processBscTeamEnrichmentQueue` walks
- * the cards a commit just wrote, one BSC detail request every 300ms, and fills
+ * has an automatic source for its team: the `bscTeamPool` lane walks the
+ * cards a commit just wrote, about one BSC detail request every 2 s, and fills
  * `teamOnCardIds` where BSC has an answer. Right after a 900-card sync, that
- * queue is minutes from finishing — badging every BSC card "missing team"
+ * lane is up to half an hour from finishing — badging every BSC card "missing team"
  * during the drain would flood the checklist with items that resolve
  * themselves, and would train the operator to ignore the badge. So a
  * BSC-linked card is only badged once `teamCheckDoneAt` says the lookup has

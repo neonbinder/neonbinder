@@ -20,6 +20,9 @@ import {
   BSC_TEAM_ENQUEUE_CHUNK_SIZE,
   nextBscTeamCheckStep,
 } from "./bscTeamPool";
+import { BSC_TEAM_ENRICH_DELAY_MS } from "./adapters/buysportscards";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { insertTestCard } from "../lib/testing/card-row";
 import { captureBscTeamLane, runBscTeamLane } from "../lib/testing/bsc-team-lane";
 
@@ -184,6 +187,38 @@ describe("the lane end to end (item + completion)", () => {
     const row = await t.run(async (ctx) => ctx.db.get(card));
     expect(row?.teamCheckOutcome).toBe("gaveUp");
     expect(row?.teamCheckDoneAt).toBeDefined();
+  });
+
+  test("the slot is held BSC_TEAM_ENRICH_DELAY_MS after each call: about one BSC call every 2 s (NEO-482)", async () => {
+    // Paced below BSC's volume limit, deployment wide. 300 cards at ~2 s each
+    // is ~10 min, inside BSC_TEAM_CHECK_OPERATOR_AFTER_MS with no 429.
+    expect(BSC_TEAM_ENRICH_DELAY_MS).toBe(1_700);
+    const t = convexTest(schema, modules);
+    let calledAt: number | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calledAt = Date.now();
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const card = await seedCard(t);
+    const lane = captureBscTeamLane();
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [card] });
+    expect(await runBscTeamLane(t, lane, 1)).toBe(1);
+
+    expect(calledAt).not.toBeNull();
+    const heldMs = Date.now() - calledAt!;
+    expect(heldMs).toBeGreaterThanOrEqual(BSC_TEAM_ENRICH_DELAY_MS);
+    expect(heldMs).toBeLessThan(BSC_TEAM_ENRICH_DELAY_MS + 1_000);
+  });
+
+  test("cardChecklist's drain estimate mirrors the lane's pace", () => {
+    // cardChecklist.ts cannot import the "use node" adapter, so it keeps a copy.
+    const src = readFileSync(join(__dirname, "cardChecklist.ts"), "utf8");
+    const mirror = src.match(/const BSC_TEAM_ENRICH_DELAY_MS = ([\d_]+);/);
+    expect(mirror).not.toBeNull();
+    expect(Number(mirror![1].replace(/_/g, ""))).toBe(BSC_TEAM_ENRICH_DELAY_MS);
   });
 
   test("a push-back is never scheduled past the deadline", async () => {

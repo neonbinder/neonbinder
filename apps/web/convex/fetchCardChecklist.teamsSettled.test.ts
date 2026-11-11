@@ -233,9 +233,12 @@ describe("fetchCardChecklist — ready === total is the end of the team lookups 
   test("rows with no lookup owed land ready; looked-up rows stay pending until their chunk is written", async () => {
     const t = convexTest(schema, modules);
     const rowId = await seedTree(t, { bscSet: true, slSet: true });
-    // 60 BSC cards needing a lookup = two chunks (50 + 10); one BSC card whose
-    // team came from the parse; two SportLots-only cards (no BSC ref to look
-    // anything up by). Distinct numbers, so nothing auto-matches.
+    // 60 BSC cards needing a lookup = two chunks (50 + 10), of which only the
+    // first 40 are asked live (PR 451 D-A, BSC_FETCH_TIME_LOOKUP_CAP); the
+    // other 20 are recorded as failed lookups for the background lane. One
+    // BSC card whose team came from the parse; two SportLots-only cards (no
+    // BSC ref to look anything up by). Distinct numbers, so nothing
+    // auto-matches.
     mockState.bscCards = [
       ...Array.from({ length: 60 }, (_, i) => bscCard(String(i + 1))),
       bscCard("100", ["Mets"]),
@@ -261,22 +264,32 @@ describe("fetchCardChecklist — ready === total is the end of the team lookups 
 
     expect(result.success).toBe(true);
     expect(result.candidateCount).toBe(63);
-    expect(before.map((b) => b.chunk.length)).toEqual([50, 10]);
-    // Before the first chunk: the whole batch is there and exactly the three
-    // rows that owe no lookup are ready.
+    // One live ask, of the first 40: the second chunk is past the cap and is
+    // only recorded, never asked.
+    expect(before.map((b) => b.chunk.length)).toEqual([40]);
+    expect(before[0].chunk).toEqual(Array.from({ length: 40 }, (_, i) => `bsc-${i + 1}`));
+    // Before the lookup: the whole batch is there and exactly the three rows
+    // that owe no lookup are ready — the 20 cards past the cap included, which
+    // stay pending until their own chunk is written, so the marker cannot be
+    // reached before the last write.
     expect(before[0]).toMatchObject({ total: 63, ready: 3 });
-    // Before the LAST chunk: still short by exactly that chunk — the marker
-    // cannot be reached by anything earlier than the last lookup write.
-    expect(before[1]).toMatchObject({ total: 63, ready: 53 });
 
-    // After the action: every row ready, and every looked-up team on its row.
+    // After the action: every row ready, the asked cards' teams on their rows,
+    // and the deferred cards settled as failed lookups with no team (the
+    // commit queues those for the background lane).
     const after = await view(t, rowId);
     expect(after.total).toBe(result.candidateCount);
     expect(after.ready).toBe(after.total);
-    for (let i = 1; i <= 60; i++) {
+    expect(result.readyAfterTeams).toBe(after.total);
+    for (let i = 1; i <= 40; i++) {
       const card = after.cards.find((c) => c.cardNumber === String(i));
       expect(card?.teams).toEqual([`Team ${i}`]);
       expect(card?.teamResolved).toBe(true);
+    }
+    for (let i = 41; i <= 60; i++) {
+      const card = after.cards.find((c) => c.cardNumber === String(i));
+      expect(card?.teams).toBeUndefined();
+      expect(card?.teamLookup).toBe("failed");
     }
     expect(after.cards.find((c) => c.cardNumber === "100")?.teams).toEqual([
       "Mets",

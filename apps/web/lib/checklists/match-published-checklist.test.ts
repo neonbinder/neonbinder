@@ -6,6 +6,7 @@
 import { describe, expect, test } from "vitest";
 import {
   MAX_CHECKLIST_MISREADS,
+  isNoNumber,
   matchPublishedChecklist,
   normalizeChecklistNumber,
   playersAgree,
@@ -266,5 +267,110 @@ describe("matchPublishedChecklist: the misreads list is capped", () => {
     expect(r.misreads).toHaveLength(MAX_CHECKLIST_MISREADS);
     expect(r.misreads.every((m) => m.cardIndex === 0)).toBe(true);
     expect(r.misreadCount).toBe(3 * MAX_CHECKLIST_MISREADS);
+  });
+});
+
+// PR 451 (D-B) — an NNO row pairs with a no-number card by player, under the
+// same exactly-one guard on both sides; never with a numbered card.
+const nno = (players: string[] = [], teams: string[] = []) => ({
+  number: "NNO",
+  players,
+  teams,
+  noNumber: true as const,
+});
+
+describe("matchPublishedChecklist: NNO rows pair by player (D-B)", () => {
+  test("isNoNumber: blank and NNO in any print are no number; a number is one", () => {
+    for (const raw of ["", "  ", "NNO", "nno", "#NNO", "NNO.", "No. NNO"]) {
+      expect(isNoNumber(raw)).toBe(true);
+    }
+    for (const raw of ["1", "BCP-12", "NNO1", "N"]) expect(isNoNumber(raw)).toBe(false);
+  });
+
+  test("one NNO card and one NNO row naming the same player pair, via player", () => {
+    const r = matchPublishedChecklist(
+      [card("NNO", ["Chris Potter"]), card("NNO", ["Jon Larson"]), card("", ["Craig Herr"])],
+      [nno(["Jon Larson"], ["Roanoke Express"]), nno(["craig herr"]), nno(["Chris Potter"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 2, "player"],
+      [1, 0, "player"],
+      [2, 1, "player"],
+    ]);
+    expect(r.unmatchedCardIndices).toEqual([]);
+    expect(r.matches.every((m) => m.conflict === undefined && m.fillPlayers === undefined)).toBe(true);
+  });
+
+  test("two no-number cards with the same player leave both unmatched", () => {
+    const r = matchPublishedChecklist(
+      [card("NNO", ["Chris Potter"]), card("NNO", ["Chris Potter"])],
+      [nno(["Chris Potter"], ["Roanoke Express"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+    // Same (missing) number on both sides: no misread either.
+    expect(r.misreadCount).toBe(0);
+  });
+
+  test("two NNO rows with the same player leave the card unmatched", () => {
+    const r = matchPublishedChecklist(
+      [card("NNO", ["Chris Potter"])],
+      [nno(["Chris Potter"], ["Roanoke Express"]), nno(["Chris Potter"], ["Richmond Renegades"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0]);
+  });
+
+  test("an NNO row never pairs with a numbered card, even the only one with that player", () => {
+    const r = matchPublishedChecklist(
+      [card("12", ["Mike Trout"])],
+      [nno(["Mike Trout"], ["Los Angeles Angels"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0]);
+  });
+
+  test("a numbered row never pairs with a no-number card by player", () => {
+    const r = matchPublishedChecklist(
+      [card("NNO", ["Mike Trout"])],
+      [row("12", ["Mike Trout"], ["Los Angeles Angels"])],
+    );
+    expect(r.matches).toEqual([]);
+  });
+
+  test("a row numbered NNO without the flag is still a no-number row", () => {
+    const r = matchPublishedChecklist(
+      [card("NNO", ["Mike Trout"]), card("NNO", ["Juan Soto"])],
+      [row("NNO", ["Mike Trout"], ["Los Angeles Angels"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([[0, 0, "player"]]);
+    expect(r.unmatchedCardIndices).toEqual([1]);
+  });
+
+  test("a no-number card or row with no players has nothing to pair by", () => {
+    const r = matchPublishedChecklist([card("NNO")], [nno([], ["Roanoke Express"])]);
+    expect(r.matches).toEqual([]);
+  });
+
+  test("an NNO pair still surfaces a team disagreement", () => {
+    const r = matchPublishedChecklist(
+      [card("NNO", ["Chris Potter"], ["Richmond Renegades"])],
+      [nno(["Chris Potter"], ["Roanoke Express"])],
+    );
+    expect(r.matches[0]).toMatchObject({
+      via: "player",
+      conflict: { teams: { marketplace: ["Richmond Renegades"], checklist: ["Roanoke Express"] } },
+    });
+  });
+
+  test("numbered cards keep matching by number beside NNO pairs", () => {
+    const r = matchPublishedChecklist(
+      [card("1", ["Chris Potter"]), card("NNO", ["Chris Potter"])],
+      [row("1", ["Chris Potter"]), nno(["Chris Potter"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "number"],
+      [1, 1, "player"],
+    ]);
   });
 });

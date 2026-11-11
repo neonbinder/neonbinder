@@ -53,7 +53,9 @@ import {
  *
  * The preview IS the parse: what the table shows is exactly what the sync
  * gets. Every line that did not become a row is listed under "Skipped lines"
- * with the reason, so nothing is dropped behind the operator's back.
+ * with the reason, so nothing is dropped behind the operator's back. A card
+ * printed with no number ("NNO") is a row like any other, numbered "NNO": the
+ * sync pairs it by player (PR 451 D-B), so it is never listed as skipped.
  *
  * ## Subsets
  *

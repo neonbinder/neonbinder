@@ -25,6 +25,9 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
+import { checkPublishedChecklist } from "./selectorOptions";
+import { parsePublishedChecklist } from "../lib/checklists/parse-published-checklist";
+import { matchPublishedChecklist } from "../lib/checklists/match-published-checklist";
 
 type BscCard = {
   cardNumber: string;
@@ -198,7 +201,13 @@ beforeEach(() => {
 
 async function run(
   publishedChecklist?: {
-    rows: { number: string; players: string[]; teams: string[]; subset?: string }[];
+    rows: {
+      number: string;
+      players: string[];
+      teams: string[];
+      subset?: string;
+      noNumber?: boolean;
+    }[];
   },
   extra: { waitKey?: string } = {},
 ) {
@@ -520,5 +529,112 @@ describe("fetchCardChecklist with a publisher checklist: the server re-checks th
   test("refuses a waitKey with a character outside letters, digits, _ and -", async () => {
     mockState.bscCards = [bsc("1")];
     await expect(run(undefined, { waitKey: "bad key!" })).rejects.toThrow(/waitKey/);
+  });
+});
+
+// PR 451 (D-B) — an NNO row pairs with an unnumbered card by player, exactly
+// one each side; anything else leaves the card to the BSC lookup.
+describe("fetchCardChecklist with a publisher checklist: NNO rows pair by player (D-B)", () => {
+  /** Candidate rows by BSC ref: NNO cards share a card number. */
+  async function byRef(t: ReturnType<typeof convexTest>) {
+    const rows = await t.run((ctx) => ctx.db.query("checklistCandidates").collect());
+    return new Map(rows.map((r) => [r.platformData.bsc?.ref, r]));
+  }
+
+  test("one NNO card and one NNO row naming the player: the row's team, no BSC lookup", async () => {
+    mockState.bscCards = [
+      bsc("NNO", { players: ["Chris Potter"], platformRef: "bsc-potter" }),
+      bsc("NNO", { players: ["Jon Larson"], platformRef: "bsc-larson" }),
+    ];
+    const { t, result } = await run({
+      rows: [
+        { number: "NNO", players: ["Chris Potter"], teams: ["Roanoke Express"], noNumber: true },
+      ],
+    });
+    expect(result.success).toBe(true);
+    // Only the card no row named is asked about.
+    expect(mockState.teamLookupCalls).toEqual([["bsc-larson"]]);
+    const rows = await byRef(t);
+    expect(rows.get("bsc-potter")).toMatchObject({
+      teams: ["Roanoke Express"],
+      teamLookup: "checklist",
+    });
+    expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
+  });
+
+  test("two NNO cards with the same player: neither pairs, both are looked up", async () => {
+    mockState.bscCards = [
+      bsc("NNO", { players: ["Chris Potter"], platformRef: "bsc-potter-a" }),
+      bsc("NNO", { players: ["Chris Potter"], platformRef: "bsc-potter-b" }),
+    ];
+    const { t, result } = await run({
+      rows: [{ number: "NNO", players: ["Chris Potter"], teams: ["Roanoke Express"], noNumber: true }],
+    });
+    expect(mockState.teamLookupCalls.flat().sort()).toEqual(["bsc-potter-a", "bsc-potter-b"]);
+    const rows = await byRef(t);
+    expect(rows.get("bsc-potter-a")?.teamLookup).not.toBe("checklist");
+    expect(rows.get("bsc-potter-b")?.teamLookup).not.toBe("checklist");
+    expect(result.checklistTeams).toEqual({ matched: 0, total: 2 });
+  });
+
+  test("an NNO row sent without the flag still pairs by player (the server sets it)", async () => {
+    mockState.bscCards = [bsc("NNO", { players: ["Chris Potter"], platformRef: "bsc-potter" })];
+    const { result } = await run({
+      rows: [{ number: "NNO", players: ["Chris Potter"], teams: ["Roanoke Express"] }],
+    });
+    expect(mockState.teamLookupCalls).toEqual([]);
+    expect(result.checklistTeams).toEqual({ matched: 1, total: 1 });
+  });
+
+  test("an NNO row never answers a numbered card", async () => {
+    mockState.bscCards = [bsc("12", { players: ["Chris Potter"] })];
+    const { result } = await run({
+      rows: [{ number: "NNO", players: ["Chris Potter"], teams: ["Roanoke Express"], noNumber: true }],
+    });
+    expect(mockState.teamLookupCalls).toEqual([["bsc-12"]]);
+    expect(result.checklistTeams).toEqual({ matched: 0, total: 1 });
+  });
+});
+
+describe("checkPublishedChecklist agrees with the client's parse on NNO rows (D-B)", () => {
+  const PASTE = [
+    "1 Mike Trout - Los Angeles Angels",
+    "NNO Chris Potter - Roanoke Express",
+    "nno Jon Larson - Roanoke Express",
+    "#NNO. Jon Larson - Richmond Renegades",
+    "NNO Header Card",
+  ].join("\n");
+
+  test("the server keeps every flag the parser set, and sets it on a row sent without one", () => {
+    const parsed = parsePublishedChecklist(PASTE);
+    expect(parsed.skipped).toEqual([]);
+    const checked = checkPublishedChecklist({ rows: parsed.rows })!;
+    expect(checked.rows.map((r) => r.noNumber === true)).toEqual(
+      parsed.rows.map((r) => r.noNumber === true),
+    );
+    expect(checked.rows.map((r) => r.noNumber === true)).toEqual([false, true, true, true, true]);
+    // A client that drops the flag still gets the same rows back.
+    const unflagged = parsed.rows.map(({ noNumber: _drop, ...rest }) => rest);
+    expect(checkPublishedChecklist({ rows: unflagged })!.rows).toEqual(checked.rows);
+  });
+
+  test("the matcher pairs the same cards on the client's rows and the server's", () => {
+    const parsed = parsePublishedChecklist(PASTE);
+    const checked = checkPublishedChecklist({ rows: parsed.rows })!;
+    const cards = [
+      { cardNumber: "1", players: ["Mike Trout"] },
+      { cardNumber: "NNO", players: ["Chris Potter"] },
+      // Two rows name Jon Larson: this card stays unmatched on both sides.
+      { cardNumber: "NNO", players: ["Jon Larson"] },
+      { cardNumber: "12", players: ["Chris Potter"] },
+    ];
+    const client = matchPublishedChecklist(cards, parsed.rows);
+    const server = matchPublishedChecklist(cards, checked.rows);
+    expect(server).toEqual(client);
+    expect(client.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "number"],
+      [1, 1, "player"],
+    ]);
+    expect(client.unmatchedCardIndices).toEqual([2, 3]);
   });
 });

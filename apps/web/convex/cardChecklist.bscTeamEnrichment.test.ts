@@ -843,7 +843,7 @@ describe("enqueueBscTeamBackfill", () => {
  * applies the answer, and the backfill scan that finds legacy rows.
  *
  * The write-time check is the load-bearing one. The queue walks a whole set at
- * one request every 300ms while the operator works the same checklist, so a
+ * about one request every 2 s while the operator works the same checklist, so a
  * confirmation can land after a card was enqueued and before its answer comes
  * back. An enqueue-time filter alone would be checked minutes too early.
  */

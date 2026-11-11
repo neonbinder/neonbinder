@@ -45,9 +45,14 @@ clock stalls them).
   `t.action` is awaited. `vi.useFakeTimers({ shouldAdvanceTime: true })` lets
   a sub-second pause elapse in real time while minute-scale `runAfter` passes
   still wait for `runAllTimers` (NEO-475 card-listing retry,
-  bscTeamEnrichmentQueue NEO-330 block). A jittered pause has no exact delay
-  to match, so a setTimeout spy keyed on the pause RANGE must not overlap
-  another delay in the path (BSC_TEAM_ENRICH_DELAY_MS is 300, inside 250-500).
+  bscTeamEnrichmentQueue NEO-330 block). A multi-second pause (the bscTeamPool
+  item's 1.7 s pacing since NEO-482) blows the 5 s timeout that way: step the
+  fake clock while awaiting instead (`settleOnFakeClock` in
+  lib/testing/bsc-team-lane.ts; capture the result, never chain it, or a
+  rejection goes unhandled across the steps). A jittered pause has no exact
+  delay to match, so a setTimeout spy keyed on the pause RANGE must not
+  overlap another delay in the path (the pacing pause, 1.7 s, is outside
+  250-500).
 - A retry SCHEDULE (several pauses, e.g. `readSheets`' 503 list, NEO-475):
   export the list, key the setTimeout spy on `list.includes(ms)`, and record
   `[ms, readsSoFar]` so one assertion pins both the lengths and where each

@@ -307,6 +307,7 @@ import {
 import {
   checklistNameKey,
   matchPublishedChecklist,
+  rowHasNoNumber,
   type ChecklistConflict,
 } from "../lib/checklists/match-published-checklist";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
@@ -14308,12 +14309,25 @@ function sameNames(a: readonly string[], b: readonly string[]): boolean {
  * it. Never stored: it is matched against this run's cards and dropped.
  */
 export const MAX_PUBLISHED_CHECKLIST_ROWS = 2000;
+
+/**
+ * PR 451 (D-A, Jason) — the most cards `fetchCardChecklist` asks BSC about
+ * live, per fetch, for their team. Counted on cards actually sent (a
+ * checklist-answered card is never one). The rest are recorded as failed
+ * lookups, so the commit queues them on the background lane, the same path a
+ * BSC stop sends them down; the "Still looking up teams" line covers them.
+ */
+export const BSC_FETCH_TIME_LOOKUP_CAP = 40;
 const publishedChecklistValidator = v.object({
   rows: v.array(
     v.object({
       number: v.string(),
       players: v.array(v.string()),
       teams: v.array(v.string()),
+      // PR 451 (D-B) — the publisher printed no number ("NNO"). The re-check
+      // below sets it from the number too, so a row sent without the flag
+      // reads the same; the matcher pairs such a row by player only.
+      noNumber: v.optional(v.boolean()),
       // The parser's subset label (a file's "set" / "insert" column). The
       // client chooses rows by it; the fetch never reads it and drops it in
       // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
@@ -14328,7 +14342,10 @@ type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
  * the same limits): at most `MAX_PUBLISHED_CHECKLIST_ROWS` rows, every number,
  * player and team within the stored-name cap, players and teams within a
  * card's caps. Refused whole, never trimmed, and named by row position only.
- * Strings are trimmed; empty names dropped.
+ * Strings are trimmed; empty names dropped. A row is a no-number row
+ * (`noNumber: true`) when the client flagged it or its number is blank or
+ * "NNO", by the matcher's own test (`rowHasNoNumber`), so the client's parse
+ * and this re-check always agree on which rows pair by player.
  */
 export function checkPublishedChecklist(
   published: PublishedChecklist | undefined,
@@ -14363,6 +14380,7 @@ export function checkPublishedChecklist(
       number,
       players: clean(row.players, MAX_CARD_PLAYERS, "player"),
       teams: clean(row.teams, MAX_CARD_TEAMS, "team"),
+      ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
     };
   });
   return { rows };
@@ -15610,7 +15628,9 @@ export const fetchCardChecklist = action({
       // 3c. PR 451 (NEO-478) — the operator's publisher checklist.
       //
       //     Each card it matches by number (exactly one card and exactly one
-      //     row, rule 7; one letter-prefix-strip fallback) whose row names a
+      //     row, rule 7; one letter-prefix-strip fallback), or, for a card
+      //     with no number, by player against an NNO row (again exactly one
+      //     each side, D-B), whose row names a
       //     team takes its team answer from the row: the row's teams, through
       //     the same whole-name-first resolution BSC's raw value takes. Those
       //     cards are written `ready` with `teamLookup: "checklist"` and BSC
@@ -15731,6 +15751,7 @@ export const fetchCardChecklist = action({
             rows: published.rows.length,
             cards: out.length,
             matched: match.matches.length,
+            matchedByPlayer: match.matches.filter((m) => m.via === "player").length,
             teamsFromChecklist: checklistAnswered.size,
             unmatched: match.unmatchedCardIndices.length,
             conflicts,
@@ -15848,6 +15869,10 @@ export const fetchCardChecklist = action({
 
       // NEO-333 — the team fence handed back to the client; see `returns`.
       let readyAfterTeams = 0;
+      // PR 451 (D-A) — refs sent to the adapter (what the cap bounds), and of
+      // those, the ones it actually put to BSC (not marked `skipped`).
+      let teamLookupsSent = 0;
+      let teamLookupsAsked = 0;
       if (needsTeamLookup.length > 0) {
         // Chunked, so each chunk's results reach the modal as they resolve
         // rather than all at once when the last card returns. The chunk is
@@ -15864,6 +15889,14 @@ export const fetchCardChecklist = action({
         let stopAsking = false;
         for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
           const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
+          // PR 451 (D-A) — at most BSC_FETCH_TIME_LOOKUP_CAP cards are asked
+          // live per fetch. The rest of the chunk (and every later chunk) is
+          // never sent, so it is recorded below as a FAILED lookup, exactly
+          // like a card a stop left unasked: the row goes `ready`, and the
+          // commit queues it for the background lane.
+          const toAsk = stopAsking
+            ? []
+            : chunk.slice(0, Math.max(0, BSC_FETCH_TIME_LOOKUP_CAP - teamLookupsSent));
           // NEO-330 — a chunk whose lookup THROWS does not fail the fetch.
           // Jason, 2026-10-11: "If a team lookup never returns then the user
           // must select a team." A throw leaves `lookups` empty, so every ref
@@ -15876,12 +15909,15 @@ export const fetchCardChecklist = action({
           // guess.
           let lookups: BscCardTeamLookup[] = [];
           const lookupStartedAt = Date.now();
-          if (!stopAsking) {
+          if (toAsk.length > 0) {
+            teamLookupsSent += toAsk.length;
             try {
               lookups = await ctx.runAction(
                 internal.adapters.buysportscards.fetchBscCardTeamNames,
-                { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref), ...waitKeyArg },
+                { bscCardIds: toAsk.map((c) => c.platformData.bsc!.ref), ...waitKeyArg },
               );
+              // A card the adapter marked `skipped` was never put to BSC.
+              teamLookupsAsked += lookups.filter((l) => l.skipped !== true).length;
               if (lookups.some((l) => l.skipped === true)) stopAsking = true;
             } catch (error) {
               stopAsking = true;
@@ -15891,7 +15927,7 @@ export const fetchCardChecklist = action({
                   msg: "checklist_team_lookup_chunk_failed",
                   platform: "bsc",
                   operation: "fetchBscCardTeamNames",
-                  cards: chunk.length,
+                  cards: toAsk.length,
                   elapsedMs: Date.now() - lookupStartedAt,
                   error: error instanceof Error ? error.name : "unknown",
                 }),
@@ -15946,9 +15982,14 @@ export const fetchCardChecklist = action({
       //    be work done on data that may never exist, and the user asked for
       //    pairing to come before the Wikidata / player / team syncs.
       //    `resolveChecklistEntities` runs on the CONFIRMED set instead.
+      // PR 451 (D-A) — and how many cards BSC was asked about live versus
+      // left for the background lane (the cap, a stop, or a throw). Counts only.
       console.log(
         `[fetchCardChecklist] ${autoMatchedCards.length} paired, ` +
-          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only; ` +
+          `team lookups: ${teamLookupsAsked} asked, ` +
+          `${needsTeamLookup.length - teamLookupsAsked} deferred to the background lane ` +
+          `(cap ${BSC_FETCH_TIME_LOOKUP_CAP})`,
       );
 
       // NEO-189 — tell the OPERATOR about cross-source card-number collisions,
