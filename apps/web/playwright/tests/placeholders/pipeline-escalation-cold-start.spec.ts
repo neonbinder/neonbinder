@@ -14,7 +14,11 @@ test(
 
     // While the heavy service cold-starts the user is told, not left on a
     // frozen screen: the batch notice, and a badge on each escalating photo.
-    await expect(page.getByText(/A few of these need a closer look/)).toBeVisible({
+    await expect(
+      page.getByText("A few of these need a closer look, which can take a minute or so. The rest keep coming in below.", {
+        exact: true,
+      }),
+    ).toBeVisible({
       timeout: 120_000,
     });
     await expect(page.getByText(/Escalating.*deeper processing/).first()).toBeVisible();

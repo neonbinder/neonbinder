@@ -21,8 +21,8 @@
 // two pages are not images (6 bytes each, labelled image/jpeg), so the app uploads
 // them as it would any scan. The fast preprocess service cannot open them and
 // answers 422 ENTRY_UNDECODABLE (NEO-484), a refusal the pipeline settles at once
-// and never retries, so each page's tile says "That's not a photo we can open.
-// Send a fresh one." and offers no Try again. The spec waits for that line, the
+// and never retries, so each page's tile says "Can't open this file. Save it
+// again as a JPEG or PNG and send that." and offers no Try again. The spec waits for that line, the
 // one wait past 7 s (R5, `COLD_REFUSAL`), and then closes the run from the app.
 // The failed pages stay in the Pairing pile, so the run is not clear and leaving
 // the page asks first (`useLeaveGuard`).
@@ -45,26 +45,29 @@ test.use({ screenshot: "off" });
 /**
  * The one signed-off ceiling in this spec (GUIDE hard rule 3): 45 s, Jason, 2026-11-10,
  * the same as `add-cards-photo-over-limit-says-too-big`. It covers ONLY the wait for the
- * "not a photo" line on the card's tiles: the upload, a cold fast preprocess service's
+ * "can't open" line on the card's tiles: the upload, a cold fast preprocess service's
  * start and its 422. It is void if a cold start is measured over 45 s, and never a
  * licence for any other wait in this spec.
  */
 const COLD_REFUSAL = 45_000;
 
-/** `failedText` for a file that is not an image (`PHOTO_NOT_A_PHOTO_LINE`, realLanes.ts). */
-const NOT_A_PHOTO = "That's not a photo we can open. Send a fresh one.";
+/** `failedText` for a file that is not an image (`PHOTO_WONT_OPEN_LINE`, realLanes.ts). */
+const NOT_A_PHOTO = "Can't open this file. Save it again as a JPEG or PNG and send that.";
 
 /** What a run that closed with no photo in it says (`runNotice`, realLanes.ts). */
 const NO_PHOTOS = "No photos came in before this run closed. Start a new run and drop some in.";
 
 /**
  * The run's line once D has closed it with the card in (`runNotice`, realLanes.ts).
- * Both pages have already failed by then (the spec waits for their "not a photo"
+ * Both pages have already failed by then (the spec waits for their "can't open"
  * lines first), so closing leaves no photo read: the run ends as a failed batch
- * and says so, while the failed pages stay in the pile. It still says "That's a
- * wrap on this run's photos!" out loud (NEO-459): that follows the close, not the reads.
+ * and says so, while the failed pages stay in the pile. Every failed page is a
+ * file we couldn't open, so the line is the one that says so (NEO-484,
+ * `mostFailedWontOpen`). It still says "That's a wrap on this run's photos!" out
+ * loud (NEO-459): that follows the close, not the reads.
  */
-const CLOSED_WITH_CARD = /^Most of these photos wouldn't read\./;
+const CLOSED_WITH_CARD =
+  "Most of these files wouldn't open. Anything below is still yours to save. Save the rest again as JPEG or PNG and send them, with their other sides, in a new run.";
 
 test(
   "Scanner app: Done on the screen ends the app, and D in the app closes the run on the screen",
@@ -128,7 +131,7 @@ test(
       withCard.press("d");
       await withCard.said("Done. 1 card sent.");
       // The screen follows with nobody touching it: the run is closed, Done is gone.
-      await expect(page.getByText(CLOSED_WITH_CARD)).toBeVisible();
+      await expect(page.getByText(CLOSED_WITH_CARD, { exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Done adding photos" })).toHaveCount(0);
       await expect(page.getByRole("status").filter({ hasText: "That's a wrap on this run's photos!" })).toBeVisible();
       expect(await withCard.exited()).toBe(0);
@@ -147,7 +150,7 @@ test(
       expect(asked).toHaveLength(1);
       expect(asked[0]).toMatch(/^confirm: This run isn't finished: some cards are still working or need you\. Leave anyway\?/);
       await expect(page).toHaveURL(runUrl);
-      await expect(page.getByText(CLOSED_WITH_CARD)).toBeVisible();
+      await expect(page.getByText(CLOSED_WITH_CARD, { exact: true })).toBeVisible();
       // ...and Leave moves on (which also frees the page for the cleanup below).
       page.once("dialog", (dialog) => void dialog.accept());
       await myCards.click();
@@ -164,7 +167,7 @@ test(
           await done.click();
           // Leave only once the close has landed, or the page goes with it in flight.
           // Either leg can get here, with no photo in or with the card.
-          await expect(page.getByText(CLOSED_WITH_CARD).or(page.getByText(NO_PHOTOS))).toBeVisible();
+          await expect(page.getByText(CLOSED_WITH_CARD, { exact: true }).or(page.getByText(NO_PHOTOS))).toBeVisible();
         }
       } catch (e) {
         undone.push(`closing the open run: ${e instanceof Error ? e.message.split("\n").filter(Boolean).slice(0, 3).join(" ") : String(e)}`);

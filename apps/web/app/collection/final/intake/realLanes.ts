@@ -311,8 +311,12 @@ export const PHOTO_SET_ASIDE_LINE = "That photo was set aside. Bring it back to 
 /** A photo over the limit: on its tile, and if a stale Try again is refused for it. */
 export const PHOTO_TOO_BIG_LINE = `Too big (over ${PHOTO_LIMIT}). Shrink it and send it again.`;
 
-/** NEO-484: a file that is not a decodable image: on its tile, and if a stale Try again is refused for it. */
-export const PHOTO_NOT_A_PHOTO_LINE = `That's not a photo we can open. ${SEND_FRESH_LINE}`;
+/**
+ * NEO-484: a file that is not a decodable image: on its tile, and if a stale Try
+ * again is refused for it. It names the fix, a re-save, because re-shooting the
+ * card would hand over the same file type again.
+ */
+export const PHOTO_WONT_OPEN_LINE = "Can't open this file. Save it again as a JPEG or PNG and send that.";
 
 /**
  * Why a photo in the pile failed, in a collector's words. With no Try again on
@@ -320,7 +324,7 @@ export const PHOTO_NOT_A_PHOTO_LINE = `That's not a photo we can open. ${SEND_FR
  */
 export function failedText(image: Pick<IntakeImage, "errorCode">, retryOffered: boolean): string {
   if (image.errorCode === ENTRY_TOO_MANY_PIXELS) return PHOTO_TOO_BIG_LINE;
-  if (image.errorCode === ENTRY_UNDECODABLE) return PHOTO_NOT_A_PHOTO_LINE;
+  if (image.errorCode === ENTRY_UNDECODABLE) return PHOTO_WONT_OPEN_LINE;
   const why = image.errorCode === "PHOTO_TIMED_OUT" ? "Took too long to read" : "Couldn't read it";
   return retryOffered ? why : `${why}. ${SEND_FRESH_LINE}`;
 }
@@ -485,7 +489,36 @@ function allRejectedLine(job: NoticeJob): string {
   return unreadable;
 }
 
-function failedNotice(job: NoticeJob): RunNotice {
+const MOST_UNREAD_LINE =
+  "Most of these photos couldn't be read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run, with their other sides.";
+const MOST_UNOPENED_LINE =
+  "Most of these files wouldn't open. Anything below is still yours to save. Save the rest again as JPEG or PNG and send them, with their other sides, in a new run.";
+
+/** The image fields the failed-run line reads: which photos failed, and why. */
+export type NoticePhoto = Pick<IntakeImage, "status" | "errorCode">;
+
+/**
+ * Does the run's line depend on the photos as well as the job? Only for a run
+ * that failed with photos in it, where the line says what most of them did. The
+ * screen holds the line back until the photos have loaded, so it never says one
+ * thing and then the other.
+ */
+export function noticeReadsPhotos(job: NoticeJob | null | undefined): boolean {
+  return job?.status === "failed" && job.errorCode === "TOO_MANY_IMAGE_FAILURES" && !!job.totalImages;
+}
+
+/**
+ * NEO-484: were most of the failed photos files we couldn't open? The same
+ * strict-majority rule the run's own failure is decided by
+ * (`failedImages * 2 > totalImages`, placeholderPairing.ts), one level down:
+ * undecodable photos * 2 > failed photos. A tie is not most.
+ */
+export function mostFailedWontOpen(job: Pick<NoticeJob, "failedImages">, photos: readonly NoticePhoto[]): boolean {
+  const unopened = photos.filter((p) => p.status === "failed" && p.errorCode === ENTRY_UNDECODABLE).length;
+  return unopened * 2 > job.failedImages;
+}
+
+function failedNotice(job: NoticeJob, photos: readonly NoticePhoto[]): RunNotice {
   const nothingIn = !job.totalImages;
   const failed = (line: string) => notice(line, true, nothingIn);
   switch (job.errorCode) {
@@ -495,7 +528,7 @@ function failedNotice(job: NoticeJob): RunNotice {
       return failed("Your zip never landed. Send it again in a new run.");
     case "TOO_MANY_IMAGE_FAILURES": {
       if (!nothingIn) {
-        const most = "Most of these photos wouldn't read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run, with their other sides.";
+        const most = mostFailedWontOpen(job, photos) ? MOST_UNOPENED_LINE : MOST_UNREAD_LINE;
         return failed(
           job.rejectedEntries > 0 && job.rejected
             ? `${most} ${job.rejectedEntries} more didn't make it in: ${rejectedClauses(job.rejected)}.`
@@ -514,15 +547,16 @@ function failedNotice(job: NoticeJob): RunNotice {
 
 /**
  * NEO-446 — what the screen says about a run past collecting, from its job row
- * alone, so a refresh on `?run=` says the same thing. Null while the run is
+ * (and, for a run that failed with photos in, the photos: `noticeReadsPhotos`),
+ * so a refresh on `?run=` says the same thing. Null while the run is
  * still collecting (the drop zone is the message then). A null job is a row
  * that is gone: the line says so, and the lanes stay in case they hold saved
  * cards.
  */
-export function runNotice(job: NoticeJob | null): RunNotice | null {
+export function runNotice(job: NoticeJob | null, photos: readonly NoticePhoto[] = []): RunNotice | null {
   if (!job) return notice(SNAG_LINE);
   if (job.status === "collecting") return null;
-  if (job.status === "failed") return failedNotice(job);
+  if (job.status === "failed") return failedNotice(job, photos);
   if (job.status === "pending" || job.status === "uploaded" || job.status === "extracting") {
     return notice(UNPACKING_LINE, false);
   }

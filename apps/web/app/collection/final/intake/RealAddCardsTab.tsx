@@ -54,11 +54,11 @@ import {
   laneOf,
   photoLabels,
   PHOTO_NEWS_QUIET_MS,
-  PHOTO_NOT_A_PHOTO_LINE,
   PHOTO_OUT_OF_TRIES_LINE,
   PHOTO_RUN_CLOSED_LINE,
   PHOTO_SET_ASIDE_LINE,
   PHOTO_TOO_BIG_LINE,
+  PHOTO_WONT_OPEN_LINE,
   photoChanges,
   photoLine,
   photoNewsOf,
@@ -69,6 +69,7 @@ import {
   readOf,
   reasonText,
   RUN_CLOSED_LINE,
+  noticeReadsPhotos,
   runNotice,
   runSummary,
   type IntakeImage,
@@ -365,7 +366,15 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     wasCollecting.current = collecting;
     focusParked.current = went && closed && focusFell() && parkFocus();
   });
-  const notice = collecting ? null : runNotice(job);
+  // NEO-484 — a run that failed with photos in says what most of them did, so its
+  // line waits for the photos (the same read RunWorkspace makes, so one subscription)
+  // rather than saying one thing and then the other.
+  const noticeNeedsPhotos = !collecting && noticeReadsPhotos(job);
+  const noticePhotos = useQuery(
+    api.placeholderPipeline.listPlaceholderImages,
+    run && noticeNeedsPhotos ? { jobId: run.jobId } : "skip",
+  );
+  const notice = collecting || (noticeNeedsPhotos && noticePhotos === undefined) ? null : runNotice(job, noticePhotos);
 
   // NEO-370, NEO-452 — the gate, on what the run (or the setup) will give its cards.
   const shownDefaults: RunDefaults = run?.defaults ?? defaults;
@@ -1882,7 +1891,7 @@ function RunWorkspace({
                         } else if (r.reason === "too big") {
                           notify(PHOTO_TOO_BIG_LINE);
                         } else if (r.reason === "not an image") {
-                          notify(PHOTO_NOT_A_PHOTO_LINE);
+                          notify(PHOTO_WONT_OPEN_LINE);
                         } else if (r.reason === "set aside") {
                           notify(PHOTO_SET_ASIDE_LINE);
                         }

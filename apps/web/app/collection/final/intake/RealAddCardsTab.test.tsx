@@ -2983,14 +2983,14 @@ describe("NEO-446: setting a loose photo aside", () => {
       retryMutation().mockResolvedValueOnce({ retried: false, reason: "not an image" });
       openWith([unread(0, "a.jpg")]);
       fireEvent.click(screen.getByRole("button", { name: "Try again: a.jpg" }));
-      await waitFor(() => expect(notify).toHaveBeenCalledWith("That's not a photo we can open. Send a fresh one."));
+      await waitFor(() => expect(notify).toHaveBeenCalledWith("Can't open this file. Save it again as a JPEG or PNG and send that."));
     });
 
     it("NEO-484: a photo that is not an image offers no Try again and says why", () => {
       openWith([{ ...unread(0, "a.jpg"), errorCode: "ENTRY_UNDECODABLE" }]);
       expect(screen.queryByRole("button", { name: "Try again: a.jpg" })).toBeNull();
       expect(document.getElementById("loose-why-0")?.textContent).toBe(
-        "That's not a photo we can open. Send a fresh one.",
+        "Can't open this file. Save it again as a JPEG or PNG and send that.",
       );
     });
 
@@ -3109,6 +3109,10 @@ describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
   const drop = async (files: File[]) => {
     await act(async () => mocks.dropzone.at(-1)!.onFiles(files));
   };
+  const MOST_UNREAD =
+    "Most of these photos couldn't be read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run, with their other sides.";
+  const MOST_UNOPENED =
+    "Most of these files wouldn't open. Anything below is still yours to save. Save the rest again as JPEG or PNG and send them, with their other sides, in a new run.";
   /** Every live-region line on screen, without the page-address readout. */
   const lines = () =>
     screen
@@ -3278,9 +3282,57 @@ describe("NEO-446: the run's line, the zip wording and Start a new run", () => {
         failedImages: 3,
       });
       open(runId);
-      expect(lines().some((l) => l.startsWith("Most of these photos wouldn't read."))).toBe(true);
+      expect(lines()).toContain(MOST_UNREAD);
       expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
       expect(await screen.findByRole("heading", { name: "Pairing" })).toBeTruthy();
+    });
+
+    describe("NEO-484: a partial failure where most failed photos wouldn't open", () => {
+      const failedPhoto = (entryIndex: number, errorCode: string) => ({
+        entryIndex,
+        originalName: `scan-${entryIndex}.jpg`,
+        status: "failed",
+        errorCode,
+        retries: 0,
+      });
+      const failedRun = (errorCodes: string[]) => {
+        const runId = runWithJob({
+          status: "failed",
+          errorCode: "TOO_MANY_IMAGE_FAILURES",
+          totalImages: errorCodes.length + 1,
+          failedImages: errorCodes.length,
+        });
+        mocks.data.images = [photo(errorCodes.length), ...errorCodes.map((code, i) => failedPhoto(i, code))];
+        return runId;
+      };
+
+      it("says the files wouldn't open and to save them again, with the button and the lanes", async () => {
+        open(failedRun(["ENTRY_UNDECODABLE", "ENTRY_UNDECODABLE", "PHOTO_TIMED_OUT"]));
+        expect(lines()).toContain(MOST_UNOPENED);
+        expect(lines()).not.toContain(MOST_UNREAD);
+        expect(screen.getByRole("button", { name: "Start a new run" })).toBeTruthy();
+        expect(await screen.findByRole("heading", { name: "Pairing" })).toBeTruthy();
+      });
+
+      it("a mix with no majority that wouldn't open keeps the plain line", () => {
+        open(failedRun(["ENTRY_UNDECODABLE", "PHOTO_TIMED_OUT"]));
+        expect(lines()).toContain(MOST_UNREAD);
+        expect(lines()).not.toContain(MOST_UNOPENED);
+      });
+
+      it("other failures keep the plain line", () => {
+        open(failedRun(["PHOTO_TIMED_OUT", "ENTRY_TOO_MANY_PIXELS", "PROCESS_ENTRY_FAILED"]));
+        expect(lines()).toContain(MOST_UNREAD);
+        expect(lines()).not.toContain(MOST_UNOPENED);
+      });
+
+      it("holds the line until the photos load, rather than saying one thing then the other", () => {
+        const runId = failedRun(["ENTRY_UNDECODABLE", "ENTRY_UNDECODABLE"]);
+        mocks.data.images = undefined as unknown as unknown[];
+        open(runId);
+        expect(lines().filter(Boolean)).toEqual([]);
+        expect(screen.queryByRole("button", { name: "Start a new run" })).toBeNull();
+      });
     });
 
     it("a healthy finished run says all in, with no Start a new run and the lanes shown", async () => {
