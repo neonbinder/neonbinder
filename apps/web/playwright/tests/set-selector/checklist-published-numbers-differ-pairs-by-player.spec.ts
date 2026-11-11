@@ -15,6 +15,15 @@
 //     one row is unlinked and linked again by its buttons, Confirm takes the 13
 //     teams to the wizard, and "Cards with no team" lists Mike Lowell ONLY. A
 //     Back to Match Cards keeps the links. Nothing is committed: Cancel, Discard.
+//   PHASE A2, the counts match but one name is misspelled (14 rows, row 11 reads
+//     "Rhett Lowdr"). The fetch pairs the 13 unique names itself and applies them,
+//     so those cards are not listed; Rhett Lowder's card and row 11 are the only
+//     leftovers, so Match Cards still opens, in solo mode, and says the 13 are
+//     saved too. The operator links the one pair by its buttons and Confirms; the
+//     two spellings disagree, so the wizard opens on "Checklist says otherwise"
+//     and the operator keeps the card's. It asks no "Cards with no team" after
+//     that: the 13 cards the dialog never listed still reach the save, with the
+//     14th. Nothing is committed: Cancel, Discard.
 //   PHASE B, the counts match (14 rows). The fetch pairs every row to its card
 //     by player itself: no Match Cards, "Teams from your checklist: 14 of 14
 //     cards", no "Cards with no team" step. Panini writes "Oakland A's" for
@@ -67,7 +76,9 @@ import {
   advanceToSave,
   cancelAndDiscard,
   confirmSaveButton,
+  expectChecklistDisagreementFirst,
   openDecidedList,
+  pickDisagreementSide,
   readBackDecision,
   reviewWizard,
 } from "../../support/wizard";
@@ -78,6 +89,7 @@ const WITHOUT_LOWELL = nameFallbackFacts(CHECKLISTS.signatureSeries2026WithoutLo
 /** The checklist column's heading: how many rows still wait for a card ("all linked!" when none). */
 const yourChecklist = (unlinked: number) => (unlinked === 0 ? "Your checklist (all linked!)" : `Your checklist (${unlinked} to link)`);
 const WHOLE = nameFallbackFacts(CHECKLISTS.signatureSeries2026, CHECKLISTS.signatureSeries2026);
+const MIXED = nameFallbackFacts(CHECKLISTS.signatureSeries2026MisspelledLowder, CHECKLISTS.signatureSeries2026);
 
 test(
   "Published checklist — rows whose numbers match no card pair to the cards by player name, and the card's own player settles the club",
@@ -178,12 +190,68 @@ test(
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
     await expect(wizard.getByRole("radiogroup", { name: /^Team for / })).toHaveCount(1);
     await expect(wizard.getByRole("radiogroup", { name: "Team for Mike Lowell" })).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "wizard after checklist-solo confirm" });
+    await cancelAndDiscard(page);
+    await expect(matchCards).toBeHidden();
+
+    // ══ PHASE A2: 14 rows, one misspelled, against 14 cards ══
+    // Equal counts, so the fetch applies the unique name pairs itself: 13 of them, and the misspelled
+    // row and Rhett Lowder's card are left for the operator.
+    expect(MIXED.equalCounts).toBe(true);
+    expect(MIXED.matched).toBe(MIXED.cards - 1);
+    await page.getByRole("button", { name: "Remove the publisher's checklist" }).click();
+    await expect(publishersChecklistChip(page, WITHOUT_LOWELL.rows)).toBeHidden();
+    await expect(publishersChecklistButton(page)).toBeVisible();
+    await usePublishersChecklist(page, CHECKLISTS.signatureSeries2026MisspelledLowder);
+    await syncChecklistButton(page).click();
+    await expectAfterMarketplace(page, matchCards, {
+      platform: "BuySportsCards",
+      what: "Match Cards after the fetch of the misspelled Signature Series checklist",
+    });
+    // The 13 the server paired are not listed: the dialog only says they are saved too.
+    await expect(matchCards.getByText(`${MIXED.matched} cards already matched to your checklist — they're saved too`)).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "BuySportsCards cards (1)" })).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: yourChecklist(1) })).toBeVisible();
+    // Only the one card and the one row are on screen as leftovers.
+    const leftoverCards = matchCards.getByRole("listitem").filter({ hasText: /^#SIG-/ });
+    await expect(leftoverCards).toHaveCount(1);
+    await expect(leftoverCards).toContainText("#SIG-RL Rhett Lowder");
+    const leftoverRows = matchCards.getByRole("list", { name: "Leftover checklist rows" }).getByRole("listitem");
+    await expect(leftoverRows).toHaveCount(1);
+    await expect(leftoverRows).toContainText("#11 Rhett Lowdr");
+    await expect(matchCards.getByRole("button", { name: /^Unlink checklist row / })).toHaveCount(0);
+    await expect(matchCards.getByRole("button", { name: /^(Keep|Unkeep|Remove)\b/ })).toHaveCount(0);
+    await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, one leftover pair" });
+
+    // The operator links the pair with the buttons.
+    await matchCards.getByRole("button", { name: /^Select .*Rhett Lowdr/ }).click();
+    await matchCards.getByRole("button", { name: /^Link selected checklist row to #SIG-RL/ }).click();
+    await expect(matchCards.getByRole("heading", { name: yourChecklist(0) })).toBeVisible();
+    await expect(leftoverRows).toContainText("Linked to #SIG-RL Rhett Lowder");
+    await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
+    await expect(matchCards).toBeHidden();
+
+    // The pair the operator made reads "Rhett Lowder" on the card and "Rhett Lowdr" on the row, so the
+    // wizard opens on its "Checklist says otherwise" step (a disagreement is asked, never settled
+    // silently). The operator keeps the marketplace's spelling.
+    await expectChecklistDisagreementFirst(page);
+    await pickDisagreementSide(page, "SIG-RL", "Keep the marketplace's");
+    await wizard.getByRole("button", { name: "Next (Enter)", exact: true }).click();
+
+    // Then the one club question, then no "Cards with no team": all 14 cards, the 13 the dialog never
+    // listed included, took their team from the checklist, and all 14 reach the save.
+    await expect(clubStep).toBeVisible();
+    await answerClubStep(page);
+    await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
+    await advanceToSave(page);
+    await expect(wizard.getByText(`Save ${MIXED.cards} cards?`)).toBeVisible();
     await cancelAndDiscard(page);
     await expect(matchCards).toBeHidden();
 
     // ══ PHASE B: 14 rows against 14 cards ══
     await page.getByRole("button", { name: "Remove the publisher's checklist" }).click();
-    await expect(publishersChecklistChip(page, WITHOUT_LOWELL.rows)).toBeHidden();
+    await expect(publishersChecklistChip(page, MIXED.rows)).toBeHidden();
     await expect(publishersChecklistButton(page)).toBeVisible();
     expect(WHOLE.equalCounts).toBe(true);
     expect(WHOLE.matched).toBe(WHOLE.cards);

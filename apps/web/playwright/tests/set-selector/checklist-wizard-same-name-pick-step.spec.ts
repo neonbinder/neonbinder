@@ -86,6 +86,12 @@ test(
 
     // A stint a red attempt of STEP 6 left on him would turn the pick step below into a link: take
     // it off first, so the claim of the pick step (a rival with NO career on file) holds.
+    // R2: the guard has two states and each ends in a hard assert.
+    //   (a) CLEAN, the expected one: the page says "No stints recorded yet." and nothing runs.
+    //   (b) STRAY: a "Remove <club> <n> stint" control is showing (a red earlier run left it): it is
+    //       removed and saved, and "Saved <name>" must appear.
+    // The first assert below requires one of the two to be on screen, and the last requires (a) in
+    // both cases, so the spec cannot go on with a career on file.
     const strayStint = page.getByRole("button", { name: new RegExp(`^Remove ${OTHER_CLUB} [0-9]+ stint$`) });
     await expect(strayStint.or(page.getByText("No stints recorded yet.")).first()).toBeVisible();
     if (await strayStint.isVisible()) {

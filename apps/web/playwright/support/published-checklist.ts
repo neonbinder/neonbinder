@@ -48,6 +48,12 @@ export const CHECKLISTS = {
   topps2014FootballBase: "2014-football-topps-base",
   /** Baseball 2024 Topps Chrome Insert Future Stars: 20 cards (`FS-1`..`FS-20`), the setup's insert fetch. */
   futureStars2024: "2024-topps-chrome-insert-future-stars",
+  /**
+   * Future Stars as a publisher would number it: `101`..`119`, the same 19 players (FS-20 Brayan Rocchio left
+   * out). No number is a BSC `FS-n` or a SportLots number, and 19 rows against 20 cards means the counts
+   * differ, so every row pairs by player name and none is applied until the operator confirms.
+   */
+  futureStars2024PublisherNumbering: "2024-topps-chrome-insert-future-stars-publisher-numbering",
   /** Hockey 1995 Roanoke Express ECHL Base: 25 cards, every one `NNO`, so each pairs by player. */
   roanokeExpress1995: "1995-hockey-roanoke-express-echl-base",
   /** Baseball 2025 Bowman Draft Insert Bowman Draft Nights Autographs: 5 cards (`BDNA-EW`..), the autograph-format spec's set. */
@@ -81,6 +87,12 @@ export const CHECKLISTS = {
   signatureSeries2026: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs",
   /** The same file with row 17 (Mike Lowell) left out: 13 rows against BSC's 14 cards, so the counts differ. */
   signatureSeries2026WithoutLowell: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-without-lowell",
+  /**
+   * The whole file with row 11 misspelled ("Rhett Lowdr"): 14 rows against 14 cards, so the counts match and
+   * the server pairs the 13 unique names itself, but Rhett Lowder's card and the misspelled row are left for
+   * the operator, so Match Cards opens for that one pair.
+   */
+  signatureSeries2026MisspelledLowder: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-misspelled-lowder",
 } as const;
 
 export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];
