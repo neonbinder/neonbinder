@@ -30,6 +30,8 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
+import { expectAfterMarketplace } from "./marketplace-wait";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistName } from "./published-checklist";
 import {
   columnHeading,
   columnOption,
@@ -127,6 +129,82 @@ export function autographChoice(page: Page, choice: AutographChoice): Locator {
 }
 
 /**
+ * NEO-478: the step that shows where the operator's published checklist and the
+ * marketplace disagree about a card (a player's name, a team). Contract: a
+ * locator on its heading, nothing waited for.
+ */
+export function checklistDisagreementHeading(page: Page): Locator {
+  return reviewWizard(page).getByRole("heading", { level: 3, name: "Checklist says otherwise" });
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * One disagreement's choices on that step: a radio group per card named
+ * "Disagreement on #<number>" (the radios repeat on every card, so the group
+ * scopes them). The number must not be a prefix of another ("#6" and "#60").
+ */
+export function disagreementOn(page: Page, number: string): Locator {
+  return reviewWizard(page).getByRole("radiogroup", { name: new RegExp(`^Disagreement on #${escapeRegExp(number)}(?![0-9A-Za-z])`) });
+}
+
+/**
+ * The "Checklist says otherwise" step comes FIRST in the walk, before any name
+ * step (answering it hides the review rows for names no card carries any more),
+ * so a wizard opened by a fetch that had a disagreement shows it at once. The
+ * bulk links ("Add remaining players as new", "Skip remaining names") are
+ * hidden while it is on screen, and Next stays blocked until every group has a
+ * side picked.
+ *
+ * Contract: ENTRY the wizard is open. EXIT the step's heading is showing,
+ * nothing on it decided. A wizard that does not open on it fails here, by
+ * name: the caller is the spec whose FEATURE is that step.
+ */
+export async function expectChecklistDisagreementFirst(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  await expect(checklistDisagreementHeading(page), "the wizard opens on its Checklist says otherwise step").toBeVisible();
+  await expect(wizard.getByText("Checklist disagreements", { exact: true })).toBeVisible();
+  await expect(wizard.getByRole("button", { name: /Skip remaining names/ })).toHaveCount(0);
+  await expect(wizard.getByRole("button", { name: /Add remaining players as new/ })).toHaveCount(0);
+}
+
+/**
+ * Pick a side in one disagreement's radio group and prove it took (checked).
+ */
+export async function pickDisagreementSide(
+  page: Page,
+  number: string,
+  side: "Keep the marketplace's" | "Use the checklist's",
+): Promise<void> {
+  const radio = disagreementOn(page, number).getByRole("radio", { name: side, exact: true });
+  await radio.click();
+  await expect(radio).toBeChecked();
+}
+
+/**
+ * The step's bulk answer (shown with two or more cards): one press sets every
+ * card's own radio, and each card can then be changed on its own. Contract:
+ * ENTRY the "Checklist says otherwise" step is open with two or more cards.
+ * EXIT every card's radio on that side is checked; nothing is pressed after it.
+ */
+export async function pickSideForAllCards(
+  page: Page,
+  side: "Keep the marketplace's" | "Use the checklist's",
+  numbers: readonly string[],
+): Promise<void> {
+  const group = reviewWizard(page).getByRole("group", { name: "Same answer for every card:" });
+  await group.getByRole("button", { name: `${side} on all`, exact: true }).click();
+  for (const number of numbers) {
+    await expect(disagreementOn(page, number).getByRole("radio", { name: side, exact: true })).toBeChecked();
+  }
+}
+
+/** The status the blocked Next shows while a card on the step has no side picked. */
+export function pickASideFirst(page: Page): Locator {
+  return reviewWizard(page).getByText("Pick a side on every card first — then Next.").first();
+}
+
+/**
  * Pick `choice` on the open "Autographed cards" step and prove it took.
  * Contract: ENTRY the step is on screen. EXIT the tile is checked (so the
  * footer's Next is released); nothing is pressed after it.
@@ -179,8 +257,14 @@ export async function fetchChecklistToWizard(
   page: Page,
   env: FlowEnv,
   target: DrillTarget = {},
+  { checklist = target.set === undefined ? CHECKLISTS.starsOfMlbNetwork : undefined }: { checklist?: ChecklistName } = {},
 ): Promise<void> {
   await drillToBaseVariant(page, env, { set: "Topps Stars of MLB Network", ...target });
+  // NEO-478/482: the publisher's checklist is uploaded before the fetch, so BSC is
+  // asked for nothing per card. The default set's own CSV is used unless the
+  // caller names another file; a caller that targets another set and names none
+  // fetches live.
+  const facts = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 
   const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
@@ -192,12 +276,18 @@ export async function fetchChecklistToWizard(
     await expect(ready).toBeVisible({ timeout: FETCH });
     await ready.click();
   } else {
-    // One marketplace answered: the solo path keeps its cards without pairing.
-    await expect(page.getByText(/Kept all [0-9]+ cards? from BSC/)).toBeVisible({ timeout: FETCH });
+    // One marketplace answered: the solo path keeps its cards without pairing. The
+    // fetch is one live BSC round trip: 7 s of our own time plus the seconds the
+    // screen says it is waiting on BSC (NEO-487), never a flat ceiling.
+    await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
+      platform: "BuySportsCards",
+      what: "the solo fetch's kept-cards line",
+    });
     await expect(page.getByText(/Match Cards/)).toBeHidden();
     await expect(confirmMatches).toBeHidden();
   }
   await expect(reviewWizard(page)).toBeVisible({ timeout: FETCH });
+  if (facts !== undefined) await expectTeamsFromChecklist(page, facts);
   // The helper's product is this screen, so it checks it (GUIDE "Accessibility checks").
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
@@ -209,6 +299,12 @@ export interface OneMarketplaceSet {
   sport?: string;
   year?: string;
   manufacturer?: string;
+  /**
+   * NEO-478/482: a captured publisher's checklist to upload before the Sync
+   * (`CHECKLISTS` in support/published-checklist.ts). Omitted, the fetch asks
+   * BSC for every card itself.
+   */
+  checklist?: ChecklistName;
 }
 
 /**
@@ -294,17 +390,23 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   // re-sync raises no review). A local re-run against an already-committed
   // preview fails here, by name, which is correct: re-seed first.
   await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+  const facts = target.checklist === undefined ? undefined : await usePublishersChecklist(page, target.checklist);
   await syncChecklistButton(page).click();
 
-  // One live BSC round trip. `soloKeptMessage` prints only on the NEO-255
+  // One live BSC round trip, waited on with `expectAfterMarketplace` (NEO-487).
+  // `soloKeptMessage` prints only on the NEO-255
   // branch, once the streamed batch has arrived in full, and names the one side
   // it asked: both the sync point and the proof that one marketplace was attached.
-  await expect(page.getByText(/Kept all [0-9]+ cards? from BSC/)).toBeVisible({ timeout: 60_000 });
+  await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
+    platform: "BuySportsCards",
+    what: "the solo fetch's kept-cards line",
+  });
 
   // Every fetched name the deployment does not hold is queued, each behind a
   // lookup (measured ~0.8 s to open on a 25-card set; the flow's 60 s). Gated
   // on the wizard's title, "Tidy up this set" since NEO-335.
   await expect(reviewWizard(page)).toBeVisible({ timeout: 60_000 });
+  if (facts !== undefined) await expectTeamsFromChecklist(page, facts);
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
 

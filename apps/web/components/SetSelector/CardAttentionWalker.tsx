@@ -4,7 +4,7 @@ import { Theme } from "@radix-ui/themes";
 import type { Id } from "../../convex/_generated/dataModel";
 import { compareCardNumbers } from "@/lib/cards/card-number";
 import NeonButton from "../modules/NeonButton";
-import { deriveCardAttention } from "./card-attention";
+import { deriveCardAttention, stillLookingUpTeams } from "./card-attention";
 import WizardChrome from "./WizardChrome";
 import {
   AttentionSportContext,
@@ -41,9 +41,7 @@ export function walkDoneLine(awaitingLookup: number): string {
   if (awaitingLookup <= 0) {
     return "All clear — nothing on this checklist needs attention.";
   }
-  return `All clear for now. Still looking up teams for ${awaitingLookup} ${
-    awaitingLookup === 1 ? "card" : "cards"
-  }.`;
+  return `All clear for now. ${stillLookingUpTeams(awaitingLookup)}`;
 }
 
 /**

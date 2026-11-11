@@ -1004,12 +1004,48 @@ export const listingSyncStepValidator = v.object({
   conditions: v.optional(v.array(collectionCopyConditionValidator)),
   status: listingSyncStepStatusValidator,
   finishedAt: v.optional(v.number()),
+  /**
+   * PR 451 (NEO-487) — measured by the BSC call recorder, never the step's
+   * elapsed time: set while a BSC call of this step is outstanding (written on
+   * the recorder's 0 → 1 edge, cleared on its debounced 1 → 0 edge), and the
+   * total time this step has spent waiting on BSC so far.
+   */
+  marketplaceWaitingSince: v.optional(v.number()),
+  marketplaceWaitMs: v.optional(v.number()),
 });
 export const listingSyncProgressValidator = v.object({
   /** The claim that started this run (`listingDrain.claimVariant`). */
   runStartedAt: v.number(),
   steps: v.array(listingSyncStepValidator),
 });
+
+/**
+ * PR 451 (NEO-478) — where the operator's publisher checklist disagrees with
+ * the marketplace on one card. `marketplace` is what the card carries (the
+ * merged marketplace answer), `checklist` what the publisher's row says. Each
+ * side is present only when that field disagrees. Bounded by
+ * `startCandidateBatch` (MAX_CARD_PLAYERS / MAX_CARD_TEAMS, name length).
+ */
+export const checklistConflictSidesValidator = v.object({
+  marketplace: v.array(v.string()),
+  checklist: v.array(v.string()),
+});
+export const checklistConflictValidator = v.object({
+  players: v.optional(checklistConflictSidesValidator),
+  teams: v.optional(checklistConflictSidesValidator),
+});
+
+/**
+ * NEO-335 / PR 451 — how a card's fetch-time team answer was reached:
+ * "answered" (BSC replied), "failed" (the BSC call failed), "checklist" (the
+ * operator's publisher checklist answered it; BSC was not asked). The one
+ * definition the candidate row, the preview card and the commit chunk share.
+ */
+export const cardTeamLookupValidator = v.union(
+  v.literal("answered"),
+  v.literal("failed"),
+  v.literal("checklist"),
+);
 
 /**
  * NEO-370 — why a sold line was not (fully) applied to the collector's box
@@ -1549,8 +1585,14 @@ export default defineSchema({
     // was an operator's "no team" ruling, which is not a lookup at all), so a
     // re-ask treats absent like "gaveUp". No index: only the armed re-ask
     // (`enqueueBscTeamBackfill` mode "reask") reads it, and it pages the table.
+    //
+    // PR 451 (NEO-478): "checklist" — the operator's publisher checklist
+    // answered this card at fetch (a matched row), so BSC was never asked. A
+    // card that ends teamless with it was claimed teamless by the checklist;
+    // a re-ask never selects it. Revert hazard: a revert must keep this
+    // literal while rows carry it.
     teamCheckOutcome: v.optional(
-      v.union(v.literal("answered"), v.literal("gaveUp")),
+      v.union(v.literal("answered"), v.literal("gaveUp"), v.literal("checklist")),
     ),
     // NEO-236: the team name BSC returned that we could not match to a row.
     //
@@ -3392,7 +3434,18 @@ export default defineSchema({
     // commit can stamp an answered card's `teamCheckDoneAt` instead of
     // re-asking BSC after save. Optional and additive; the table is drained at
     // commit, so no backfill.
-    teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+    //
+    // PR 451 (NEO-478): "checklist" — the team came from the operator's
+    // publisher checklist (an exactly-one number match), so no BSC lookup ran.
+    teamLookup: v.optional(cardTeamLookupValidator),
+    // PR 451 (NEO-478) — the operator's publisher checklist disagrees with the
+    // marketplace on this card's players and/or teams. Written only on a
+    // candidate the checklist matched by number (exactly one on both sides).
+    // `players` / `teams` on the row still hold the marketplace's answer; the
+    // wizard's "Checklist says otherwise" step settles it and the commit
+    // refuses a card that still carries it. Bounded like `playersConflict`
+    // (`startCandidateBatch`). The checklist itself is never stored.
+    checklistConflict: v.optional(checklistConflictValidator),
     // NEO-335 — BSC's team value for this card exactly as the lookup returned
     // it (trimmed, UNSPLIT; NEO-333's `rawTeamName`), written by
     // `resolveCandidateTeams` only when `teams` does not already say it — a
@@ -4069,6 +4122,64 @@ export default defineSchema({
   bscCallSummaries: defineTable(bscCallSummaryFields)
     // exportRange's `startedAt` window, oldest first, paged.
     .index("by_startedAt", ["startedAt"]),
+
+  /**
+   * PR 451 (NEO-487) — "Waiting on BuySportsCards…": how long one BSC call
+   * recorder (one adapter invocation) has been waiting on BSC, for one run the
+   * client is watching.
+   *
+   * ONE ROW PER RECORDER, inserted on the recorder's first wait edge
+   * (`marketplaceWaits.open`) and then patched by `_id` on every later edge
+   * (`marketplaceWaits.edge`), so two adapter invocations of one run never
+   * write the same document; the public reader (`marketplaceWaits.forRun`)
+   * sums them. Never a shared counter: a counter leaks when an action dies
+   * between its increment and decrement, a row with a stale `waitingSince`
+   * just expires.
+   *
+   * `runKey` is minted by the CLIENT for one fetch / build / probe (≤ 64,
+   * `[A-Za-z0-9_-]`), and `ownerId` is the caller's identity subject, taken
+   * from the action's auth, never from an argument. The table holds no
+   * `selectorOptions` id, so it stays out of the wipe graph and the
+   * reference seed. Each row deletes itself an hour after insert
+   * (`marketplaceWaits.expire`, scheduled by the inserting mutation).
+   *
+   * No marketplace value is stored: only times.
+   */
+  marketplaceWaits: defineTable({
+    ownerId: v.string(),
+    runKey: v.string(),
+    platform: v.literal("bsc"),
+    /** Set while the recorder has a BSC call outstanding; absent between waits. */
+    waitingSince: v.optional(v.number()),
+    /** Closed waiting time so far, in ms (the open interval is not included). */
+    accumulatedMs: v.number(),
+    updatedAt: v.number(),
+  }).index("by_owner_and_run", ["ownerId", "runKey"]),
+
+  /**
+   * PR 451 (NEO-487) — a deployment-wide pause on one BSC endpoint after it
+   * answered 429. BSC's edge blocks per IP and every Convex deployment egresses
+   * from shared IPs, so one caller's 429 is everyone's: the fetch-time lookup
+   * and the background queue both read this before every wave and make no
+   * call while `until` is in the future.
+   *
+   * One row per (platform, endpoint), written only on a 429
+   * (`marketplaceCooldowns.record429`) and on the first success after one:
+   * zero writes on the healthy path.
+   * `streak` counts 429 windows in a row (15 s doubling to 120 s, or BSC's
+   * Retry-After when longer, up to 10 min); it resets to 0 on the first
+   * successful answer after a window closes (`recordSuccess`, NEO-482), or
+   * once 15 min pass with no 429. A 429 inside a live window does not
+   * escalate it.
+   */
+  marketplaceCooldowns: defineTable({
+    platform: v.literal("bsc"),
+    endpoint: v.literal("cardListing"),
+    until: v.number(),
+    last429At: v.number(),
+    streak: v.number(),
+    updatedAt: v.number(),
+  }).index("by_platform_endpoint", ["platform", "endpoint"]),
 
   /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────

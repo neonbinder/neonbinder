@@ -26,6 +26,7 @@
 // link reached the cards, and the era options prove which era was offered and
 // chosen.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { CHECKLISTS } from "../../support/published-checklist";
 import { setBuilderReady } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
 import {
@@ -36,7 +37,13 @@ import {
   stepCounter,
 } from "../../support/wizard";
 
-const TARGET = { sport: "Baseball", year: "2025", manufacturer: "Topps", set: "Topps Welcome to the Club: 3X MVP" };
+const TARGET = {
+  sport: "Baseball",
+  year: "2025",
+  manufacturer: "Topps",
+  set: "Topps Welcome to the Club: 3X MVP",
+  checklist: CHECKLISTS.welcomeToTheClub,
+};
 const CLUB = "Philadelphia Athletics";
 
 test(

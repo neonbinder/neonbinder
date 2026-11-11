@@ -61,6 +61,7 @@ import {
   type RowCheck,
 } from "./base-match-probe";
 import { BASE_MATCH_COPY, type BaseMatchSide } from "@/lib/cards/base-match";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 
 // ===== TYPES =====
 
@@ -2747,6 +2748,17 @@ function ReconciliationDialog({
                   life when the check was asked for, so it is in the tree
                   (empty) before its first words. */}
               {baseCheck && <LiveLine text={probe.announcement} />}
+              {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while
+                  a Base check call is held up by BSC. Mounted for the
+                  dialog's life beside the check's live line. */}
+              {baseCheck && (
+                <WaitingOnMarketplaceRun
+                  runKey={probe.bscWait.runKey}
+                  active={probe.bscWait.active}
+                  marketplace="BuySportsCards"
+                  className="mb-2"
+                />
+              )}
               {/* NEO-341: one column below sm. Side by side in a phone-width
                   dialog each column was ~170px, and a row's "Make its own
                   set" button left the item name one letter wide. */}

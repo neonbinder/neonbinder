@@ -10,10 +10,11 @@ import {
   QueryCtx,
 } from "./_generated/server";
 import type { FunctionReference } from "convex/server";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
+import { assertResetArmed } from "./resetArming";
 import {
   recordAdapterCall,
   newRequestId,
@@ -301,9 +302,22 @@ import {
   findOrCreateLeague,
   normalizeLeagueName,
 } from "./leagues";
+// PR 451 (NEO-478 / NEO-487) — the publisher checklist's pairing (pure, rule
+// 7), the shared team splitter, and the "Waiting on BuySportsCards…" run key.
+import {
+  checklistNameKey,
+  matchPublishedChecklist,
+  rowHasNoNumber,
+  type ChecklistConflict,
+} from "../lib/checklists/match-published-checklist";
+import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
+import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
+import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
 import {
   cardPlatformDataValidator,
   cardPlatformWireDataValidator,
+  cardTeamLookupValidator,
+  checklistConflictValidator,
   selectorOptionFields,
   selectorOptionLevelValidator,
 } from "./schema";
@@ -1303,6 +1317,18 @@ export const findSetYearForSelectorOptionQuery = internalQuery({
  * the only place unknowns were ever computed. Splitting it out lets the
  * custom-subtree branch call it too, without touching any BSC/SL logic.
  */
+/** PR 451 — `players.resolveNameForReview`'s answer for one name. */
+type NameReviewAnswer = {
+  matchCount: number;
+  playerId?: Id<"players">;
+  narrowedByCardYear?: boolean;
+  narrowedBy?: "cardYear" | "hallOfFame";
+  candidatePlayerIds?: Array<Id<"players">>;
+};
+/** PR 451 — names per `players.resolveNamesForReview` call, and calls in flight. */
+export const NAME_REVIEW_SLICE = 25;
+export const NAME_REVIEW_CONCURRENCY = 4;
+
 async function resolveUnknownsAndStartBatch(
   ctx: ActionCtx,
   args: {
@@ -1563,6 +1589,48 @@ async function resolveUnknownsAndStartBatch(
   /** NEO-424 — `matchCount` per queued name, for the rule-E2 preselect. */
   const matchCountByName = new Map<string, number>();
 
+  /**
+   * PR 451 — every name's in-sport lookup, asked up front in BATCHES
+   * (`players.resolveNamesForReview`: 25 names a call, up to 4 calls at once)
+   * instead of one `runQuery` per name. A first sync of a big set carries
+   * hundreds of names, and each round trip cost more than the lookup. Each
+   * answer is exactly what `resolveNameForReview` gives for that name, with
+   * the same card year and card teams, so the gate below is unchanged. A name
+   * whose answer is missing reads as no match: it goes to review, never
+   * silently resolved.
+   */
+  const resolvedByNorm = new Map<string, NameReviewAnswer>();
+  {
+    const toAsk = [...playerByNorm].filter(
+      ([normalized]) => !skippedKeys.has(`player:${normalized}`),
+    );
+    const slices: Array<typeof toAsk> = [];
+    for (let i = 0; i < toAsk.length; i += NAME_REVIEW_SLICE) {
+      slices.push(toAsk.slice(i, i + NAME_REVIEW_SLICE));
+    }
+    for (let i = 0; i < slices.length; i += NAME_REVIEW_CONCURRENCY) {
+      const group = slices.slice(i, i + NAME_REVIEW_CONCURRENCY);
+      const answers: NameReviewAnswer[][] = await Promise.all(
+        group.map((slice) =>
+          ctx.runQuery(internal.players.resolveNamesForReview, {
+            sportId: args.sportId,
+            ...(setYear !== undefined ? { cardYear: setYear } : {}),
+            names: slice.map(([normalized, name]) => {
+              const teams = cardTeamNamesFor(normalized);
+              return teams.length > 0 ? { name, cardTeamNames: teams } : { name };
+            }),
+          }),
+        ),
+      );
+      group.forEach((slice, g) => {
+        slice.forEach(([normalized], k) => {
+          const answer = answers[g]?.[k];
+          if (answer) resolvedByNorm.set(normalized, answer);
+        });
+      });
+    }
+  }
+
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
     const cardTeamNames = cardTeamNamesFor(normalized);
@@ -1592,18 +1660,10 @@ async function resolveUnknownsAndStartBatch(
      * today's path silently (D3), and only a history answer the lookup did not
      * reach becomes a visible decided row.
      */
-    const resolved = await ctx.runQuery(internal.players.resolveNameForReview, {
-      name,
-      sportId: args.sportId,
-      // NEO-254 — the card's OWN year and team, which is what turns "2 or
-      // more" back into "1" for most collisions. See
-      // `players.narrowSameNamePlayersByCardYear`: a 1990 card is not about a
-      // man who retired in 1937, and when two contemporaries share a name the
-      // team printed on the card separates them. Undefined year → no
-      // narrowing at all, which is the pre-NEO-254 behaviour.
-      ...(setYear !== undefined ? { cardYear: setYear } : {}),
-      ...(cardTeamNames.length > 0 ? { cardTeamNames } : {}),
-    });
+    //
+    // PR 451 — answered by the batched lookup above, with the card's OWN year
+    // and team (NEO-254: see `players.narrowSameNamePlayersByCardYear`).
+    const resolved: NameReviewAnswer = resolvedByNorm.get(normalized) ?? { matchCount: 0 };
     const verdict = setHistoryVerdict(resolved, historyPlayers.get(normalized));
     if (verdict.kind === "autoLink") {
       pendingPlayerLinks.push({
@@ -2105,8 +2165,9 @@ export const getCardChecklist = query({
       // is STRICT: a row carrying the field would otherwise fail the whole
       // checklist with `Object contains extra field`. `MissingTeamFixer`
       // reads it for the line saying which case the card is in.
+      // PR 451 (NEO-478): + "checklist", the publisher checklist answered it.
       teamCheckOutcome: v.optional(
-        v.union(v.literal("answered"), v.literal("gaveUp")),
+        v.union(v.literal("answered"), v.literal("gaveUp"), v.literal("checklist")),
       ),
       // NEO-236: the team name BSC returned that matched no row of ours.
       // `MissingTeamFixer` shows it as "Marketplace says: …" so the operator
@@ -3866,6 +3927,11 @@ type CardNameBearing = {
   teams?: string[];
   team?: string;
   playersConflict?: { bsc: string[]; sportlots: string[] };
+  // PR 451 (NEO-478) — the publisher checklist's disagreement, both sides.
+  checklistConflict?: {
+    players?: { marketplace: string[]; checklist: string[] };
+    teams?: { marketplace: string[]; checklist: string[] };
+  };
   // NEO-335 — operator-chosen NB team ids. Only the COUNT is bounded here;
   // the ids themselves are validated against the table by the commit.
   teamIds?: ReadonlyArray<unknown>;
@@ -3980,6 +4046,33 @@ function assertCardBatchWithinLimits(
             throw new Error(
               `${fnName}: ${where} carries a ${side} player name of ${name.length} characters in its roster conflict; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
             );
+          }
+        }
+      }
+    }
+    // PR 451 (NEO-478) — the checklist disagreement is four more lists, and
+    // `resolveChecklistEntities` resolves the names on both of its sides, so
+    // they come back in on the card caps too.
+    const checklist = card.checklistConflict;
+    if (checklist) {
+      for (const [what, cap] of [
+        ["players", MAX_CARD_PLAYERS],
+        ["teams", MAX_CARD_TEAMS],
+      ] as const) {
+        const sides = checklist[what];
+        if (!sides) continue;
+        for (const side of ["marketplace", "checklist"] as const) {
+          if (sides[side].length > cap) {
+            throw new Error(
+              `${fnName}: ${where} carries ${sides[side].length} ${side} ${what} in its checklist disagreement, above the ${cap} limit`,
+            );
+          }
+          for (const name of sides[side]) {
+            if (name.length > MAX_PLAYER_NAME_LENGTH) {
+              throw new Error(
+                `${fnName}: ${where} carries a ${side} name of ${name.length} characters in its checklist disagreement; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+              );
+            }
           }
         }
       }
@@ -8794,6 +8887,14 @@ function resetTimeBudgetMs(): number {
 
 /** The per-table reset counts, plus whether the run got through every table. */
 type SetBuilderResetResult = {
+  /**
+   * PR 451 (NEO-482) — the deployment-wide BSC 429 cooldown rows. A window
+   * left open by the last run would hold the next run's team lookups for up
+   * to 10 minutes before any of its cards were asked.
+   */
+  marketplaceCooldownsDeleted: number;
+  /** PR 451 (NEO-482) — the "Waiting on BuySportsCards…" rows of earlier runs. */
+  marketplaceWaitsDeleted: number;
   /** NEO-306 — pending SportLots set reviews, one per (year, brand). */
   slSetReviewsDeleted: number;
   /** NEO-358 — the transient per-column sync notices, drained before the rows they name. */
@@ -8923,7 +9024,24 @@ async function runSetBuilderReset(
   const startedAt = Date.now();
   const budgetMs = resetTimeBudgetMs();
 
+  // PR 451 (NEO-482) — empty the BSC team lane before the cards it would ask
+  // about are drained, so the previous seed's queued checks (pushed back
+  // behind a cooldown for up to 30 minutes) never sit on the one slot in
+  // front of the next run's cards. Scheduled rather than awaited, the way
+  // the commit path enqueues onto the lane: the cancel touches the workpool
+  // component, and the reset must not fail on it. The cancel is armed itself
+  // (`assertResetArmed`), and every caller of this function has already
+  // asserted the flag. A resumed call schedules it again; cancelling an empty
+  // lane is a no-op.
+  await ctx.scheduler.runAfter(
+    0,
+    internal.bscTeamPool.cancelAllBscTeamChecks,
+    {},
+  );
+
   const counts = {
+    marketplaceCooldownsDeleted: 0,
+    marketplaceWaitsDeleted: 0,
     slSetReviewsDeleted: 0,
     selectorSyncStatusDeleted: 0,
     collectionCopiesDeleted: 0,
@@ -8962,8 +9080,24 @@ async function runSetBuilderReset(
   // the NEO-370 listing tables, cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
-    // NEO-306 — FIRST: a review doc points at a year and a brand row, so it
-    // drains before the table it references. A handful of docs at most.
+    // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows, FIRST.
+    // Neither names a row of any other table, so their place in the order is
+    // about the run, not about references: the cooldown is deployment-wide
+    // and a window the previous run opened would push every team lookup of
+    // the next one behind it. Not reference-seed tables: every scope drains
+    // them. The per-user `/testing/reset` deliberately leaves both alone,
+    // because eight shards run it at once and the cooldown is shared.
+    [
+      "marketplaceCooldownsDeleted",
+      internal.selectorOptions.resetMarketplaceCooldownsBatch,
+    ],
+    [
+      "marketplaceWaitsDeleted",
+      internal.selectorOptions.resetMarketplaceWaitsBatch,
+    ],
+    // NEO-306 — first of the catalogue's dependants: a review doc points at a
+    // year and a brand row, so it drains before the table it references. A
+    // handful of docs at most.
     ["slSetReviewsDeleted", internal.selectorOptions.resetSlSetReviewsBatch],
     // NEO-358 — the per-column sync notices ("SportLots could not be
     // reached…"). A row names its column's parent selector row, so it drains
@@ -9206,33 +9340,9 @@ async function runSetBuilderReset(
  */
 const RESET_BATCH_SIZE = 500;
 
-/**
- * The arming check, asserted at BOTH layers of the reset — the entry point and
- * every batch mutation it loops.
- *
- * The duplication is the point (NEO-214 security review). There is no identity
- * check anywhere under this entry point, because a CLI run carries no identity
- * (see `resetSetBuilderDataFromCli`), so the flag is the ONLY thing standing
- * between a call and a drained table. Asserting it solely at the entry point
- * would mean a future internal caller — a migration, a cron, a well-meaning
- * `ctx.runMutation` — could empty a table by going straight to a batch. So the
- * check lives next to each delete, which is exactly where the old
- * `requireAdmin` used to sit and for the same defence-in-depth reason.
- *
- * `ConvexError` rather than `Error`: production Convex REDACTS a plain `Error`
- * message, and the whole point of this refusal is to name the flag you have to
- * set.
- */
-function assertResetArmed(): void {
-  if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-    throw new ConvexError(
-      "Set Builder reset is not armed on this deployment. Set " +
-        "ALLOW_RESET_SET_BUILDER_DATA=true on it first " +
-        "(`npx convex env set ALLOW_RESET_SET_BUILDER_DATA true`), and " +
-        "unset it again afterwards on production.",
-    );
-  }
-}
+// `assertResetArmed` lives in `./resetArming` (PR 451, NEO-482) so the BSC
+// team lane's armed cancel (`bscTeamPool.cancelAllBscTeamChecks`) can assert
+// the same flag; its docblock there says why it sits at both layers.
 
 /**
  * The ONLY entry point to the Set Builder reset (NEO-214). Wipes
@@ -9241,6 +9351,9 @@ function assertResetArmed(): void {
  * `playerSports`, `players`, `playerAliases`, `teams`, `teamAliases`,
  * `franchises` and `leagues`. With `scope: "exceptReferenceSeed"` (NEO-330)
  * it skips the eight reference-seed tables among those and wipes the rest.
+ * Every scope also clears the BSC 429 cooldown (`marketplaceCooldowns`), the
+ * BSC wait rows (`marketplaceWaits`) and the BSC team lane (PR 451, NEO-482);
+ * the per-user `/testing/reset` touches none of the three.
  *
  * Runbook: `docs/operations/neo214-set-builder-admin-scripts.md`. Take a
  * **Backup Now** first (NEO-190 §3) and run it with the app CLOSED — resetting
@@ -9309,7 +9422,11 @@ export const resetSetBuilderDataFromCli = internalAction({
     ),
   },
   returns: v.object({
-    // NEO-306 — pending SportLots set reviews, drained first.
+    // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows, drained
+    // first in every scope.
+    marketplaceCooldownsDeleted: v.number(),
+    marketplaceWaitsDeleted: v.number(),
+    // NEO-306 — pending SportLots set reviews, drained right after them.
     slSetReviewsDeleted: v.number(),
     // NEO-358 — the transient per-column sync notices.
     selectorSyncStatusDeleted: v.number(),
@@ -9481,6 +9598,50 @@ export const resetEntityReviewQueueBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("entityReviewQueue").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `marketplaceCooldowns` (PR 451, NEO-482), looped by
+ * `runSetBuilderReset` first in every scope. One row per (platform, endpoint),
+ * so this is a handful of rows at most; paged like every other batch anyway.
+ */
+export const resetMarketplaceCooldownsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("marketplaceCooldowns")
+      .take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `marketplaceWaits` (PR 451, NEO-482), looped by
+ * `runSetBuilderReset` in every scope. Each row's own `expire` job is left
+ * scheduled; it reads the row by id and does nothing once it is gone.
+ */
+export const resetMarketplaceWaitsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("marketplaceWaits").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -10864,6 +11025,10 @@ export const ensureSelectorOptions = action({
     level: levelValidator,
     parentId: v.optional(v.id("selectorOptions")),
     force: v.optional(v.boolean()),
+    // PR 451 (NEO-487) — the client's run key for "Waiting on
+    // BuySportsCards…" (`marketplaceWaits`), passed down to the BSC selector
+    // fetch. Shape-checked after the admin gate; never sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     ran: v.boolean(),
@@ -10895,6 +11060,10 @@ export const ensureSelectorOptions = action({
   }> => {
     await requireAdmin(ctx);
     const { level, parentId, force } = args;
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("ensureSelectorOptions: waitKey must be 1-64 letters, digits, _ or -.");
+    }
+    const waitKeyArg = args.waitKey !== undefined ? { waitKey: args.waitKey } : {};
 
     // NEO-237 — the Sets column may be opened from the All Brands VIEW, in
     // which case its parent is the YEAR, not a manufacturer. Read once; it
@@ -11110,12 +11279,13 @@ export const ensureSelectorOptions = action({
             ...(parentRow?.level === "manufacturer"
               ? { manufacturerId: parentRow._id }
               : {}),
+            ...waitKeyArg,
           },
         );
       } else {
         res = await ctx.runAction(
           api.selectorOptions.fetchAggregatedOptions,
-          { level, parentId, parentFilters },
+          { level, parentId, parentFilters, ...waitKeyArg },
         );
       }
       if (!res.success) {
@@ -11318,6 +11488,8 @@ export const fetchAggregatedOptions = action({
         variantType: v.optional(v.string()),
       }),
     ),
+    // PR 451 (NEO-487) — see `ensureSelectorOptions.waitKey`.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -11354,6 +11526,10 @@ export const fetchAggregatedOptions = action({
     // cleanly to the client instead of being rewritten as "Failed to fetch
     // options: Admin access required" by the generic catch below.
     await requireAdmin(ctx);
+    // PR 451 (NEO-487) — outside the try for the same reason.
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("fetchAggregatedOptions: waitKey must be 1-64 letters, digits, _ or -.");
+    }
 
     // Correlation id for the adapter-perf dashboard. Generated here at the
     // outermost aggregator so child BSC/SL calls can tag their own
@@ -11632,6 +11808,7 @@ export const fetchAggregatedOptions = action({
                   ? { platformFilters: bscPlatformFilters }
                   : {}),
                 requestId,
+                ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}),
               }),
               BSC_CHILD_DEADLINE_MS,
             )
@@ -13099,6 +13276,8 @@ export const syncSetsAcrossManufacturers = action({
      * every brand of the year. The BSC phase is year-wide either way.
      */
     manufacturerId: v.optional(v.id("selectorOptions")),
+    // PR 451 (NEO-487) — see `ensureSelectorOptions.waitKey`.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -13144,6 +13323,11 @@ export const syncSetsAcrossManufacturers = action({
     // NEO-306 — the SportLots phase mints nothing, so no identity is
     // threaded anywhere; the review's save records its own caller.
     await requireAdmin(ctx);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError(
+        "syncSetsAcrossManufacturers: waitKey must be 1-64 letters, digits, _ or -.",
+      );
+    }
     const requestId = newRequestId();
     try {
       // 1. Build ancestor chain from yearId to get sport/year values + slugs
@@ -13222,6 +13406,7 @@ export const syncSetsAcrossManufacturers = action({
               year: slotIds(yearAncestor, "bsc"),
             },
             requestId,
+            ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}),
           },
         );
 
@@ -14127,6 +14312,107 @@ interface ReconciledCard {
    * sides) carry no such tag.
    */
   unmatched?: "bsc" | "sl";
+  /** PR 451 (NEO-478) — the publisher checklist disagrees on this card. */
+  checklistConflict?: {
+    players?: { marketplace: string[]; checklist: string[] };
+    teams?: { marketplace: string[]; checklist: string[] };
+  };
+  /** PR 451 (NEO-478) — the card's team answer came from the checklist. */
+  teamLookup?: "checklist";
+}
+
+/** PR 451 — two team lists name the same teams, as the checklist matcher compares names. */
+function sameNames(a: readonly string[], b: readonly string[]): boolean {
+  const key = (names: readonly string[]) =>
+    [...new Set(names.map(checklistNameKey).filter(Boolean))].sort().join("|");
+  return key(a) === key(b);
+}
+
+/**
+ * PR 451 (NEO-478) — the operator's publisher checklist as the fetch receives
+ * it. Never stored: it is matched against this run's cards and dropped.
+ */
+export const MAX_PUBLISHED_CHECKLIST_ROWS = 2000;
+
+/**
+ * PR 451 (D-A, Jason) — the most cards `fetchCardChecklist` asks BSC about
+ * live, per fetch, for their team. Counted on cards actually sent (a
+ * checklist-answered card is never one). The rest are recorded as failed
+ * lookups, so the commit queues them on the background lane, the same path a
+ * BSC stop sends them down; the "Still looking up teams" line covers them.
+ */
+export const BSC_FETCH_TIME_LOOKUP_CAP = 40;
+const publishedChecklistValidator = v.object({
+  rows: v.array(
+    v.object({
+      number: v.string(),
+      players: v.array(v.string()),
+      teams: v.array(v.string()),
+      // PR 451 (D-B) — the publisher printed no number ("NNO"). The re-check
+      // below sets it from the number too, so a row sent without the flag
+      // reads the same; the matcher pairs such a row by player only.
+      noNumber: v.optional(v.boolean()),
+      // The parser's subset label (a file's "set" / "insert" column). The
+      // client chooses rows by it; the fetch never reads it and drops it in
+      // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
+      subset: v.optional(v.string()),
+    }),
+  ),
+});
+type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
+
+/**
+ * The server's re-check of a publisher checklist (the client's parser applies
+ * the same limits): at most `MAX_PUBLISHED_CHECKLIST_ROWS` rows, every number,
+ * player and team within the stored-name cap, players and teams within a
+ * card's caps. Refused whole, never trimmed, and named by row position only.
+ * Strings are trimmed; empty names dropped. A row is a no-number row
+ * (`noNumber: true`) when the client flagged it or its number is blank or
+ * "NNO", by the matcher's own test (`rowHasNoNumber`), so the client's parse
+ * and this re-check always agree on which rows pair by player.
+ */
+export function checkPublishedChecklist(
+  published: PublishedChecklist | undefined,
+): PublishedChecklist | undefined {
+  if (!published) return undefined;
+  if (published.rows.length > MAX_PUBLISHED_CHECKLIST_ROWS) {
+    throw new ConvexError(
+      `The publisher's checklist has ${published.rows.length} rows; the limit is ${MAX_PUBLISHED_CHECKLIST_ROWS}.`,
+    );
+  }
+  const rows = published.rows.map((row, index) => {
+    const where = `Row ${index + 1} of the publisher's checklist`;
+    const number = row.number.trim();
+    if (number.length > MAX_PLAYER_NAME_LENGTH) {
+      throw new ConvexError(`${where} has a card number over ${MAX_PLAYER_NAME_LENGTH} characters.`);
+    }
+    // The subset is dropped below, but it still crossed the wire: held to the
+    // same cap as a name, so an unread field cannot carry an unbounded string.
+    if (row.subset !== undefined && row.subset.trim().length > MAX_PLAYER_NAME_LENGTH) {
+      throw new ConvexError(`${where} has a set name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
+    }
+    const clean = (names: string[], max: number, unit: string) => {
+      const kept = names.map((n) => n.trim()).filter(Boolean);
+      if (kept.length > max) {
+        throw new ConvexError(`${where} names ${kept.length} ${unit}s; the limit is ${max}.`);
+      }
+      for (const n of kept) {
+        if (n.length > MAX_PLAYER_NAME_LENGTH) {
+          throw new ConvexError(
+            `${where} has a ${unit} name over ${MAX_PLAYER_NAME_LENGTH} characters.`,
+          );
+        }
+      }
+      return kept;
+    };
+    return {
+      number,
+      players: clean(row.players, MAX_CARD_PLAYERS, "player"),
+      teams: clean(row.teams, MAX_CARD_TEAMS, "team"),
+      ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
+    };
+  });
+  return { rows };
 }
 
 const previewCardFields = {
@@ -14207,7 +14493,17 @@ const previewCardFields = {
   // a teamless BSC card is queued for the background lookup. It is a hint
   // about OUR call, never a value from the marketplace, and it decides only
   // whether that call is repeated.
-  teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  //
+  // PR 451 (NEO-478): "checklist" — the operator's publisher checklist named
+  // this card's team (or named none) at fetch, so BSC was not asked; the
+  // commit stamps `teamCheckOutcome: "checklist"` on a card that ends
+  // teamless and never queues it.
+  teamLookup: v.optional(cardTeamLookupValidator),
+  // PR 451 (NEO-478) — the publisher checklist disagrees with the marketplace
+  // on this card ("Checklist says otherwise"). ACCEPTED here for the same
+  // reason `playersConflict` is, and REFUSED by `commitCardChecklist`: a card
+  // on its way to being written carries one answer, not an open question.
+  checklistConflict: v.optional(checklistConflictValidator),
   // `rawTeamName` — BSC's team value for this card exactly as the fetch-time
   // lookup returned it, unsplit (`checklistCandidates.rawTeamName`, present
   // only where `teams` does not already say it). Read by the commit for one
@@ -14325,6 +14621,20 @@ const commitCardValidator = v.object({
 export const fetchCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
+    /**
+     * PR 451 (NEO-478) — the operator's publisher checklist, parsed on the
+     * client (`lib/checklists/parse-published-checklist.ts`) and re-checked
+     * here (`checkPublishedChecklist`). Cards it matches by number (exactly
+     * one on both sides, rule 7) take their teams from it and are not looked
+     * up on BSC when their row names a team; the rest are. Never stored.
+     */
+    publishedChecklist: v.optional(publishedChecklistValidator),
+    /**
+     * PR 451 (NEO-487) — the client's run key for "Waiting on
+     * BuySportsCards…" (`marketplaceWaits.forRun`). ≤ 64, `[A-Za-z0-9_-]`.
+     * Absent: nothing is written.
+     */
+    waitKey: v.optional(v.string()),
   },
   /**
    * The cards do NOT come back this way. They are published to
@@ -14432,6 +14742,13 @@ export const fetchCardChecklist = action({
      */
     candidateBatchId: v.optional(v.string()),
     readyAfterTeams: v.optional(v.number()),
+    /**
+     * PR 451 (NEO-478) — with a publisher checklist: how many of this run's
+     * candidates took their team answer from it (`matched`), of all the
+     * candidates (`total`). "Teams from your checklist: N of M cards".
+     * Absent without a checklist.
+     */
+    checklistTeams: v.optional(v.object({ matched: v.number(), total: v.number() })),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -14441,6 +14758,7 @@ export const fetchCardChecklist = action({
     pausedSides: Array<"bsc" | "sportlots">;
     candidateBatchId?: string;
     readyAfterTeams?: number;
+    checklistTeams?: { matched: number; total: number };
   }> => {
     // NEO-202: this was the one function in this file with no identity check.
     // It is not merely a read: it performs authenticated fetches against BSC
@@ -14459,6 +14777,14 @@ export const fetchCardChecklist = action({
     // `{ success: false, message }`, which would render an authorization
     // failure as a marketplace outage.
     const adminUserId = await requireAdmin(ctx);
+    // PR 451 — both new inputs are checked before any marketplace is asked,
+    // outside the `try` for the reason `requireAdmin` is: a refusal is not an
+    // outage.
+    const published = checkPublishedChecklist(args.publishedChecklist);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("fetchCardChecklist: waitKey must be 1-64 letters, digits, _ or -.");
+    }
+    const waitKeyArg = args.waitKey !== undefined ? { waitKey: args.waitKey } : {};
     // NEO-255 — hoisted out of the `try` so the failure return can carry it
     // too. A caller has to be able to tell "two marketplaces are attached and
     // this run fell over" from "one is attached", and a throw is exactly when
@@ -14774,6 +15100,7 @@ export const fetchCardChecklist = action({
             ...(bscFacetPlan.sourceFacet
               ? { sourceFacet: bscFacetPlan.sourceFacet }
               : {}),
+            ...waitKeyArg,
           },
         ).catch((err) => {
           console.error(`[fetchCardChecklist] BSC error:`, err);
@@ -15327,6 +15654,142 @@ export const fetchCardChecklist = action({
         }
       }
 
+      // 3c. PR 451 (NEO-478) — the operator's publisher checklist.
+      //
+      //     Each card it matches by number (exactly one card and exactly one
+      //     row, rule 7; one letter-prefix-strip fallback), or, for a card
+      //     with no number, by player against an NNO row (again exactly one
+      //     each side, D-B), whose row names a
+      //     team takes its team answer from the row: the row's teams, through
+      //     the same whole-name-first resolution BSC's raw value takes. Those
+      //     cards are written `ready` with `teamLookup: "checklist"` and BSC
+      //     is never asked about them. A row naming no team is no claim, so
+      //     its card keeps the BSC lookup (players still fill). A
+      //     player or team that disagrees with the marketplace becomes
+      //     `checklistConflict` for the operator; the card keeps the
+      //     marketplace's values. Players fill in where the marketplace has
+      //     none. Unmatched cards (Jason, D2) still get the per-card BSC
+      //     lookup below, bounded and cooldown-aware.
+      //
+      //     The rows themselves are never written anywhere.
+      const checklistAnswered = new Set<ReconciledCard>();
+      let checklistTeams: { matched: number; total: number } | undefined;
+      if (published) {
+        const match = matchPublishedChecklist(
+          out.map((c) => ({ cardNumber: c.cardNumber, players: c.players, teams: c.teams })),
+          published.rows,
+        );
+        // Only a team text with a comma can resolve to something other than
+        // itself (`chooseCandidateTeams`); ask about those, once each, and
+        // only the first MAX_CHECKLIST_TEAM_TEXTS distinct ones (the
+        // resolver's read bound). A text past that cap maps to null: its
+        // cards get no checklist team and fall back to the per-card BSC
+        // lookup, like an unmatched card (D2). No error, no new copy.
+        const commaTexts = new Map<string, number | null>();
+        const toResolve: Array<{ raw: string; parts: string[] }> = [];
+        for (const m of match.matches) {
+          for (const t of published.rows[m.rowIndex].teams) {
+            if (!t.includes(",") || commaTexts.has(t)) continue;
+            if (toResolve.length >= MAX_CHECKLIST_TEAM_TEXTS) {
+              commaTexts.set(t, null);
+              continue;
+            }
+            commaTexts.set(t, toResolve.length);
+            toResolve.push({ raw: t, parts: splitMarketplaceTeamNames(t).names });
+          }
+        }
+        const resolvedTexts: Array<string[] | null> =
+          toResolve.length > 0
+            ? await ctx.runQuery(internal.checklistCandidates.resolveChecklistTeamTexts, {
+                selectorOptionId: args.selectorOptionId,
+                texts: toResolve,
+              })
+            : [];
+        let conflicts = 0;
+        let refused = 0;
+        for (const m of match.matches) {
+          const card = out[m.cardIndex];
+          const row = published.rows[m.rowIndex];
+          if (m.fillPlayers) card.players = [...m.fillPlayers];
+          // The row's teams as the card would carry them; null = refused.
+          let teams: string[] | null = [];
+          for (const t of row.teams) {
+            const at = commaTexts.get(t);
+            const names = at === undefined ? [t] : at === null ? null : resolvedTexts[at];
+            if (!names) {
+              teams = null;
+              break;
+            }
+            teams.push(...names);
+          }
+          if (teams) {
+            teams = [...new Set(teams)];
+            if (teams.length > MAX_CARD_TEAMS) teams = null;
+          }
+          // The disagreement as the operator will settle it. Its checklist
+          // teams are the RESOLVED names (a comma text split as the card
+          // would carry it), so "Use the checklist's" writes the same names
+          // a checklist-answered card gets. Resolved, they may turn out to be
+          // the card's own teams (no disagreement at all); refused, the
+          // checklist says nothing usable about the team, so there is
+          // nothing to offer.
+          let conflict: ChecklistConflict | undefined = m.conflict
+            ? {
+                ...(m.conflict.players ? { players: m.conflict.players } : {}),
+                ...(m.conflict.teams ? { teams: m.conflict.teams } : {}),
+              }
+            : undefined;
+          if (conflict?.teams) {
+            const marketplace = conflict.teams.marketplace;
+            if (!teams || sameNames(teams, marketplace)) {
+              delete conflict.teams;
+            } else {
+              conflict.teams = { marketplace, checklist: teams };
+            }
+          }
+          if (conflict && !conflict.players && !conflict.teams) conflict = undefined;
+          if (conflict) {
+            card.checklistConflict = conflict;
+            conflicts++;
+          }
+          if (!teams) {
+            // Not representable: the checklist says nothing usable about the
+            // team, so the card is left to the BSC lookup like an unmatched
+            // one.
+            refused++;
+            continue;
+          }
+          // A team disagreement keeps the marketplace's teams on the card
+          // until the operator picks (and the card already has a team, so it
+          // needs no lookup either way).
+          if (conflict?.teams) continue;
+          // A row that names no team makes no claim about it (wrapper rule
+          // 8): its players still fill or compare above, but the card is not
+          // checklist-answered, is not counted in `checklistTeams`, and keeps
+          // its BSC lookup like an unmatched card.
+          if (teams.length === 0) continue;
+          card.teams = teams;
+          card.teamLookup = "checklist";
+          checklistAnswered.add(card);
+        }
+        checklistTeams = { matched: checklistAnswered.size, total: out.length };
+        // Counts only — never a name.
+        console.log(
+          JSON.stringify({
+            msg: "checklist_published_match",
+            rows: published.rows.length,
+            cards: out.length,
+            matched: match.matches.length,
+            matchedByPlayer: match.matches.filter((m) => m.via === "player").length,
+            teamsFromChecklist: checklistAnswered.size,
+            unmatched: match.unmatchedCardIndices.length,
+            conflicts,
+            refusedTeams: refused,
+            misreads: match.misreadCount,
+          }),
+        );
+      }
+
       // 4. NEO-90: resolve team names for regular BSC cards that don't
       //    already have one from the cheap synchronous parse (TC-suffix /
       //    parenthetical — see parsePlayersField). This is the only place
@@ -15341,8 +15804,15 @@ export const fetchCardChecklist = action({
       //    ref), so including it would publish a row `pending` that no chunk
       //    can ever flip — and the one-marketplace auto-keep path waits for
       //    every row to be `ready`.
+      //
+      //    PR 451 (NEO-478): a card the publisher checklist answered is never
+      //    looked up (D2: only the cards it did not match are).
       const needsTeamLookup = out.filter(
-        (c) => !c.teams?.length && !c.team && c.platformData.bsc?.ref,
+        (c) =>
+          !checklistAnswered.has(c) &&
+          !c.teams?.length &&
+          !c.team &&
+          c.platformData.bsc?.ref,
       );
       // NEO-330 / NEO-341 — exactly these rows are written `pending`; every
       // other row is `ready` the moment it lands (its team came from the
@@ -15401,6 +15871,9 @@ export const fetchCardChecklist = action({
         // NEO-251: same rule — the streamed path is the only path, so a roster
         // conflict missing here is one the operator never sees.
         playersConflict: card.playersConflict,
+        // PR 451 (NEO-478) — same rule: the streamed path is the only path.
+        ...(card.checklistConflict ? { checklistConflict: card.checklistConflict } : {}),
+        ...(card.teamLookup ? { teamLookup: card.teamLookup } : {}),
         bucket,
         confidence,
         // NEO-341 — see `awaitingTeam` above.
@@ -15425,14 +15898,34 @@ export const fetchCardChecklist = action({
 
       // NEO-333 — the team fence handed back to the client; see `returns`.
       let readyAfterTeams = 0;
+      // PR 451 (D-A) — refs sent to the adapter (what the cap bounds), and of
+      // those, the ones it actually put to BSC (not marked `skipped`).
+      let teamLookupsSent = 0;
+      let teamLookupsAsked = 0;
       if (needsTeamLookup.length > 0) {
         // Chunked, so each chunk's results reach the modal as they resolve
         // rather than all at once when the last card returns. The chunk is
         // deliberately a multiple of BSC_TEAM_LOOKUP_CONCURRENCY so each round
         // trip still saturates the fan-out.
         const TEAM_LOOKUP_CHUNK = 50;
+        // PR 451 (NEO-487) — once a lookup stops early (a 429, an open
+        // cooldown, a wave in which every card failed: the adapter marks the
+        // cards it never asked `skipped`) or a chunk throws, BSC is not asked
+        // about the rest of this fetch either. Those cards are recorded as
+        // FAILED lookups, so the rows still go `ready` (the fence advances)
+        // and the commit queues them for the background lane, which waits
+        // the cooldown out.
+        let stopAsking = false;
         for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
           const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
+          // PR 451 (D-A) — at most BSC_FETCH_TIME_LOOKUP_CAP cards are asked
+          // live per fetch. The rest of the chunk (and every later chunk) is
+          // never sent, so it is recorded below as a FAILED lookup, exactly
+          // like a card a stop left unasked: the row goes `ready`, and the
+          // commit queues it for the background lane.
+          const toAsk = stopAsking
+            ? []
+            : chunk.slice(0, Math.max(0, BSC_FETCH_TIME_LOOKUP_CAP - teamLookupsSent));
           // NEO-330 — a chunk whose lookup THROWS does not fail the fetch.
           // Jason, 2026-10-11: "If a team lookup never returns then the user
           // must select a team." A throw leaves `lookups` empty, so every ref
@@ -15440,28 +15933,35 @@ export const fetchCardChecklist = action({
           // exactly as a per-card failure is. The rows still go `ready` (the
           // client's wait is not left to run out on them, and the NEO-333
           // fence still advances), the cards commit with no team, and the
-          // commit queues each one for the post-commit lookup
-          // (`processBscTeamEnrichmentQueue`, with its bounded retry and
-          // give-up) — never a guess.
+          // commit queues each one for the post-commit lookup (the
+          // `bscTeamPool` lane, with its bounded retry and give-up) — never a
+          // guess.
           let lookups: BscCardTeamLookup[] = [];
           const lookupStartedAt = Date.now();
-          try {
-            lookups = await ctx.runAction(
-              internal.adapters.buysportscards.fetchBscCardTeamNames,
-              { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
-            );
-          } catch (error) {
-            // Platform, operation, counts and timing — never a card name.
-            console.warn(
-              JSON.stringify({
-                msg: "checklist_team_lookup_chunk_failed",
-                platform: "bsc",
-                operation: "fetchBscCardTeamNames",
-                cards: chunk.length,
-                elapsedMs: Date.now() - lookupStartedAt,
-                error: error instanceof Error ? error.name : "unknown",
-              }),
-            );
+          if (toAsk.length > 0) {
+            teamLookupsSent += toAsk.length;
+            try {
+              lookups = await ctx.runAction(
+                internal.adapters.buysportscards.fetchBscCardTeamNames,
+                { bscCardIds: toAsk.map((c) => c.platformData.bsc!.ref), ...waitKeyArg },
+              );
+              // A card the adapter marked `skipped` was never put to BSC.
+              teamLookupsAsked += lookups.filter((l) => l.skipped !== true).length;
+              if (lookups.some((l) => l.skipped === true)) stopAsking = true;
+            } catch (error) {
+              stopAsking = true;
+              // Platform, operation, counts and timing — never a card name.
+              console.warn(
+                JSON.stringify({
+                  msg: "checklist_team_lookup_chunk_failed",
+                  platform: "bsc",
+                  operation: "fetchBscCardTeamNames",
+                  cards: toAsk.length,
+                  elapsedMs: Date.now() - lookupStartedAt,
+                  error: error instanceof Error ? error.name : "unknown",
+                }),
+              );
+            }
           }
           // NEO-335 — keyed by the card's OWN ref, inside the adapter
           // boundary: this routes BSC's answer back to the card it was asked
@@ -15511,9 +16011,14 @@ export const fetchCardChecklist = action({
       //    be work done on data that may never exist, and the user asked for
       //    pairing to come before the Wikidata / player / team syncs.
       //    `resolveChecklistEntities` runs on the CONFIRMED set instead.
+      // PR 451 (D-A) — and how many cards BSC was asked about live versus
+      // left for the background lane (the cap, a stop, or a throw). Counts only.
       console.log(
         `[fetchCardChecklist] ${autoMatchedCards.length} paired, ` +
-          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only; ` +
+          `team lookups: ${teamLookupsAsked} asked, ` +
+          `${needsTeamLookup.length - teamLookupsAsked} deferred to the background lane ` +
+          `(cap ${BSC_FETCH_TIME_LOOKUP_CAP})`,
       );
 
       // NEO-189 — tell the OPERATOR about cross-source card-number collisions,
@@ -15562,6 +16067,7 @@ export const fetchCardChecklist = action({
         pausedSides: pausedList,
         candidateBatchId,
         readyAfterTeams,
+        ...(checklistTeams ? { checklistTeams } : {}),
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
@@ -15674,6 +16180,23 @@ export const resolveChecklistEntities = action({
         addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
       }
       for (const t of teamsOnCard) additionalTeamNames.push(t);
+      // PR 451 (NEO-478) — an unsettled checklist disagreement: the card
+      // carries the marketplace's side (resolved above), and the operator may
+      // pick the checklist's in the wizard. Its names are resolved and queued
+      // here too, so a picked checklist player or team arrives as a decided
+      // name, never a pending one. The checklist's players sit on a card with
+      // the checklist's teams when the teams disagree too.
+      const conflict = c.checklistConflict;
+      if (conflict) {
+        const checklistTeams = (conflict.teams?.checklist ?? []).map((t) => t.trim()).filter(Boolean);
+        const teamsForChecklistPlayers = checklistTeams.length > 0 ? checklistTeams : teamsOnCard;
+        for (const p of conflict.players?.checklist ?? []) {
+          if (!p.trim()) continue;
+          additionalPlayerNames.push(p);
+          addCardTeamNames(cardTeamNamesByPlayer, p, teamsForChecklistPlayers);
+        }
+        for (const t of checklistTeams) additionalTeamNames.push(t);
+      }
     }
 
     const sportRow = await ctx.runQuery(
@@ -18707,7 +19230,7 @@ function settleCardTeamAnswer(a: {
   /** The row already carries `teamCheckDoneAt`. */
   teamCheckDone: boolean;
   teamNone: boolean;
-  teamLookup?: "answered" | "failed";
+  teamLookup?: "answered" | "failed" | "checklist";
   bscTeamHint?: string;
   operatorUserId?: string;
   now: number;
@@ -18724,6 +19247,20 @@ function settleCardTeamAnswer(a: {
     };
   }
   if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
+  // PR 451 (NEO-478) — the publisher checklist answered this card at fetch:
+  // it matched by number (exactly one on both sides) and its row named a team.
+  // A row naming no team is no claim and never sets "checklist" (B1); that
+  // card kept its BSC lookup. So a card here carries a checklist team that
+  // did not land as an NB team on the row (still a pending name, for
+  // example). BSC was never asked and is not asked now: the lookup is done,
+  // its outcome is the checklist's, and no "Listed as:" hint is kept (no
+  // marketplace said anything).
+  if (a.teamLookup === "checklist") {
+    return {
+      fields: { teamCheckDoneAt: a.now, teamCheckOutcome: "checklist" },
+      enqueue: false,
+    };
+  }
   if (a.teamLookup === "answered") {
     const hint = a.hasPendingTeam ? "" : (a.bscTeamHint ?? "").trim();
     // The cap below is the same slice `applyBscTeamResolution` puts on its
@@ -18810,7 +19347,7 @@ const commitChunkCardValidator = v.object({
   // treating marketplace content as accepted.
   operatorTeamIds: v.optional(v.array(v.id("teams"))),
   // How the fetch-time BSC lookup ended. See `previewCardFields.teamLookup`.
-  teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  teamLookup: v.optional(cardTeamLookupValidator),
   // The operator answered "No team on this card". Set by the action only when
   // the card resolved to no team and no pending team name — teams win.
   teamNone: v.optional(v.literal(true)),
@@ -20227,10 +20764,15 @@ export const commitCardChecklistFinalize = internalMutation({
     //
     // NEO-294: on the LAST page only, so an interrupted walk schedules
     // nothing — the same thing a failed all-or-nothing finalize did.
+    //
+    // PR 451 (NEO-487): onto the one-slot `bscTeamPool` lane, which owns the
+    // retry ladder and waits out a 429 cooldown. Scheduled rather than
+    // enqueued inline, so this mutation stays small and stays runnable where
+    // the workpool component is not mounted.
     if (args.bscTeamEnrichmentIds.length > 0) {
       await ctx.scheduler.runAfter(
         0,
-        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        internal.bscTeamPool.enqueueBscTeamChecks,
         { cardChecklistIds: args.bscTeamEnrichmentIds },
       );
     }
@@ -21871,6 +22413,19 @@ export const commitCardChecklist = action({
         `commitCardChecklist: ${
           card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
         } still carries an unsettled players conflict. Settle it in the pairing dialog before committing.`,
+      );
+    }
+    // PR 451 (NEO-478) — the same rule for a publisher-checklist
+    // disagreement: the wizard's "Checklist says otherwise" step settles it
+    // and strips the field. A card still carrying it is a client that skipped
+    // the decision, and committing would write the marketplace's answer over
+    // a disagreement nobody settled.
+    for (const [index, card] of args.cards.entries()) {
+      if (!card.checklistConflict) continue;
+      throw new ConvexError(
+        `commitCardChecklist: ${
+          card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
+        } still carries an unsettled checklist disagreement. Settle it in the "Checklist says otherwise" step before committing.`,
       );
     }
     // NEO-335 — the "Card titles" answers, held to the write path's caps before

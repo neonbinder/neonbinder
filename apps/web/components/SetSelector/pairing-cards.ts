@@ -16,11 +16,13 @@
  */
 
 import type { PairingCard } from "./CardPairingModal";
+import type { ChecklistConflict } from "./checklist-conflict";
 
 /**
  * NEO-335 — how the fetch-time BSC team lookup for a card ended:
  * "answered" (BSC replied, with a team or with none on file) or "failed" (the
- * call failed). Absent when no lookup ran. The commit stamps an answered
+ * call failed); NEO-478 adds "checklist" (the operator's published checklist
+ * named the team, a data claim). Absent when no lookup ran. The commit stamps an answered
  * teamless card as checked instead of asking BSC again after save; see
  * `previewCardFields.teamLookup` in convex/selectorOptions.ts.
  */
@@ -60,6 +62,8 @@ export type ReadyCandidate = {
   teamLookup?: TeamLookup;
   /** NEO-335 — BSC's unsplit team value; see `PairingCard.rawTeamName`. */
   rawTeamName?: string;
+  /** NEO-478 — the published checklist disagrees; see `PairingCard.checklistConflict`. */
+  checklistConflict?: ChecklistConflict;
 };
 
 /**
@@ -103,6 +107,10 @@ export function candidateToPairingCard(
     // NEO-335: BSC's raw team value, only on the rows the server kept one for
     // (a split or refused split). Spread on the same terms as `teamLookup`.
     ...(c.rawTeamName ? { rawTeamName: c.rawTeamName } : {}),
+    // NEO-478: the checklist's disagreement, on the same terms. It is NOT a
+    // cross-marketplace question, so the dialog carries it through untouched
+    // and the wizard's "Checklist says otherwise" step settles it.
+    ...(c.checklistConflict ? { checklistConflict: c.checklistConflict } : {}),
   };
 }
 
@@ -118,6 +126,12 @@ export function candidateToPairingCard(
  * this path there is nothing to lift and nothing to ask; going through the same
  * mapping and then dropping the fields keeps that a stated property rather than
  * an assumption about which buckets can appear.
+ *
+ * NEO-478: `checklistConflict` is NOT dropped. It is not a disagreement
+ * between two marketplaces but between the operator's published checklist and
+ * the card, and a single can carry one as readily as a pair. It rides on to
+ * the wizard, whose "Checklist says otherwise" step settles it before the
+ * commit (which refuses a card still carrying one).
  */
 export function candidatesToPairingCards(
   candidates: readonly ReadyCandidate[],

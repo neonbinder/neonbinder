@@ -78,10 +78,11 @@ vi.mock("./SkippedNamesPanel", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({ default: () => null }));
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
-const state: { cards: unknown } = { cards: [] };
+const state: { cards: unknown; refs: Set<string> } = { cards: [], refs: new Set() };
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string) => {
+    state.refs.add(ref);
     if (ref === "getCardChecklist") return state.cards;
     if (ref === "getSelectorOptionById") return { value: "Base" };
     if (ref === "getAncestorChain") return [];
@@ -371,5 +372,171 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     fireEvent.click(control);
     fireEvent.keyDown(control, { key: "Enter" });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+/**
+ * PR 451 (NEO-487) — the checklist's "Still looking up teams" status line.
+ *
+ * A card whose background team lookup is queued or in flight is nobody's to
+ * answer yet, so the pill leaves it out; a set whose only open cards are
+ * queued used to show nothing at all. Pinned: the line's text and role, that
+ * it needs no pill, that it leaves when the queue drains, that a given-up
+ * card hands over to the pill, that its number is throttled, that it stands
+ * down while the walker (which says the same sentence) is open, and that it
+ * reads nothing but the checklist subscription the page already holds.
+ */
+describe("CardChecklist — 'Still looking up teams' while the background lookup runs (PR 451)", () => {
+  /** The always-mounted region; `textContent` is "" while idle. */
+  const lookupRegion = () =>
+    document.querySelector<HTMLElement>('[role="status"][data-team-lookup-status]');
+  const lookupLine = (count: number) =>
+    screen
+      .getAllByRole("status")
+      .find(
+        (el) =>
+          el.textContent ===
+          `Still looking up teams for ${count} ${count === 1 ? "card" : "cards"}. Nothing for you to do yet.`,
+      );
+  /** The lane gave up on it: stamped done, no team, the operator's now. */
+  const gaveUp = (n: number) => ({
+    ...awaitingLookup(n),
+    teamCheckDoneAt: 2_000,
+    teamCheckOutcome: "gaveUp",
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.refs = new Set();
+  });
+
+  it("says how many cards are waiting, in a status region, when nothing else needs the operator", () => {
+    state.cards = [awaitingLookup(1), awaitingLookup(2), awaitingLookup(3), settled(4)];
+    render(ui());
+    expect(queryPill()).toBeNull();
+    const line = lookupLine(3);
+    expect(line).toBeTruthy();
+    expect(line).toBe(lookupRegion());
+    expect(screen.getByText(/^Still looking up teams for 3 cards\./)).toBeTruthy();
+  });
+
+  it("is singular for one card, and keeps 'teams' (a card can carry more than one)", () => {
+    state.cards = [awaitingLookup(1), settled(2)];
+    render(ui());
+    expect(lookupLine(1)).toBeTruthy();
+  });
+
+  it("never names a marketplace", () => {
+    state.cards = [awaitingLookup(1), awaitingLookup(2)];
+    render(ui());
+    expect(lookupRegion()!.textContent).not.toMatch(/BuySportsCards|BSC|SportLots|eBay/i);
+  });
+
+  it("sits beside the pill when other cards need the operator too", () => {
+    state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
+    render(ui());
+    expect(pill("1 needs you")).toBeTruthy();
+    expect(lookupLine(2)).toBeTruthy();
+  });
+
+  it("keeps the region mounted and empty while nothing is waiting, so the first count is read", () => {
+    state.cards = [settled(1)];
+    const { rerender } = render(ui());
+    const region = lookupRegion();
+    expect(region).not.toBeNull();
+    expect(region!.textContent).toBe("");
+    expect(region!.childNodes.length).toBe(0);
+
+    vi.useFakeTimers();
+    try {
+      state.cards = [settled(1), awaitingLookup(2), awaitingLookup(3)];
+      rerender(ui());
+      act(() => {
+        vi.advanceTimersByTime(0);
+      });
+      expect(lookupRegion()).toBe(region);
+      expect(lookupLine(2)).toBe(region);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves at once when the queue drains", () => {
+    state.cards = [awaitingLookup(1), awaitingLookup(2)];
+    const { rerender } = render(ui());
+    expect(lookupLine(2)).toBeTruthy();
+    state.cards = [settled(1), settled(2)];
+    rerender(ui());
+    expect(lookupRegion()!.textContent).toBe("");
+  });
+
+  it("hands a card the lookup gave up on to the pill", () => {
+    state.cards = [awaitingLookup(1)];
+    const { rerender } = render(ui());
+    expect(lookupLine(1)).toBeTruthy();
+    expect(queryPill()).toBeNull();
+
+    state.cards = [gaveUp(1)];
+    rerender(ui());
+    expect(lookupRegion()!.textContent).toBe("");
+    expect(pill("1 needs you")).toBeTruthy();
+  });
+
+  it("moves its number at most every 5 s, so a screen reader is not read every answer", () => {
+    vi.useFakeTimers();
+    try {
+      state.cards = [awaitingLookup(1), awaitingLookup(2), awaitingLookup(3), awaitingLookup(4)];
+      const { rerender } = render(ui());
+      expect(lookupLine(4)).toBeTruthy();
+
+      // The first answer after a quiet spell shows on the next tick.
+      state.cards = [settled(1), awaitingLookup(2), awaitingLookup(3), awaitingLookup(4)];
+      rerender(ui());
+      act(() => {
+        vi.advanceTimersByTime(0);
+      });
+      expect(lookupLine(3)).toBeTruthy();
+
+      // Two more a second apart: held, then delivered as the latest.
+      state.cards = [settled(1), settled(2), awaitingLookup(3), awaitingLookup(4)];
+      rerender(ui());
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      state.cards = [settled(1), settled(2), settled(3), awaitingLookup(4)];
+      rerender(ui());
+      act(() => {
+        vi.advanceTimersByTime(3999);
+      });
+      expect(lookupLine(3)).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(lookupLine(1)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stands down while the walker is open: its done line says the same sentence", () => {
+    state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
+    render(ui());
+    expect(lookupLine(2)).toBeTruthy();
+    fireEvent.click(pill());
+    expect(screen.getByRole("dialog", { name: "Walker stand-in" })).toBeTruthy();
+    expect(lookupRegion()!.textContent).toBe("");
+  });
+
+  it("reads only the subscriptions the checklist already held — no new query, no lookup started", () => {
+    state.cards = [settled(1)];
+    const first = render(ui());
+    const before = new Set(state.refs);
+    first.unmount();
+
+    state.refs = new Set();
+    state.cards = [awaitingLookup(1), awaitingLookup(2)];
+    render(ui());
+    expect(lookupLine(2)).toBeTruthy();
+    expect([...state.refs].sort()).toEqual([...before].sort());
   });
 });

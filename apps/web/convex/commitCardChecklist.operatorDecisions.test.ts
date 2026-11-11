@@ -22,7 +22,7 @@ import { insertTestCard } from "../lib/testing/card-row";
 
 beforeEach(() => {
   // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
-  // lookup (processBscTeamEnrichmentQueue) as a side effect. This file has
+  // lookup (bscTeamPool.enqueueBscTeamChecks since PR 451) as a side effect. This file has
   // nothing to say about team resolution. A THROWING stub rather than a
   // canned 200 — same convention as
   // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
@@ -380,9 +380,8 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
     );
     expect(crossListings).toHaveLength(0);
     // NEO-247: the first commit enqueues 2 bsc-linked cards (P1, C1) —
-    // processBscTeamEnrichmentQueue reschedules its tail with a real
-    // BSC_TEAM_ENRICH_DELAY_MS (300ms) delay rather than runAfter(0), which
-    // drainScheduled cannot force through, so cancel what's left pending.
+    // since PR 451 they go to the bscTeamPool workpool, a component
+    // convex-test cannot register, so cancel what's left pending.
     await drainScheduled(t);
     await cancelScheduled(t);
   });
@@ -542,7 +541,7 @@ async function scheduledBscEnqueueCount(
     return rows.map((r) => r.name);
   });
   return names.filter((n) =>
-    n.includes("processBscTeamEnrichmentQueue"),
+    n.includes("enqueueBscTeamChecks"),
   ).length;
 }
 

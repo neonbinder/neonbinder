@@ -132,6 +132,7 @@ import { derivedVariantFlags, variantTypeKind } from "./variantRole";
 import { titleChainFacts } from "./listingShortName";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { classifyAdapterError } from "./observability";
+import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
 import {
   failureFromMessage,
   scrubLogText,
@@ -1866,7 +1867,15 @@ const extraValidator = v.object({
 });
 
 export const buildParallelChecklist = action({
-  args: { parallelId: v.id("selectorOptions") },
+  args: {
+    parallelId: v.id("selectorOptions"),
+    /**
+     * PR 451 (NEO-487) — the client's run key for "Waiting on
+     * BuySportsCards…" (`marketplaceWaits.forRun`). Passed to the BSC fetch;
+     * absent, nothing is written.
+     */
+    waitKey: v.optional(v.string()),
+  },
   returns: v.object({
     status: v.union(v.literal("built"), v.literal("blocked")),
     /** Insert cards copied onto the parallel (linked on at least one side). */
@@ -1933,6 +1942,9 @@ export const buildParallelChecklist = action({
   }),
   handler: async (ctx, args): Promise<BuildParallelResult> => {
     await requireAdmin(ctx);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("buildParallelChecklist: waitKey must be 1-64 letters, digits, _ or -.");
+    }
     const startedAt = Date.now();
     const zero = (): SideCounts => ({ bsc: 0, sportlots: 0 });
     const emptyLists = (): SideLists => ({ bsc: [], sportlots: [] });
@@ -2109,6 +2121,7 @@ export const buildParallelChecklist = action({
             parentFilters: {},
             facetFilters: plan.bscFilters,
             ...(plan.bscSourceFacet ? { sourceFacet: plan.bscSourceFacet } : {}),
+            ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}),
           },
         );
         tally(trace, result);
