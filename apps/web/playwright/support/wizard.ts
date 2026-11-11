@@ -45,7 +45,7 @@ import {
 
 /** A live marketplace fetch, or a whole batch's lookups (the flows' 120 s / 180 s). */
 const FETCH = 120_000;
-const LOOKUPS = 180_000;
+export const LOOKUPS = 180_000;
 
 /**
  * The open pre-save wizard, by its dialog name (WizardChrome `WIZARD_TITLE`;
