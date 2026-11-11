@@ -98,3 +98,4 @@
 - [Neo464 dashboard aggregator](patterns_neo464_dashboard_aggregator.md) — per-read owner derivation; budget skips; demo shell; test seeds go live when the account later polls/pushes
 - [Playwright WebSocket route proxy](patterns_playwright_websocket_route_proxy.md) — route-group calls never reach reporters; local trace holds the JWT; close-code 1005 remap; forward before side work
 - [Neo478 operator checklist ingest](patterns_neo478_operator_checklist_ingest.md) — pasted-file ingest: bounds after the gate, quadratic \s+ split, uncapped pair list, CSV injection only with an export
+- [LLM-operated shell queue](patterns_llm_operated_shell_queue.md) — message text typed into Bash is injected before jq --arg helps; sender binding; gh pr list --head matches forks/old PRs

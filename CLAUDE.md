@@ -139,7 +139,8 @@ re-measure before quoting them for Playwright.
    a push Jason asks for (a preview to look at). One session runs the queue
    (`pr-queue run`).
 5. **On your turn:** merge main, push, open the PR (title
-   `NEO-123(<PR#>) Description`) and send the queue its number. CI runs the
+   `NEO-123(<PR#>) Description`) and record its number with the queue
+   (the `pr-queue` skill's `set-pr`, then a `PR` message). CI runs the
    full suite. On a red spec: **run that one spec locally** on your
    deployment again, or against the PR's own preview stack when your
    deployment cannot reproduce it (below).
