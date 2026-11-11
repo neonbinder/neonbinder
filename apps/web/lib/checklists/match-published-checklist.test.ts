@@ -6,6 +6,7 @@
 import { describe, expect, test } from "vitest";
 import {
   MAX_CHECKLIST_MISREADS,
+  exactChecklistNumber,
   isNoNumber,
   matchPublishedChecklist,
   normalizeChecklistNumber,
@@ -59,7 +60,7 @@ describe("matchPublishedChecklist: the exactly-one guard", () => {
     expect(normalizeChecklistNumber("#12")).toBe("12");
     expect(normalizeChecklistNumber("No. 12")).toBe("12");
     expect(normalizeChecklistNumber(" bcp - 12 ")).toBe("BCP-12");
-    const r = matchPublishedChecklist([card("bcp-12")], [row("#BCP-12")]);
+    const r = matchPublishedChecklist([card("BCP-12")], [row("#BCP-12")]);
     expect(r.matches[0]).toMatchObject({ via: "number" });
   });
 
@@ -372,5 +373,96 @@ describe("matchPublishedChecklist: NNO rows pair by player (D-B)", () => {
       [0, 0, "number"],
       [1, 1, "player"],
     ]);
+  });
+});
+
+describe("matchPublishedChecklist: NEO-489 numbers read as printed (case)", () => {
+  test("exactChecklistNumber keeps case but drops #, No. and spaces", () => {
+    expect(exactChecklistNumber("#1a")).toBe("1a");
+    expect(exactChecklistNumber("No. 1A")).toBe("1A");
+    expect(exactChecklistNumber(" PPR - DLa ")).toBe("PPR-DLa");
+    expect(normalizeChecklistNumber("PPR-DLa")).toBe("PPR-DLA");
+  });
+
+  test("cards 1a and 1A pair with rows 1a and 1A, each by its exact number", () => {
+    const r = matchPublishedChecklist(
+      [card("1a"), card("1A")],
+      [row("1a", ["Low"]), row("1A", ["Up"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "number"],
+      [1, 1, "number"],
+    ]);
+  });
+
+  test("cards 1a and 1A with only row 1A: 1A pairs exactly, 1a stays unmatched", () => {
+    const r = matchPublishedChecklist([card("1a"), card("1A")], [row("1A", ["Up"])]);
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([[1, 0, "number"]]);
+    expect(r.unmatchedCardIndices).toEqual([0]);
+  });
+
+  test("cards x1a and X1A with row X1a: the folded key names two cards, so both stay unmatched", () => {
+    const r = matchPublishedChecklist([card("x1a"), card("X1A")], [row("X1a", ["P"])]);
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+  });
+
+  test("card 1a with rows 1A and 1A: the folded key names two rows, so it stays unmatched", () => {
+    const r = matchPublishedChecklist([card("1a")], [row("1A", ["A"]), row("1A", ["B"])]);
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0]);
+  });
+
+  test("card PPR-DLa with row ppr-dla pairs once, via caseFolded", () => {
+    const r = matchPublishedChecklist([card("PPR-DLa")], [row("ppr-dla", ["Derrek Lee"])]);
+    expect(r.matches).toHaveLength(1);
+    expect(r.matches[0]).toMatchObject({ cardIndex: 0, rowIndex: 0, via: "caseFolded" });
+  });
+
+  test("an exact pair is never reported as caseFolded", () => {
+    const r = matchPublishedChecklist([card("PPR-DLa")], [row("PPR-DLa")]);
+    expect(r.matches[0].via).toBe("number");
+  });
+});
+
+describe("matchPublishedChecklist: NEO-489 a No Team row", () => {
+  const noTeamRow = (number: string, players: string[] = []) => ({
+    number,
+    players,
+    teams: [] as string[],
+    noTeam: true as const,
+  });
+
+  test("a card that already has a team against a No Team row is a team conflict with an empty checklist side", () => {
+    const r = matchPublishedChecklist(
+      [card("1", ["Mike Trout"], ["Los Angeles Angels"])],
+      [noTeamRow("1", ["Mike Trout"])],
+    );
+    expect(r.matches[0].conflict).toEqual({
+      teams: { marketplace: ["Los Angeles Angels"], checklist: [] },
+    });
+  });
+
+  test("a card that carries only the legacy singular team conflicts too", () => {
+    const legacy = { cardNumber: "1", players: ["Mike Trout"], team: "Los Angeles Angels" };
+    const r = matchPublishedChecklist([legacy as never], [noTeamRow("1", ["Mike Trout"])]);
+    expect(r.matches[0].conflict?.teams).toEqual({
+      marketplace: ["Los Angeles Angels"],
+      checklist: [],
+    });
+  });
+
+  test("a card with no team against a No Team row is no conflict", () => {
+    const r = matchPublishedChecklist([card("1", ["Mike Trout"])], [noTeamRow("1", ["Mike Trout"])]);
+    expect(r.matches).toHaveLength(1);
+    expect(r.matches[0].conflict).toBeUndefined();
+  });
+
+  test("a teamed card against a row that merely lists no team is still no conflict", () => {
+    const r = matchPublishedChecklist(
+      [card("1", ["Mike Trout"], ["Los Angeles Angels"])],
+      [row("1", ["Mike Trout"])],
+    );
+    expect(r.matches[0].conflict).toBeUndefined();
   });
 });

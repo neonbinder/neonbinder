@@ -6,7 +6,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
+import { NO_TEAM_AND_A_TEAM } from "../../lib/checklists/no-team";
 import PublishedChecklistDialog, {
+  NO_TEAM_CELL,
   NOTHING_READS,
   NOTHING_TO_USE,
   PICK_A_SUBSET,
@@ -300,7 +302,7 @@ describe("PublishedChecklistDialog", () => {
     open();
     expect(
       screen.getByText(
-        "Paste it straight off the checklist page, or pick a file. We line it up by card number and only look up teams your list leaves out.",
+        /^Paste it straight off the checklist page, or pick a file\. We line it up by card number and only look up teams your list leaves out\./,
       ),
     ).toBeTruthy();
     expect(box().getAttribute("placeholder")).toBeNull();
@@ -478,5 +480,44 @@ describe("the copy helpers and the chip", () => {
     // 24px + 10px above and below: the target grows, the chip does not.
     expect(remove.className).toContain("after:-inset-y-2.5");
     expect(remove.className).not.toContain("min-h-11");
+  });
+});
+
+describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
+  it("shows a No Team row's team cell as 'No team', not the muted 'None' of a blank cell", async () => {
+    open();
+    await paste("1 Host One - No Team\n2 Rhett Lowder\n3 Pat Smith - Cincinnati Reds");
+    await waitFor(() => expect(screen.getByText("3 rows")).toBeTruthy());
+    const table = screen.getByRole("table");
+    expect(NO_TEAM_CELL).toBe("No team");
+    const rows = within(table).getAllByRole("row");
+    const cellsOf = (n: string) =>
+      within(rows.find((r) => within(r).queryByText(n))!).getAllByRole("cell");
+    expect(cellsOf("Host One")[2].textContent).toBe("No team");
+    // A blank team cell is no claim: still the muted None.
+    expect(cellsOf("Rhett Lowder")[2].textContent).toBe("None");
+    expect(cellsOf("Pat Smith")[2].textContent).toBe("Cincinnati Reds");
+  });
+
+  it("hands a No Team row on with noTeam and no teams", async () => {
+    const { onUse } = open();
+    await paste("1 Host One - No Team");
+    await waitFor(() => expect(screen.getByText("1 row")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+    expect(onUse.mock.calls[0][0].rows).toEqual([
+      { number: "1", players: ["Host One"], teams: [], noTeam: true },
+    ]);
+  });
+
+  it("lists a No Team beside a team under Skipped lines with the parser's reason", async () => {
+    open();
+    await paste("#,Player,Team\n1,Host One,No Team / Cincinnati Reds\n2,Pat Smith,Cincinnati Reds");
+    await waitFor(() => expect(screen.getByRole("heading", { name: /Skipped lines/ })).toBeTruthy());
+    expect(screen.getByText(NO_TEAM_AND_A_TEAM)).toBeTruthy();
+  });
+
+  it("tells the operator how to mark a card that has no team", () => {
+    open();
+    expect(screen.getAllByText(/No Team/).length).toBeGreaterThan(0);
   });
 });

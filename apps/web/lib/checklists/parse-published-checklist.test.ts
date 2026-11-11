@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { NO_TEAM_AND_A_TEAM } from "./no-team";
 import {
   LOOKS_LIKE_A_COUNT,
   NO_NUMBER,
@@ -182,7 +183,7 @@ describe("parsePublishedChecklist — CSV and TSV with a header", () => {
   });
 
   it("skips a data row with an unreadable or missing number, with a reason", () => {
-    const out = parsePublishedChecklist("Number,Player\nxx,A Guy\n,B Guy\n4,C Guy");
+    const out = parsePublishedChecklist("Number,Player\nBDC 12,A Guy\n,B Guy\n4,C Guy");
     expect(out.rows.map((r) => r.number)).toEqual(["4"]);
     expect(out.skipped.map((s) => s.line)).toEqual([2, 3]);
     expect(out.skipped[0].reason).not.toBe(out.skipped[1].reason);
@@ -760,5 +761,136 @@ describe("parsePublishedChecklist — collector review S7: header spellings and 
       ["1 Mike Trout - Los Angeles Angels®", "2 Shohei Ohtani - Los Angeles Dodgers™"].join("\n"),
     );
     expect(out.rows.map((r) => r.teams)).toEqual([["Los Angeles Angels"], ["Los Angeles Dodgers"]]);
+  });
+});
+
+describe("parsePublishedChecklist — NEO-489: a team cell reading No Team", () => {
+  it.each(["No Team", "no team", "NO  TEAM", "  No Team  "])(
+    "reads %j in a header CSV as noTeam with no team",
+    (cell) => {
+      const out = parsePublishedChecklist(`#,Player,Team\n1,Mike Trout,"${cell}"`);
+      expect(out.skipped).toEqual([]);
+      expect(out.rows).toEqual([{ number: "1", players: ["Mike Trout"], teams: [], noTeam: true }]);
+    },
+  );
+
+  it("reads No Team in a positional TSV", () => {
+    const out = parsePublishedChecklist("1\tMike Trout\tNo Team\n2\tJuan Soto\tNew York Mets");
+    expect(out.format).toBe("tsv");
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: [], noTeam: true },
+      { number: "2", players: ["Juan Soto"], teams: ["New York Mets"] },
+    ]);
+  });
+
+  it("reads No Team after a spaced dash in line mode", () => {
+    const out = parsePublishedChecklist("88 2014 NFLPA Rookie Premiere - No Team");
+    expect(out.format).toBe("lines");
+    expect(out.rows).toEqual([
+      { number: "88", players: ["2014 NFLPA Rookie Premiere"], teams: [], noTeam: true },
+    ]);
+  });
+
+  it("reads No Team after a comma in line mode", () => {
+    const out = parsePublishedChecklist("1 Lauren Shehadi, No Team");
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Lauren Shehadi"], teams: [], noTeam: true },
+    ]);
+  });
+
+  it.each(["None", "N/A", "No team listed", "-", ""])(
+    "does not read %j as No Team: it makes no claim",
+    (cell) => {
+      const out = parsePublishedChecklist(`#,Player,Team\n1,Mike Trout,"${cell}"`);
+      expect(out.rows.every((r) => r.noTeam === undefined)).toBe(true);
+    },
+  );
+
+  it("skips a cell holding No Team and a real team, with the shared reason", () => {
+    const out = parsePublishedChecklist("#,Player,Team\n1,Mike Trout,No Team / New York Mets");
+    expect(out.rows).toEqual([]);
+    expect(out.skipped).toHaveLength(1);
+    expect(out.skipped[0].reason).toBe(NO_TEAM_AND_A_TEAM);
+  });
+
+  it("skips No Team in one team column and a team in another", () => {
+    const out = parsePublishedChecklist(
+      "#,Player,Team,Team\n1,Mike Trout,No Team,New York Mets\n2,Juan Soto,New York Mets,No Team",
+    );
+    expect(out.rows).toEqual([]);
+    expect(out.skipped.map((s) => s.reason)).toEqual([NO_TEAM_AND_A_TEAM, NO_TEAM_AND_A_TEAM]);
+  });
+
+  it("keeps a row with a number and No Team but no player", () => {
+    const out = parsePublishedChecklist("#,Player,Team\n5,,No Team");
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual([{ number: "5", players: [], teams: [], noTeam: true }]);
+  });
+
+  it("keeps a line-mode row with a number and No Team but no player", () => {
+    const out = parsePublishedChecklist("NNO - No Team");
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0]).toMatchObject({ number: "NNO", teams: [], noTeam: true });
+  });
+});
+
+describe("parsePublishedChecklist — NEO-489: the number column is trusted, as printed", () => {
+  it.each([["a"], ["PPR-DLa"], ["TBD"], ["1a"], ["1A"]])(
+    "keeps %j from a header CSV number column exactly as printed",
+    (num) => {
+      const out = parsePublishedChecklist(`#,Player,Team\n${num},Mike Trout,Angels`);
+      expect(out.skipped).toEqual([]);
+      expect(out.rows.map((r) => r.number)).toEqual([num]);
+    },
+  );
+
+  it("keeps a letters-only number from a positional TSV", () => {
+    const out = parsePublishedChecklist("TBD\tMike Trout\tAngels\nPPR-DLa\tDerrek Lee\tCubs");
+    expect(out.rows.map((r) => r.number)).toEqual(["TBD", "PPR-DLa"]);
+  });
+
+  it("keeps both 1a and 1A as two rows (case is not folded by the parser)", () => {
+    const out = parsePublishedChecklist("#,Player,Team\n1a,A Player,Angels\n1A,B Player,Cubs");
+    expect(out.rows.map((r) => r.number)).toEqual(["1a", "1A"]);
+  });
+
+  it("calls a two-word number unreadable", () => {
+    const out = parsePublishedChecklist("#,Player,Team\nBDC 12,Mike Trout,Angels");
+    expect(out.rows).toEqual([]);
+    expect(out.skipped).toHaveLength(1);
+    expect(out.skipped[0].reason).toBe("Card number isn't one we can read");
+  });
+
+  it.each([
+    "Jean-Carlos Smith - Mets",
+    "PPR-DLa Derrek Lee - Chicago Cubs",
+    "a Player - Team",
+  ])("still skips the free-text line %j for its number", (line) => {
+    const out = parsePublishedChecklist(line);
+    expect(out.rows).toEqual([]);
+    expect(out.skipped).toHaveLength(1);
+    expect(out.skipped[0].reason).toBe("No card number at the start");
+  });
+});
+
+describe("parsePublishedChecklist — NEO-489: a whole team cell that makes no claim", () => {
+  it.each(["none", "None", "NONE", "n/a", "N/A", "No team listed", "no  team  listed", "-"])(
+    "reads %j as no team and no claim",
+    (cell) => {
+      const out = parsePublishedChecklist(`#,Player,Team\n1,Mike Trout,"${cell}"`);
+      expect(out.skipped).toEqual([]);
+      expect(out.rows).toEqual([{ number: "1", players: ["Mike Trout"], teams: [] }]);
+      expect(out.rows[0].noTeam).toBeUndefined();
+    },
+  );
+
+  it("splits N/A no more: it is never the teams N and A", () => {
+    const out = parsePublishedChecklist("1\tMike Trout\tN/A\n2\tJuan Soto\tNew York Mets");
+    expect(out.rows[0].teams).toEqual([]);
+  });
+
+  it("only a WHOLE cell makes no claim: a real team beside 'None' stays a team", () => {
+    const out = parsePublishedChecklist("#,Player,Team\n1,Mike Trout,Angels / None");
+    expect(out.rows[0].teams).toEqual(["Angels", "None"]);
   });
 });

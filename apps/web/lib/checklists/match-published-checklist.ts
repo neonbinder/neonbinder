@@ -9,12 +9,24 @@
  *
  * A card number is the strongest key and still not unique (two series both
  * start at #1, a variation reuses its parent's number). So a card and a row
- * pair only when the normalised number names exactly one card AND exactly one
- * row. Anything else is left unmatched, never given to the first candidate.
+ * pair only when the number names exactly one card AND exactly one row.
+ * Anything else is left unmatched, never given to the first candidate.
  *
- * One fallback, on what the first pass left: a leading letter prefix
- * ("BCP-12", "US12") is stripped on both sides and the same exactly-one guard
- * applies again ("BCP-12" on BSC against "12" in the publisher's list).
+ * Numbers are compared as printed, case kept (NEO-489): "1a" and "1A" can be
+ * two different cards in one set. Three passes, each on what the one before
+ * left:
+ *
+ *  1. **Exact** (`exactChecklistNumber`): trimmed, a leading "#" / "No."
+ *     dropped, inner spaces removed, case KEPT. Exactly one card and one row.
+ *  2. **Case-folded** (`normalizeChecklistNumber`, the exact key upper-cased):
+ *     a leftover pairs only when its folded key belongs to exactly one card
+ *     in the WHOLE set and exactly one row in the WHOLE checklist. So "1a"
+ *     and "1A" both on the card side never fold onto a lone "1A" row; a
+ *     case-only twin on either side leaves the number unmatched.
+ *  3. **Letter prefix stripped**: a leading letter prefix ("BCP-12", "US12")
+ *     is stripped from the folded key on both sides and the same exactly-one
+ *     guard applies again ("BCP-12" on BSC against "12" in the publisher's
+ *     list).
  *
  * ## Cards with no number ("NNO") pair by player, never by a tie
  *
@@ -35,7 +47,9 @@
  *    That is a comparison only; nothing is written from it, and the card
  *    keeps the marketplace's full names (`playersAgree`).
  *  - The card already carries a team (BSC's bulk parse, or SportLots) and the
- *    row names a different one: `conflict.teams`.
+ *    row names a different one: `conflict.teams`. A row that says "No Team"
+ *    (`noTeam`) against a card with a team is a disagreement too, with an
+ *    empty checklist side.
  *  - A card left unmatched whose players appear on a row at a DIFFERENT
  *    number is a likely misread (`misreads`): reported, never paired. The
  *    list holds at most `MAX_CHECKLIST_MISREADS` pairs (a player on many
@@ -59,12 +73,19 @@ export type ChecklistRowInput = {
    * counts as one whether or not the flag is set.
    */
   noNumber?: boolean;
+  /**
+   * The checklist says this card shows no team ("No Team"); `teams` is then
+   * empty. Against a card that has a team it is a conflict (NEO-489).
+   */
+  noTeam?: boolean;
 };
 
 export type ChecklistCardInput = {
   cardNumber: string;
   players?: readonly string[];
   teams?: readonly string[];
+  /** A legacy single team, read only when `teams` is empty. */
+  team?: string;
 };
 
 export type ChecklistConflictSides = { marketplace: string[]; checklist: string[] };
@@ -77,10 +98,11 @@ export type ChecklistCardMatch = {
   cardIndex: number;
   rowIndex: number;
   /**
-   * How the pair was made: the number as written, the number after the
-   * letter-prefix strip, or (a no-number card and an NNO row) the players.
+   * How the pair was made: the number as printed (case kept), the number
+   * case-folded (unique on both sides), the number after the letter-prefix
+   * strip, or (a no-number card and an NNO row) the players.
    */
-  via: "number" | "prefixStripped" | "player";
+  via: "number" | "caseFolded" | "prefixStripped" | "player";
   /** Present only when the two disagree. */
   conflict?: ChecklistConflict;
   /** The row's players, when the card has none. */
@@ -105,15 +127,23 @@ export type ChecklistMatchResult = {
 export const MAX_CHECKLIST_MISREADS = 200;
 
 /**
- * A card number as both sides compare it: trimmed, a leading "#" or "No."
- * dropped, inner whitespace removed, upper-cased. "#12" = "No. 12" = "12";
- * "bcp-12" = "BCP-12".
+ * A card number as printed, as the exact pass compares it: trimmed, a
+ * leading "#" or "No." dropped, inner whitespace removed, case KEPT.
+ * "#12" = "No. 12" = "12"; "1a" and "1A" stay two numbers.
  */
-export function normalizeChecklistNumber(raw: string): string {
+export function exactChecklistNumber(raw: string): string {
   let n = raw.normalize("NFKC").trim();
   n = n.replace(/^(?:#|no\.?(?=\s|\d|#))\s*/i, "");
   n = n.replace(/^#\s*/, "");
-  return n.replace(/\s+/g, "").toUpperCase();
+  return n.replace(/\s+/g, "");
+}
+
+/**
+ * The case-folded number: `exactChecklistNumber` upper-cased. "bcp-12" =
+ * "BCP-12". Pairs only under the whole-set guard of the case-folded pass.
+ */
+export function normalizeChecklistNumber(raw: string): string {
+  return exactChecklistNumber(raw).toUpperCase();
 }
 
 /**
@@ -198,23 +228,23 @@ function nonEmpty(names: readonly string[] | undefined): string[] {
   return (names ?? []).map((n) => n.trim()).filter(Boolean);
 }
 
+function groupByKey(keys: Map<number, string>): Map<string, number[]> {
+  const byKey = new Map<string, number[]>();
+  for (const [i, k] of keys) {
+    const list = byKey.get(k);
+    if (list) list.push(i);
+    else byKey.set(k, [i]);
+  }
+  return byKey;
+}
+
 /** Pair keys that are exactly one on each side. */
 function pairUnique(
   cardKeys: Map<number, string>,
   rowKeys: Map<number, string>,
 ): Array<{ cardIndex: number; rowIndex: number }> {
-  const cardsByKey = new Map<string, number[]>();
-  for (const [i, k] of cardKeys) {
-    const list = cardsByKey.get(k);
-    if (list) list.push(i);
-    else cardsByKey.set(k, [i]);
-  }
-  const rowsByKey = new Map<string, number[]>();
-  for (const [i, k] of rowKeys) {
-    const list = rowsByKey.get(k);
-    if (list) list.push(i);
-    else rowsByKey.set(k, [i]);
-  }
+  const cardsByKey = groupByKey(cardKeys);
+  const rowsByKey = groupByKey(rowKeys);
   const pairs: Array<{ cardIndex: number; rowIndex: number }> = [];
   for (const [k, cardList] of cardsByKey) {
     const rowList = rowsByKey.get(k);
@@ -231,25 +261,50 @@ export function matchPublishedChecklist(
 ): ChecklistMatchResult {
   // A no-number card or row has no key here: it pairs by player below, and
   // only there. The misread check reads a missing number as "".
+  const cardExact = new Map<number, string>();
   const cardNumbers = new Map<number, string>();
   cards.forEach((c, i) => {
     if (isNoNumber(c.cardNumber)) return;
-    cardNumbers.set(i, normalizeChecklistNumber(c.cardNumber));
+    const exact = exactChecklistNumber(c.cardNumber);
+    cardExact.set(i, exact);
+    cardNumbers.set(i, exact.toUpperCase());
   });
+  const rowExact = new Map<number, string>();
   const rowNumbers = new Map<number, string>();
   rows.forEach((r, i) => {
     if (rowHasNoNumber(r)) return;
-    rowNumbers.set(i, normalizeChecklistNumber(r.number));
+    const exact = exactChecklistNumber(r.number);
+    rowExact.set(i, exact);
+    rowNumbers.set(i, exact.toUpperCase());
   });
 
   const paired = new Map<number, { rowIndex: number; via: ChecklistCardMatch["via"] }>();
   const usedRows = new Set<number>();
-  for (const p of pairUnique(cardNumbers, rowNumbers)) {
+  // Pass 1: the number as printed, case kept.
+  for (const p of pairUnique(cardExact, rowExact)) {
     paired.set(p.cardIndex, { rowIndex: p.rowIndex, via: "number" });
     usedRows.add(p.rowIndex);
   }
 
-  // The fallback, on what is left on both sides. A number with no prefix
+  // Pass 2: case-folded, for leftovers only, and only when the folded number
+  // is exactly one card in the whole set AND exactly one row in the whole
+  // checklist. Counting the whole of each side (not just the leftovers) is
+  // what keeps "1a" from folding onto a "1A" row whose own "1A" card paired
+  // in pass 1.
+  const foldedCards = groupByKey(cardNumbers);
+  const foldedRows = groupByKey(rowNumbers);
+  for (const [cardIndex, folded] of cardNumbers) {
+    if (paired.has(cardIndex)) continue;
+    const cardList = foldedCards.get(folded);
+    const rowList = foldedRows.get(folded);
+    if (cardList?.length !== 1 || rowList?.length !== 1) continue;
+    const rowIndex = rowList[0];
+    if (usedRows.has(rowIndex)) continue;
+    paired.set(cardIndex, { rowIndex, via: "caseFolded" });
+    usedRows.add(rowIndex);
+  }
+
+  // Pass 3, on what is left on both sides. A number with no prefix
   // keeps itself, so "BCP-12" (card) meets "12" (row) and the reverse.
   const strippedCards = new Map<number, string>();
   for (const [i, n] of cardNumbers) {
@@ -299,7 +354,8 @@ export function matchPublishedChecklist(
     const row = rows[pair.rowIndex];
     const cardPlayers = nonEmpty(card.players);
     const rowPlayers = nonEmpty(row.players);
-    const cardTeams = nonEmpty(card.teams);
+    const listedTeams = nonEmpty(card.teams);
+    const cardTeams = listedTeams.length > 0 ? listedTeams : nonEmpty(card.team ? [card.team] : []);
     const rowTeams = nonEmpty(row.teams);
     const conflict: ChecklistConflict = {};
     if (cardPlayers.length > 0 && rowPlayers.length > 0 && !playersAgree(cardPlayers, rowPlayers)) {
@@ -307,6 +363,9 @@ export function matchPublishedChecklist(
     }
     if (cardTeams.length > 0 && rowTeams.length > 0 && namesKey(cardTeams) !== namesKey(rowTeams)) {
       conflict.teams = { marketplace: cardTeams, checklist: rowTeams };
+    } else if (cardTeams.length > 0 && rowTeams.length === 0 && row.noTeam === true) {
+      // The checklist says No Team; the card has one. The operator decides.
+      conflict.teams = { marketplace: cardTeams, checklist: [] };
     }
     matches.push({
       cardIndex,

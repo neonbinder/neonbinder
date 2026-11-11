@@ -310,6 +310,12 @@ import {
   rowHasNoNumber,
   type ChecklistConflict,
 } from "../lib/checklists/match-published-checklist";
+// NEO-489 — "No Team" in a publisher checklist: a claim, never a team name.
+import {
+  checklistClaimsNoTeam,
+  isNoClaimTeamText,
+  isNoTeamText,
+} from "../lib/checklists/no-team";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
 import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
@@ -14352,6 +14358,11 @@ const publishedChecklistValidator = v.object({
       // below sets it from the number too, so a row sent without the flag
       // reads the same; the matcher pairs such a row by player only.
       noNumber: v.optional(v.boolean()),
+      // NEO-489 — the checklist says the card shows no team ("No Team");
+      // `teams` is then empty. The re-check below also reads it from a team
+      // string that is exactly "No Team", so a row sent either way reads the
+      // same, and refuses a row that says No Team and names a team.
+      noTeam: v.optional(v.boolean()),
       // The parser's subset label (a file's "set" / "insert" column). The
       // client chooses rows by it; the fetch never reads it and drops it in
       // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
@@ -14370,6 +14381,16 @@ type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
  * (`noNumber: true`) when the client flagged it or its number is blank or
  * "NNO", by the matcher's own test (`rowHasNoNumber`), so the client's parse
  * and this re-check always agree on which rows pair by player.
+ *
+ * NEO-489: a row is a No Team row (`noTeam: true`, `teams: []`) when the
+ * client flagged it or every team string is exactly "No Team"
+ * (`isNoTeamText`, the parser's own test), so "No Team" never reaches the
+ * fetch as a team name. A row that says No Team and also names a team
+ * contradicts itself and refuses the whole checklist. A team string that
+ * says nothing ("None", "N/A", "No team listed", "-": `isNoClaimTeamText`,
+ * the parser's own list) as the row's only team is dropped, the same as a
+ * blank cell, so a caller cannot plant a team named "None". Beside another
+ * team it is kept as sent, exactly as the parser keeps it.
  */
 export function checkPublishedChecklist(
   published: PublishedChecklist | undefined,
@@ -14405,11 +14426,21 @@ export function checkPublishedChecklist(
       }
       return kept;
     };
+    // A no-claim word is dropped only as the whole cell (one string), as the
+    // parser reads it; beside a team it is left as it is, like the client.
+    const cleaned = clean(row.teams, MAX_CARD_TEAMS, "team");
+    const named = cleaned.length === 1 && isNoClaimTeamText(cleaned[0]) ? [] : cleaned;
+    const teams = named.filter((t) => !isNoTeamText(t));
+    const noTeam = row.noTeam === true || teams.length < named.length;
+    if (noTeam && teams.length > 0) {
+      throw new ConvexError(`${where} says No Team and names a team.`);
+    }
     return {
       number,
       players: clean(row.players, MAX_CARD_PLAYERS, "player"),
-      teams: clean(row.teams, MAX_CARD_TEAMS, "team"),
+      teams,
       ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
+      ...(noTeam ? { noTeam: true } : {}),
     };
   });
   return { rows };
@@ -15663,8 +15694,14 @@ export const fetchCardChecklist = action({
       //     team takes its team answer from the row: the row's teams, through
       //     the same whole-name-first resolution BSC's raw value takes. Those
       //     cards are written `ready` with `teamLookup: "checklist"` and BSC
-      //     is never asked about them. A row naming no team is no claim, so
-      //     its card keeps the BSC lookup (players still fill). A
+      //     is never asked about them. A row whose team cell is blank is no
+      //     claim, so its card keeps the BSC lookup (players still fill). A
+      //     row that says "No Team" (NEO-489, `noTeam`) IS a claim: its card
+      //     is answered by the checklist with no team (`teamLookup:
+      //     "checklist"`, `teams: []`, read back by `checklistClaimsNoTeam`),
+      //     is never looked up, and is stamped confirmed no-team at commit.
+      //     Against a card that already has a team it is a team conflict
+      //     with an empty checklist side. A
       //     player or team that disagrees with the marketplace becomes
       //     `checklistConflict` for the operator; the card keeps the
       //     marketplace's values. Players fill in where the marketplace has
@@ -15676,7 +15713,12 @@ export const fetchCardChecklist = action({
       let checklistTeams: { matched: number; total: number } | undefined;
       if (published) {
         const match = matchPublishedChecklist(
-          out.map((c) => ({ cardNumber: c.cardNumber, players: c.players, teams: c.teams })),
+          out.map((c) => ({
+            cardNumber: c.cardNumber,
+            players: c.players,
+            teams: c.teams,
+            team: c.team,
+          })),
           published.rows,
         );
         // Only a team text with a comma can resolve to something other than
@@ -15707,6 +15749,7 @@ export const fetchCardChecklist = action({
             : [];
         let conflicts = 0;
         let refused = 0;
+        let noTeamFromChecklist = 0;
         for (const m of match.matches) {
           const card = out[m.cardIndex];
           const row = published.rows[m.rowIndex];
@@ -15767,7 +15810,21 @@ export const fetchCardChecklist = action({
           // 8): its players still fill or compare above, but the card is not
           // checklist-answered, is not counted in `checklistTeams`, and keeps
           // its BSC lookup like an unmatched card.
-          if (teams.length === 0) continue;
+          //
+          // NEO-489: a row that says "No Team" is the exception. That IS a
+          // claim (the card shows no team), so the card is checklist-answered
+          // with no team: never looked up, counted in `checklistTeams`, and
+          // stamped confirmed no-team at commit (`checklistClaimsNoTeam`).
+          // It only gets here when the card has no team of its own; a card
+          // with one took the conflict branch above.
+          if (teams.length === 0) {
+            if (row.noTeam !== true) continue;
+            card.teams = [];
+            card.teamLookup = "checklist";
+            checklistAnswered.add(card);
+            noTeamFromChecklist++;
+            continue;
+          }
           card.teams = teams;
           card.teamLookup = "checklist";
           checklistAnswered.add(card);
@@ -15781,7 +15838,9 @@ export const fetchCardChecklist = action({
             cards: out.length,
             matched: match.matches.length,
             matchedByPlayer: match.matches.filter((m) => m.via === "player").length,
+            matchedByCaseFolded: match.matches.filter((m) => m.via === "caseFolded").length,
             teamsFromChecklist: checklistAnswered.size,
+            noTeamFromChecklist,
             unmatched: match.unmatchedCardIndices.length,
             conflicts,
             refusedTeams: refused,
@@ -16185,11 +16244,14 @@ export const resolveChecklistEntities = action({
       // pick the checklist's in the wizard. Its names are resolved and queued
       // here too, so a picked checklist player or team arrives as a decided
       // name, never a pending one. The checklist's players sit on a card with
-      // the checklist's teams when the teams disagree too.
+      // the checklist's teams when the teams disagree too. NEO-489: a team
+      // disagreement with an empty checklist side is the checklist saying
+      // "No Team", so its players sit on a card with no team, never on the
+      // marketplace's.
       const conflict = c.checklistConflict;
       if (conflict) {
         const checklistTeams = (conflict.teams?.checklist ?? []).map((t) => t.trim()).filter(Boolean);
-        const teamsForChecklistPlayers = checklistTeams.length > 0 ? checklistTeams : teamsOnCard;
+        const teamsForChecklistPlayers = conflict.teams ? checklistTeams : teamsOnCard;
         for (const p of conflict.players?.checklist ?? []) {
           if (!p.trim()) continue;
           additionalPlayerNames.push(p);
@@ -19206,7 +19268,10 @@ export function commitTeamHint(
  *     admin), plus `teamCheckDoneAt`, because the lookup has nothing left to
  *     find for a card a human settled. Never when a team NAME is still pending
  *     review (that is a team, waiting), never without the operator id, and
- *     never over an existing confirmation.
+ *     never over an existing confirmation. NEO-489: a publisher checklist
+ *     that said "No Team" for the card arrives here as the same `teamNone`
+ *     (the commit prelude reads it through `checklistClaimsNoTeam`), so it
+ *     is stamped exactly like the operator's own answer.
  *  2. BSC ANSWERED at fetch — `teamCheckDoneAt` is stamped, and when the
  *     card's team string reached commit unresolved and not pending it is kept
  *     as `bscTeamName`, capped, the hint the missing-team fixer shows — never
@@ -19249,8 +19314,10 @@ function settleCardTeamAnswer(a: {
   if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
   // PR 451 (NEO-478) — the publisher checklist answered this card at fetch:
   // it matched by number (exactly one on both sides) and its row named a team.
-  // A row naming no team is no claim and never sets "checklist" (B1); that
-  // card kept its BSC lookup. So a card here carries a checklist team that
+  // A row with a blank team cell is no claim and never sets "checklist" (B1);
+  // that card kept its BSC lookup. A row that said "No Team" (NEO-489) does
+  // set it, with no team, and is stamped as `teamNone` above. So a card here
+  // carries a checklist team that
   // did not land as an NB team on the row (still a pending name, for
   // example). BSC was never asked and is not asked now: the lookup is done,
   // its outcome is the checklist's, and no "Listed as:" hint is kept (no
@@ -22904,8 +22971,16 @@ export const commitCardChecklist = action({
       // "No team on this card" — teams win. A card carrying any team id or a
       // pending team name drops the answer here; the chunk drops it again if
       // the leaf's set-level team fills the card on insert.
+      //
+      // NEO-489 — the publisher checklist saying "No Team" is the same
+      // answer: a card whose team lookup is "checklist" and which carries no
+      // team string (`checklistClaimsNoTeam`, the helper the client reads to
+      // keep the card out of the Teams step). A checklist team the operator
+      // ruled "not a team" still carries its string, so it never reads as
+      // one. Same trust as `teamNone`: both are client claims, and teams win
+      // either way.
       const teamNone =
-        c.teamNone === true &&
+        (c.teamNone === true || checklistClaimsNoTeam(c)) &&
         teamOnCardIds.length === 0 &&
         pendingTeamNames.length === 0;
       // Reconciliation markers live in `attributes` so they are visible on the

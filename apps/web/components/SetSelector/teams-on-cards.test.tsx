@@ -675,11 +675,15 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
   });
 
   test("a team the published checklist settled is a data claim: nothing pre-filled over it (NEO-478)", () => {
+    // NEO-489: a checklist card with NO team string is the checklist's "No
+    // Team" and leaves the section; this card's checklist team was ruled "not
+    // a team" by the operator, so it keeps its (skipped) string and stays.
+    const skipRows = [row({ kind: "team", name: "Team Card", decision: { action: "skip" } })];
     const cards: PreviewCardForTeams[] = [
-      { ...card("1", ["Johnny Bench"]), teamLookup: "checklist" },
+      { ...card("1", ["Johnny Bench"], ["Team Card"]), teamLookup: "checklist" },
       { ...card("2", ["Johnny Bench"]), teamLookup: "answered" },
     ];
-    const groups = build(cards, [], {
+    const groups = build(cards, skipRows, {
       "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
     });
     // The claim is part of what a line shares, so the two do not collapse.
@@ -1183,5 +1187,40 @@ describe("stored team skips — a name an earlier save ruled 'not a team'", () =
     const people = storedPeople(undefined, undefined, ["Roanoke Express"]);
     expect([...(people?.skippedTeamNames ?? [])]).toEqual(["express roanoke"]);
     expect(people?.skippedPlayerNames).toBeUndefined();
+  });
+});
+
+describe("NEO-489 — a card the checklist answered No Team is never asked", () => {
+  const noTeam = (cardNumber: string, players: string[]): PreviewCardForTeams => ({
+    ...card(cardNumber, players),
+    teams: [],
+    teamLookup: "checklist",
+  });
+
+  test("it is outside teamlessCardIndexes while a plain teamless card stays in", () => {
+    const cards = [noTeam("1", ["Host One"]), card("2", ["Johnny Bench"])];
+    expect(teamlessCardIndexes(cards, [])).toEqual([1]);
+  });
+
+  test("it is in no group and asks the server about no player", () => {
+    const cards = [noTeam("1", ["Host One"])];
+    expect(build(cards)).toEqual([]);
+    expect(evidenceRequests(cards, [])).toEqual([]);
+  });
+
+  test("a checklist card whose team string was ruled not a team is still asked", () => {
+    const rows = [row({ kind: "team", name: "Checklist", decision: { action: "skip" } })];
+    const cards: PreviewCardForTeams[] = [
+      { ...card("1", ["Host One"], ["Checklist"]), teamLookup: "checklist" },
+    ];
+    expect(teamlessCardIndexes(cards, rows)).toEqual([0]);
+  });
+
+  test("a No Team card gives a same-player sibling no batch evidence and no pre-fill", () => {
+    const groups = build([noTeam("1", ["Johnny Bench"]), card("2", ["Johnny Bench"])]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([1]);
+    expect(groups[0].suggestion).toBeNull();
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
   });
 });

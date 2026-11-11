@@ -57,6 +57,17 @@ import {
  * printed with no number ("NNO") is a row like any other, numbered "NNO": the
  * sync pairs it by player (PR 451 D-B), so it is never listed as skipped.
  *
+ * ## No Team (NEO-489)
+ *
+ * A team cell that says exactly "No Team" (any case, any spacing) is the
+ * checklist saying the card shows no team. The row keeps `teams: []` and
+ * carries `noTeam: true`; its Teams cell reads "No team" at a team's
+ * strength, where a blank cell (no claim, so the team is looked up) reads a
+ * muted "None". The sync takes the claim as the card's answer and never asks
+ * about it. "No Team" beside a real team is a contradiction the parser will
+ * not settle: the line is skipped with the parser's own reason
+ * (`NO_TEAM_AND_A_TEAM`), shown under Skipped lines like every other.
+ *
  * ## Subsets
  *
  * A checklist page often carries several subsets under one heading (Base Set,
@@ -139,6 +150,9 @@ export const NOTHING_TO_USE = "Nothing to use yet — paste lines that start wit
 export const SUBSET_QUESTION = "Which of these belong to this set?";
 /** Said when "Use this checklist" is pressed before any subset is ticked. */
 export const PICK_A_SUBSET = "Tick at least one subset first — then use it.";
+
+/** NEO-489 — the team cell of a row whose checklist said "No Team". */
+export const NO_TEAM_CELL = "No team";
 /** How long the paste must hold still before its count is announced. */
 export const COUNT_ANNOUNCE_DEBOUNCE_MS = 1500;
 
@@ -360,7 +374,8 @@ export default function PublishedChecklistDialog({
             </h2>
             <p id={leadId} className="mt-0.5 text-sm text-ink-2">
               Paste it straight off the checklist page, or pick a file. We line it up by card
-              number and only look up teams your list leaves out.
+              number and only look up teams your list leaves out. Card with no team? Write
+              “No Team” where its team goes.
             </p>
           </header>
 
@@ -567,6 +582,10 @@ export default function PublishedChecklistDialog({
                             <td className="px-3 py-1 align-top text-ink-2">
                               {row.teams.length > 0 ? (
                                 row.teams.join(", ")
+                              ) : row.noTeam ? (
+                                // The checklist's answer, so it reads at a
+                                // team's strength, unlike a blank cell.
+                                NO_TEAM_CELL
                               ) : (
                                 <span className="text-ink-3">None</span>
                               )}

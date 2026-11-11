@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import ChecklistConflictStep, {
   BULK_ANSWER_LABEL,
   CHECKLIST_NEXT_BLOCKED,
+  CHECKLIST_NO_TEAM,
   CHECKLIST_STEP_HEADING,
   KEEP_MARKETPLACE_ALL_LABEL,
   KEEP_MARKETPLACE_LABEL,
@@ -436,5 +437,34 @@ describe("ChecklistConflictStep", () => {
   it("the lead says one card or N cards", () => {
     expect(checklistStepLead(1)).toMatch(/this card/);
     expect(checklistStepLead(3)).toMatch(/3 cards/);
+  });
+});
+
+describe("ChecklistConflictStep — No Team (NEO-489)", () => {
+  const noTeamRows: ChecklistConflictRow[] = [
+    {
+      index: 0,
+      cardNumber: "70",
+      cardName: "Host One",
+      conflict: { teams: { marketplace: ["Cincinnati Reds"], checklist: [] } },
+    },
+    {
+      index: 1,
+      cardNumber: "71",
+      cardName: "Pat Smith",
+      conflict: { teams: { marketplace: [], checklist: ["Kansas City Royals"] } },
+    },
+  ];
+
+  it("reads an empty checklist side as 'No team', and an empty marketplace side as 'No team listed'", () => {
+    renderStep({ rows: noTeamRows });
+    expect(CHECKLIST_NO_TEAM).toBe("No team");
+    const g70 = screen.getByRole("radiogroup", { name: disagreementLabel("70") });
+    expect(within(g70).getByText("No team")).toBeTruthy();
+    expect(within(g70).getByText("Cincinnati Reds")).toBeTruthy();
+    expect(within(g70).queryByText("No team listed")).toBeNull();
+    const g71 = screen.getByRole("radiogroup", { name: disagreementLabel("71") });
+    expect(within(g71).getByText("No team listed")).toBeTruthy();
+    expect(within(g71).queryByText("No team")).toBeNull();
   });
 });
