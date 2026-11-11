@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router";
 import type { SyncProblemSet, SyncStatusData } from "../fake-data";
 import { MARKETPLACES } from "../dash-labels";
 import { CardTitle, count, MarketBadge, sideHref, Thumb } from "./bits";
-import { PanelLink } from "./panelLink";
+import { heldOf, PanelLink } from "./panelLink";
 import { useOpen } from "./useOpen";
 
 /**
@@ -31,22 +31,40 @@ import { useOpen } from "./useOpen";
 /** Held-back cards a set shows before "Show all". */
 export const HELD_PREVIEW = 6;
 
+/**
+ * The frame says how bad it is: a set whose last sync failed is the danger
+ * rule; only cards held back (each one a fix the collector can make) is the
+ * warning rule; only cards waiting for the next sync is the plain rule.
+ */
+export function syncFrame(status: SyncStatusData): "danger" | "warn" | "plain" {
+  if (status.problems.some((p) => p.failure)) return "danger";
+  if (status.problems.length > 0) return "warn";
+  return "plain";
+}
+
+const FRAME_RULE = {
+  danger: "border-notice-danger-rule",
+  warn: "border-notice-warn-rule",
+  plain: "border-rule",
+} as const;
+
+/** A link on its own line: a 44px target on a phone, its text height beside the heading on wider screens. */
+const SYNC_LINK =
+  "inline-flex min-h-11 items-center rounded-sm text-sm font-semibold text-neon-blue-text underline-offset-2 hover:underline focus-outline sm:min-h-0";
+
 export default function SyncStatus({ status }: { status: SyncStatusData }) {
   const { pathname } = useLocation();
   const trouble = status.problems.length > 0;
   return (
     <section
       aria-labelledby="cb-sync-heading"
-      className={`min-w-0 rounded-2xl border bg-raised p-4 sm:p-5 ${trouble ? "border-notice-danger-rule" : "border-rule"}`}
+      className={`shadow-offset min-w-0 rounded-2xl border bg-raised p-4 sm:p-5 ${FRAME_RULE[syncFrame(status)]}`}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 id="cb-sync-heading" className="text-lg font-bold text-ink">
+        <h2 id="cb-sync-heading" tabIndex={-1} className="rounded-sm text-lg font-bold text-ink focus-outline">
           Sync status
         </h2>
-        <Link
-          to={sideHref(pathname, "inventory", { tab: "sync" })}
-          className="rounded-sm text-sm font-semibold text-neon-blue-text underline-offset-2 hover:underline focus-outline"
-        >
+        <Link to={sideHref(pathname, "inventory", { tab: "sync" })} className={SYNC_LINK}>
           Open Sync status
         </Link>
       </div>
@@ -84,13 +102,19 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
   const shown = all ? set.cards : set.cards.slice(0, HELD_PREVIEW);
   const folded = set.cards.length - HELD_PREVIEW;
   const unnamed = set.heldBack - set.cards.length;
-  // ↑ ↓ in a held-back card's panel walk the set's held-back cards, the folded ones too.
+  // ↑ ↓ in a held-back card's panel walk the set's held-back cards, the folded ones too, each with its reason.
   const heldIds = set.cards.map((c) => c.card.id);
+  const heldList = new Map(
+    set.cards.flatMap((c) => {
+      const held = heldOf(set.marketplace, c.code);
+      return held ? [[c.card.id, held] as const] : [];
+    }),
+  );
   return (
     <article aria-labelledby={headingId} className="min-w-0">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <MarketBadge marketplace={set.marketplace} />
-        <h3 id={headingId} className="text-sm font-bold text-ink">
+        <h3 id={headingId} tabIndex={-1} className="rounded-sm text-sm font-bold text-ink focus-outline">
           {set.setLabel}
           <span className="sr-only"> on {market}</span>
         </h3>
@@ -98,21 +122,30 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
       {set.heldBack > 0 && (
         <>
           <p className="mt-2 text-sm font-semibold text-ink">
-            {count(set.heldBack, "card")} held back from {market}. Fix each one on its card:
+            {count(set.heldBack, "card")} held back from {market}.{" "}
+            {set.heldBack === 1
+              ? "Fix it on the card and it goes up next sync:"
+              : "Fix each one on its card and it goes up next sync:"}
           </p>
           {shown.length > 0 && (
             <ul className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {shown.map(({ card, reason }) => (
+              {shown.map(({ card, reason, code }) => (
                 <li key={card.id} className="min-w-0">
                   <PanelLink
                     cardId={card.id}
                     side="inventory"
                     list={heldIds}
-                    className="flex h-full min-w-0 items-start gap-2.5 rounded-md border border-notice-warn-rule bg-notice-warn-bg p-2 hover:bg-hover-raised focus-outline"
+                    held={heldOf(set.marketplace, code)}
+                    heldList={heldList}
+                    // The warn tint stays under the pointer: the rule darkens and the title underlines.
+                    className="group flex h-full min-w-0 items-start gap-2.5 rounded-md border border-notice-warn-rule bg-notice-warn-bg p-2 hover:border-notice-warn-ink focus-outline"
                   >
                     <Thumb card={card} className="w-10" />
                     <span className="min-w-0 flex-1 text-xs leading-snug">
-                      <CardTitle card={card} className="font-semibold text-ink" />
+                      <CardTitle
+                        card={card}
+                        className="font-semibold text-ink underline-offset-2 group-hover:underline"
+                      />
                       <span className="mt-1 block text-notice-warn-ink">{reason}</span>
                     </span>
                   </PanelLink>
@@ -133,19 +166,25 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
                     aria-hidden="true"
                     className={`size-4 transition-transform motion-reduce:transition-none ${all ? "rotate-180" : ""}`}
                   />
+                  {/* The words on it lead its name (WCAG 2.5.3): the count it adds is seen, the set it is in is read, last. */}
                   {all ? "Show fewer" : `Show all ${set.cards.length}`}
+                  {!all && (
+                    <span aria-hidden="true" className="text-ink-3">
+                      {" "}
+                      (+{folded})
+                    </span>
+                  )}
                   <span className="sr-only">
                     {" "}
                     held back in {set.setLabel} on {market}
                   </span>
-                  {!all && <span className="text-ink-3"> (+{folded})</span>}
                 </button>
               )}
               {unnamed > 0 && (
                 <Link
                   to={sideHref(pathname, "inventory", { tab: "sync" })}
                   aria-label={`${count(unnamed, "more card")} on Sync status, held back in ${set.setLabel} on ${market}`}
-                  className="rounded-sm text-sm font-semibold text-neon-blue-text underline-offset-2 hover:underline focus-outline"
+                  className={SYNC_LINK}
                 >
                   {count(unnamed, "more card")} on Sync status
                 </Link>

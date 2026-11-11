@@ -53,7 +53,7 @@ function Strip({ binder, wanted }: { binder: ShelfBinder; wanted: Set<string> })
       </span>
       <div className="min-w-0 flex-1 space-y-2.5">
         <div>
-          <h3 id={headingId} className="font-bold leading-tight text-ink">
+          <h3 id={headingId} tabIndex={-1} className="rounded-sm font-bold leading-tight text-ink focus-outline">
             {binder.name}
           </h3>
           {binder.ruleText && <p className="text-xs text-ink-3">{binder.ruleText}</p>}

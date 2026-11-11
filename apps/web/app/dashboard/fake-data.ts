@@ -45,7 +45,7 @@ import { SCORE_1989_FOOTBALL_ID, SCORE_1989_LAST_CARD, SCORE_1989_TODAY } from "
 import { demoCard } from "@/app/collection/final/data/demoStore";
 import { initialCollectionState, MAIN_BINDER_ID } from "@/app/collection/final/store";
 import { compareCardNumbers } from "@/app/collection/final/data/labels";
-import type { CardId, SetId, VariantKind } from "@/app/collection/final/data/types";
+import type { CardId, ListingProblemReason, SetId, VariantKind } from "@/app/collection/final/data/types";
 import { toDash, type DashCard } from "./dash-card";
 import type { Marketplace } from "./dash-labels";
 import { DEFAULT_SPINE_FONT_ID } from "@/lib/print/spine-fonts";
@@ -220,15 +220,15 @@ const RIPKEN = pick(SET.finest, null, 5);
  * line counts what the boxes really hold.
  */
 const UNSHIPPED_AS_BUILT: UnshippedSale[] = [
-  sale("sale-bsc-1", "bsc", "BSC-3920118", 3, "Ready to ship", [
+  sale("sale-bsc-1", "bsc", "DEMO-1001", 3, "Ready to ship", [
     { card: YZERMAN, quantity: 4, problem: { kind: "oversold", sold: 4, inBoxes: inBoxes(YZERMAN.id) } },
   ]),
-  sale("sale-ebay-1", "ebay", "14-12873-40211", 2, "Paid", [{ card: SKENES_AUTO, quantity: 1 }]),
-  sale("sale-bsc-3", "bsc", "BSC-3920877", 1, "Ready to ship", [
+  sale("sale-ebay-1", "ebay", "12-34567-89012", 2, "Paid", [{ card: SKENES_AUTO, quantity: 1 }]),
+  sale("sale-bsc-3", "bsc", "DEMO-1002", 1, "Ready to ship", [
     { card: THURMAN, quantity: 1 },
     { card: GRIFFEY, quantity: 1 },
   ]),
-  sale("sale-bsc-2", "bsc", "BSC-3921456", 0, "Ready to ship", [
+  sale("sale-bsc-2", "bsc", "DEMO-1003", 0, "Ready to ship", [
     { card: SCORE_PROOF, quantity: 1 },
     { card: null, quantity: 1, problem: { kind: "unmatched", listingTitle: "2024 Score #333 Rome Odunze RC" } },
   ]),
@@ -741,6 +741,8 @@ const NEW_LISTINGS: NewListing[] = [...BOX_LINES]
 export interface HeldBackCard {
   card: DashCard;
   reason: string;
+  /** The reason's code, so the card's panel can say it and open on the fix; absent when not known. */
+  code?: ListingProblemReason;
 }
 
 /** A set whose last sync to a marketplace failed, or held cards back. */
@@ -769,18 +771,56 @@ export interface SyncStatusData {
   more: boolean;
 }
 
-/** A held-back set as the board names it: "2024 Score Artist's Proof", "1996-97 Upper Deck Base". */
-function heldBackSet(id: string, marketplace: Marketplace, card: DashCard, reason: string): SyncProblemSet {
-  const setLabel = `${card.setLabel} ${card.variantName ?? "Base"}`;
-  return { id, marketplace, setLabel, failure: null, heldBack: 1, cards: [{ card, reason }] };
+/**
+ * A held-back set as Sync status names it, in the words its cards' listing
+ * titles use, so the heading and the titles under it read as one set:
+ * "2024 Score Artist's Proof", "1993 Topps Finest Base".
+ */
+function heldSetLabel(card: DashCard): string {
+  const { season, name, brand } = card.card.set;
+  const set = name.toLowerCase().startsWith(brand.name.toLowerCase()) ? name : `${brand.name} ${name}`;
+  return `${season} ${set} ${card.variantName ?? "Base"}`;
 }
 
-/** Box cards only (a held-back card is one for sale), and never one an eBay order just sold. */
+/** Why the demo's sync held a card back, in the words the signed-in page says them (`real/heldBackReason`). */
+const HELD_WORDS = {
+  noPrice: "No price yet. Set one on the card, or a common price for the set.",
+  noPhoto: "eBay listings need a photo. Add one to a copy of this card and it goes up.",
+} as const;
+
+function heldBackSet(id: string, marketplace: Marketplace, held: { card: DashCard; code: keyof typeof HELD_WORDS }[]): SyncProblemSet {
+  return {
+    id,
+    marketplace,
+    setLabel: heldSetLabel(held[0].card),
+    failure: null,
+    heldBack: held.length,
+    cards: held.map(({ card, code }) => ({ card, reason: HELD_WORDS[code], code })),
+  };
+}
+
+/** A Finest dupe in the Show box (the sample's `copy-box-06` to `-12`), held back for want of a price or, priced, a photo. */
+const finestDupe = (n: number, code: keyof typeof HELD_WORDS) => ({ card: pick(SET.finest, null, n), code });
+
+/**
+ * Box cards only (a held-back card is one for sale), and never one an eBay
+ * order just sold. The Finest build's dupes hold back more cards than the set
+ * shows before "Show all".
+ */
 const SYNC_STATUS: SyncStatusData = {
   pending: [{ marketplace: "bsc", cards: 3, more: false }],
   problems: [
-    heldBackSet("sync-ebay-score-proof", "ebay", SCORE_PROOF, "eBay listings need a photo. Add one to a copy of this card and it goes up."),
-    heldBackSet("sync-ebay-finest", "ebay", RIPKEN, "No price yet. Set one on the card, or a common price for the set."),
+    heldBackSet("sync-ebay-score-proof", "ebay", [{ card: SCORE_PROOF, code: "noPhoto" }]),
+    heldBackSet("sync-ebay-finest", "ebay", [
+      { card: RIPKEN, code: "noPrice" },
+      finestDupe(1, "noPrice"),
+      finestDupe(4, "noPhoto"),
+      finestDupe(6, "noPrice"),
+      finestDupe(7, "noPhoto"),
+      finestDupe(8, "noPhoto"),
+      finestDupe(9, "noPrice"),
+      finestDupe(10, "noPhoto"),
+    ]),
   ],
   more: false,
 };

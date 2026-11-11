@@ -74,8 +74,14 @@ export default function NewListings({ listings }: { listings: NewListing[] }) {
             className={`size-4 transition-transform motion-reduce:transition-none ${all ? "rotate-180" : ""}`}
           />
           {all ? "Show fewer" : `Show all ${listings.length}`}
+          {/* The count it adds is seen, not read: the words on it lead its name (WCAG 2.5.3). */}
+          {!all && (
+            <span aria-hidden="true" className="text-ink-3">
+              {" "}
+              (+{hidden})
+            </span>
+          )}
           <span className="sr-only"> new listings</span>
-          {!all && <span className="text-ink-3"> (+{hidden})</span>}
         </button>
       )}
     </section>

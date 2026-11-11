@@ -9,7 +9,7 @@
  * - the 1989 Score Football base set, all 330, in its own binder ("'89
  *   Score"), finished today (Barry Sanders #257 was the last card);
  * - real Reggie White cards across his career, for "All Reggie White";
- * - more cards for sale in the Show box, priced, over five sets.
+ * - more cards for sale in the Show box, most priced, over five sets.
  *
  * Signed-in pages never import it, so its checklists never reach their
  * chunks. Sample data from published checklists (see each file), not NB data.
@@ -142,6 +142,21 @@ function load(): void {
   forSale("copy-box-04", baseCard("1993-finest-baseball", "2"), 8);
   // No price yet: the sync holds it back until it has one.
   forSale("copy-box-05", baseCard("1993-finest-baseball", "5"), undefined, { condition: "Excellent", acquiredAt: "2026-11-10" });
+  // The Finest build's dupes, boxed for eBay a week back: some still need a
+  // price, the priced ones a photo, so the dashboard's Sync status holds more
+  // of one set back than it shows before "Show all".
+  const finestDupes: [string, string, number | undefined][] = [
+    ["copy-box-06", "1", undefined],
+    ["copy-box-07", "4", 3],
+    ["copy-box-08", "6", undefined],
+    ["copy-box-09", "7", 3],
+    ["copy-box-10", "8", 2],
+    ["copy-box-11", "9", undefined],
+    ["copy-box-12", "10", 4],
+  ];
+  for (const [id, n, price] of finestDupes) {
+    forSale(id, baseCard("1993-finest-baseball", n), price, { acquiredAt: "2026-11-03" });
+  }
 }
 
 load();

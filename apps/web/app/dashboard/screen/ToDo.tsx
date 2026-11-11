@@ -19,7 +19,8 @@ import { PanelLink } from "./panelLink";
  */
 
 /** An order's card, by its full listing title: opens the card's panel. */
-const CARD_LINK = "block rounded-sm hover:underline underline-offset-2 focus-outline";
+const CARD_LINK =
+  "block rounded-sm underline decoration-ink-3/60 underline-offset-2 hover:text-neon-blue-text hover:decoration-current focus-outline";
 
 /** Whether Needs a Look has anything in it. */
 export function needsALook(data: DashboardData): boolean {
@@ -61,7 +62,7 @@ export function OutTheDoor({ sales }: { sales: SalesData }) {
   return (
     <section aria-labelledby="cb-ship-heading" className="shadow-offset min-w-0 overflow-hidden rounded-2xl border border-rule bg-raised">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b-4 border-neon-green px-4 pt-4 pb-3 sm:px-5">
-        <h2 id="cb-ship-heading" className="text-2xl font-bold text-ink">
+        <h2 id="cb-ship-heading" tabIndex={-1} className="rounded-sm text-2xl font-bold text-ink focus-outline">
           Out the Door
         </h2>
         <p className="text-sm text-ink-2">
@@ -118,7 +119,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <MarketBadge marketplace={order.marketplace} />
-            <h3 id={`${anchor}-title`} className="text-sm font-bold tabular-nums text-ink">
+            <h3 id={`${anchor}-title`} tabIndex={-1} className="rounded-sm text-sm font-bold tabular-nums text-ink focus-outline">
               <span className="sr-only">{market} order </span>#{order.orderNumber}
             </h3>
             <span className="rounded-md border border-control px-1.5 text-xs text-ink-2">
@@ -276,7 +277,7 @@ export function NeedsALook({ data }: { data: DashboardData }) {
 
   return (
     <section aria-labelledby="cb-look-heading" className="min-w-0">
-      <h2 id="cb-look-heading" className="text-2xl font-bold text-ink">
+      <h2 id="cb-look-heading" tabIndex={-1} className="rounded-sm text-2xl font-bold text-ink focus-outline">
         Needs a Look
       </h2>
       <ul className="mt-3 flex flex-col gap-3">

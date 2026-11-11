@@ -54,3 +54,20 @@ note, never an exposure finding.
 "settled" rule that must step a window past the Nth entry usually runs the
 walk to its hop cap. Re-cost it per load (hops x (index reads + uncached
 ancestor chain)); bounded is fine, but say the new typical, not the old.
+
+**Test seeds into marketplace-adjacent tables (round 3).** A seed that writes
+"only where NB does not poll/push for the caller" is quiet only until that
+account starts polling or pushing. Check every later reader:
+- the order poll re-reads each stored NON-FINAL order by its `orderId`
+  (`listingSales` "stored orders not final" refresh), so a seeded open order
+  becomes a marketplace call with a fabricated id every tick once polling
+  starts; filter the seed prefix in `pollInput` or seed a final status;
+- an outbox row left behind is drained when pushing starts, and widens the
+  run to its variant (a binder-only fallback card pulls in a variant NB
+  would not otherwise touch);
+- a sync record carrying `lastSuccessAt` flips the first real run from a full
+  read to incremental (`claim.lastSuccessAt === null` gates the full read);
+- `claimVariant` does not clear `lastError`, so a marker-in-`lastError`
+  cleanup can match a record a real run is holding (`status: "running"`);
+  deleting/replacing it drops `conditionsPushed` (NEO-475). Guard on status.
+Related: [[patterns-testing-endpoint-gate]], [[patterns-neo370-scheduled-marketplace-poll]].

@@ -97,7 +97,11 @@ export function CardLine({
         <Thumb card={card} className={thumb} />
       </div>
       <div className="min-w-0 flex-1 text-xs leading-snug">
-        <CardTitle card={card} className={link ? "text-ink group-hover:text-neon-blue-text group-hover:underline" : "text-ink"} />
+        <CardTitle card={card} className={
+            link
+              ? "text-ink underline decoration-ink-3/60 underline-offset-2 group-hover:text-neon-blue-text group-hover:decoration-current"
+              : "text-ink"
+          } />
         {wanted && <WantFlag className="mt-0.5" />}
         {children}
       </div>
@@ -137,7 +141,7 @@ export function MarketBadge({ marketplace }: { marketplace: Marketplace }) {
 export function BlockHeading({ id, children, note }: { id: string; children: string; note?: string }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-      <h2 id={id} className="text-2xl font-bold text-ink">
+      <h2 id={id} tabIndex={-1} className="rounded-sm text-2xl font-bold text-ink focus-outline">
         {children}
       </h2>
       {note && <p className="text-sm text-ink-3">{note}</p>}
@@ -149,7 +153,7 @@ export function BlockHeading({ id, children, note }: { id: string; children: str
 export function RailHeading({ id, children, note }: { id: string; children: string; note?: string }) {
   return (
     <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-      <h2 id={id} className="text-lg font-bold text-ink">
+      <h2 id={id} tabIndex={-1} className="rounded-sm text-lg font-bold text-ink focus-outline">
         {children}
       </h2>
       {note && <p className="text-xs text-ink-3">{note}</p>}

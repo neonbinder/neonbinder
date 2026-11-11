@@ -41,9 +41,12 @@ export const SHELVES = 3;
 export const SHELF_CAP = PER_SHELF * SHELVES;
 /** With boxes on the third shelf, the binders keep two. */
 export const SHELF_CAP_WITH_BOXES = PER_SHELF * (SHELVES - 1);
-/** The third shelf still carries its starter beside this many binders at most (fewer on a phone). */
+/**
+ * The third shelf still carries its starter beside this many binders at most.
+ * Fewer on a phone: past two its words wrap down into the ledge.
+ */
 export const STARTER_ROOM = 4;
-export const STARTER_ROOM_NARROW = 3;
+export const STARTER_ROOM_NARROW = 2;
 /** Box ends to a shelf (fewer on a phone); past that, the last place says how many more. */
 export const BOXES_PER_SHELF = 6;
 export const BOXES_PER_SHELF_NARROW = 4;
@@ -69,6 +72,18 @@ function useNarrow(): boolean {
 function spineWidth(cards: number, narrow: boolean): number {
   const [min, max] = narrow ? [34, 38] : [46, 62];
   return Math.round(Math.min(max, Math.max(min, 40 + cards * 0.5)));
+}
+
+/**
+ * A spine's CSS width: its own (scaled up beside the pocket page, xl), but
+ * never wider than an eighth of the shelf's content box less its 7 gaps (4px
+ * on a phone, 6px wider), so eight always stand: a phone's at 320px, and the
+ * thickest binders at 1280px. `.cb-shelf` is the size container `cqw` reads.
+ */
+export function spineCssWidth(width: number, narrow: boolean): string {
+  const gaps = (PER_SHELF - 1) * (narrow ? 4 : 6);
+  const share = `calc((100cqw - ${gaps}px) / ${PER_SHELF})`;
+  return narrow ? `min(${width}px, ${share})` : `min(calc(${width}px * var(--spine-scale, 1)), ${share})`;
 }
 
 export function spineLabel(b: ShelfBinder): string {
@@ -102,10 +117,7 @@ function Spine({
   const style = {
     "--vinyl": binder.label.background,
     "--i": index,
-    // On a phone, never wider than an eighth of the shelf's content box (less its 7 gaps of 4px): eight fit at 320px.
-    width: narrow
-      ? `min(${width}px, calc((100cqw - 28px) / ${PER_SHELF}))`
-      : `calc(${width}px * var(--spine-scale, 1))`,
+    width: spineCssWidth(width, narrow),
   } as CSSProperties;
   return (
     <button
@@ -145,9 +157,14 @@ function Spine({
   );
 }
 
-/** "Show box, box, 48 cards for sale": My Boxes' own words (everything in a box is for sale). */
+/**
+ * "Unsorted, box, 48 cards for sale": My Boxes' own words (everything in a
+ * box is for sale), led by the name the box end shows (WCAG 2.5.3). A name
+ * that already says box ("Show box") is not told so twice.
+ */
 export function boxLabel(box: ShelfBox): string {
-  return `${box.name}, box, ${count(box.cardCount, "card")} for sale`;
+  const kind = /\bbox$/i.test(box.name.trim()) ? "" : ", box";
+  return `${box.name}${kind}, ${count(box.cardCount, "card")} for sale`;
 }
 
 /**

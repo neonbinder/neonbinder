@@ -1,9 +1,8 @@
-import { useContext } from "react";
+import { lazy, Suspense, useContext, type ReactNode } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import NoticeLine from "@/app/collection/prototypes/p1/notice";
 import { drillToCard } from "@/app/collection/final/catalog/drill";
 import { CARD_PARAM, drillToParams, entityToParams, QUERY_PARAM } from "@/app/collection/final/checklistParams";
-import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "@/app/collection/final/data/demoStore";
 import { CollectionStoreContext, SideProvider } from "@/app/collection/final/data/store";
 import type { Suggestion } from "@/app/collection/final/data/types";
 import { isOpen, OpenCardDrawer, useCardDrawer } from "@/app/collection/final/drawerControl";
@@ -11,7 +10,7 @@ import { CollectionModeProvider } from "@/app/collection/final/mode";
 import { PageApiContext, type ChecklistsTarget, type PageApi } from "@/app/collection/final/pageApi";
 import { useFloatingClearance, useStatusLine } from "@/app/collection/final/statusLine";
 import { sideHref } from "./bits";
-import { PANEL_SIDE_PARAM, panelSide } from "./panelLink";
+import { heldForCard, PANEL_HELD_PARAM, PANEL_SIDE_PARAM, panelHeld, panelSide } from "./panelLink";
 
 /**
  * NEO-464 — the card panel over the dashboard (see `./panelLink`): the
@@ -24,10 +23,13 @@ import { PANEL_SIDE_PARAM, panelSide } from "./panelLink";
  * on the same live reads the dashboard draws (New Listings shows a new price
  * at once). The logged-out demo holds none: the panel mounts the demo's own
  * store, saved under the demo's key, so what is changed here shows on the
- * demo's Collection and Inventory too.
+ * demo's Collection and Inventory too. That store is loaded only on the demo
+ * path (`DemoPanelStore`), so the signed-in panel never fetches it.
  *
  * The panel's side comes from the link (`side=inventory`), so the add form
- * offers boxes for stock and binders for pulls. Its ways out to Checklists (a
+ * offers boxes for stock and binders for pulls. A held-back card's reason
+ * (`held=`) comes the same way: the panel says it and puts the keyboard on
+ * the fix; ↑ ↓ carry each held-back card's own reason, and Close drops it. Its ways out to Checklists (a
  * search pick, a card's checklist) go to Collection, a page of their own:
  * Back comes back to the dashboard with the panel open.
  */
@@ -39,8 +41,22 @@ export default function CardPanelHost() {
     </CollectionModeProvider>
   );
   if (mounted) return host;
-  return <DemoCollectionProvider storageKey={PUBLIC_STORAGE_KEY}>{host}</DemoCollectionProvider>;
+  return (
+    <Suspense fallback={null}>
+      <DemoPanelStore>{host}</DemoPanelStore>
+    </Suspense>
+  );
 }
+
+/** The logged-out demo's own store, under the demo's key: fetched only when the demo opens a card. */
+const DemoPanelStore = lazy(async () => {
+  const { DemoCollectionProvider, PUBLIC_STORAGE_KEY } = await import("@/app/collection/final/data/demoStore");
+  return {
+    default: function DemoPanelStore({ children }: { children: ReactNode }) {
+      return <DemoCollectionProvider storageKey={PUBLIC_STORAGE_KEY}>{children}</DemoCollectionProvider>;
+    },
+  };
+});
 
 /** Where Checklists opens on Collection for a target the panel asked for. */
 export function checklistsQuery(target: ChecklistsTarget): Record<string, string> {
@@ -69,7 +85,10 @@ function PanelOverDashboard() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const line = useStatusLine();
-  const control = useCardDrawer(params, { closeParams: [PANEL_SIDE_PARAM] });
+  const control = useCardDrawer(params, {
+    closeParams: [PANEL_SIDE_PARAM, PANEL_HELD_PARAM],
+    onCardChange: heldForCard,
+  });
   // With the panel shut, the status line floats over the page, as on Collection.
   useFloatingClearance(line.notice !== null && !control.drawer);
 
@@ -90,7 +109,7 @@ function PanelOverDashboard() {
     <PageApiContext.Provider value={pageApi}>
       <SideProvider value={panelSide(params)}>
         {isOpen(control) ? (
-          <OpenCardDrawer control={control} line={line} />
+          <OpenCardDrawer control={control} line={line} held={panelHeld(params)} />
         ) : (
           <NoticeLine notice={line.notice} onUndo={line.undo} onDismiss={line.dismiss} floating />
         )}

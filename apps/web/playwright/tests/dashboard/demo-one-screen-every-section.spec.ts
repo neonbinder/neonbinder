@@ -53,7 +53,7 @@ test(
     // Today's pulls hold the card that closed it, and it is on the Want List (graded): the dashed pull.
     const freshPulls = page.getByRole("region", { name: "Fresh Pulls" });
     await expect(freshPulls.getByRole("link", { name: /^1989 Score Barry Sanders #257 .*On your Want List$/ })).toBeVisible();
-    // The demo's box lines carry their prices; one waits on a price.
+    // The demo's box lines carry their prices; a few wait on a price.
     const newListings = page.getByRole("region", { name: "New Listings" });
     await expect(newListings.getByRole("link").filter({ hasText: /\$\d+\.\d{2}/ }).first()).toBeVisible();
 

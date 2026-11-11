@@ -123,3 +123,122 @@ describe("Overlay", () => {
     expect(document.activeElement).toBe(two);
   });
 });
+
+/** NEO-464 — the opener can leave the page while the panel is open (the card it named was fixed in there). */
+describe("Overlay focus on close, when the opener is gone", () => {
+  const frame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+  function Page({ open, keepOpener, home = false }: { open: boolean; keepOpener: boolean; home?: boolean }) {
+    const opener = keepOpener ? (
+      <button type="button">Open card</button>
+    ) : null;
+    return (
+      <main>
+        <h1>Welcome back</h1>
+        <section aria-labelledby="sec">
+          <h2 id="sec">Sync status</h2>
+          <article aria-labelledby="set">
+            <h3 id="set">1993 Topps Finest</h3>
+            {home ? <div data-focus-home="" aria-label="Held back">{opener}</div> : opener}
+          </article>
+        </section>
+        {open && (
+          <Overlay labelledBy="t" onClose={() => {}}>
+            {heading}
+          </Overlay>
+        )}
+      </main>
+    );
+  }
+
+  function openFrom(home = false) {
+    const view = render(<Page open={false} keepOpener home={home} />);
+    screen.getByRole("button", { name: "Open card" }).focus();
+    view.rerender(<Page open keepOpener home={home} />);
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Title" }));
+    return view;
+  }
+
+  it("goes back to the opener when it is still there", async () => {
+    const view = openFrom();
+    view.rerender(<Page open={false} keepOpener />);
+    await frame();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open card" }));
+  });
+
+  it("with the opener gone, goes to the heading of the nearest labelled article, made focusable but no tab stop", async () => {
+    const view = openFrom();
+    view.rerender(<Page open keepOpener={false} />);
+    view.rerender(<Page open={false} keepOpener={false} />);
+    await frame();
+    const set = screen.getByRole("heading", { name: "1993 Topps Finest" });
+    expect(document.activeElement).toBe(set);
+    expect(set.getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("a data-focus-home nearer than the heading wins", async () => {
+    const view = openFrom(true);
+    view.rerender(<Page open keepOpener={false} home />);
+    view.rerender(<Page open={false} keepOpener={false} home />);
+    await frame();
+    expect((document.activeElement as HTMLElement).getAttribute("aria-label")).toBe("Held back");
+  });
+
+  it("when the article went too, the section's heading; with no labelled heading left, the page's h1", async () => {
+    const view = openFrom();
+    view.rerender(<Page open keepOpener={false} />);
+    view.rerender(<Page open={false} keepOpener={false} />);
+    document.querySelector("article")?.remove();
+    await frame();
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Sync status" }));
+    view.unmount();
+
+    const again = render(
+      <div>
+        <h1>Top</h1>
+        <section aria-labelledby="gone">
+          <button type="button">Opener two</button>
+        </section>
+      </div>,
+    );
+    screen.getByRole("button", { name: "Opener two" }).focus();
+    again.rerender(
+      <div>
+        <h1>Top</h1>
+        <section aria-labelledby="gone">
+          <button type="button">Opener two</button>
+        </section>
+        <Overlay labelledBy="t" onClose={() => {}}>
+          {heading}
+        </Overlay>
+      </div>,
+    );
+    again.rerender(
+      <div>
+        <h1>Top</h1>
+      </div>,
+    );
+    await frame();
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Top" }));
+  });
+
+  it("leaves focus alone when the page already put it somewhere", async () => {
+    const view = openFrom();
+    view.rerender(<Page open keepOpener={false} />);
+    view.rerender(<Page open={false} keepOpener={false} />);
+    const h1 = screen.getByRole("heading", { name: "Welcome back" });
+    h1.tabIndex = -1;
+    h1.focus();
+    await frame();
+    expect(document.activeElement).toBe(h1);
+  });
+
+  it("moves nothing when nothing had focus at open (a link opened it)", async () => {
+    const view = render(<Page open={false} keepOpener />);
+    (document.activeElement as HTMLElement | null)?.blur();
+    view.rerender(<Page open keepOpener />);
+    view.rerender(<Page open={false} keepOpener={false} />);
+    await frame();
+    expect(document.activeElement).toBe(document.body);
+  });
+});

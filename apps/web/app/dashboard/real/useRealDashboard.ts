@@ -515,7 +515,7 @@ export function syncStatusOf(raw: SyncAlertsRaw | undefined, cards: CardsById | 
       heldBack: set.heldBack,
       cards: set.cards.flatMap((c) => {
         const card = cards?.get(c.cardId as CardId);
-        return card ? [{ card: toDash(card), reason: heldBackReason(c, set.platform) }] : [];
+        return card ? [{ card: toDash(card), reason: heldBackReason(c, set.platform), code: c.reason }] : [];
       }),
     })),
     more: raw.more,

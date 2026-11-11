@@ -92,16 +92,17 @@ test(
     const [cardBox, failureBox] = [await heldBack.boundingBox(), await ebaySet.getByText(TEST_FAILURE).boundingBox()];
     expect(cardBox!.y).toBeLessThan(failureBox!.y);
 
-    // The held-back card opens its own card panel OVER the dashboard (a Back step), where its price is
-    // fixed. The price saved there shows at once on New Listings under it; Back closes the panel with the
-    // keyboard on the card, and the status line's Undo still takes the price back.
+    // The held-back card opens its own card panel OVER the dashboard (a Back step), carrying why it was
+    // held back: the panel says so above Your copies and opens the box copy's Edit form with the keyboard
+    // on its Price, the fix. The price saved there shows at once on New Listings under it; Back closes the
+    // panel with the keyboard on the card, and the status line's Undo still takes the price back.
     await heldBack.click();
-    await expect(page).toHaveURL(/\/dashboard\?detail=[^&]+&side=inventory$/);
+    await expect(page).toHaveURL(/\/dashboard\?detail=[^&]+&side=inventory&held=ebay\.noPrice$/);
     await expect(drawer).toBeVisible();
-    await yourCopies.getByRole("button", { name: `Edit ${card.short}, Raw, Excellent`, exact: true }).click();
+    await expect(drawer.getByText(/^Held back from eBay: no price yet\./)).toBeVisible();
     const editForm = drawer.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
     const price = editForm.getByRole("spinbutton", { name: "Price", exact: true });
-    await expect(price).toBeVisible();
+    await expect(price).toBeFocused();
     await expectAccessible(page, { label: "Dashboard, a held-back card's panel open over it" });
     await price.fill("4");
     await editForm.getByRole("button", { name: "Save copy" }).click();

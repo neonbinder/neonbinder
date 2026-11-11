@@ -9,12 +9,14 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindersOf, getDashboard, type DashboardData } from "../fake-data";
 import DashboardScreen, { summary } from "./DashboardScreen";
 import { priceWords } from "./NewListings";
-import { HELD_PREVIEW } from "./SyncStatus";
+import { HELD_PREVIEW, syncFrame } from "./SyncStatus";
 import type { ShelfBinder } from "./shelf-model";
+import { boxLabel, spineCssWidth, STARTER_ROOM_NARROW } from "./Shelf";
+import { NEED_CHIPS } from "./Boards";
 
 function wrapper({ children }: { children: ReactNode }) {
   return <MemoryRouter initialEntries={["/demo"]}>{children}</MemoryRouter>;
@@ -286,8 +288,43 @@ describe("the sync status (review round 4)", () => {
     expect(within(sync).getByRole("heading", { level: 3, name: `${set.setLabel} on eBay` })).toBeTruthy();
     const first = set.cards[0];
     const link = within(sync).getByRole("link", { name: new RegExp(`^${first.card.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) });
-    expect(link.getAttribute("href")).toBe(`/demo?detail=${encodeURIComponent(first.card.id)}&side=inventory`);
+    // It carries why it was held back, so the panel says it and opens on the fix.
+    expect(first.code).toBe("noPhoto");
+    expect(link.getAttribute("href")).toBe(`/demo?detail=${encodeURIComponent(first.card.id)}&side=inventory&held=ebay.noPhoto`);
     expect(link.textContent).toContain(first.reason);
+  });
+
+  it("the frame says how bad it is: danger for a failed sync, warning for held-back cards, plain for cards waiting", () => {
+    const data = getDashboard();
+    const status = data.syncStatus!;
+    expect(syncFrame(status)).toBe("warn");
+    expect(syncFrame({ ...status, problems: [{ ...status.problems[0], failure: "It didn't go through." }] })).toBe("danger");
+    expect(syncFrame({ ...status, problems: [] })).toBe("plain");
+    draw(data);
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    expect(sync.className).toContain("border-notice-warn-rule");
+    expect(sync.className).not.toContain("border-notice-danger-rule");
+  });
+
+  it("one held-back card is told to fix it; several, each one", () => {
+    const data = getDashboard();
+    draw(data);
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    expect(within(sync).getByText("1 card held back from eBay. Fix it on the card and it goes up next sync:")).toBeTruthy();
+    const finest = data.syncStatus!.problems[1];
+    expect(
+      within(sync).getByText(`${finest.heldBack} cards held back from eBay. Fix each one on its card and it goes up next sync:`),
+    ).toBeTruthy();
+  });
+
+  it(`the demo holds more of one set back than it shows before Show all, its heading in its cards' own words`, () => {
+    const data = getDashboard();
+    const finest = data.syncStatus!.problems.find((p) => p.cards.length > HELD_PREVIEW)!;
+    expect(finest).toBeTruthy();
+    for (const { card } of finest.cards) expect(card.title.startsWith(finest.setLabel.replace(/ Base$/, ""))).toBe(true);
+    draw(data);
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    expect(within(sync).getByRole("button", { name: `Show all ${finest.cards.length} held back in ${finest.setLabel} on eBay` })).toBeTruthy();
   });
 
   it("a set whose last sync failed says so after its held-back cards; the cards it does not name open on Sync status", () => {
@@ -296,7 +333,8 @@ describe("the sync status (review round 4)", () => {
     draw({ ...data, syncStatus: { pending: [], problems: [set], more: true } });
     const sync = screen.getByRole("region", { name: "Sync status" });
     const failure = within(sync).getByText("The marketplace didn't answer.");
-    expect(within(sync).getByText("5 cards held back from eBay. Fix each one on its card:")).toBeTruthy();
+    expect(within(sync).getByText("5 cards held back from eBay. Fix each one on its card and it goes up next sync:")).toBeTruthy();
+    expect(sync.className).toContain("border-notice-danger-rule");
     // Held-back cards lead: every named card comes before the failure sentence.
     for (const link of within(sync).getAllByRole("link", { name: /No price yet|need a photo/ })) {
       expect(before(link, failure)).toBe(true);
@@ -319,7 +357,9 @@ describe("the sync status (review round 4)", () => {
     const sync = screen.getByRole("region", { name: "Sync status" });
     const held = () => within(sync).getAllByRole("link", { name: /^Held card \d+/ });
     expect(held()).toHaveLength(HELD_PREVIEW);
-    const showAll = within(sync).getByRole("button", { name: `Show all ${cards.length} held back in ${set.setLabel} on eBay (+3)` });
+    // The words on it lead its name; the "(+3)" it shows is seen, not read (WCAG 2.5.3).
+    const showAll = within(sync).getByRole("button", { name: `Show all ${cards.length} held back in ${set.setLabel} on eBay` });
+    expect(showAll.textContent).toMatch(/^Show all 9 \(\+3\) held back in /);
     expect(showAll.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(showAll);
     expect(held()).toHaveLength(cards.length);
@@ -367,10 +407,11 @@ describe("New Listings (review round 4)", () => {
     const first = data.newListings[0];
     expect(links[0].getAttribute("href")).toBe(`/demo?detail=${encodeURIComponent(first.id)}&side=inventory`);
     expect(links[0].textContent).toContain(`${first.quantity} in ${first.boxName}`);
-    // Each tile says its own price, as the panel does: the demo prices its box lines but one.
+    // Each tile says its own price, as the panel does: the demo leaves a few box lines unpriced.
     shown.forEach((listing, i) => expect(links[i].textContent).toContain(priceWords(listing.priceCents, listing.quantity)));
-    expect(shown.filter((l) => l.priceCents === null)).toHaveLength(1);
-    expect(within(listings).getAllByText("No price yet")).toHaveLength(1);
+    const unpriced = shown.filter((l) => l.priceCents === null).length;
+    expect(unpriced).toBeGreaterThan(0);
+    expect(within(listings).getAllByText("No price yet")).toHaveLength(unpriced);
   });
 
   it("more than six: the rest behind Show all", () => {
@@ -409,8 +450,8 @@ describe("the third shelf (review round 4)", () => {
     expect(screen.getByRole("button", { name: "Show all 20 binders" })).toBeTruthy();
     const boxes = screen.getByRole("list", { name: "Shelf 3, boxes" });
     const inShow = data.shelfBoxes!.find((b) => b.id === "box-show")!.cardCount;
-    expect(inShow).toBe(11);
-    const show = within(boxes).getByRole("link", { name: `Show box, box, ${inShow} cards for sale` });
+    expect(inShow).toBe(18);
+    const show = within(boxes).getByRole("link", { name: `Show box, ${inShow} cards for sale` });
     expect(show.getAttribute("href")).toBe("/demo/inventory?tab=boxes&b=box-show");
     expect(within(boxes).getAllByRole("link")).toHaveLength(data.shelfBoxes!.length);
     expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
@@ -440,5 +481,63 @@ describe("the third shelf (review round 4)", () => {
     draw({ ...getDashboard(), shelfBoxes: [], binders: many(21) });
     expect(within(screen.getByRole("list", { name: "Shelf 3" })).getAllByRole("button")).toHaveLength(5);
     expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
+  });
+});
+
+describe("audit fixes (NEO-464)", () => {
+  const base = bindersOf(getDashboard()).find((b) => !b.checklist)!;
+  const many = (n: number): ShelfBinder[] =>
+    Array.from({ length: n }, (_, i) => ({ ...base, id: `b${i}`, name: `Binder ${i}`, newCards: [], cardCount: 1 }));
+  const INVENTORY_STARTER = "That to-list pile won't list itself. Add cards to sell";
+  /** A phone-width screen, as the shelf asks `matchMedia`. */
+  const phone = () =>
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({ matches: query.includes("max-width"), media: query, addEventListener: () => {}, removeEventListener: () => {} }) as unknown as MediaQueryList,
+    );
+  afterEach(() => vi.restoreAllMocks());
+
+  it("a box end's name leads with the name it shows, and a name that says box is not told so twice", () => {
+    const box = getDashboard().shelfBoxes![0];
+    expect(boxLabel({ ...box, name: "Show box", cardCount: 11 })).toBe("Show box, 11 cards for sale");
+    expect(boxLabel({ ...box, name: "Unsorted", cardCount: 1 })).toBe("Unsorted, box, 1 card for sale");
+    expect(boxLabel({ ...box, name: "Shoebox", cardCount: 2 })).toBe("Shoebox, box, 2 cards for sale");
+  });
+
+  it("every spine is capped at an eighth of its shelf, wide screens too, so eight always stand", () => {
+    expect(spineCssWidth(62, false)).toBe("min(calc(62px * var(--spine-scale, 1)), calc((100cqw - 42px) / 8))");
+    expect(spineCssWidth(38, true)).toBe("min(38px, calc((100cqw - 28px) / 8))");
+  });
+
+  it(`on a phone the third shelf carries its starter beside ${STARTER_ROOM_NARROW} binders at most`, () => {
+    phone();
+    const { unmount } = draw({ ...getDashboard(), shelfBoxes: [], binders: many(16 + STARTER_ROOM_NARROW) });
+    expect(screen.getByRole("link", { name: INVENTORY_STARTER })).toBeTruthy();
+    unmount();
+    draw({ ...getDashboard(), shelfBoxes: [], binders: many(16 + STARTER_ROOM_NARROW + 1) });
+    expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
+  });
+
+  it(`a board names its first ${NEED_CHIPS} needs again as rows of their own, for a phone's thumb, then how many more`, () => {
+    const data = getDashboard();
+    draw(data);
+    const board = screen.getAllByRole("article").find((a) => a.textContent?.includes("Need:"))!;
+    const rows = within(board).getByRole("list");
+    const chips = within(rows).getAllByRole("link");
+    expect(chips).toHaveLength(NEED_CHIPS);
+    expect(chips[0].className).toContain("min-h-11");
+    // The same cards as the wider line's first needs, opening the same panels.
+    const line = within(board).getAllByRole("link").filter((l) => !rows.contains(l) && l.getAttribute("href")?.includes("detail="));
+    expect(chips.map((c) => c.getAttribute("href"))).toEqual(line.slice(0, NEED_CHIPS).map((l) => l.getAttribute("href")));
+    expect(rows.parentElement!.className).toContain("sm:hidden");
+  });
+
+  it("card links read as links at rest: underlined before any hover", () => {
+    draw(getDashboard());
+    const board = screen.getAllByRole("article").find((a) => a.textContent?.includes("Need:"))!;
+    const need = within(board).getAllByRole("link").find((l) => l.getAttribute("href")?.includes("detail="))!;
+    expect(need.className).toMatch(/(^| )underline( |$)/);
+    const order = within(screen.getByRole("region", { name: "Out the Door" })).getAllByRole("link").find((l) => !l.getAttribute("aria-hidden"))!;
+    expect(order.className).toMatch(/(^| )underline( |$)/);
   });
 });

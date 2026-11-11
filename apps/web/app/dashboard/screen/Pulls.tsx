@@ -64,7 +64,7 @@ export function Chase({ wants }: { wants: WantCard[] }) {
   return (
     <section aria-labelledby="cb-chase-heading" className="space-y-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 id="cb-chase-heading" className="text-2xl font-bold text-ink">
+        <h2 id="cb-chase-heading" tabIndex={-1} className="rounded-sm text-2xl font-bold text-ink focus-outline">
           The Chase
         </h2>
         <p className="text-sm text-ink-3">Top of your Want List.</p>
@@ -130,7 +130,7 @@ export function FreshPulls({ batches, wanted }: { batches: AdditionBatch[]; want
   return (
     <section aria-labelledby="cb-pulls-heading" className="space-y-5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 id="cb-pulls-heading" className="text-2xl font-bold text-ink">
+        <h2 id="cb-pulls-heading" tabIndex={-1} className="rounded-sm text-2xl font-bold text-ink focus-outline">
           Fresh Pulls
         </h2>
         <p className="text-sm text-ink-3">Newest first.</p>
@@ -169,7 +169,7 @@ function Batch({ batch, wanted }: { batch: AdditionBatch; wanted: Set<string> })
   return (
     <article aria-labelledby={headingId} className="space-y-3">
       <div>
-        <h3 id={headingId} className="text-base font-bold text-ink">
+        <h3 id={headingId} tabIndex={-1} className="rounded-sm text-base font-bold text-ink focus-outline">
           {batchTitle(batch)}
         </h3>
         {batch.binders.length > 1 && (
@@ -196,8 +196,14 @@ function Batch({ batch, wanted }: { batch: AdditionBatch; wanted: Set<string> })
           />
           {/* The name is the visible words plus a stable "which batch" for a reader; aria-expanded says the state. */}
           {all ? "Show fewer" : `Show all ${batch.cards.length}`}
+          {/* The count it adds is seen, not read: the words on it lead its name (WCAG 2.5.3). */}
+          {!all && (
+            <span aria-hidden="true" className="text-ink-3">
+              {" "}
+              (+{hidden})
+            </span>
+          )}
           <span className="sr-only"> cards from {batch.whenLabel}</span>
-          {!all && <span className="text-ink-3"> (+{hidden})</span>}
         </button>
       )}
     </article>

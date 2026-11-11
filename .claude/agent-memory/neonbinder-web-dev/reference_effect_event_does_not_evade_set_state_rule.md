@@ -21,3 +21,9 @@ move queued after a panel's `close()` frame (which returns focus to its opener)
 runs after it, and can check `document.activeElement` for the opener. Start the
 frame from an effect on state set in the same batch as the panel opening, so the
 target field is already in the DOM.
+
+When the write is "open in edit mode once the data loads" (a one-shot pending
+intent), the lint-clean shape is React's adjust-state-while-rendering pattern:
+hold the intent in `useState(() => initial)`, and in render
+`if (intent && data !== undefined) { setIntent(null); ...other setStates }`.
+It runs once, needs no effect and no disable (NEO-464 CardDetail held-back fix).

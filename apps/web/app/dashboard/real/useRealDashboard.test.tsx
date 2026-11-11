@@ -578,7 +578,8 @@ describe("the empty shelf", () => {
     expect(screen.getByRole("link", { name: COLLECTION_STARTER })).toBeTruthy();
     expect(screen.queryByRole("link", { name: INVENTORY_STARTER })).toBeNull();
     expect(screen.getByRole("heading", { name: "Your binders and boxes" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Show box, box, 48 cards for sale" }).getAttribute("href")).toBe(
+    // A name that already says box is not told so twice (WCAG 2.5.3: the name leads with what the end shows).
+    expect(screen.getByRole("link", { name: "Show box, 48 cards for sale" }).getAttribute("href")).toBe(
       "/inventory?tab=boxes&b=box-1",
     );
   });

@@ -5,7 +5,7 @@ import { Theme } from "@radix-ui/themes";
 import { getDashboard, type DashboardData } from "../fake-data";
 import DashboardScreen from "./DashboardScreen";
 import { checklistsQuery, suggestionTarget } from "./CardPanelHost";
-import { cardPanelSearch, panelSide } from "./panelLink";
+import { cardPanelSearch, heldForCard, heldOf, panelHeld, panelSide } from "./panelLink";
 
 /**
  * NEO-464 — a card on the dashboard opens its card panel OVER the dashboard,
@@ -25,6 +25,34 @@ describe("the panel's URL", () => {
     expect(cardPanelSearch("", "c 1", "collection")).toBe("?detail=c+1");
     // Another card, or another side, replaces what was there; an add form's mode never rides along.
     expect(cardPanelSearch("?detail=old&mode=add&side=inventory", "c2", "collection")).toBe("?detail=c2");
+  });
+
+  it("carries a held-back card's reason, and only a reason this build knows, on a marketplace that lists", () => {
+    const held = { platform: "ebay", reason: "noPrice" } as const;
+    expect(cardPanelSearch("?open=x", "c1", "inventory", held)).toBe("?open=x&detail=c1&side=inventory&held=ebay.noPrice");
+    // Another card without one takes the old one off.
+    expect(cardPanelSearch("?detail=c1&side=inventory&held=ebay.noPrice", "c2", "inventory")).toBe("?detail=c2&side=inventory");
+    expect(panelHeld(new URLSearchParams("held=ebay.noPrice"))).toEqual(held);
+    expect(panelHeld(new URLSearchParams("held=bsc.noPhoto"))).toEqual({ platform: "bsc", reason: "noPhoto" });
+    for (const bad of ["", "ebay", "ebay.", "sportlots.noPrice", "ebay.madeUp", "ebay.toString", "ebay.__proto__"]) {
+      expect(panelHeld(new URLSearchParams({ held: bad })), bad).toBeNull();
+    }
+    expect(heldOf("ebay", "noPhoto")).toEqual({ platform: "ebay", reason: "noPhoto" });
+    expect(heldOf("sportlots", "noPhoto")).toBeUndefined();
+    expect(heldOf("bsc", undefined)).toBeUndefined();
+  });
+
+  it("↑ ↓ put the next card's own reason on the URL, from the entry the link pushed, or none", () => {
+    const state = { drawer: true, list: ["a", "b", "c"], held: { a: "ebay.noPrice", b: "ebay.noPhoto" } };
+    const p = new URLSearchParams("detail=a&side=inventory&held=ebay.noPrice");
+    heldForCard(p, "b", state);
+    expect(p.get("held")).toBe("ebay.noPhoto");
+    heldForCard(p, "c", state);
+    expect(p.has("held")).toBe(false);
+    heldForCard(p, "a", null);
+    expect(p.has("held")).toBe(false);
+    heldForCard(p, "a", { held: { a: "ebay.bogus" } });
+    expect(p.has("held")).toBe(false);
   });
 
   it("reads the side back: inventory, else the collection", () => {
@@ -131,11 +159,56 @@ describe("a card opens its panel over the dashboard", () => {
     const link = within(sync).getByRole("link", { name: new RegExp(`^${escape(held.card.title)}`) });
     fireEvent.click(link);
     const panel = await screen.findByRole("dialog");
-    expect(pageUrl()).toBe(`/demo?detail=${encodeURIComponent(held.card.id)}&side=inventory`);
+    expect(pageUrl()).toBe(`/demo?detail=${encodeURIComponent(held.card.id)}&side=inventory&held=ebay.${held.code}`);
     await settle();
     fireEvent.click(within(panel).getByRole("button", { name: "Close card detail" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(pageUrl()).toBe("/demo");
+  });
+
+  it("a held-back card's panel says why above Your copies, puts the keyboard on the fix, and ↑ ↓ carry each card's own reason", async () => {
+    const data = renderDashboard("/demo");
+    const finest = data.syncStatus!.problems[1];
+    const [ripken, second] = finest.cards;
+    expect(ripken.code).toBe("noPrice");
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    fireEvent.click(within(sync).getByRole("link", { name: new RegExp(`^${escape(ripken.card.title)}`) }));
+    const panel = await screen.findByRole("dialog");
+    await settle();
+    expect(pageUrl()).toBe(`/demo?detail=${encodeURIComponent(ripken.card.id)}&side=inventory&held=ebay.noPrice`);
+    const notice = within(panel).getByText(/^Held back from eBay: no price yet\./);
+    const copies = within(panel).getByRole("region", { name: /^Your copies of / });
+    expect(notice.compareDocumentPosition(copies) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The box copy's Edit form is open, the keyboard on its Price.
+    await waitFor(() => expect(document.activeElement).toBe(within(panel).getByRole("spinbutton", { name: "Price" })));
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Next card" }));
+    await waitFor(() =>
+      expect(pageUrl()).toBe(`/demo?detail=${encodeURIComponent(second.card.id)}&side=inventory&held=ebay.${second.code}`),
+    );
+    await settle();
+    expect(within(screen.getByRole("dialog")).getByText(/^Held back from eBay/)).toBeTruthy();
+
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close card detail" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(pageUrl()).toBe("/demo");
+  });
+
+  it("a held-back card for want of a photo opens on its copy's photo Add; a shared link without a reason says nothing", async () => {
+    const data = renderDashboard("/demo");
+    const photo = data.syncStatus!.problems[1].cards.find((c) => c.code === "noPhoto")!;
+    cleanup();
+    renderDashboard(`/demo?detail=${encodeURIComponent(photo.card.id)}&side=inventory&held=ebay.noPhoto`);
+    let panel = await screen.findByRole("dialog");
+    await settle();
+    expect(within(panel).getByText(/^Held back from eBay: listings there need a photo\./)).toBeTruthy();
+    await waitFor(() => expect((document.activeElement as HTMLElement | null)?.getAttribute("data-copy-photo-add")).toBe("front"));
+    cleanup();
+    renderDashboard(`/demo?detail=${encodeURIComponent(photo.card.id)}&side=inventory`);
+    panel = await screen.findByRole("dialog");
+    await settle();
+    expect(within(panel).queryByText(/^Held back from/)).toBeNull();
+    expect(within(panel).queryByRole("spinbutton", { name: "Price" })).toBeNull();
   });
 
   it("a shared link opens the panel; Escape takes it off in place, side and all, and the dashboard's own params stay", async () => {

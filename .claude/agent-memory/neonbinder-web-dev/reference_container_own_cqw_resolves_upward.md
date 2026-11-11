@@ -17,3 +17,8 @@ root of the sibling `EmptySleeve` turned an 88px sleeve into a pill (5cqw of a
 `cqw` only on children. Spot it in a screenshot: shapes that look right in a
 grid but wrong in isolation, or radii that change with the window width.
 Related: [[static-markup-visual-check]].
+
+Testing it: happy-dom silently drops an inline `width` whose value uses
+`min()`/`calc()` with `cqw`, so `style.width` reads "" in a component test.
+Put the expression in an exported pure helper (NEO-464 `spineCssWidth`) and
+assert the string; prove the geometry with a real-browser measure instead.

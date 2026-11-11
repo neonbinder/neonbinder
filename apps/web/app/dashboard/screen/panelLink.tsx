@@ -2,7 +2,10 @@ import { lazy, Suspense, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router";
 import type { DrawerHistoryState } from "@/app/collection/final/drawerControl";
 import { DRAWER_MODE_PARAM, DRAWER_PARAM } from "@/app/collection/final/drawerParams";
-import type { CardId, Side } from "@/app/collection/final/data/types";
+import type { HeldBack } from "@/app/collection/final/CardDetail";
+import type { CardId, ListingProblemReason, Side } from "@/app/collection/final/data/types";
+import { PROBLEM_COPY } from "@/app/collection/final/inventory/listing/copy";
+import type { Marketplace } from "../dash-labels";
 
 /**
  * NEO-464 — a card on the dashboard opens its card panel OVER the dashboard
@@ -27,6 +30,41 @@ import type { CardId, Side } from "@/app/collection/final/data/types";
 /** The panel's side on the dashboard URL: `inventory`, or absent for the collection. */
 export const PANEL_SIDE_PARAM = "side";
 
+/**
+ * Why the card the panel opened on was held back from a sync, on the
+ * dashboard URL: `held=<platform>.<reason>` ("ebay.noPhoto"). Set by a
+ * held-back card on Sync status, so the panel says why above "Your copies"
+ * and puts the keyboard on the control that fixes it. It belongs to that one
+ * card: ↑ ↓ and Close take it off.
+ */
+export const PANEL_HELD_PARAM = "held";
+
+/** A held-back card's reason, as the panel takes it. */
+export type HeldReason = HeldBack;
+
+/** A reason as the URL and the history entry carry it: "ebay.noPhoto". */
+function heldValue(held: HeldReason): string {
+  return `${held.platform}.${held.reason}`;
+}
+
+/** The reason a held-back card carries into its panel; none for a marketplace that does not list, or no code. */
+export function heldOf(marketplace: Marketplace, code: ListingProblemReason | undefined): HeldReason | undefined {
+  if (!code || (marketplace !== "bsc" && marketplace !== "ebay")) return undefined;
+  return { platform: marketplace, reason: code };
+}
+
+/** The reason on a dashboard URL, or null when it names none (or one this build doesn't know). */
+export function panelHeld(params: URLSearchParams): HeldReason | null {
+  return parseHeld(params.get(PANEL_HELD_PARAM));
+}
+
+function parseHeld(value: string | null | undefined): HeldReason | null {
+  const [platform, reason] = (value ?? "").split(".");
+  if (platform !== "bsc" && platform !== "ebay") return null;
+  if (!reason || !Object.hasOwn(PROBLEM_COPY, reason)) return null;
+  return { platform, reason: reason as ListingProblemReason };
+}
+
 /** The side a dashboard URL opens its card panel on. */
 export function panelSide(params: URLSearchParams): Side {
   return params.get(PANEL_SIDE_PARAM) === "inventory" ? "inventory" : "collection";
@@ -36,13 +74,27 @@ export function panelSide(params: URLSearchParams): Side {
  * The dashboard's search with `cardId`'s panel open on `side`: the view
  * under it (an open binder, its page, a disclosure) kept as it is.
  */
-export function cardPanelSearch(search: string, cardId: CardId, side: Side): string {
+export function cardPanelSearch(search: string, cardId: CardId, side: Side, held?: HeldReason): string {
   const p = new URLSearchParams(search);
   p.set(DRAWER_PARAM, cardId);
   p.delete(DRAWER_MODE_PARAM);
   if (side === "inventory") p.set(PANEL_SIDE_PARAM, "inventory");
   else p.delete(PANEL_SIDE_PARAM);
+  if (held) p.set(PANEL_HELD_PARAM, heldValue(held));
+  else p.delete(PANEL_HELD_PARAM);
   return `?${p.toString()}`;
+}
+
+/**
+ * As ↑ ↓ (or a pick inside the panel) swap the card in place: the new card's
+ * own held-back reason, from the history entry the held-back card's link
+ * pushed (`DrawerHistoryState.held`), else none.
+ */
+export function heldForCard(params: URLSearchParams, cardId: CardId, state: unknown): void {
+  const map = (state as DrawerHistoryState | null)?.held;
+  const held = map && typeof map === "object" ? parseHeld(map[cardId]) : null;
+  if (held) params.set(PANEL_HELD_PARAM, heldValue(held));
+  else params.delete(PANEL_HELD_PARAM);
 }
 
 /**
@@ -56,6 +108,8 @@ export function PanelLink({
   cardId,
   side,
   list,
+  held,
+  heldList,
   twin = false,
   className,
   children,
@@ -63,6 +117,10 @@ export function PanelLink({
   cardId: CardId;
   side: Side;
   list?: readonly CardId[];
+  /** A held-back card: why, so the panel says it and puts the keyboard on the fix. */
+  held?: HeldReason;
+  /** Every held-back card's reason in `list`, so ↑ ↓ in the panel carry each one's own. */
+  heldList?: ReadonlyMap<CardId, HeldReason>;
   /**
    * A picture beside the card's own link (an order's thumbnail): it opens
    * the same panel for a pointer, but is hidden from a reader and out of the
@@ -74,10 +132,15 @@ export function PanelLink({
 }) {
   const { pathname, search } = useLocation();
   const state: DrawerHistoryState = { drawer: true };
-  if (list && list.length > 1 && list.includes(cardId)) state.list = [...new Set(list)];
+  if (list && list.length > 1 && list.includes(cardId)) {
+    state.list = [...new Set(list)];
+    if (heldList && heldList.size > 0) {
+      state.held = Object.fromEntries([...heldList].map(([id, h]) => [id, heldValue(h)]));
+    }
+  }
   return (
     <Link
-      to={{ pathname, search: cardPanelSearch(search, cardId, side) }}
+      to={{ pathname, search: cardPanelSearch(search, cardId, side, held) }}
       // The drawer pushed this entry: Close steps Back off it, as on Collection.
       state={state}
       onPointerEnter={preloadCardPanel}

@@ -55,7 +55,8 @@ test("Dashboard: empty shelves lead into Add cards on Collection and on Inventor
     // A box in use: its box end stands on the shelf, and opens it on My Boxes.
     expect(spines).toBeLessThanOrEqual(16);
     await expect(page.getByRole("heading", { level: 2, name: "Your binders and boxes" })).toBeVisible();
-    const box = boxShelf.getByRole("link", { name: /, box, / }).first();
+    // "Unsorted, box, 48 cards for sale"; a box named "... box" drops the second "box".
+    const box = boxShelf.getByRole("link", { name: /, \d[\d,]* cards? for sale$/ }).first();
     await expect(box).toBeVisible();
     await box.click();
     await expect(page).toHaveURL(/\/inventory\?tab=boxes&b=[^&]+$/);

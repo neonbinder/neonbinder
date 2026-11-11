@@ -189,7 +189,18 @@ export const NEED_NAMED = 5;
  * The line clips (`truncate`), so its focus ring is drawn inside the words.
  */
 const NEED_LINK =
-  "relative z-10 rounded-sm hover:text-neon-blue-text hover:underline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus";
+  "relative z-10 rounded-sm underline decoration-ink-3/60 underline-offset-2 hover:text-neon-blue-text hover:decoration-current focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus";
+
+/**
+ * On a phone, the first needs as their own rows, each a 44px target, so a
+ * thumb never lands on its neighbour in the one-line list. The rest are the
+ * "+N more" the wider line says too.
+ */
+export const NEED_CHIPS = 2;
+
+/** A need on a phone: one row, the full title clamped to it, above the title's stretched hit area. */
+const NEED_CHIP =
+  "relative z-10 flex min-h-11 min-w-0 items-center gap-1 rounded-md border border-rule bg-raised px-2.5 text-xs text-ink underline decoration-ink-3/60 underline-offset-2 hover:border-selection hover:text-neon-blue-text hover:decoration-current focus-outline";
 
 /**
  * One compact board: rank, name, percent; Have and Need; one bar of
@@ -288,8 +299,33 @@ function Board({
         </span>
       </div>
 
+      {/* A phone: the first needs as rows of their own, each a full tap target. */}
+      <div className="flex min-w-0 flex-col gap-1.5 text-xs text-ink-2 sm:hidden">
+        <span className="font-bold text-ink">Need:</span>
+        <ul className="flex min-w-0 flex-col gap-1.5">
+          {named.slice(0, NEED_CHIPS).map((c) => (
+            <li key={c.id} className="min-w-0">
+              <PanelLink cardId={c.id} side="collection" list={neededIds} className={NEED_CHIP}>
+                {wanted.has(c.id) && (
+                  <>
+                    <span aria-hidden="true" className="mc-star shrink-0 text-neon-yellow-text">
+                      ★
+                    </span>
+                    <span className="sr-only">On your Want List: </span>
+                  </>
+                )}
+                <span className="min-w-0 truncate">{c.title}</span>
+              </PanelLink>
+            </li>
+          ))}
+        </ul>
+        {item.need > Math.min(named.length, NEED_CHIPS) && (
+          <span className="text-ink-3">+{item.need - Math.min(named.length, NEED_CHIPS)} more</span>
+        )}
+      </div>
+
       {/* Divs, not a p: globals.css gives p `text-wrap: pretty` unlayered, which beats `truncate`'s nowrap. */}
-      <div className="flex min-w-0 items-baseline gap-1 text-xs text-ink-2">
+      <div className="flex min-w-0 items-baseline gap-1 text-xs text-ink-2 max-sm:hidden">
         <span className="shrink-0 font-bold text-ink">Need:</span>
         {/* Each named need opens its panel, ↑ ↓ walking every need the board holds. A focused one past the
             clip scrolls the line to it; leaving the line puts it back at its start. */}
@@ -379,7 +415,7 @@ function Cheer({ done, onDismissed }: { done: CompletedSet; onDismissed: () => v
             cardId={done.lastCard.id}
             side="collection"
             list={done.cards.map((c) => c.id)}
-            className="rounded-sm font-semibold text-ink underline-offset-2 hover:underline focus-outline"
+            className="rounded-sm font-semibold text-ink underline decoration-ink-3/60 underline-offset-2 hover:text-neon-blue-text hover:decoration-current focus-outline"
           >
             {done.lastCard.title}
           </PanelLink>{" "}

@@ -1,6 +1,7 @@
 import { startTransition, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import CardDrawer from "./CardDrawer";
+import type { HeldBack } from "./CardDetail";
 import type { Card, CardId, CopyId } from "./data/types";
 import { DRAWER_MODE_PARAM, DRAWER_PARAM } from "./drawerParams";
 import { usePushParams, useReplaceParams } from "./mode";
@@ -55,6 +56,12 @@ export interface DrawerHistoryState {
    * link opened in a new tab carries none and steps through just its card.
    */
   list?: CardId[];
+  /**
+   * NEO-464: why each held-back card in `list` was held back from a sync
+   * (`<platform>.<reason>`), for a drawer opened from the dashboard's Sync
+   * status, so ↑ ↓ carry each card's own reason onto the URL.
+   */
+  held?: Record<CardId, string>;
 }
 
 /** The history state's list, when it is one and holds the card. */
@@ -91,11 +98,18 @@ export function useCardDrawer(
   {
     beforeOpen,
     closeParams = [],
+    onCardChange,
   }: {
     /** Runs before a card opens (the collection page settles its search box). */
     beforeOpen?: () => void;
     /** More params the drawer owns, taken off with it when it closes in place. */
     closeParams?: readonly string[];
+    /**
+     * Params that belong to the one card open (the dashboard's held-back
+     * reason): set for `cardId` as ↑ ↓ or a pick from inside swap the card in
+     * place, from the entry's history `state`.
+     */
+    onCardChange?: (params: URLSearchParams, cardId: CardId, state: unknown) => void;
   } = {},
 ): CardDrawerControl {
   const location = useLocation();
@@ -145,7 +159,11 @@ export function useCardDrawer(
       else p.delete(DRAWER_MODE_PARAM);
     };
     // Already open (a card picked from inside it): swap the card in place.
-    if (drawerId) replaceParams(write);
+    if (drawerId)
+      replaceParams((p) => {
+        write(p);
+        onCardChange?.(p, cardId, location.state);
+      });
     else pushParams(write, { drawer: true } satisfies DrawerHistoryState);
   };
   const closeDrawer = () => {
@@ -174,6 +192,7 @@ export function useCardDrawer(
           replaceParams((p) => {
             p.set(DRAWER_PARAM, next);
             p.delete(DRAWER_MODE_PARAM);
+            onCardChange?.(p, next, location.state);
           });
         }
       : null;
@@ -184,9 +203,12 @@ export function useCardDrawer(
 export function OpenCardDrawer({
   control,
   line,
+  held,
 }: {
   control: CardDrawerControl & { drawer: OpenDrawer };
   line: StatusLine;
+  /** NEO-464: why the open card was held back from a sync (the dashboard's Sync status), if it was. */
+  held?: HeldBack | null;
 }) {
   const { drawer, drawerIndex, closeDrawer, step } = control;
   return (
@@ -209,6 +231,7 @@ export function OpenCardDrawer({
           ? { index: drawerIndex, total: drawer.listIds.length }
           : null
       }
+      held={held ?? undefined}
     />
   );
 }
