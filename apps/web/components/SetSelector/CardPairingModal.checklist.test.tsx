@@ -1462,3 +1462,110 @@ describe("CardPairingModal — the discard count, a hand link in two marketplace
     expect(screen.getByRole("dialog", { name: "Discard 2 pairings?" })).toBeTruthy();
   });
 });
+
+describe("CardPairingModal — the card's own Unlink on the checklist chip (NEO-490)", () => {
+  const CHIP_SOLO = `Unlink card #A1 Card One from checklist row #1 ${TOP}`;
+
+  const soloLinked = () => {
+    mount({
+      soloSide: "bsc",
+      data: { unmatchedBsc: plainCards() },
+      checklist: checklistFor(plainRows(), plainKeys),
+    });
+    selectTop();
+    linkTopTo("#A1 Card One");
+  };
+
+  test("in the solo column it drops the link and the row returns to the list", () => {
+    soloLinked();
+    expect(screen.queryByLabelText(`Select #1 ${TOP}`)).toBeNull();
+
+    fireEvent.click(screen.getByLabelText(CHIP_SOLO));
+
+    expect(screen.getByLabelText(`Select #1 ${TOP}`)).toBeTruthy();
+    expect(screen.queryByText(/^Checklist #/)).toBeNull();
+    expect(screen.queryByLabelText(CHIP_SOLO)).toBeNull();
+    expect(screen.getByRole("heading", { name: "Your checklist (3 to link)" })).toBeTruthy();
+    // The card is offered a row again.
+    selectTop();
+    expect(screen.getByLabelText("Link selected checklist row to #A1 Card One")).toBeTruthy();
+  });
+
+  test("it says Unlinked", () => {
+    soloLinked();
+    fireEvent.click(screen.getByLabelText(CHIP_SOLO));
+    expect(announcer().textContent).toBe("Unlinked.");
+  });
+
+  test("focus lands on the row's Select button", async () => {
+    soloLinked();
+    fireEvent.click(screen.getByLabelText(CHIP_SOLO));
+    const button = screen.getByLabelText(`Select #1 ${TOP}`);
+    await waitFor(() => expect(document.activeElement).toBe(button));
+  });
+
+  test("from a Matched row it drops the checklist link and leaves the pair matched", () => {
+    mount({
+      data: { autoMatched: [{ card: pairedCard("5", "Pair Card"), confidence: 1 }] },
+      checklist: checklistFor([row("1", ["Frank Thomas"])], ["bsc-5"]),
+      resolve: vi.fn().mockResolvedValue([]),
+    });
+    fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas"));
+    fireEvent.click(screen.getByLabelText("Link selected checklist row to #5 Pair Card"));
+    expect(screen.getByText("Checklist #1")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Unlink card #5 Pair Card from checklist row #1 Frank Thomas"));
+
+    expect(screen.queryByText("Checklist #1")).toBeNull();
+    expect(screen.getByLabelText("Select #1 Frank Thomas")).toBeTruthy();
+    // The marketplace pair is untouched.
+    expect(screen.getByLabelText("Unlink #5 Pair Card")).toBeTruthy();
+    expect(announcer().textContent).toBe("Unlinked.");
+  });
+
+  test("from a keep-shelf card in a two-marketplace set it drops the link", () => {
+    mount({
+      data: { unmatchedBsc: [bscCard("A1", "Card One")] },
+      checklist: checklistFor([row("1", ["Frank Thomas"])], ["bsc-A1"]),
+      resolve: vi.fn().mockResolvedValue([]),
+    });
+    fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas"));
+    linkTopTo("#A1 Card One");
+    // A linked card is kept: it sits on the shelf with its chip.
+    expect(screen.getByLabelText("Remove #A1 Card One from save list")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Unlink card #A1 Card One from checklist row #1 Frank Thomas"));
+
+    expect(screen.queryByText("Checklist #1")).toBeNull();
+    expect(screen.getByLabelText("Select #1 Frank Thomas")).toBeTruthy();
+    expect(announcer().textContent).toBe("Unlinked.");
+  });
+
+  test("its name is distinct from the marketplace Unlink and the row's Unlink", () => {
+    mount({
+      data: { autoMatched: [{ card: pairedCard("5", "Pair Card"), confidence: 1 }] },
+      checklist: checklistFor([row("1", ["Frank Thomas"])], ["bsc-5"]),
+      resolve: vi.fn().mockResolvedValue([]),
+    });
+    fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas"));
+    fireEvent.click(screen.getByLabelText("Link selected checklist row to #5 Pair Card"));
+
+    // Each exact name finds exactly one control.
+    expect(screen.getByLabelText("Unlink #5 Pair Card")).toBeTruthy();
+    expect(screen.getByLabelText("Unlink checklist row #1 Frank Thomas from #5 Pair Card")).toBeTruthy();
+    expect(screen.getByLabelText("Unlink card #5 Pair Card from checklist row #1 Frank Thomas")).toBeTruthy();
+    // The three are different controls.
+    expect(screen.getAllByRole("button", { name: /^Unlink/ })).toHaveLength(3);
+    // The prefixes the other specs match on never reach the chip's button.
+    expect(screen.getAllByLabelText(/^Unlink checklist row /)).toHaveLength(1);
+  });
+
+  test("the Link button is still found by its name now that it is a NeonButton", () => {
+    soloLinked();
+    fireEvent.click(screen.getByLabelText("Select #2 Jacob Wilson"));
+    const link = screen.getByRole("button", { name: "Link selected checklist row to #A2 Card Two" });
+    expect(link.textContent).toBe("Link");
+    fireEvent.click(link);
+    expect(screen.getByLabelText("Unlink card #A2 Card Two from checklist row #2 Jacob Wilson")).toBeTruthy();
+  });
+});
