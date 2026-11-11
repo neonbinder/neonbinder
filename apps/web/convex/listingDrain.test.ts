@@ -62,6 +62,8 @@ const creds = vi.hoisted(() => ({
   refreshedToken: "tok-2",
   tokenCalls: 0,
   refreshCalls: 0,
+  /** NEO-489: awaited inside every token read (the session's sign-in). */
+  onToken: undefined as (() => Promise<void>) | undefined,
 }));
 
 vi.mock("./credentials", async (importOriginal) => {
@@ -75,6 +77,7 @@ vi.mock("./credentials", async (importOriginal) => {
       returns: v.any(),
       handler: async () => {
         creds.tokenCalls += 1;
+        await creds.onToken?.();
         if (creds.refreshCalls > 0) return { token: creds.refreshedToken };
         return creds.token === null ? null : { token: creds.token };
       },
@@ -382,6 +385,7 @@ beforeEach(() => {
   creds.refreshed = true;
   creds.tokenCalls = 0;
   creds.refreshCalls = 0;
+  creds.onToken = undefined;
 });
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -1691,6 +1695,43 @@ describe("drainOwner: the run's steps (NEO-415)", () => {
     expect((await record(s, v.variantId))?.status).toBe("error");
     expect(await stepsOf(s, v.variantId)).toEqual(["read Mint/Near Mint: failed"]);
   });
+
+  // NEO-489 — the session's sign-in (its token read) is BSC wait time, shown
+  // on the read it signs in for.
+  test("the first read is working while the session signs in, and the sign-in counts as its BSC wait", async () => {
+    const s = await setup();
+    const { v } = await twoCards(s);
+    let duringSignIn: string[] | null = null;
+    creds.onToken = async () => {
+      duringSignIn = await stepsOf(s, v.variantId);
+      // Long enough to tell the sign-in from the first call's own wait.
+      await new Promise((r) => setTimeout(r, 80));
+    };
+    await drain(s);
+    expect(duringSignIn).toEqual(["read Mint/Near Mint: working", "read Excellent: waiting", "send: waiting"]);
+    const first = (await record(s, v.variantId))?.progress?.steps[0];
+    expect(first).toMatchObject({ kind: "read", status: "done" });
+    expect(first?.marketplaceWaitMs).toBeGreaterThanOrEqual(70);
+    expect(first?.marketplaceWaitingSince).toBeUndefined();
+  });
+
+  test("a session that cannot sign in fails the first read with the reason, and keeps the rows", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    creds.token = null;
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+    expect(report.stoppedFor).toBe("noToken");
+    expect(bsc.sheetReads).toHaveLength(0);
+    expect(bsc.authHeaders).toHaveLength(0);
+    const rec = await record(s, v.variantId);
+    expect(rec).toMatchObject({ status: "error" });
+    expect(rec?.lastError).toBe(
+      "NeonBinder couldn't sign in to BuySportsCards for you. Connect it again under Profile.",
+    );
+    expect(await stepsOf(s, v.variantId)).toEqual(["read Mint/Near Mint: failed"]);
+    expect(rec?.progress?.steps[0].marketplaceWaitingSince).toBeUndefined();
+    expect(await outbox(s)).toHaveLength(2);
+  });
 });
 
 describe("claimVariant: a new run's ledger", () => {
@@ -2751,6 +2792,32 @@ describe("bscSheetSteps: sheets NB has no name for (defensive since NEO-475)", (
     expect(bsc.qty("bsc-1", "nm-mt")).toBe(0);
     expect((await stepsOf(s, v.variantId))?.slice(0, 2)).toEqual(["read Excellent: done", "read: done"]);
     expect(JSON.stringify((await record(s, v.variantId))?.progress)).not.toMatch(/nm-mt/);
+  });
+
+  // NEO-489 — the sign-in starts the step `readSheets` reads first
+  // (`reads.order[0]`), never the first condition: here the first condition
+  // is the unnamed sheet, which is read last.
+  test("with no targets and an unnamed sheet stored first, the sign-in runs under the first sheet READ", async () => {
+    const s = await setup();
+    const { v, bsc, copy } = await oneExcellent(s, { year: "1975", conditions: VINTAGE_KEYS });
+    await drain(s);
+    const rec = await record(s, v.variantId);
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(rec!._id, { conditionsPushed: ["nm-mt", "ex"] });
+      await ctx.db.delete(copy.copyId as Id<"collectionCopies">);
+    });
+    bsc.sheetReads = [];
+    await queue(s, [{ cardId: v.cardIds[0], variantId: v.variantId, seq: 2 }]);
+    let duringSignIn: string[] | null = null;
+    creds.onToken = async () => {
+      duringSignIn = await stepsOf(s, v.variantId);
+    };
+
+    await drain(s);
+
+    expect(bsc.sheetReads.slice(0, 2).map((r) => r.condition)).toEqual(["ex", "nm-mt"]);
+    expect(duringSignIn).toEqual(["read Excellent: working", "read: waiting", "send: waiting"]);
+    expect((await stepsOf(s, v.variantId))?.slice(0, 2)).toEqual(["read Excellent: done", "read: done"]);
   });
 });
 
