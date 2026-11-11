@@ -8,6 +8,8 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import type { Doc } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import { __resetContractCache } from "./credentials";
 import { SEED_BSC_RELOGIN_SPACING_MS, seedBscReloginClock } from "./testing";
 import { insertTestCard } from "../lib/testing/card-row";
@@ -1306,6 +1308,119 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
 
     expect(state.logins).toBe(5);
     expect(await sellerIdOf(t)).toBe(SELLER);
+    await drainScheduled(t);
+  });
+
+  /**
+   * NEO-489: a convex-test instance whose `updateSiteCredentialStatus` records
+   * every call: the `listing` it was asked for, the seller id saved at that
+   * moment, and the BSC listing row it left behind. The real handler runs.
+   */
+  async function recordingStatusWrites() {
+    const calls: Array<{
+      listing: string | undefined;
+      sellerIdAtCall: string | null;
+      rowAfter: Doc<"marketplaceListingStates"> | null;
+    }> = [];
+    const realModule = (await modules["./userProfile.ts"]()) as Record<string, unknown>;
+    const real = realModule.updateSiteCredentialStatus as {
+      _handler: (ctx: MutationCtx, args: { userId: string; listing?: string }) => Promise<null>;
+    };
+    const t = convexTest(schema, {
+      ...modules,
+      "./userProfile.ts": async () => ({
+        ...realModule,
+        updateSiteCredentialStatus: Object.assign(() => undefined, real as object, {
+          _handler: async (
+            ctx: MutationCtx,
+            args: { userId: string; listing?: string },
+          ) => {
+            const profile = await ctx.db
+              .query("userProfiles")
+              .withIndex("by_user", (q) => q.eq("userId", args.userId))
+              .unique();
+            const sellerIdAtCall = profile?.marketplaceAccountIds?.bscSellerId ?? null;
+            const out = await real._handler(ctx, args);
+            const rowAfter = await ctx.db
+              .query("marketplaceListingStates")
+              .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.userId).eq("platform", "bsc"))
+              .first();
+            calls.push({ listing: args.listing, sellerIdAtCall, rowAfter });
+            return out;
+          },
+        }),
+      }),
+    });
+    return { t, calls };
+  }
+
+  /** The `startListingWalk` jobs scheduled so far (a listing run starting). */
+  const listingWalks = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("startListingWalk"),
+      ),
+    );
+
+  test("NEO-489: listing stays off while the id is missing, then exactly one save once it lands", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, {}, { sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(3);
+    // Every sign-in in the loop stores with listing off; one save follows the id.
+    expect(calls.map((c) => c.listing)).toEqual(["testOff", "testOff", "testOff", "save"]);
+    for (const call of calls.slice(0, 3)) {
+      expect(call.rowAfter).toMatchObject({ testListingOff: true });
+      expect(call.rowAfter?.listingStartedAt).toBeUndefined();
+    }
+    // The save comes only after the id is saved, and listing starts on that id.
+    const save = calls[3];
+    expect(save.sellerIdAtCall).toBe(SELLER);
+    expect(save.rowAfter?.testListingOff).toBeUndefined();
+    expect(save.rowAfter?.listingStartedAt).toBeTypeOf("number");
+    expect(save.rowAfter?.platformAccountId).toBe(SELLER);
+    expect(await listingWalks(t)).toHaveLength(1);
+    await drainScheduled(t);
+  });
+
+  test("NEO-489: the id on the first sign-in: one listing-off store, then one save", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    const { fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(calls.map((c) => [c.listing, c.sellerIdAtCall])).toEqual([
+      ["testOff", SELLER],
+      ["save", SELLER],
+    ]);
+    expect(calls[1].rowAfter).toMatchObject({ platformAccountId: SELLER });
+    expect(calls[1].rowAfter?.listingStartedAt).toBeTypeOf("number");
+    expect(await listingWalks(t)).toHaveLength(1);
+    await drainScheduled(t);
+  });
+
+  test("NEO-489: a stalled seed leaves listing off: no save, the marker held, no listing run", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([
+      { site: "buysportscards", stored: false, reason: stalled(5) },
+    ]);
+
+    expect(state.logins).toBe(5);
+    expect(calls.map((c) => c.listing)).toEqual(["testOff", "testOff", "testOff", "testOff", "testOff"]);
+    const [row] = await t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
+    );
+    expect(row.testListingOff).toBe(true);
+    expect(row.listingStartedAt).toBeUndefined();
+    expect(await listingWalks(t)).toEqual([]);
+    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
     await drainScheduled(t);
   });
 

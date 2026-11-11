@@ -1747,11 +1747,14 @@ async function runSiteLogin(
 
   const loginResult = result.data;
 
-  // Persist BSC sellerId on the user's profile so subsequent
-  // fetchBscChecklist calls don't have to re-derive it. The browser
-  // service may legitimately return success without sellerId if BSC's
-  // /marketplace/user/profile shape changes — in that case we skip the
-  // upsert and fall back to env-var seller in fetchBscChecklist.
+  // Persist the BSC seller id, read live from BSC's profile inside this
+  // login, on the user's profile. It is never taken from env or config. This
+  // runs before the caller writes the credential status (connectAndStore's
+  // `updateSiteCredentialStatus`, which starts listing), so a save that
+  // returns the id has it saved before listing turns on. The read is
+  // best-effort: a login can succeed without an id (a stalled or reshaped
+  // profile read), and then nothing is written here; listing still starts,
+  // and the drain reads the id live from BSC (and saves it) when it needs it.
   if (site === "buysportscards" && loginResult.sellerId) {
     await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
       userId,

@@ -783,8 +783,12 @@ type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: s
  *   store branch runs one normal store. No extra call.
  * - id missing: a fresh password login through `storeTestCredentials`, on
  *   both branches (the "already present" branch never signs in otherwise, so
- *   nothing would save the id). After each login, the profile is read for
- *   the id. Missing: sign in fresh again, no logout. A BSC profile stall
+ *   nothing would save the id). NEO-489: each of these sign-ins stores with
+ *   listing OFF (the test marker), so no listing run can start before the id
+ *   exists; once the id is saved, one `updateSiteCredentialStatus` with
+ *   `listing: "save"` turns listing on, and a seed that stalls leaves it off.
+ *   After each login, the profile is read for the id. Missing: sign in fresh
+ *   again, no logout. A BSC profile stall
  *   heals with time, not with a new session, and our password login is
  *   already a new session each time, so the loop is what buys the time. At
  *   most {@link SEED_BSC_MAX_RELOGINS} re-logins after the first, each
@@ -825,14 +829,14 @@ async function seedBscWithSellerId(
     const profile = await ctx.runQuery(api.userProfile.getUserProfile, {});
     return !!profile?.marketplaceAccountIds?.bscSellerId;
   };
-  const store = async (): Promise<{ success: boolean; message: string }> => {
+  const store = async (listing: boolean): Promise<{ success: boolean; message: string }> => {
     try {
       return await ctx.runAction(internal.credentials.storeTestCredentials, {
         userId: args.userId,
         site,
         username: args.username,
         password: args.password,
-        listing: true,
+        listing,
       });
     } catch (error) {
       return { success: false, message: error instanceof Error ? error.message : String(error) };
@@ -850,7 +854,7 @@ async function seedBscWithSellerId(
       });
       return { site, stored: true };
     }
-    const stored = await store();
+    const stored = await store(true);
     return stored.success ? { site, stored: true } : { site, stored: false, reason: stored.message };
   }
 
@@ -859,13 +863,24 @@ async function seedBscWithSellerId(
   for (;;) {
     attempt += 1;
     const signInStartedAt = Date.now();
-    const stored = await store();
+    // NEO-489: listing stays off (the test marker) while the id is missing.
+    const stored = await store(false);
     if (!stored.success) return { site, stored: false, reason: stored.message };
     const idSaved = await sellerIdSaved();
     console.log(
       JSON.stringify({ msg: "seed_bsc_relogin", attempt, idSaved, elapsedMs: Date.now() - startedAt, waitedMs }),
     );
-    if (idSaved) return { site, stored: true };
+    if (idSaved) {
+      // The id is saved: now, and only now, turn listing on (clears the marker).
+      await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+        userId: args.userId,
+        site,
+        hasCredentials: true,
+        needsReauth: false,
+        listing: "save",
+      });
+      return { site, stored: true };
+    }
     const stalled = {
       site,
       stored: false,
