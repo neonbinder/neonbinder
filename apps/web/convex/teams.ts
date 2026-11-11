@@ -40,6 +40,7 @@ import {
   findTeamsByAlias,
   findTeamsByExactName,
   findTeamsByFullName,
+  narrowTeamRowsByCardPlayers,
   resolveTeamForSetYear,
   teamRowFields,
 } from "./lib/teamRow";
@@ -1176,6 +1177,51 @@ export const findByFullNameInternal = internalQuery({
       args.setYear,
     );
     return teamId;
+  },
+});
+
+/**
+ * NEO-490 (2b) — a team name the set year could not settle to one era, settled
+ * by the players on the cards that print it.
+ *
+ * `cardPlayerIds` holds, per card printing `name`, the NB players that card's
+ * names resolved to (see `narrowTeamRowsByCardPlayers` for the rule and its
+ * bounds). Returns the one era every card's players point at, or null.
+ *
+ * Null also when the name resolves WITHOUT the players — no row at all, or
+ * the set year (with the card's past-era allowance) already picks one. That
+ * answer is `resolveTeamForSetYear`'s, not this rule's, and the caller labels
+ * what this returns as a career-team link ("Satchel Paige's club"); handing
+ * back an ordinary resolution would put that label on a link the players did
+ * not make. The review gate calls this only for names still unresolved.
+ *
+ * Never inserts; a caller treats null as "ask the operator", never "create".
+ */
+export const resolveTeamByCardPlayers = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    name: v.string(),
+    setYear: v.optional(v.number()),
+    cardPlayerIds: v.array(v.array(v.id("players"))),
+  },
+  returns: v.union(v.id("teams"), v.null()),
+  handler: async (ctx, args): Promise<Id<"teams"> | null> => {
+    // A CARD caller: the past-era allowance applies, exactly as the gate's own
+    // resolution of the same name did (NEO-307).
+    const { teamId, candidates } = await resolveTeamForSetYear(
+      ctx,
+      args.sportId,
+      args.name,
+      args.setYear,
+      { allowPastEra: true },
+    );
+    if (teamId !== null) return null;
+    return await narrowTeamRowsByCardPlayers(
+      ctx,
+      candidates,
+      args.cardPlayerIds,
+      args.setYear,
+    );
   },
 });
 
