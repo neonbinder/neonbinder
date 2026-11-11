@@ -1,6 +1,5 @@
 import { Button, ButtonProps } from "@radix-ui/themes";
 import React, { forwardRef } from "react";
-import { useTheme } from "@/src/theme/ThemeProvider";
 
 /**
  * The one action button (NEO-356, Jason 2026-10-23: "we should be using that
@@ -98,12 +97,14 @@ export function neonButtonPaint(variant: NeonButtonVariant, outline = false): Ne
  * streams) uses aria-disabled, because native `disabled` removes it from the
  * tab order and makes the reason unreachable by keyboard.
  *
- * A fill: dark dims the neon (a lit tube switched off); light swaps it for the
- * neutral button fill and quiet ink, because a neon fill at 45% on white reads
- * as a pale, still-pressable button. An outline fades to half. Set inline, so
- * it outranks the hover and Radix's grey disabled fill.
+ * A fill swaps the neon for the neutral button fill and quiet ink, in both
+ * modes. A dimmed neon (dark used 45%) still read as the same green, only
+ * dimmer, so a held Next looked pressable beside a live Cancel; on white it
+ * read as a pale, still-pressable button. The roles are per mode (theme.css),
+ * so each mode gets its own grey. An outline fades to half. Set inline, so it
+ * outranks the hover and Radix's grey disabled fill.
  */
-function disabledStyle(paint: NeonButtonPaint, filled: boolean, mode: "light" | "dark"): React.CSSProperties {
+function disabledStyle(paint: NeonButtonPaint, filled: boolean): React.CSSProperties {
   const off: React.CSSProperties = {
     backgroundColor: paint["--nb-fill"],
     color: paint["--nb-ink"],
@@ -111,17 +112,13 @@ function disabledStyle(paint: NeonButtonPaint, filled: boolean, mode: "light" | 
     cursor: "not-allowed",
   };
   if (!filled) return { ...off, opacity: 0.5 };
-  if (mode === "light") {
-    return { ...off, backgroundColor: "var(--button-neutral)", color: "var(--ink-3)" };
-  }
-  return { ...off, opacity: 0.45 };
+  return { ...off, backgroundColor: "var(--button-neutral)", color: "var(--ink-3)" };
 }
 
 const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(function NeonButton(
   { variant = "primary", outline = false, size = "2", className, style, children, ...props },
   ref,
 ) {
-  const { mode } = useTheme();
   const paint = neonButtonPaint(variant, outline);
   const ariaDisabled = props["aria-disabled"];
   const isDisabled = Boolean(props.disabled) || ariaDisabled === true || ariaDisabled === "true";
@@ -134,7 +131,7 @@ const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(function NeonB
       className={className ? `neon-button focus-outline ${className}` : "neon-button focus-outline"}
       style={{
         ...(paint as React.CSSProperties),
-        ...(isDisabled ? disabledStyle(paint, !outline, mode) : null),
+        ...(isDisabled ? disabledStyle(paint, !outline) : null),
         ...style,
       }}
     >

@@ -427,10 +427,19 @@ describe("the Sync status tab", () => {
     );
     const view = render(tree());
     // One run line for the whole screen: none per platform, and the tab adds none of its own.
-    const runLines = () => screen.getAllByRole("status").filter((el) => !el.closest("li"));
+    // Each platform keeps only its marketplace-wait region, always mounted and
+    // empty while nothing waits (NEO-487), which says nothing.
+    const isWait = (el: HTMLElement) => el.hasAttribute("data-marketplace-wait");
+    const runLines = () => screen.getAllByRole("status").filter((el) => !el.closest("li") && !isWait(el));
     expect(runLines()).toHaveLength(1);
-    expect(within(screen.getByRole("region", { name: "BuySportsCards" })).queryAllByRole("status")).toHaveLength(0);
-    expect(within(screen.getByRole("region", { name: "eBay" })).queryAllByRole("status")).toHaveLength(0);
+    for (const name of ["BuySportsCards", "eBay"]) {
+      const statuses = within(screen.getByRole("region", { name })).queryAllByRole("status");
+      expect(statuses.filter((el) => !isWait(el))).toHaveLength(0);
+      const waits = statuses.filter(isWait);
+      expect(waits).toHaveLength(1);
+      expect(waits[0].textContent).toBe("");
+      expect(waits[0].className).toBe("");
+    }
     expect(runLine().textContent).toBe("");
 
     current = after;

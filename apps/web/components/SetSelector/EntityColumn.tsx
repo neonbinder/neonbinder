@@ -35,6 +35,8 @@ import {
 import { siblingTwinSuffixes } from "./marketplace-item-label";
 import { ColumnSyncFailedContext } from "./column-sync-failed-context";
 import { columnSyncFailedMessage } from "./column-sync-failed";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 
 type Level =
   | "sport"
@@ -436,6 +438,13 @@ export default function EntityColumn({
   const ensureOptions = useAction(
     api.selectorOptions.ensureSelectorOptions,
   );
+  // PR 451 (NEO-487) — THIS column's own ensure call: the run key it was
+  // given and whether it is still pending, for "Waiting on BuySportsCards…"
+  // in the syncing panel. A fresh key per call; a settled call only clears
+  // its own key, so an older call finishing never hides a newer one's wait.
+  const [ensureWait, setEnsureWait] = useState<{ key: string; pending: boolean } | null>(
+    null,
+  );
 
   // NEO-450 (a11y) — how loudly the "Couldn't sync <X>" box speaks.
   //
@@ -497,20 +506,32 @@ export default function EntityColumn({
   // The retry button, so focus can return to it when a sync started from it
   // ends (see the branch park below).
   const syncButtonRef = useRef<HTMLButtonElement | null>(null);
+  // One ensure call: PR 451's wait key for "Waiting on BuySportsCards…", and
+  // NEO-450's failure count for the "Couldn't sync <X>" box.
   const runEnsure = useCallback(
-    (args: Parameters<typeof ensureOptions>[0]) => {
+    (args: {
+      level: NonNullable<typeof level>;
+      parentId: typeof parentId;
+      force?: boolean;
+    }) => {
       const scope = `${args.level}:${args.parentId ?? "root"}`;
+      const waitKey = mintWaitKey();
+      setEnsureWait({ key: waitKey, pending: true });
+      const settled = () =>
+        setEnsureWait((w) => (w?.key === waitKey ? { key: waitKey, pending: false } : w));
       const failed = () =>
         setSyncFailure((prev) =>
           prev.scope === scope
             ? { scope, attempt: prev.attempt + 1, urgent: true, shown: false }
             : prev,
         );
-      void ensureOptions(args).then(
+      void ensureOptions({ ...args, waitKey }).then(
         (res) => {
+          settled();
           if (res?.reason === "error") failed();
         },
         (err: unknown) => {
+          settled();
           failed();
           // Still surfaces as an unhandled rejection, as the bare `void` call
           // did before, so error reporting sees it.
@@ -1750,6 +1771,16 @@ export default function EntityColumn({
           <p className="text-ink-3">
             Fetching from marketplaces…
           </p>
+          {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while THIS
+              column's own sync is held up by a BSC call. Mounted with the
+              panel, which shows before any wait can reach 1.5 s, so the
+              status region exists before it speaks. */}
+          <WaitingOnMarketplaceRun
+            runKey={ensureWait?.key ?? null}
+            active={!!ensureWait?.pending}
+            marketplace="BuySportsCards"
+            className="mt-2"
+          />
         </div>
       );
     }

@@ -21,6 +21,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { columnSyncFailedMessage } from "../../components/SetSelector/column-sync-failed";
 import type { FlowEnv } from "./env";
+import { expectAfterMarketplace } from "./marketplace-wait";
 
 export type Column =
   | "Sports"
@@ -105,6 +106,34 @@ export async function pick(
 ): Promise<void> {
   if (search) await columnSearch(page, column).fill(name);
   await columnOption(page, column, name).click();
+}
+
+/**
+ * Wait for `target` while a column's auto-sync is asking BuySportsCards: the
+ * Years, Sets and Variant Types columns sync from BSC the first time they are
+ * opened on data nothing synced yet, and the column's syncing panel says
+ * "Waiting on BuySportsCards…" while that call is out. The step gets 7 s of its
+ * own plus every second the status was up (NEO-487, `expectAfterMarketplace`),
+ * never a flat ceiling. On data that is already synced it returns at once.
+ * Not for Manufacturers (SportLots-led, BSC has no such level).
+ *
+ * Contract: ENTRY the column is open (its parent row was just picked). EXIT
+ * `target` is visible.
+ */
+export async function expectAfterBscSync(page: Page, target: Locator, what: string): Promise<void> {
+  await expectAfterMarketplace(page, target, { platform: "BuySportsCards", what });
+}
+
+/**
+ * `pick` for a column whose rows may still be one BSC sync away (see
+ * `expectAfterBscSync`): search, wait for the row with the marketplace rule,
+ * click it.
+ */
+export async function pickAfterBscSync(page: Page, column: Column, name: string): Promise<void> {
+  await columnSearch(page, column).fill(name);
+  const row = columnOption(page, column, name);
+  await expectAfterBscSync(page, row, `${column} row ${name}`);
+  await row.click();
 }
 
 /**
@@ -283,7 +312,9 @@ export async function drillToSet(page: Page, env: FlowEnv, target: DrillTarget =
   }
   await expect(columnHeading(page, "Sets")).toBeVisible();
 
-  await pick(page, "Sets", set);
+  // Sets sync from BSC on first use (a set nothing opened before, e.g. 1996
+  // Score): the marketplace rule, not a flat 7 s.
+  await pickAfterBscSync(page, "Sets", set);
   await expect(columnHeading(page, "Variant Types")).toBeVisible();
   await expect(columnOption(page, "Variant Types", "Base")).toBeVisible({
     timeout: VARIANT_TYPES_SYNC,

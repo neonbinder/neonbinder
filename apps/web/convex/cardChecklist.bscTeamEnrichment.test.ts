@@ -223,8 +223,8 @@ const getCard = (t: ReturnType<typeof convexTest>, id: Id<"cardChecklist">) =>
  * NEO-220 — this file must not reach the network, and must not leave work
  * running past the end of a test.
  *
- * `enqueueBscTeamBackfill` schedules `processBscTeamEnrichmentQueue`, which
- * calls BuySportsCards' PRODUCTION API. Nothing here asserts on that action —
+ * `enqueueBscTeamBackfill` schedules `bscTeamPool.enqueueBscTeamChecks`
+ * (PR 451), whose pool item calls BuySportsCards' PRODUCTION API. Nothing here asserts on that action —
  * these tests cover the Convex-side building blocks (`getForBscTeamCheck`,
  * `applyBscTeamResolution`, `enqueueBscTeamBackfill`) and only ever schedule
  * it as a side effect. Until now that scheduled work escaped past teardown and
@@ -843,7 +843,7 @@ describe("enqueueBscTeamBackfill", () => {
  * applies the answer, and the backfill scan that finds legacy rows.
  *
  * The write-time check is the load-bearing one. The queue walks a whole set at
- * one request every 300ms while the operator works the same checklist, so a
+ * about one request every 2 s while the operator works the same checklist, so a
  * confirmation can land after a card was enqueued and before its answer comes
  * back. An enqueue-time filter alone would be checked minutes too early.
  */
@@ -1480,7 +1480,7 @@ describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
 
     const pending = await pendingScheduled(t);
     expect(pending).toHaveLength(1);
-    expect(pending[0].name).toContain("processBscTeamEnrichmentQueue");
+    expect(pending[0].name).toContain("enqueueBscTeamChecks");
     expect(
       [...(pending[0].args[0] as { cardChecklistIds: string[] }).cardChecklistIds].sort(),
     ).toEqual([ids.legacy, ids.gaveUp].sort());

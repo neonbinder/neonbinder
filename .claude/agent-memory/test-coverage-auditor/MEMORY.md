@@ -13,3 +13,4 @@
 - [Keyboard alternative to pointer, unit only](keyboard-alternative-to-pointer-unit-only.md) — Tab/Enter onto a drop box proven only in happy-dom; ask for a live press + per-viewport layout geometry
 - [Spec move mojibake](spec-rename-mojibake-vacuous-negatives.md) — renamed specs can corrupt … and arrows; negative asserts go vacuous; byte-grep every moved file
 - [Websocket-faked query masks transitions](websocket-faked-query-masks-transitions.md) — faked Convex value proves the stored state only; hides "syncing" and own-action branches (alert, focus return)
+- [Measured-wait helper](measured-wait-helper-untested-and-narrower-than-flat-timeout.md) — flat live timeout swapped for announced-wait credit: helper untested, narrower than the flat ceiling, 429 UI never forced live

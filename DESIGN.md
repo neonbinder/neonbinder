@@ -311,7 +311,7 @@ Crisp, solid and few. One neon fill per decision. Every action button is `NeonBu
 - **`variant="negative"`:** Show-Sign Pink fill, black ink. Cancel and destructive alike. A quiet destructive link or × is `ink-3` that turns `text-neon-pink-text` under the pointer. In a confirm dialog the pink confirm sits beside a cyan (`secondary`) Cancel, so the two read apart.
 - **`outline`:** any of the four as an outline: the hue's `-text` role as text and a 1px edge on a clear ground, filling with the neon and its black ink under the pointer. A quiet neutral action (Back, Swap sides, Check for new scans) is `secondary outline`.
 - **Neutral:** `button-neutral` fill, `ink` or `ink-2` text, `button-neutral-hover` under the pointer.
-- **Disabled:** keyed off `disabled` and `aria-disabled` alike, so a button can stay in the tab order and still read as not live. A fill: dark dims the neon to 45% opacity; light swaps it for the `button-neutral` fill and `ink-3` ink, because a neon fill at 45% on white reads as a pale, still-pressable button. An outline fades to 50%. Not-allowed cursor in both.
+- **Disabled:** keyed off `disabled` and `aria-disabled` alike, so a button can stay in the tab order and still read as not live. A fill swaps to the `button-neutral` fill and `ink-3` ink in both modes: a dimmed neon (dark once used 45% opacity) still reads as the same hue and looks pressable, and on white a faded neon reads as a pale, still-pressable button. An outline fades to 50%. Not-allowed cursor in both.
 - **Quiet actions:** text or ghost buttons in `ink-2` that brighten on hover, for everything that isn't the decision.
 
 ### Inputs / Fields

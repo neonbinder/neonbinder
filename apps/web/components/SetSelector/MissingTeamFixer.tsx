@@ -9,6 +9,7 @@ import {
   useAttentionContextOptionId,
   useAttentionSportId,
   type AttentionFixerProps,
+  type TeamCheckOutcome,
 } from "./cardAttentionRegistry";
 
 /**
@@ -121,14 +122,19 @@ export function marketplaceHeading(listingName: string, rowCount: number, agreed
  *   gaveUp            — the lookup ran out of retries; nobody knows yet
  *   answered + hint   — null: the listing's claim is already on screen
  *                       (its chips, or "Marketplace says")
+ *   checklist         — NEO-478: the operator's published checklist settled
+ *                       the team and named none for this card
  *   absent            — null: stamped before outcomes were recorded
  *
  * Never names the marketplace — "the listing". Exported for the copy test.
  */
 export function outcomeHeading(
-  outcome: "answered" | "gaveUp" | undefined,
+  outcome: TeamCheckOutcome | undefined,
   hasHint: boolean,
 ): string | null {
+  if (outcome === "checklist" && !hasHint) {
+    return "The publisher’s checklist skips the team on this one. Pick the one on the card, or say there isn’t one.";
+  }
   if (outcome === "gaveUp") {
     return "We couldn’t get a team from the listing for this card. Pick the one on the card.";
   }

@@ -188,6 +188,7 @@ describe("EntityColumn + EntitySelector — a failed sync (NEO-445)", () => {
       level: "year",
       parentId: YEAR_PARENT,
       force: true,
+      waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
     });
   });
 
@@ -459,6 +460,7 @@ describe("EntityColumn — how loudly the failure speaks (NEO-450 a11y)", () => 
       level: "year",
       parentId: YEAR_PARENT,
       force: true,
+      waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
     });
     expectFreshFailure();
   });
@@ -470,7 +472,11 @@ describe("EntityColumn — how loudly the failure speaks (NEO-450 a11y)", () => 
     renderYears();
     await act(async () => {});
 
-    expect(mockEnsure).toHaveBeenCalledWith({ level: "year", parentId: YEAR_PARENT });
+    expect(mockEnsure).toHaveBeenCalledWith({
+      level: "year",
+      parentId: YEAR_PARENT,
+      waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
+    });
     expectFreshFailure();
   });
 

@@ -5,6 +5,7 @@
  * do not apply (R3/R9). Used by the `collection/*` specs; one implementation.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
+import { expectAfterMarketplace } from "./marketplace-wait";
 
 /**
  * The cascade and a `drill` that picks one option and waits for its summary
@@ -537,6 +538,33 @@ export function syncRun(platform: Locator, setLabel: string, platformName: strin
   };
 }
 
+/** A signed-off longer landing ceiling per step label: a label map, or a function for labels that vary (a read's condition). */
+export type StepCeilings = Readonly<Record<string, number>> | ((label: string) => number | undefined);
+
+/**
+ * One step of a walk lands (`landing`). A step with a signed-off ceiling in
+ * `slow` waits that long (GUIDE hard rule 3). Any other step waits 7 s of our
+ * own time, and, when the walk names the `marketplace` it talks to (NEO-487),
+ * plus every second the "Waiting on <marketplace>..." status was up
+ * (`expectAfterMarketplace`): a marketplace that makes a step slow never fails
+ * a spec, and a slow step of ours still does. Without `marketplace` it is the
+ * plain 7 s.
+ */
+async function stepLands(
+  platform: Locator,
+  label: string,
+  landing: Locator,
+  slow: StepCeilings,
+  marketplace: string | undefined,
+): Promise<void> {
+  const budget = typeof slow === "function" ? slow(label) : slow[label];
+  if (budget === undefined && marketplace !== undefined) {
+    await expectAfterMarketplace(platform.page(), landing, { platform: marketplace, what: `the step "${label}"` });
+    return;
+  }
+  await expect(landing).toBeVisible(budget === undefined ? undefined : { timeout: budget });
+}
+
 /**
  * Walks the set's run under way one step at a time: every wait covers exactly
  * ONE step landing, within the standard budget, so a run of many serial sheet
@@ -555,13 +583,17 @@ export function syncRun(platform: Locator, setLabel: string, platformName: strin
  * `slow` gives ONE named step a longer landing budget than the standard 7 s:
  * `{ "Go live": 15_000 }`. Only a ceiling Jason has signed off belongs here,
  * recorded at the call site (GUIDE hard rule 3); every other step keeps the
- * config's budget, and a step not named in `slow` is never given more.
+ * config's budget, and a step not named in `slow` is never given more. `slow`
+ * may also be a function of the label (`bscReadCeiling`). `marketplace` (NEO-487,
+ * "BuySportsCards") makes every OTHER step wait 7 s plus the time the
+ * marketplace's "Waiting on ..." status is up (`expectAfterMarketplace`).
  */
 export async function followRunToEnd(
   platform: Locator,
   run: ReturnType<typeof syncRun>,
   until?: Locator,
-  slow: Readonly<Record<string, number>> = {},
+  slow: StepCeilings = {},
+  marketplace?: string,
 ): Promise<void> {
   const idle = platform.getByText(/^Nothing syncing right now\./);
   const over = until ? idle.or(until).first() : idle;
@@ -572,10 +604,7 @@ export async function followRunToEnd(
     if (await over.isVisible()) return;
     const label = ((await open.first().textContent()) ?? "").trim().replace(/, (working|waiting)$/, "");
     // That one step lands (or snags), or the run ends, or the walk's goal is reached.
-    const budget = slow[label];
-    await expect(run.step(label).or(run.step(label, "failed")).or(over).first()).toBeVisible(
-      budget === undefined ? undefined : { timeout: budget },
-    );
+    await stepLands(platform, label, run.step(label).or(run.step(label, "failed")).or(over).first(), slow, marketplace);
   }
   await expect(over).toBeVisible();
 }
@@ -649,12 +678,18 @@ const MAX_REST_PASSES = 45;
  *
  * Call it with the press already toasted, and read the set's row only after
  * it returns: the row is then a run that started after the press, finished.
+ *
+ * `marketplace` (NEO-487): the platform's name as the screen says it
+ * ("BuySportsCards"). Every step not named in `slow` then waits 7 s of our own
+ * time plus the seconds "Waiting on <marketplace>..." was showing, with the
+ * measured wait in the test report, instead of a flat 7 s.
  */
 export async function followRunToRest(
   platform: Locator,
   run: ReturnType<typeof syncRun>,
   settled: Locator,
-  slow: Readonly<Record<string, number>> | ((label: string) => number | undefined) = {},
+  slow: StepCeilings = {},
+  marketplace?: string,
 ): Promise<void> {
   const idle = platform.getByText(/^Nothing syncing right now\./);
   const open = run.running.getByRole("listitem", { name: /, (working|waiting)$/ });
@@ -668,10 +703,7 @@ export async function followRunToRest(
     const [text] = await open.allTextContents();
     if (text === undefined) continue;
     const label = text.trim().replace(/, (working|waiting)$/, "");
-    const budget = typeof slow === "function" ? slow(label) : slow[label];
-    await expect(run.step(label).or(run.step(label, "failed")).or(settled).first()).toBeVisible(
-      budget === undefined ? undefined : { timeout: budget },
-    );
+    await stepLands(platform, label, run.step(label).or(run.step(label, "failed")).or(settled).first(), slow, marketplace);
   }
   await expect(settled).toBeVisible();
   await expect(idle).toBeVisible();

@@ -117,7 +117,7 @@ type RowOverrides = {
   cardNumber?: string;
   cardName?: string;
   /** NEO-345 */
-  teamCheckOutcome?: "answered" | "gaveUp";
+  teamCheckOutcome?: "answered" | "gaveUp" | "checklist";
 };
 const SPORT_ID = "sport-baseball" as unknown as Id<"selectorOptions">;
 
@@ -531,6 +531,21 @@ describe("MissingTeamFixer — the team check's outcome (NEO-345)", () => {
   it("renders the gave-up line", () => {
     renderFixer({ teamCheckOutcome: "gaveUp" });
     expect(screen.getByText(GAVE_UP!)).toBeTruthy();
+  });
+
+  it("has its own line for a team the published checklist skipped, and it never blames the marketplace (NEO-478)", () => {
+    const line = outcomeHeading("checklist", false);
+    expect(line).toBeTruthy();
+    expect(line).not.toBe(outcomeHeading("answered", false));
+    expect(line).not.toBe(outcomeHeading("gaveUp", false));
+    expect(line).not.toMatch(/BSC|SportLots|BuySportsCards|listing/);
+    // A checklist answer with a hint on screen needs no extra line.
+    expect(outcomeHeading("checklist", true)).toBeNull();
+  });
+
+  it("renders the checklist line for a card the checklist left teamless", () => {
+    renderFixer({ teamCheckOutcome: "checklist" });
+    expect(screen.getByText(outcomeHeading("checklist", false)!)).toBeTruthy();
   });
 
   it("renders neither line for a legacy row with no outcome", () => {

@@ -6,6 +6,7 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import ParallelBuildPanel, {
   PARALLEL_BUILD_HEADING_ID,
   SLEEVE_TONE,
@@ -427,6 +428,14 @@ export default function BaseParallelsBuildSection({
             run={runner.run}
             onStop={runner.stop}
             headingLevel={4}
+            waitingSlot={
+              // NEO-487 — the run's one waitKey; subscribed only while it runs.
+              <WaitingOnMarketplaceRun
+                runKey={runner.run.waitKey ?? null}
+                active={runner.active}
+                marketplace="BuySportsCards"
+              />
+            }
           />
         </div>
       )}

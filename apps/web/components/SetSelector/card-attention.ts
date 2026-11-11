@@ -55,3 +55,25 @@ export const ATTENTION_LABELS: Record<AttentionKind, string> = {
 export function attentionItemLabel(item: { kind: string }): string {
   return ATTENTION_LABELS[item.kind as AttentionKind] ?? "needs a look";
 }
+
+/**
+ * NEO-335 / PR 451 — "Still looking up teams for N cards." The one sentence
+ * for cards waiting on the automatic team lookup (`isAwaitingTeamLookup`):
+ * the walker ends on it ("All clear for now. …") and the checklist's status
+ * line opens with it, so both say the same thing in the same words. The
+ * singular keeps "teams": a card can carry more than one. Never names where
+ * the lookup goes; the operator does not need a marketplace to blame.
+ */
+export function stillLookingUpTeams(count: number): string {
+  return `Still looking up teams for ${count} ${count === 1 ? "card" : "cards"}.`;
+}
+
+/**
+ * PR 451 (NEO-487) — the checklist's status line while any of the set's cards
+ * wait on the background team lookup. The second sentence is the point of
+ * the line: there is nothing to press. A card the lookup gives up on becomes
+ * the operator's through the attention count, not through this line.
+ */
+export function teamLookupStatusLine(count: number): string {
+  return `${stillLookingUpTeams(count)} Nothing for you to do yet.`;
+}

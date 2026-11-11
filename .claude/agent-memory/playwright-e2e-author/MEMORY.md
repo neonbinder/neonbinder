@@ -104,3 +104,6 @@
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
 - [Column sync failed hides the empty line](patterns_column_sync_failed_hides_the_empty_line.md) — NEO-450: wake on columnSyncError, empty line hidden is no proof; marker-split regex from the builder
 - [Fake a Convex query value over the WebSocket](patterns_fake_a_convex_query_value_over_the_websocket.md) — NEO-450: routeWebSocket, key udfPath+args, no-op-version Transition inject, end on the retry's ActionResponse
+- [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic, measured-wait credit, blocked Next via Enter, radiogroup per card
+- [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
+- [Checklist upload team claim blocks career prefill](patterns_checklist_upload_team_claim_blocks_career_prefill.md) — NEO-478: an uploaded row's team is a permanent claim; Roanoke spec cannot take the upload; aria-disabled Use via Enter; burst 429s

@@ -51,6 +51,9 @@ import UnreviewedNameFixer from "./UnreviewedNameFixer";
  * for a new fixer is additive and breaks no caller. Add fields here as fixers
  * need them rather than casting at a call site.
  */
+/** NEO-345 / NEO-478 — `cardChecklist.teamCheckOutcome`, as the client reads it. */
+export type TeamCheckOutcome = "answered" | "gaveUp" | "checklist";
+
 export type CardChecklistRow = {
   _id: Id<"cardChecklist">;
   cardNumber: string;
@@ -61,10 +64,12 @@ export type CardChecklistRow = {
   /**
    * NEO-345: why the background BSC team check finished, written with every
    * `teamCheckDoneAt` stamp — "answered" (BSC replied) or "gaveUp" (retries
-   * ran out). Absent on a row stamped before the field existed. Read only by
-   * the missing-team fixer's one-line account of the card's case.
+   * ran out); NEO-478 adds "checklist" (the operator's published checklist
+   * settled the team, so BSC was never asked). Absent on a row stamped
+   * before the field existed. Read only by the missing-team fixer's one-line
+   * account of the card's case.
    */
-  teamCheckOutcome?: "answered" | "gaveUp";
+  teamCheckOutcome?: TeamCheckOutcome;
   teamNoneConfirmedAt?: number;
   /**
    * NEO-236: the team name BSC returned that matched no `teams` row.
@@ -292,26 +297,12 @@ export function attentionWalkSubtitle(items: AttentionItem[]): string {
 }
 
 /**
- * NEO-335 — a card still waiting on the automatic BSC team lookup: linked to
- * BSC, no team on it, nobody has said it has none, and the lookup has not
- * stamped `teamCheckDoneAt` (it failed at fetch and is queued for a retry).
- *
- * These are exactly the cards `deriveCardAttention` holds back from
- * `missingTeam` while they wait (its clause 3), so they are not in the walk.
- * The walker counts them only to say, once the walk is done, that more may
- * yet arrive. Never a reason to badge or ask: the lookup answers most of them.
- *
- * Reads only the presence of the BSC ref, the same as the rule it mirrors.
+ * NEO-335 — a card still waiting on the automatic BSC team lookup. The rule
+ * lives in the pure `card-attention` seam (PR 451 moved it there so the
+ * checklist's status line can count with it without loading the fixers);
+ * re-exported here so the walker's imports stay where they were.
  */
-export function isAwaitingTeamLookup(row: CardChecklistRow): boolean {
-  return (
-    !!row.platformData?.bsc?.ref &&
-    !row.teamCheckDoneAt &&
-    !row.teamNoneConfirmedAt &&
-    (row.teamOnCardIds?.length ?? 0) === 0 &&
-    (row.pendingTeamNames?.length ?? 0) === 0
-  );
-}
+export { isAwaitingTeamLookup } from "./card-attention";
 
 /** Reason text for a card whose kinds this bundle has no fixer for. */
 export function unfixableReason(item: { kind: string } | undefined): string {
