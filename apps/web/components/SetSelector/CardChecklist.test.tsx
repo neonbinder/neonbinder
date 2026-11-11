@@ -1811,11 +1811,11 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         await syncWith(rerender, arrivedBatch, { checklistMatch: matchSummary() });
 
         expect(await screen.findByText(/Match Cards/)).toBeTruthy();
-        expect(screen.getByRole("list", { name: "Checklist rows" })).toBeTruthy();
-        expect(screen.getByLabelText("Select checklist row 1 Solo One")).toBeTruthy();
+        expect(screen.getByRole("list", { name: "Leftover checklist rows" })).toBeTruthy();
+        expect(screen.getByLabelText("Select #1 Solo One · Solo Team")).toBeTruthy();
         // Solo: every SportLots card is saved, so there is nothing to keep.
         expect(screen.queryByLabelText(/^Keep /)).toBeNull();
-        expect(screen.getByText(/Every SportLots card is saved/)).toBeTruthy();
+        expect(screen.getByText(/Every card here gets saved/)).toBeTruthy();
         expect(mockCommitChecklist).not.toHaveBeenCalled();
         expect(mockResolveEntities).not.toHaveBeenCalled();
       });
@@ -1857,7 +1857,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         });
         await screen.findByText(/Match Cards/);
 
-        fireEvent.click(screen.getByLabelText("Select checklist row 1 Solo One"));
+        fireEvent.click(screen.getByLabelText("Select #1 Solo One · Solo Team"));
         fireEvent.click(screen.getByLabelText("Link selected checklist row to #1 Solo One"));
         await act(async () => {
           fireEvent.click(screen.getByLabelText("Confirm card matches"));
@@ -1913,7 +1913,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
             }),
           });
         });
-        expect(screen.queryByRole("list", { name: "Checklist rows" })).toBeNull();
+        expect(screen.queryByRole("list", { name: "Leftover checklist rows" })).toBeNull();
         await act(async () => {
           fireEvent.click(screen.getByLabelText("Confirm card matches"));
         });
@@ -1931,13 +1931,13 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         await syncWith(rerender, arrivedBatch, { checklistMatch: matchSummary() });
         await screen.findByText(/Match Cards/);
 
-        fireEvent.click(screen.getByLabelText("Select checklist row 1 Solo One"));
+        fireEvent.click(screen.getByLabelText("Select #1 Solo One · Solo Team"));
         fireEvent.click(screen.getByLabelText("Link selected checklist row to #1 Solo One"));
         await act(async () => {
           fireEvent.click(screen.getByLabelText("Confirm card matches"));
         });
 
-        expect(await screen.findByText(/Your checklist links didn't go through/)).toBeTruthy();
+        expect(await screen.findByText(/your checklist links didn't stick/)).toBeTruthy();
         expect(mockCommitChecklist).not.toHaveBeenCalled();
         expect(screen.getByText(/Match Cards/)).toBeTruthy();
       });

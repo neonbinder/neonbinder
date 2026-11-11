@@ -556,8 +556,25 @@ describe("NEO-490 — describeDecision words a career-team link", () => {
 
   it("a team link names the card's player", () => {
     expect(describeDecision(teamLink, "St. Louis Browns", null, null, null, "Satchel Paige")).toBe(
-      "Linked to St. Louis Browns · Satchel Paige's club",
+      "Linked to St. Louis Browns · Satchel Paige played there",
     );
+  });
+
+  it("leaves out 'the' for Team names, all-caps names and names that start with it", () => {
+    const line = (team: string) =>
+      describeDecision(playerLink, "Nelson Cruz", null, null, null, team);
+    expect(line("Team USA")).toBe("Linked to Nelson Cruz · played for Team USA");
+    expect(line("team canada")).toBe("Linked to Nelson Cruz · played for team canada");
+    expect(line("USA")).toBe("Linked to Nelson Cruz · played for USA");
+    expect(line("The Astros")).toBe("Linked to Nelson Cruz · played for The Astros");
+    expect(line("the astros")).toBe("Linked to Nelson Cruz · played for the astros");
+  });
+
+  it("still says 'the' for a name that only starts like Team or has mixed case", () => {
+    const line = (team: string) =>
+      describeDecision(playerLink, "Nelson Cruz", null, null, null, team);
+    expect(line("Teamsters")).toBe("Linked to Nelson Cruz · played for the Teamsters");
+    expect(line("Houston Astros")).toBe("Linked to Nelson Cruz · played for the Houston Astros");
   });
 
   it("falls back to general words with no context", () => {
@@ -568,10 +585,10 @@ describe("NEO-490 — describeDecision words a career-team link", () => {
       "Linked to a player · played for the team on the card",
     );
     expect(describeDecision(teamLink, "St. Louis Browns")).toBe(
-      "Linked to St. Louis Browns · the card's player played there",
+      "Linked to St. Louis Browns · the player on the card played there",
     );
     expect(describeDecision(teamLink)).toBe(
-      "Linked to a team · the card's player played there",
+      "Linked to a team · the player on the card played there",
     );
   });
 });
@@ -602,13 +619,38 @@ describe("NEO-490 — careerTeamContextFor", () => {
     decision,
   });
 
-  it("a player row gets the team on the first card carrying its name", () => {
+  it("a player row gets the team on the one card carrying its name", () => {
     const cards = [
       { players: ["Someone Else"], teams: ["Chicago Cubs"] },
-      { players: ["Nelson Cruz"], teams: ["Houston Astros", "Texas Rangers"] },
-      { players: ["Nelson Cruz"], teams: ["Seattle Mariners"] },
+      { players: ["Nelson Cruz"], teams: ["Houston Astros"] },
     ];
     expect(careerTeamContextFor(playerRow(careerLink), cards)).toBe("Houston Astros");
+  });
+
+  it("is null when two cards carry the player's name", () => {
+    const cards = [
+      { players: ["Nelson Cruz"], teams: ["Houston Astros"] },
+      { players: ["Nelson Cruz"], teams: ["Seattle Mariners"] },
+    ];
+    expect(careerTeamContextFor(playerRow(careerLink), cards)).toBeNull();
+  });
+
+  it("is null when two cards print the team's name", () => {
+    const cards = [
+      { players: ["Satchel Paige"], teams: ["St. Louis Browns"] },
+      { players: ["Other Guy"], teams: ["St. Louis Browns"] },
+    ];
+    expect(careerTeamContextFor(teamRow(careerTeamLink), cards)).toBeNull();
+  });
+
+  it("is null when the one card carrying the name prints two teams", () => {
+    const cards = [{ players: ["Nelson Cruz"], teams: ["Houston Astros", "Texas Rangers"] }];
+    expect(careerTeamContextFor(playerRow(careerLink), cards)).toBeNull();
+  });
+
+  it("is null when the one card printing the team names two players", () => {
+    const cards = [{ players: ["Satchel Paige", "Second Guy"], teams: ["St. Louis Browns"] }];
+    expect(careerTeamContextFor(teamRow(careerTeamLink), cards)).toBeNull();
   });
 
   it("falls back to the card's single team field", () => {
@@ -617,10 +659,10 @@ describe("NEO-490 — careerTeamContextFor", () => {
     ).toBe("Houston Astros");
   });
 
-  it("a team row gets the first player on the first card printing its name", () => {
+  it("a team row gets the player on the one card printing its name", () => {
     const cards = [
       { players: ["Other Guy"], teams: ["Chicago Cubs"] },
-      { players: ["Satchel Paige", "Second Guy"], teams: ["St. Louis Browns"] },
+      { players: ["Satchel Paige"], teams: ["St. Louis Browns"] },
     ];
     expect(careerTeamContextFor(teamRow(careerTeamLink), cards)).toBe("Satchel Paige");
   });
@@ -729,7 +771,7 @@ describe("NEO-424 — the suggested player", () => {
       "None of the Mike Shinodas on file played that year, but one's in the Hall of Fame (Non Sport). Same one?",
     );
     expect(preselectReasonLine({ ...preselect, reason: "careerTeam" })).toBe(
-      "Only one Mike Shinoda on file played for the team on this card (Non Sport). Same one?",
+      "Only one Mike Shinoda on file ever played for this card's team (Non Sport). Same one?",
     );
   });
 });
