@@ -20,11 +20,12 @@ import {
   BSC_TEAM_ENQUEUE_CHUNK_SIZE,
   nextBscTeamCheckStep,
 } from "./bscTeamPool";
-import { BSC_TEAM_ENRICH_DELAY_MS } from "./adapters/buysportscards";
+import { BSC_TEAM_ENRICH_DELAY_MS, BSC_TEAM_WAIT_IN_SLOT_MAX_MS } from "./adapters/buysportscards";
+import * as cooldowns from "./marketplaceCooldowns";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { insertTestCard } from "../lib/testing/card-row";
-import { captureBscTeamLane, runBscTeamLane } from "../lib/testing/bsc-team-lane";
+import { captureBscTeamLane, runBscTeamLane, settleOnFakeClock } from "../lib/testing/bsc-team-lane";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -153,20 +154,113 @@ describe("the lane end to end (item + completion)", () => {
       }),
     );
 
-  test("an open cooldown pushes the card back to the window's end, keeps its pass, and makes no BSC call", async () => {
+  const answerReds = () =>
+    vi.fn(async () =>
+      new Response(JSON.stringify({ teamName: "Reds" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  /** Counts runs of `marketplaceCooldowns.get` (convex-test calls its `_handler`). */
+  const spyCooldownReads = () =>
+    vi.spyOn(cooldowns.get as unknown as { _handler: (...a: unknown[]) => unknown }, "_handler");
+
+  /**
+   * Loads the adapter module with one throwaway item, then puts the clock back
+   * at NOW. The first action in a file imports the adapter while
+   * `settleOnFakeClock` steps the fake clock, which can move it tens of
+   * seconds before the item's first read; a short-window test needs that read
+   * at NOW.
+   */
+  async function warmAdapter(t: ReturnType<typeof convexTest>): Promise<void> {
+    const gone = await seedCard(t, 99);
+    await t.run(async (ctx) => ctx.db.delete(gone));
+    await settleOnFakeClock(
+      t.action(internal.adapters.buysportscards.runBscTeamCheckItem, {
+        cardChecklistId: gone,
+        pass: 1,
+        firstQueuedAt: NOW,
+      }),
+    );
+    vi.setSystemTime(NOW);
+  }
+
+  test("the in-slot wait covers every window we open ourselves (NEO-482)", () => {
+    expect(BSC_TEAM_WAIT_IN_SLOT_MAX_MS).toBe(cooldowns.COOLDOWN_MAX_MS);
+  });
+
+  test("NEO-482: an item in a 15 s window waits it out once in the slot, then asks once, with no re-enqueue", async () => {
+    const t = convexTest(schema, modules);
+    const calledAt: number[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calledAt.push(Date.now());
+        return new Response(JSON.stringify({ teamName: "Reds" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    const card = await seedCard(t);
+    await warmAdapter(t);
+    await openWindow(t, NOW + 15_000);
+    const lane = captureBscTeamLane();
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [card], pass: 2 });
+    const reads = spyCooldownReads();
+    expect(await runBscTeamLane(t, lane, 5)).toBe(1);
+
+    expect(calledAt).toHaveLength(1);
+    expect(calledAt[0]).toBeGreaterThanOrEqual(NOW + 15_000);
+    // Once before the wait, once after it.
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(lane).toHaveLength(0);
+    const row = await t.run(async (ctx) => ctx.db.get(card));
+    expect(row?.teamCheckDoneAt).toBeDefined();
+    // The answer after the window also ends its streak.
+    const stored = await t.run(async (ctx) => ctx.db.query("marketplaceCooldowns").collect());
+    expect(stored[0].streak).toBe(0);
+  });
+
+  test("NEO-482: a window another caller extends during the wait defers the card, with no call", async () => {
+    const t = convexTest(schema, modules);
+    const fetchSpy = answerReds();
+    vi.stubGlobal("fetch", fetchSpy);
+    const card = await seedCard(t);
+    await warmAdapter(t);
+    const windowId = await openWindow(t, NOW + 15_000);
+
+    const running = t.action(internal.adapters.buysportscards.runBscTeamCheckItem, {
+      cardChecklistId: card,
+      pass: 1,
+      firstQueuedAt: NOW,
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    // A 429 elsewhere escalated the window to 30 s while this item waited.
+    await t.run(async (ctx) => ctx.db.patch(windowId, { until: NOW + 15_000 + 30_000, streak: 2 }));
+    const result = await settleOnFakeClock(running);
+
+    expect(result).toEqual({ outcome: "deferred", until: NOW + 45_000 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("an item in a window longer than the in-slot wait (a 300 s Retry-After) is pushed back to its end, keeps its pass, and makes no BSC call", async () => {
     const t = convexTest(schema, modules);
     const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
     const card = await seedCard(t);
-    await openWindow(t, NOW + 90_000);
+    await openWindow(t, NOW + 300_000);
     const lane = captureBscTeamLane();
     await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [card], pass: 2 });
+    const startedAt = Date.now();
     expect(await runBscTeamLane(t, lane, 1)).toBe(1);
 
     expect(fetchSpy).not.toHaveBeenCalled();
+    // No wait in the slot.
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
     expect(lane).toHaveLength(1);
     expect(lane[0].item).toMatchObject({ cardChecklistId: card, pass: 2 });
-    expect(lane[0].runAt).toBe(NOW + 90_000);
+    expect(lane[0].runAt).toBe(NOW + 300_000);
     // Not flagged: the operator has not been handed it yet.
     expect((await t.run(async (ctx) => ctx.db.get(card)))?.teamCheckDoneAt).toBeUndefined();
   });

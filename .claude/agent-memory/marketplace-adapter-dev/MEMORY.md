@@ -67,3 +67,4 @@
 - [Client parse rows hit strict arg validators](reference_client_parse_rows_hit_strict_arg_validators.md) — a new parser row field passed straight to an action arg fails v.object at runtime; widen optional + drop server-side
 - [Spy `_handler` to count convex-test calls](reference_convex_test_spy_handler_to_count_calls.md) — nested runQuery goes through `_handler`; an `invokeQuery` spy stays at 0; pair every "never called" with a control
 - [Workpool cancelAll semantics](reference_workpool_cancel_all_semantics.md) — pending/runAt items get `canceled`; a running item finishes with its real result and its re-enqueue escapes
+- [settleOnFakeClock drifts on first import](reference_settle_on_fake_clock_drifts_on_first_import.md) — first adapter action in a file moves the fake clock ~26 s before its first read; warm with a throwaway item, reset to NOW

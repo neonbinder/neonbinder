@@ -83,7 +83,7 @@ import { flushBscRecorder } from "./bscSeller";
 // PR 451 (NEO-487) — the "Waiting on BuySportsCards…" rows, the deployment-wide
 // card-listing cooldown, and the background team lane's item shapes.
 import { createMarketplaceWaitWriter } from "../lib/marketplaceWaitWriter";
-import { COOLDOWN_BASE_MS, parseRetryAfterMs } from "../marketplaceCooldowns";
+import { COOLDOWN_BASE_MS, COOLDOWN_MAX_MS, parseRetryAfterMs } from "../marketplaceCooldowns";
 import {
   bscTeamCheckItemResultValidator,
   type BscTeamCheckItemResult,
@@ -143,6 +143,14 @@ export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS = 500;
 // (`bscTeamPool.BSC_TEAM_CHECK_OPERATOR_AFTER_MS`) is read only when a card
 // is deferred by a 429 or an open cooldown.
 export const BSC_TEAM_ENRICH_DELAY_MS = 1_700;
+// NEO-482 — a lane item that finds a card-listing window with at most this
+// long left waits it out in its slot and then asks, instead of deferring.
+// Windows are 15 s doubling to 120 s (`marketplaceCooldowns`), so this covers
+// every window we open ourselves; only a longer Retry-After from BSC still
+// defers the card. Deferring meant every item the slot reached during a 15 s
+// window ran, read the cooldown and was re-enqueued: 150-400 extra function
+// runs per 300-card drain, and the cards shuffled to the back of the queue.
+export const BSC_TEAM_WAIT_IN_SLOT_MAX_MS = COOLDOWN_MAX_MS;
 // NEO-330 — the queue's bound on a card whose lookup keeps FAILING (network,
 // non-2xx, timeout; never "BSC has no team", which is an answer). Each pass
 // walks the whole queue; the cards that failed in it are walked again after
@@ -2761,7 +2769,11 @@ export const processBscTeamEnrichmentQueue = internalAction({
  *    the lane by a previous E2E seed (its row wiped by the reset) therefore
  *    ends on its first run instead of being pushed back for 30 minutes
  *    behind an open window;
- *  - an open card-listing cooldown: no call, `deferred` to the window's end;
+ *  - an open card-listing cooldown with at most `BSC_TEAM_WAIT_IN_SLOT_MAX_MS`
+ *    left: the item waits the window out ONCE, holding the slot, then reads
+ *    the row and the cooldown again and asks (NEO-482). A window still open
+ *    after the wait (another caller's 429 extended it), or one with longer
+ *    left (only a long Retry-After), is `deferred` to its end with no call;
  *  - a 429: `record429` opens the window, `deferred` to its end (no pass
  *    spent);
  *  - otherwise `resolveBscCardTeam`'s answer.
@@ -2794,8 +2806,25 @@ export const runBscTeamCheckItem = internalAction({
       return { outcome: "failed" };
     }
     if (!row || !row.needsCheck) return { outcome: "notNeeded" };
-    const cooldown = await readCardListingCooldown(ctx);
-    if (cooldown.until !== null) return { outcome: "deferred", until: cooldown.until };
+    let cooldown = await readCardListingCooldown(ctx);
+    if (cooldown.until !== null) {
+      const leftMs = cooldown.until - Date.now();
+      if (leftMs > BSC_TEAM_WAIT_IN_SLOT_MAX_MS) {
+        return { outcome: "deferred", until: cooldown.until };
+      }
+      // NEO-482 — a short window: wait it out in the slot, once.
+      await sleep(Math.max(0, leftMs));
+      try {
+        // The row again: a reset may have wiped the card during the wait.
+        row = await readBscTeamCheckRow(ctx, args.cardChecklistId);
+      } catch (error) {
+        logError(error);
+        return { outcome: "failed" };
+      }
+      if (!row || !row.needsCheck) return { outcome: "notNeeded" };
+      cooldown = await readCardListingCooldown(ctx);
+      if (cooldown.until !== null) return { outcome: "deferred", until: cooldown.until };
+    }
     let outcome: Awaited<ReturnType<typeof askBscCardTeam>> = "failed";
     const askedAt = Date.now();
     try {
