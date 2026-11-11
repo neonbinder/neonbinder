@@ -99,7 +99,7 @@ describe("NeonButton variants", () => {
 });
 
 describe("NeonButton disabled", () => {
-  it("dark: a fill keeps its neon, dimmed to 45%, with the not-allowed cursor", () => {
+  it("dark: a fill swaps to the neutral button fill and quiet ink, like light (NEO-482)", () => {
     document.documentElement.dataset.theme = "dark";
     render(
       <NeonButton variant="secondary" disabled>
@@ -107,9 +107,10 @@ describe("NeonButton disabled", () => {
       </NeonButton>,
     );
     const button = screen.getByRole("button", { name: "Preview" });
-    expect(button.style.backgroundColor).toBe("var(--neon-blue)");
-    expect(button.style.color).toBe("var(--on-neon-blue)");
-    expect(button.style.opacity).toBe("0.45");
+    // A dimmed neon read as the same hue, still pressable: the fill goes grey.
+    expect(button.style.backgroundColor).toBe("var(--button-neutral)");
+    expect(button.style.color).toBe("var(--ink-3)");
+    expect(button.style.opacity).toBe("");
     expect(button.style.cursor).toBe("not-allowed");
   });
 
@@ -132,7 +133,7 @@ describe("NeonButton disabled", () => {
     render(<NeonButton aria-disabled>Confirm</NeonButton>);
     const button = screen.getByRole("button", { name: "Confirm" });
     expect(button.hasAttribute("disabled")).toBe(false);
-    expect(button.style.opacity).toBe("0.45");
+    expect(button.style.backgroundColor).toBe("var(--button-neutral)");
     expect(button.style.cursor).toBe("not-allowed");
   });
 

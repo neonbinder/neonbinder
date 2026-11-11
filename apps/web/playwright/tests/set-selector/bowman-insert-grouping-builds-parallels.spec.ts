@@ -10,6 +10,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
@@ -147,6 +148,11 @@ test(
     await expect(columnHeading(page, "Parallels")).toBeVisible();
     await expect(columnOption(page, "Parallels", "Anime Kanji")).toBeVisible();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    // The publisher's checklist (NEO-478): Anime's teams are BSC's own answers, uploaded, so the fetch
+    // asks BSC for the cards' list and for ONE card's team (the `TBD` card, whose number is no number
+    // the checklist can match, stays a live lookup). Six of the cards are football players; the file
+    // carries their teams as BSC named them.
+    const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
     await syncChecklistButton(page).click();
 
     // The cards come from BSC (and SportLots, paired, when it is live): the flow's 120 s.
@@ -172,6 +178,7 @@ test(
     const wizard = reviewWizard(page);
     const saved = page.getByText(/Saved [0-9]+ cards/);
     await expect(wizard.or(saved)).toBeVisible({ timeout: 60_000 });
+    await expectTeamsFromChecklist(page, facts);
     if (await wizard.isVisible()) {
       await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard" });
       // The footer's first action says which shape opened (it paints with the batch).

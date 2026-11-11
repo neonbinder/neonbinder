@@ -1052,6 +1052,12 @@ export interface SyncStep {
    */
   conditions?: Condition[];
   status: SyncStepStatus;
+  /**
+   * NEO-487 — set while a marketplace call of this step is outstanding (the
+   * server's BSC call recorder, never the step's elapsed time). The screen
+   * says "Waiting on BuySportsCards…" with running seconds while it is.
+   */
+  marketplaceWaitingSince?: number;
 }
 
 /** One set's last sync on a platform. Last result only: there is no run log. */

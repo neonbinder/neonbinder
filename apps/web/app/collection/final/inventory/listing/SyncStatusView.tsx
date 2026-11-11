@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "@heroicons/react/24/outline";
 import { Link } from "react-router";
 import { LiveLine, RunGlyph, type RunLineKind } from "@/components/modules/RunLedger";
+import { WaitingOnMarketplace } from "@/components/modules/WaitingOnMarketplace";
 import { FOCUS } from "../../../prototypes/p1/ui";
 import type {
   ListingPlatform,
@@ -289,8 +290,28 @@ function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
           <StepLedger lines={runLines(steps, p.platform)} name={runStepsName(p.running.setLabel, p.platform)} />
         </div>
       )}
+      {/* NEO-487 — "Waiting on BuySportsCards… 12s" while a step's
+          marketplace call is outstanding. Always rendered: the line keeps
+          its own status region mounted (empty and zero-height while idle),
+          so the first wait is announced as reliably as the rest. An empty
+          region says nothing, so it never competes with the run line. */}
+      <WaitingOnMarketplace
+        waitingSince={p.running ? stepWaitingSince(steps) : undefined}
+        marketplace={name}
+        className="pl-6"
+      />
     </section>
   );
+}
+
+/**
+ * NEO-487 — when the step in flight started waiting on its marketplace, or
+ * undefined when nothing is outstanding. Only a WORKING step's wait counts:
+ * a finished step's last stamp is history, not a wait.
+ */
+export function stepWaitingSince(steps: ReadonlyArray<SyncStep> | undefined): number | undefined {
+  return steps?.find((step) => step.status === "working" && step.marketplaceWaitingSince !== undefined)
+    ?.marketplaceWaitingSince;
 }
 
 /** Which ledger glyph a step wears. */

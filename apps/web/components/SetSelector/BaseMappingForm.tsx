@@ -5,6 +5,8 @@ import { primarySlot, slotIds, slotLabel } from "../../convex/platformSlots";
 import type { PlatformSide, SlotBearingRow } from "../../convex/platformSlots";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import BaseSetPicker, { type BaseRemapNotice } from "./BaseSetPicker";
 import type { PlatformItem } from "./ReconciliationModal";
 import { blockedMessageFromErrors } from "./selector-sync-feedback";
@@ -169,6 +171,8 @@ export default function BaseMappingForm({
   }) as SlotCardCounts | undefined;
 
   const [loading, setLoading] = useState(false);
+  // PR 451 (NEO-487) — the current fetch's run key for the wait line.
+  const [waitKey, setWaitKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerData, setPickerData] = useState<RawOptionsResult | null>(null);
@@ -281,8 +285,11 @@ export default function BaseMappingForm({
     setMessageKind(null);
     setPickerData(null);
     setPickerOpen(true);
+    const key = mintWaitKey();
+    setWaitKey(key);
     try {
       const result = await fetchRawOptions({
+        waitKey: key,
         level: "insert",
         parentId: variantTypeId,
         parentFilters: {
@@ -460,6 +467,16 @@ export default function BaseMappingForm({
           mode={mode}
           remapNotice={remapNotice}
           notice={staleNotice}
+          // PR 451 (NEO-487) — the fetch runs with the picker open over it,
+          // so the picker carries the line; nothing else on the page does.
+          waitingSlot={
+            <WaitingOnMarketplaceRun
+              runKey={waitKey}
+              active={loading}
+              marketplace="BuySportsCards"
+              className="mt-1"
+            />
+          }
         />
       )}
     </>

@@ -17,6 +17,7 @@ import {
   type BaseSignature,
   type ObservedCard,
 } from "@/lib/cards/base-match";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 
 /**
  * NEO-325 — the Reconcile dialog's check of every pending parallel against
@@ -114,6 +115,11 @@ export type BaseMatchProbe = {
   announcement: string;
   /** Sides whose check stopped for want of a sign-in (security F1). */
   stopped: Readonly<Record<BaseMatchSide, boolean>>;
+  /**
+   * PR 451 (NEO-487) — for `<WaitingOnMarketplaceRun>`: the run key the BSC
+   * calls carry, and whether one is in flight. Null / false while off.
+   */
+  bscWait: { runKey: string | null; active: boolean };
 };
 
 export const checkKey = (side: BaseMatchSide, id: string) => `${side}:${id}`;
@@ -129,6 +135,13 @@ export const MAX_IN_FLIGHT_PER_SIDE = 2;
 export const SL_FIRST_PAGE_BATCH = 32;
 export const SL_COUNT_BATCH = 8;
 export const BSC_BATCH = 4;
+/**
+ * PR 451 (NEO-487) — BSC calls per wait run key. The server keeps one wait
+ * row per call and `marketplaceWaits.forRun` reads at most 50 rows of a key,
+ * so a long check moves to a fresh key before the reader would stop seeing
+ * new calls.
+ */
+export const BSC_CALLS_PER_WAIT_KEY = 40;
 
 type Stage = "first" | "count";
 
@@ -294,6 +307,10 @@ export function useBaseMatchProbe({
   const [stopped, setStopped] = useState<Record<BaseMatchSide, boolean>>(
     NOT_STOPPED,
   );
+  // PR 451 (NEO-487) — the BSC calls' run key, and whether any is in flight.
+  const [bscWaitKey, setBscWaitKey] = useState<string | null>(null);
+  const [bscBusy, setBscBusy] = useState(false);
+  const bscKeyRef = useRef<{ key: string; calls: number } | null>(null);
 
   const entriesRef = useRef(new Map<string, Entry>());
   const seqRef = useRef(0);
@@ -422,6 +439,18 @@ export function useBaseMatchProbe({
       for (const e of batch) e.status = "inflight";
       inFlightRef.current[side]++;
       const ids = batch.map((e) => e.id);
+      let waitKey: string | undefined;
+      if (side === "bsc") {
+        let held = bscKeyRef.current;
+        if (!held || held.calls >= BSC_CALLS_PER_WAIT_KEY) {
+          held = { key: mintWaitKey(), calls: 0 };
+          bscKeyRef.current = held;
+          setBscWaitKey(held.key);
+        }
+        held.calls++;
+        waitKey = held.key;
+        setBscBusy(true);
+      }
 
       const unverifiable = (e: Entry) =>
         finish(e, judgeAgainstBase(sig, side, { status: "failed" }));
@@ -430,7 +459,7 @@ export function useBaseMatchProbe({
         if (side === "bsc") {
           const results: BscProbeResult[] = await convex.action(
             api.baseMatchProbe.probeBscSets,
-            { variantTypeId: variantTypeIdNow, variantNameIds: ids },
+            { variantTypeId: variantTypeIdNow, variantNameIds: ids, ...(waitKey ? { waitKey } : {}) },
           );
           const got = byId(results);
           const signedOut = wholeBatchSignedOut(ids, results);
@@ -529,6 +558,7 @@ export function useBaseMatchProbe({
         .then(() => {
           if (genRef.current !== myGen) return;
           inFlightRef.current[side] = Math.max(0, inFlightRef.current[side] - 1);
+          if (side === "bsc" && inFlightRef.current.bsc === 0) setBscBusy(false);
           publish();
           pumpRef.current();
         });
@@ -636,8 +666,11 @@ export function useBaseMatchProbe({
       startKeysRef.current = new Set();
       announceRef.current = freshAnnounce();
       stoppedRef.current = { bsc: false, sportlots: false };
+      bscKeyRef.current = null;
       setAnnouncement("");
       setStopped(NOT_STOPPED);
+      setBscWaitKey(null);
+      setBscBusy(false);
     };
   }, [client, variantTypeId, syncScope, publish]);
 
@@ -647,6 +680,10 @@ export function useBaseMatchProbe({
     checks: phase === "on" ? checks : EMPTY,
     announcement: phase === "on" ? announcement : "",
     stopped: phase === "on" ? stopped : NOT_STOPPED,
+    bscWait: {
+      runKey: phase === "on" ? bscWaitKey : null,
+      active: phase === "on" && bscBusy,
+    },
   };
 }
 

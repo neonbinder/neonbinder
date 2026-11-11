@@ -14,7 +14,8 @@
  *
  * Fixture conventions mirror `commitCardChecklist.operatorDecisions.test.ts`.
  * Which cards were queued is read off the scheduler's own rows (the
- * `processBscTeamEnrichmentQueue` invocation the finalize phase schedules),
+ * `bscTeamPool.enqueueBscTeamChecks` invocation the finalize phase schedules
+ * since PR 451),
  * and the queue itself is never run: fetch throws, and pending work is
  * cancelled before the test ends.
  */
@@ -184,7 +185,7 @@ async function enqueuedIds(t: T): Promise<Set<string>> {
   );
   const ids = new Set<string>();
   for (const r of rows) {
-    if (!r.name.includes("processBscTeamEnrichmentQueue")) continue;
+    if (!r.name.includes("enqueueBscTeamChecks")) continue;
     const a = r.args[0] as { cardChecklistIds?: string[] } | undefined;
     for (const id of a?.cardChecklistIds ?? []) ids.add(id);
   }
@@ -926,7 +927,7 @@ describe("commitCardChecklist — re-sync of existing rows, same rule (NEO-335)"
         const rows = await c.db.system.query("_scheduled_functions").collect();
         return rows.filter(
           (r) =>
-            r.name.includes("processBscTeamEnrichmentQueue") &&
+            r.name.includes("enqueueBscTeamChecks") &&
             ((r.args[0] as { cardChecklistIds?: string[] }).cardChecklistIds ?? []).includes(rowId),
         ).length;
       });
@@ -1231,7 +1232,7 @@ describe("commitCardChecklist — adversarial edges on re-sync (NEO-335)", () =>
     );
     return rows.filter(
       (r) =>
-        r.name.includes("processBscTeamEnrichmentQueue") &&
+        r.name.includes("enqueueBscTeamChecks") &&
         ((r.args[0] as { cardChecklistIds?: string[] }).cardChecklistIds ?? []).includes(rowId),
     ).length;
   }

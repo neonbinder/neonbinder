@@ -28,28 +28,39 @@
  * `"use node"` file that cannot define a mutation.
  */
 
-import { internalMutation } from "./_generated/server";
+import { internalMutation, type MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
+
+/**
+ * The body of `markBscTeamCheckGivenUp`, callable inside another mutation
+ * (PR 451: the `bscTeamPool` completion hands a card to the operator from
+ * its own transaction). True when it stamped the card.
+ */
+export async function markBscTeamCheckGivenUpImpl(
+  ctx: MutationCtx,
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<boolean> {
+  // A fresh read, inside the writing mutation: the retries span minutes and
+  // the operator works the same checklist meanwhile.
+  const row = await ctx.db.get(cardChecklistId);
+  if (!row || !row.platformData?.bsc) return false;
+  // Already answered — by a late success, an operator's team, or an
+  // operator's "no team" (which `applyBscTeamResolution` stamps as well).
+  if (row.teamCheckDoneAt) return false;
+  // NEO-345: and WHY it is done — nothing came back, so a later re-ask
+  // (`enqueueBscTeamBackfill` mode "reask") can tell this card from one
+  // BSC actually answered.
+  await ctx.db.patch(row._id, {
+    teamCheckDoneAt: Date.now(),
+    teamCheckOutcome: "gaveUp",
+  });
+  return true;
+}
 
 export const markBscTeamCheckGivenUp = internalMutation({
   args: { cardChecklistId: v.id("cardChecklist") },
   /** Whether this call stamped the card. False when nothing was owed. */
   returns: v.boolean(),
-  handler: async (ctx, args) => {
-    // A fresh read, inside the writing mutation: the retries span minutes and
-    // the operator works the same checklist meanwhile.
-    const row = await ctx.db.get(args.cardChecklistId);
-    if (!row || !row.platformData?.bsc) return false;
-    // Already answered — by a late success, an operator's team, or an
-    // operator's "no team" (which `applyBscTeamResolution` stamps as well).
-    if (row.teamCheckDoneAt) return false;
-    // NEO-345: and WHY it is done — nothing came back, so a later re-ask
-    // (`enqueueBscTeamBackfill` mode "reask") can tell this card from one
-    // BSC actually answered.
-    await ctx.db.patch(row._id, {
-      teamCheckDoneAt: Date.now(),
-      teamCheckOutcome: "gaveUp",
-    });
-    return true;
-  },
+  handler: async (ctx, args) => markBscTeamCheckGivenUpImpl(ctx, args.cardChecklistId),
 });

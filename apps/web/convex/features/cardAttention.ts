@@ -180,10 +180,10 @@ export type AttentionCardRow = {
  *      for one piece of work.
  *
  * Clause 3 is the one worth explaining. A card with a `platformData.bsc.ref`
- * has an automatic source for its team: `processBscTeamEnrichmentQueue` walks
- * the cards a commit just wrote, one BSC detail request every 300ms, and fills
+ * has an automatic source for its team: the `bscTeamPool` lane walks the
+ * cards a commit just wrote, about one BSC detail request every 2 s, and fills
  * `teamOnCardIds` where BSC has an answer. Right after a 900-card sync, that
- * queue is minutes from finishing — badging every BSC card "missing team"
+ * lane is up to half an hour from finishing — badging every BSC card "missing team"
  * during the drain would flood the checklist with items that resolve
  * themselves, and would train the operator to ignore the badge. So a
  * BSC-linked card is only badged once `teamCheckDoneAt` says the lookup has
@@ -271,6 +271,35 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
 /** Convenience for a row badge or a filter predicate. */
 export function needsAttention(row: AttentionCardRow): boolean {
   return deriveCardAttention(row).length > 0;
+}
+
+/**
+ * NEO-335 — a card still waiting on the automatic BSC team lookup: linked to
+ * BSC, no team on it, nobody has said it has none, and the lookup has not
+ * stamped `teamCheckDoneAt`. PR 451 (NEO-487): that is a card on the
+ * one-slot `bscTeamPool` lane, queued or in flight; the lane stamps
+ * `teamCheckDoneAt` when it answers and when it gives up (the operator's
+ * turn), so the row alone says whether the lookup is still owed.
+ *
+ * These are exactly the cards `deriveCardAttention` holds back from
+ * `missingTeam` while they wait (its clause 3). Never a reason to badge or
+ * ask: the lookup answers most of them. Two readers: the walker's done line,
+ * and the checklist's "Still looking up teams" status line, which is the
+ * only handle on them while nothing else needs the operator.
+ *
+ * Reads only the presence of the BSC ref, the same as the rule it mirrors.
+ * Lives here, in the pure module, rather than beside the fixers in
+ * `cardAttentionRegistry.ts` (which re-exports it), so the checklist can count
+ * with it without loading the fixer components.
+ */
+export function isAwaitingTeamLookup(row: AttentionCardRow): boolean {
+  return (
+    !!row.platformData?.bsc?.ref &&
+    !row.teamCheckDoneAt &&
+    !row.teamNoneConfirmedAt &&
+    (row.teamOnCardIds?.length ?? 0) === 0 &&
+    (row.pendingTeamNames?.length ?? 0) === 0
+  );
 }
 
 /**

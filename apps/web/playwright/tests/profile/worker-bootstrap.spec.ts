@@ -20,10 +20,16 @@ test(
     });
 
     // The warm-ups are an optimisation (`optional: true` in the flow): a
-    // failure is logged, never fatal. The steps above stay mandatory.
-    await loginToBsc(page).catch((e: Error) =>
-      console.warn(`bootstrap: BSC warm-up skipped: ${e.message.split("\n")[0]}`),
-    );
+    // failure is logged, never fatal. The steps above stay mandatory. The BSC
+    // warm-up is a live BuySportsCards sign-in through the browser service, so
+    // it is made once per run, by worker 0, and not by every shard at the same
+    // moment (BSC pushes back on bursts, and no spec reads what the warm-up
+    // leaves: the specs that need a session sign in or press Test themselves).
+    if (env.WORKER_INDEX === "0") {
+      await loginToBsc(page).catch((e: Error) =>
+        console.warn(`bootstrap: BSC warm-up skipped: ${e.message.split("\n")[0]}`),
+      );
+    }
     await loginToSportLots(page, env).catch((e: Error) =>
       console.warn(`bootstrap: SportLots warm-up skipped: ${e.message.split("\n")[0]}`),
     );
