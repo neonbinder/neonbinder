@@ -29,6 +29,7 @@ import {
   isPresentable,
   nextUndecided,
   autoLinkOtherSport,
+  careerTeamContextFor,
   countAutoLinked,
   autoLinkedSummaryNote,
   preselectFor,
@@ -533,6 +534,150 @@ describe("describeDecision", () => {
   });
 });
 
+describe("NEO-490 — describeDecision words a career-team link", () => {
+  const playerLink: NavDecision = {
+    action: "link",
+    linkedPlayerId: "p1",
+    autoLinked: "careerTeam",
+  };
+  const teamLink: NavDecision = { action: "link", linkedTeamId: "t1", autoLinked: "careerTeam" };
+
+  it("a player link names the card's team", () => {
+    expect(describeDecision(playerLink, "Nelson Cruz", null, null, null, "Houston Astros")).toBe(
+      "Linked to Nelson Cruz · played for the Houston Astros",
+    );
+  });
+
+  it("does not double an article the context already carries", () => {
+    expect(describeDecision(playerLink, "Nelson Cruz", null, null, null, "The Astros")).toBe(
+      "Linked to Nelson Cruz · played for The Astros",
+    );
+  });
+
+  it("a team link names the card's player", () => {
+    expect(describeDecision(teamLink, "St. Louis Browns", null, null, null, "Satchel Paige")).toBe(
+      "Linked to St. Louis Browns · Satchel Paige's club",
+    );
+  });
+
+  it("falls back to general words with no context", () => {
+    expect(describeDecision(playerLink, "Nelson Cruz")).toBe(
+      "Linked to Nelson Cruz · played for the team on the card",
+    );
+    expect(describeDecision(playerLink, null, null, null, null, "  ")).toBe(
+      "Linked to a player · played for the team on the card",
+    );
+    expect(describeDecision(teamLink, "St. Louis Browns")).toBe(
+      "Linked to St. Louis Browns · the card's player played there",
+    );
+    expect(describeDecision(teamLink)).toBe(
+      "Linked to a team · the card's player played there",
+    );
+  });
+});
+
+describe("NEO-490 — careerTeamContextFor", () => {
+  const careerLink: NavDecision = {
+    action: "link",
+    linkedPlayerId: "p1",
+    autoLinked: "careerTeam",
+  };
+  const careerTeamLink: NavDecision = {
+    action: "link",
+    linkedTeamId: "t1",
+    autoLinked: "careerTeam",
+  };
+  const playerRow = (decision: NavDecision | undefined, name = "Nelson Cruz"): NavRow => ({
+    _id: "r1",
+    status: "ready",
+    kind: "player",
+    name,
+    decision,
+  });
+  const teamRow = (decision: NavDecision | undefined, name = "St. Louis Browns"): NavRow => ({
+    _id: "r2",
+    status: "ready",
+    kind: "team",
+    name,
+    decision,
+  });
+
+  it("a player row gets the team on the first card carrying its name", () => {
+    const cards = [
+      { players: ["Someone Else"], teams: ["Chicago Cubs"] },
+      { players: ["Nelson Cruz"], teams: ["Houston Astros", "Texas Rangers"] },
+      { players: ["Nelson Cruz"], teams: ["Seattle Mariners"] },
+    ];
+    expect(careerTeamContextFor(playerRow(careerLink), cards)).toBe("Houston Astros");
+  });
+
+  it("falls back to the card's single team field", () => {
+    expect(
+      careerTeamContextFor(playerRow(careerLink), [{ players: ["Nelson Cruz"], team: " Houston Astros " }]),
+    ).toBe("Houston Astros");
+  });
+
+  it("a team row gets the first player on the first card printing its name", () => {
+    const cards = [
+      { players: ["Other Guy"], teams: ["Chicago Cubs"] },
+      { players: ["Satchel Paige", "Second Guy"], teams: ["St. Louis Browns"] },
+    ];
+    expect(careerTeamContextFor(teamRow(careerTeamLink), cards)).toBe("Satchel Paige");
+  });
+
+  it("matches names case- and punctuation-insensitively", () => {
+    expect(
+      careerTeamContextFor(playerRow(careerLink, "nelson cruz"), [
+        { players: ["Nelson Cruz"], teams: ["Houston Astros"] },
+      ]),
+    ).toBe("Houston Astros");
+  });
+
+  it("is null for a link that is not a career-team one", () => {
+    const cards = [{ players: ["Nelson Cruz"], teams: ["Houston Astros"] }];
+    expect(
+      careerTeamContextFor(
+        playerRow({ action: "link", linkedPlayerId: "p1", autoLinked: "setHistory" }),
+        cards,
+      ),
+    ).toBeNull();
+    expect(
+      careerTeamContextFor(playerRow({ action: "link", linkedPlayerId: "p1" }), cards),
+    ).toBeNull();
+    expect(careerTeamContextFor(playerRow({ action: "skip" }), cards)).toBeNull();
+    expect(careerTeamContextFor(playerRow(undefined), cards)).toBeNull();
+  });
+
+  it("is null when no card says", () => {
+    expect(careerTeamContextFor(playerRow(careerLink), undefined)).toBeNull();
+    expect(careerTeamContextFor(playerRow(careerLink), [])).toBeNull();
+    expect(
+      careerTeamContextFor(playerRow(careerLink), [{ players: ["Nelson Cruz"] }]),
+    ).toBeNull();
+    expect(
+      careerTeamContextFor(teamRow(careerTeamLink), [{ teams: ["St. Louis Browns"] }]),
+    ).toBeNull();
+    expect(
+      careerTeamContextFor(playerRow(careerLink, ""), [
+        { players: ["Nelson Cruz"], teams: ["Houston Astros"] },
+      ]),
+    ).toBeNull();
+  });
+
+  it("is null for a row that is neither a player nor a team", () => {
+    const leagueRow: NavRow = {
+      _id: "r3",
+      status: "ready",
+      kind: "league",
+      name: "Nelson Cruz",
+      decision: careerLink,
+    };
+    expect(
+      careerTeamContextFor(leagueRow, [{ players: ["Nelson Cruz"], teams: ["Houston Astros"] }]),
+    ).toBeNull();
+  });
+});
+
 describe("NEO-424 — the decided summary counts the batch's own links", () => {
   const auto: NavRow = {
     _id: "a",
@@ -582,6 +727,9 @@ describe("NEO-424 — the suggested player", () => {
     );
     expect(preselectReasonLine({ ...preselect, reason: "hallOfFame" })).toBe(
       "None of the Mike Shinodas on file played that year, but one's in the Hall of Fame (Non Sport). Same one?",
+    );
+    expect(preselectReasonLine({ ...preselect, reason: "careerTeam" })).toBe(
+      "Only one Mike Shinoda on file played for the team on this card (Non Sport). Same one?",
     );
   });
 });
