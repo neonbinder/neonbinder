@@ -4164,10 +4164,13 @@ export default defineSchema({
    * call while `until` is in the future.
    *
    * One row per (platform, endpoint), written only on a 429
-   * (`marketplaceCooldowns.record429`): zero writes on the healthy path.
-   * `streak` counts 429 windows in a row (60 s doubling to 10 min, or BSC's
-   * Retry-After when longer); it resets once 15 min pass with no 429. A 429
-   * inside a live window does not escalate it.
+   * (`marketplaceCooldowns.record429`) and on the first success after one:
+   * zero writes on the healthy path.
+   * `streak` counts 429 windows in a row (15 s doubling to 120 s, or BSC's
+   * Retry-After when longer, up to 10 min); it resets to 0 on the first
+   * successful answer after a window closes (`recordSuccess`, NEO-482), or
+   * once 15 min pass with no 429. A 429 inside a live window does not
+   * escalate it.
    */
   marketplaceCooldowns: defineTable({
     platform: v.literal("bsc"),

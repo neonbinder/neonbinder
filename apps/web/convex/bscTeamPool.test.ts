@@ -171,6 +171,32 @@ describe("the lane end to end (item + completion)", () => {
     expect((await t.run(async (ctx) => ctx.db.get(card)))?.teamCheckDoneAt).toBeUndefined();
   });
 
+  test("NEO-482: the first card answered after a window closes resets the cooldown streak", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ teamName: "Reds" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const card = await seedCard(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("marketplaceCooldowns", {
+        platform: "bsc", endpoint: "cardListing", until: NOW - 1, last429At: NOW - 30_001, streak: 2, updatedAt: NOW,
+      }),
+    );
+    const lane = captureBscTeamLane();
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [card] });
+    expect(await runBscTeamLane(t, lane, 1)).toBe(1);
+
+    const rows = await t.run(async (ctx) => ctx.db.query("marketplaceCooldowns").collect());
+    expect(rows[0].streak).toBe(0);
+    expect(lane).toHaveLength(0);
+  });
+
   test("a card that has waited 30 minutes while the window stays open is handed to the operator", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal("fetch", vi.fn());

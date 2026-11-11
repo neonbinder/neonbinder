@@ -175,6 +175,50 @@ describe("fetchBscCardTeamNames — the cooldown is read before every wave", () 
     expect(out.slice(WAVE)).toEqual([SKIPPED("bsc-11"), SKIPPED("bsc-12")]);
   });
 
+  test("NEO-482: the first answered wave after a window closes resets the streak to 0", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), []));
+    await openWindow(t, Date.now() - 1);
+
+    await run(t, ids(WAVE + 5));
+
+    const rows = await cooldownRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].streak).toBe(0);
+  });
+
+  test("NEO-482: a 429 in the first wave after a window escalates the streak instead of resetting it", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      fetchStub((id) => (id === "bsc-1" ? { status: 429 } : { team: "Reds" }), []),
+    );
+    await openWindow(t, Date.now() - 1);
+    const before = Date.now();
+
+    await run(t, ids(WAVE));
+
+    const rows = await cooldownRows(t);
+    expect(rows[0].streak).toBe(2);
+    expect(rows[0].until).toBeGreaterThanOrEqual(before + 30_000);
+  });
+
+  test("NEO-482: with no live streak an answer writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), []));
+    await t.run(async (ctx) =>
+      ctx.db.insert("marketplaceCooldowns", {
+        platform: "bsc", endpoint: "cardListing", until: Date.now() - 60_000,
+        last429At: Date.now() - 75_000, streak: 0, updatedAt: Date.now() - 50_000,
+      }),
+    );
+    const before = await cooldownRows(t);
+
+    await run(t, ids(WAVE + 5));
+
+    expect(await cooldownRows(t)).toEqual(before);
+  });
+
   test("the healthy path writes no cooldown row", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), []));

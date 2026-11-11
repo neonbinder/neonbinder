@@ -83,7 +83,7 @@ import { flushBscRecorder } from "./bscSeller";
 // PR 451 (NEO-487) — the "Waiting on BuySportsCards…" rows, the deployment-wide
 // card-listing cooldown, and the background team lane's item shapes.
 import { createMarketplaceWaitWriter } from "../lib/marketplaceWaitWriter";
-import { parseRetryAfterMs } from "../marketplaceCooldowns";
+import { COOLDOWN_BASE_MS, parseRetryAfterMs } from "../marketplaceCooldowns";
 import {
   bscTeamCheckItemResultValidator,
   type BscTeamCheckItemResult,
@@ -136,9 +136,12 @@ export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS = 500;
 // BSC limits by volume (it answers 429 when we send too much; no published
 // figure), so the lane paces itself below that: 1.7 s after each call, plus
 // the call itself, is about one card-listing call every 2 s, deployment wide
-// (PR 451 / NEO-482). With no 429 a 300-card backlog drains in ~10 min; the
-// lane's 30-minute deadline (`bscTeamPool.BSC_TEAM_CHECK_OPERATOR_AFTER_MS`)
-// is read only when a card is deferred by a 429 or an open cooldown.
+// (PR 451 / NEO-482). With no 429 a 300-card backlog drains in ~10 min. BSC
+// was measured to answer 429 about every 50 calls at this pace too (a burst
+// lockout lifting in 15 to 45 s), so expect ~6 cooldowns of 15 s (one may
+// escalate to 30 s): ~12 min in all. The lane's 30-minute deadline
+// (`bscTeamPool.BSC_TEAM_CHECK_OPERATOR_AFTER_MS`) is read only when a card
+// is deferred by a 429 or an open cooldown.
 export const BSC_TEAM_ENRICH_DELAY_MS = 1_700;
 // NEO-330 — the queue's bound on a card whose lookup keeps FAILING (network,
 // non-2xx, timeout; never "BSC has no team", which is an answer). Each pass
@@ -162,7 +165,8 @@ const BSC_TEAM_LOOKUP_CONCURRENCY = 10;
 // ── PR 451 (NEO-487): a bounded lookup ─────────────────────────────────────
 //
 // BSC's edge answers 429 (empty body, a few ms) and then blocks the IP for
-// about two minutes, and Convex deployments share egress IPs. So a lookup:
+// 15 to 45 s (measured, NEO-482), and Convex deployments share egress IPs.
+// So a lookup:
 //   - checks the deployment-wide cooldown (`marketplaceCooldowns`) before
 //     every wave, and makes no call while it is open;
 //   - stops at the first 429: never retried, the lookup-wide flag stops every
@@ -201,16 +205,24 @@ export function testStallCardIds(
 /** A lookup's shared stop flag: set by the first 429 any of its cards gets. */
 type BscLookupStop = { rateLimited: boolean; retryAfterMs?: number };
 
-/** The open card-listing cooldown's end, or null. A failed read is "open road". */
-async function cardListingCooldownUntil(
+/**
+ * The card-listing cooldown as one caller sees it before a wave:
+ * `until` is the open window's end (no call before it), `closedAt` is set
+ * when the window has closed but its streak is live, so the first successful
+ * answer should call `recordCardListingSuccess` (NEO-482). A failed read is
+ * "open road" with nothing to record.
+ */
+type CardListingCooldown = { until: number | null; closedAt: number | null };
+
+async function readCardListingCooldown(
   ctx: Pick<ActionCtx, "runQuery">,
-): Promise<number | null> {
+): Promise<CardListingCooldown> {
   try {
-    const row = await ctx.runQuery(internal.marketplaceCooldowns.get, {
-      platform: "bsc",
-      endpoint: "cardListing",
-    });
-    return row ? row.until : null;
+    const row: { until?: number; closedAt?: number } | null = await ctx.runQuery(
+      internal.marketplaceCooldowns.get,
+      { platform: "bsc", endpoint: "cardListing" },
+    );
+    return { until: row?.until ?? null, closedAt: row?.closedAt ?? null };
   } catch (error) {
     console.warn(
       JSON.stringify({
@@ -220,11 +232,40 @@ async function cardListingCooldownUntil(
         error: error instanceof Error ? error.name : "unknown",
       }),
     );
-    return null;
+    return { until: null, closedAt: null };
   }
 }
 
-/** Records a 429; returns the window's end (now + 60 s if the write failed). */
+/**
+ * NEO-482 — a call asked at `askedAt` was answered after a window closed:
+ * reset the streak so the next 429 opens the base window. Called only when
+ * the caller's read said a streak is live, so the healthy path never calls
+ * it. A failed write is logged and dropped (the 15-minute backstop in
+ * `marketplaceCooldowns` still resets the streak).
+ */
+async function recordCardListingSuccess(
+  ctx: Pick<ActionCtx, "runMutation">,
+  askedAt: number,
+): Promise<void> {
+  try {
+    await ctx.runMutation(internal.marketplaceCooldowns.recordSuccess, {
+      platform: "bsc",
+      endpoint: "cardListing",
+      askedAt,
+    });
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        msg: "bsc_cooldown_reset_failed",
+        platform: "bsc",
+        operation: "cardListing",
+        error: error instanceof Error ? error.name : "unknown",
+      }),
+    );
+  }
+}
+
+/** Records a 429; returns the window's end (now + the base window if the write failed). */
 async function recordCardListing429(
   ctx: Pick<ActionCtx, "runMutation">,
   retryAfterMs: number | undefined,
@@ -245,7 +286,7 @@ async function recordCardListing429(
         error: error instanceof Error ? error.name : "unknown",
       }),
     );
-    return Date.now() + 60_000;
+    return Date.now() + COOLDOWN_BASE_MS;
   }
 }
 
@@ -2583,11 +2624,16 @@ export const fetchBscCardTeamNames = internalAction({
     const stop: BscLookupStop = { rateLimited: false };
     const stallIds = testStallCardIds();
     let asked = 0;
+    // NEO-482 — the last read found a closed window with a live streak: the
+    // first wave with an answer (and no 429) resets it.
+    let resetPending = false;
     try {
       for (let i = 0; i < args.bscCardIds.length; i += BSC_TEAM_LOOKUP_CONCURRENCY) {
         const chunk = args.bscCardIds.slice(i, i + BSC_TEAM_LOOKUP_CONCURRENCY);
-        if (!stopped && (await cardListingCooldownUntil(ctx)) !== null) {
-          stopped = "cooldown";
+        if (!stopped) {
+          const cooldown = await readCardListingCooldown(ctx);
+          if (cooldown.until !== null) stopped = "cooldown";
+          resetPending = cooldown.closedAt !== null;
         }
         if (stopped) {
           for (const bscCardId of chunk) {
@@ -2603,6 +2649,7 @@ export const fetchBscCardTeamNames = internalAction({
           continue;
         }
         asked += chunk.length;
+        const askedAt = Date.now();
         const results = await Promise.all(
           chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId, rec, stop, stallIds)),
         );
@@ -2636,6 +2683,9 @@ export const fetchBscCardTeamNames = internalAction({
           await recordCardListing429(ctx, stop.retryAfterMs);
         } else if (results.every((r) => !r.success)) {
           stopped = "waveFailed";
+        } else if (resetPending) {
+          await recordCardListingSuccess(ctx, askedAt);
+          resetPending = false;
         }
       }
     } finally {
@@ -2744,13 +2794,18 @@ export const runBscTeamCheckItem = internalAction({
       return { outcome: "failed" };
     }
     if (!row || !row.needsCheck) return { outcome: "notNeeded" };
-    const until = await cardListingCooldownUntil(ctx);
-    if (until !== null) return { outcome: "deferred", until };
+    const cooldown = await readCardListingCooldown(ctx);
+    if (cooldown.until !== null) return { outcome: "deferred", until: cooldown.until };
     let outcome: Awaited<ReturnType<typeof askBscCardTeam>> = "failed";
+    const askedAt = Date.now();
     try {
       outcome = await askBscCardTeam(ctx, args.cardChecklistId, row);
     } catch (error) {
       logError(error);
+    }
+    // NEO-482 — the first answer after a window ends its streak.
+    if (outcome === "answered" && cooldown.closedAt !== null) {
+      await recordCardListingSuccess(ctx, askedAt);
     }
     await sleep(BSC_TEAM_ENRICH_DELAY_MS);
     if (typeof outcome !== "string") return { outcome: "deferred", until: outcome.until };

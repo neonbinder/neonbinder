@@ -3072,6 +3072,7 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ["marketplaceWaits.ts", "expire", "internalMutation"],
     ["marketplaceCooldowns.ts", "get", "internalQuery"],
     ["marketplaceCooldowns.ts", "record429", "internalMutation"],
+    ["marketplaceCooldowns.ts", "recordSuccess", "internalMutation"],
     ["bscTeamPool.ts", "enqueueBscTeamChecks", "internalMutation"],
     ["bscTeamPool.ts", "cancelAllBscTeamChecks", "internalMutation"],
     ["checklistCandidates.ts", "resolveChecklistTeamTexts", "internalQuery"],
