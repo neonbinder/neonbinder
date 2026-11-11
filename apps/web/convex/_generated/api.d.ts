@@ -134,6 +134,7 @@ import type * as lib_selectorAncestry from "../lib/selectorAncestry.js";
 import type * as lib_selectorTeams from "../lib/selectorTeams.js";
 import type * as lib_teamFill from "../lib/teamFill.js";
 import type * as lib_teamRow from "../lib/teamRow.js";
+import type * as lib_testSeedMarks from "../lib/testSeedMarks.js";
 import type * as lib_titleQuery from "../lib/titleQuery.js";
 import type * as listingDrain from "../listingDrain.js";
 import type * as listingDrainEbay from "../listingDrainEbay.js";
@@ -329,6 +330,7 @@ declare const fullApi: ApiFromModules<{
   "lib/selectorTeams": typeof lib_selectorTeams;
   "lib/teamFill": typeof lib_teamFill;
   "lib/teamRow": typeof lib_teamRow;
+  "lib/testSeedMarks": typeof lib_testSeedMarks;
   "lib/titleQuery": typeof lib_titleQuery;
   listingDrain: typeof listingDrain;
   listingDrainEbay: typeof listingDrainEbay;

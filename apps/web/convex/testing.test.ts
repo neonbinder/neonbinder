@@ -1353,9 +1353,11 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
         .collect(),
     );
     const byPlatform = Object.fromEntries(records.map((r) => [r.platform, r]));
+    // No platform's record ever claims a success: were NB to start listing there, its first run is a full read too.
     expect(byPlatform.ebay.lastSuccessAt).toBeUndefined();
     expect(byPlatform.ebay.conditionsPushed).toEqual([]);
-    expect(byPlatform.bsc.lastSuccessAt).toBeTypeOf("number");
+    expect(byPlatform.bsc.lastSuccessAt).toBeUndefined();
+    expect(byPlatform.bsc.conditionsPushed).toEqual([]);
 
     // Listed everywhere: no card is queued anywhere, the failed sets still are.
     await me.mutation(api.testing.clearMyTestDashboardSeeds, {});
@@ -1411,6 +1413,103 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
       sets: [],
       more: false,
     });
+  });
+
+  test("a seeded order is never handed to the order poll, even once NB polls that platform for the caller", async () => {
+    const { t, me } = await withBoxedCard();
+    const seeded = await me.mutation(api.testing.seedMyTestSale, {});
+    expect(seeded.platform).toBe("bsc");
+    // A real order waiting to ship, which the poll must still re-read.
+    await t.run((ctx) =>
+      ctx.db.insert("marketplaceSales", {
+        ownerId: USER_A,
+        platform: "bsc",
+        orderId: "real-open-1",
+        orderNo: "R-2",
+        orderDate: 2,
+        status: "READY_TO_SHIP",
+        totals: {},
+        items: [],
+        firstSeenAt: 2,
+        lastUpdated: 2,
+      }),
+    );
+    // The caller starts listing on BuySportsCards: a saved sign-in and a started state, so the poll runs.
+    await listing(t, "bsc");
+    await t.run(async (ctx) => {
+      const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_user", (q) => q.eq("userId", USER_A))
+        .unique();
+      const siteCredentials = [{ site: "buysportscards", hasCredentials: true }];
+      if (profile) await ctx.db.patch(profile._id, { siteCredentials } as never);
+      else await ctx.db.insert("userProfiles", { userId: USER_A, siteCredentials } as never);
+    });
+    const input = await t.query(internal.listingSales.pollInput, { ownerId: USER_A, platform: "bsc" });
+    expect(input).not.toBeNull();
+    expect(input!.stored.map((o) => o.orderId)).toEqual(["real-open-1"]);
+    // The seeded order is still there for the dashboard (and the clear).
+    expect((await me.query(api.dashboard.sales, {})).orders.map((o) => o.orderNo)).toContain(seeded.orderNo);
+  });
+
+  test("a seeded failed set a real sync has claimed is the drain's: the clear and a re-seed leave it alone", async () => {
+    const { t, fx, me } = await withBoxedCard();
+    await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true });
+    const recordOn = (platform: "bsc" | "ebay") =>
+      t.run((ctx) =>
+        ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) =>
+            q.eq("ownerId", USER_A).eq("variantId", fx.baseId).eq("platform", platform),
+          )
+          .unique(),
+      );
+    // A real run claims the BuySportsCards record as `listingDrain.claimVariant` does: running, leased, a fresh
+    // ledger, and the seed's sentence still in `lastError`.
+    const claimed = await recordOn("bsc");
+    await t.run((ctx) =>
+      ctx.db.patch(claimed!._id, {
+        status: "running",
+        leaseToken: "real-run",
+        leaseExpiresAt: Date.now() + 60_000,
+        progress: { runStartedAt: Date.now(), steps: [] },
+      }),
+    );
+    // A real run on eBay died after pushing a condition: settled back to `error`, mark kept, ledger and push kept.
+    const dead = await recordOn("ebay");
+    await t.run((ctx) =>
+      ctx.db.patch(dead!._id, { progress: { runStartedAt: Date.now(), steps: [] }, conditionsPushed: ["near_mint"] }),
+    );
+    const before = { bsc: await recordOn("bsc"), ebay: await recordOn("ebay") };
+
+    expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 0 });
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: false, error: false, note: "no failed set: a real sync has picked up the test record here" },
+        { platform: "ebay", pending: false, error: false, note: "no failed set: a real sync has picked up the test record here" },
+      ],
+    });
+    expect(await recordOn("bsc")).toEqual(before.bsc);
+    expect(await recordOn("ebay")).toEqual(before.ebay);
+  });
+
+  test("the queued card needs a boxed copy: with only a binder copy, none is queued and the result says why", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedCollectionCatalog(t);
+    const me = t.withIdentity({ subject: USER_A });
+    const binder = await t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: USER_A, kind: "binder", name: "PC binder", lastUpdated: 0 }),
+    );
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1, homeId: binder });
+    const note = "no queued card: your newest card is in a binder, and NB lists only boxed cards";
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: false, error: true, note },
+        { platform: "ebay", pending: false, error: true, note },
+      ],
+    });
+    const queued = await t.run((ctx) => ctx.db.query("listingOutbox").collect());
+    expect(queued).toEqual([]);
   });
 
   test("a set with a real sync record is left alone", async () => {

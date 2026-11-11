@@ -144,6 +144,19 @@ Things that look like failures during the apps/web fast gates but are not.
    trace's request times (`*-trace.network`, `main.tsx?t=` changing between
    loads) with `stat` mtimes of the source; then rerun on a quiet tree.
 
+15. **A "spare" Vite port is often another worktree's.** Sibling worktrees
+   keep Vites on 3001, 3011, 3031, 308x and more, so `curl :<port>` answering
+   200 proves nothing, and `--strictPort` then dies "Port in use" in the
+   background. Before starting, list listeners (`lsof -iTCP -sTCP:LISTEN -n -P
+   | grep ':30'`), pick a free port, and confirm the listener's cwd is THIS
+   worktree (`lsof -p <pid> | grep cwd`) before pointing APP_URL at it (NEO-464).
+16. **A sibling's in-flight change can red a shared spec before your part runs
+   out.** To still prove your steps live without editing their assertions, copy
+   the spec to a uniquely named `zz-tmp-*.spec.ts` beside it, relax only the
+   sibling's assertion, run it, and `rm` it in the same command. Re-run the
+   `bootstrap` project after any red that skipped the spec's self-cleaning
+   (NEO-464).
+
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
 

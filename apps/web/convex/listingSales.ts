@@ -97,6 +97,7 @@ import { savedSignInsPassDone } from "./listingSync";
 import { bscEraForYear, isBscRawCondition, nbConditionsFor, type BscEra } from "./lib/bscConditions";
 import { bscOrderDisposition, chooseCopiesToLower, type BscOrder } from "./lib/bscOrders";
 import { parseListingSku } from "./lib/listingSku";
+import { isTestSaleOrderId } from "./lib/testSeedMarks";
 import {
   BSC_ORDER_PAGE_SIZE,
   closeBscSellerSession,
@@ -296,8 +297,11 @@ export const pollInput = internalQuery({
       .take(OPEN_ORDER_SCAN);
     return {
       cursorAt: state.orderCursorAt ?? state._creationTime - INITIAL_CURSOR_GRACE_MS,
+      // NEO-464: an order the dashboard's test seed wrote is never the
+      // marketplace's, so the poll never asks the marketplace about it (the
+      // open-order refresh would re-read it by id on every run).
       stored: recent
-        .filter((s) => s.platform === args.platform)
+        .filter((s) => s.platform === args.platform && !isTestSaleOrderId(s.orderId))
         .map((s) => ({ orderId: s.orderId, status: s.status, orderDate: s.orderDate })),
     };
   },

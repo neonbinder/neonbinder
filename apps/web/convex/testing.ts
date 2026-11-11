@@ -31,7 +31,7 @@ import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects
 // before any read of its stored credentials.
 import { isPlatformPaused } from "./marketplacePause";
 import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
 import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from "./collection";
 import { ListingGate } from "./listingGate";
@@ -39,6 +39,7 @@ import { intakePhotoFailureValidator, listingPlatformValidator } from "./schema"
 import { DRAIN_LEASE_MS } from "./listingDrain";
 import { LISTING_PLATFORMS, listingStateOf, newToken, pushesCounts } from "./listingOutbox";
 import { VISIT_GAP_MS } from "./dashboard";
+import { TEST_OUTBOX_SEQ, TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK } from "./lib/testSeedMarks";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -1398,12 +1399,28 @@ export const backdateMyDashboardVisit = mutation({
 // NEO-464 — what a sale and a sync problem look like on the dashboard
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Every order the seed writes carries this `orderId` prefix; the clear deletes only those. */
-export const TEST_SALE_ORDER_PREFIX = "nb-test-sale-";
-/** Every sync record the seed writes leads its NB sentences with this; the clear deletes only those. */
-export const TEST_SYNC_MARK = "(Test) ";
-/** Queued cards the seed writes carry this `seq` (real rows count up from 0); the clear deletes only those. */
-export const TEST_OUTBOX_SEQ = -1;
+// The marks live in `lib/testSeedMarks` so the order poll can skip a seeded
+// order without importing this file; the clear deletes only rows carrying them.
+export { TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK, TEST_OUTBOX_SEQ };
+
+/**
+ * A sync record exactly as `seedMyTestSync` wrote it, untouched by any real
+ * run since: marked, failed, and never claimed. A real run's claim
+ * (`listingDrain.claimVariant`) sets `status: "running"`, a lease and a
+ * `progress` ledger without clearing `lastError`, and a run that dies keeps
+ * the mark under `status: "error"` with the ledger and any conditions it
+ * pushed. Such a record is the drain's, so the seed never replaces it and the
+ * clear never deletes it.
+ */
+function isUntouchedTestSyncRecord(record: Doc<"marketplaceListingSyncs">): boolean {
+  return (
+    record.status === "error" &&
+    (record.lastError ?? "").startsWith(TEST_SYNC_MARK) &&
+    record.leaseToken === undefined &&
+    record.progress === undefined &&
+    record.conditionsPushed.length === 0
+  );
+}
 
 /**
  * The caller's copy the dashboard seeds name: the most recently touched line
@@ -1433,8 +1450,8 @@ async function seedCopyOf(
 /**
  * The first platform where NB neither pushes the caller's counts nor polls
  * their orders (`listingOutbox.pushesCounts`, the one rule for both), so a
- * seeded order or sync record is never read by a poll or a drain, and no
- * marketplace is ever called for it. Null when the caller lists on all of them.
+ * seeded order is not read by a poll while the seed is fresh. Null when the
+ * caller lists on all of them.
  */
 async function quietPlatformOf(ctx: MutationCtx, userId: string): Promise<"bsc" | "ebay" | null> {
   for (const platform of LISTING_PLATFORMS) {
@@ -1452,10 +1469,12 @@ async function quietPlatformOf(ctx: MutationCtx, userId: string): Promise<"bsc" 
  * NB could not tie to a card), so the sales section and Out the Door draw.
  * The copy is not lowered (`applied` is set so nothing ever applies it).
  *
- * It never calls a marketplace: the order goes on a platform NB does not
- * poll for the caller (`quietPlatformOf`); with both being polled it is
- * refused. Its `orderId` carries `TEST_SALE_ORDER_PREFIX`, so
- * `clearMyTestDashboardSeeds` removes exactly what this wrote.
+ * No marketplace is called for it: the order goes on a platform NB does not
+ * poll for the caller (`quietPlatformOf`; with both being polled it is
+ * refused), and if the caller starts listing there later, the poll still
+ * leaves it out (`listingSales.pollInput` drops every order whose `orderId`
+ * carries `TEST_SALE_ORDER_PREFIX`), so it is never re-read by id. The same
+ * prefix lets `clearMyTestDashboardSeeds` remove exactly what this wrote.
  *
  * Safety, in the same shape as the other helpers in this file: fails closed
  * in production (`TESTING_RESET_SECRET` is unset there); acts on the caller
@@ -1517,16 +1536,20 @@ export const seedMyTestSale = mutation({
  * Both name the caller's most recently touched catalog copy (a boxed one
  * first); with none it is refused.
  *
- * It never calls a marketplace:
+ * Nothing it writes makes NB call a marketplace on its own account:
  * - the queued card goes only on a platform NB does not push for the caller
  *   (`pushesCounts`, as `quietPlatformOf`): a drain reads the queue and would
  *   list it. On a platform NB pushes, it is skipped and the result says so.
+ *   It also needs a boxed copy (NB lists only boxed cards); with only a
+ *   binder copy it is skipped with a note.
  * - the failed-set record is only a summary NB shows; no drain or cron acts on
- *   an `error` record, and the next real run of that set rewrites it. On a
- *   platform NB pushes it carries no `lastSuccessAt` and no conditions pushed,
- *   so that next run treats it exactly like no record (a full read). A set
- *   that already has a real record on a platform is left alone there (that
- *   platform is skipped with a note, the others still seeded).
+ *   an `error` record, and the next real run of that set rewrites it. It
+ *   never carries a `lastSuccessAt` and carries no conditions pushed, on any
+ *   platform, so that next run treats it exactly like no record (a full
+ *   read). A set that already has a record on a platform which is not this
+ *   seed's own untouched record (`isUntouchedTestSyncRecord`: a real one, or
+ *   a seeded one a real run has claimed) is left alone there: that platform
+ *   is skipped with a note, the others still seeded.
  *
  * Safety as `seedMyTestSale`: production refuses it; caller only.
  */
@@ -1565,6 +1588,8 @@ export const seedMyTestSync = mutation({
       if (args.pending) {
         if (pushes) {
           notes.push("no queued card: NB lists this account here, so a real sync would pick it up");
+        } else if (!copy.boxed) {
+          notes.push("no queued card: your newest card is in a binder, and NB lists only boxed cards");
         } else {
           await ctx.db.insert("listingOutbox", {
             ownerId: userId,
@@ -1584,8 +1609,12 @@ export const seedMyTestSync = mutation({
             q.eq("ownerId", userId).eq("variantId", copy.variantId).eq("platform", platform),
           )
           .first();
-        if (existing && !(existing.lastError ?? "").startsWith(TEST_SYNC_MARK)) {
-          notes.push("no failed set: that set already has a real sync record here");
+        if (existing && !isUntouchedTestSyncRecord(existing)) {
+          notes.push(
+            (existing.lastError ?? "").startsWith(TEST_SYNC_MARK)
+              ? "no failed set: a real sync has picked up the test record here"
+              : "no failed set: that set already has a real sync record here",
+          );
         } else {
           const record = {
             ownerId: userId,
@@ -1593,7 +1622,6 @@ export const seedMyTestSync = mutation({
             platform,
             status: "error" as const,
             lastRunAt: now - 10 * 60_000,
-            ...(pushes ? {} : { lastSuccessAt: now - 86_400_000 }),
             lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
             problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
             problemsTotal: 1,
@@ -1615,7 +1643,8 @@ export const seedMyTestSync = mutation({
  * NEO-464: removes what `seedMyTestSale` and `seedMyTestSync` wrote for the
  * CALLER, and nothing else: orders whose `orderId` carries
  * `TEST_SALE_ORDER_PREFIX`, queued cards at `TEST_OUTBOX_SEQ`, and sync
- * records whose sentence carries `TEST_SYNC_MARK`. Bounded reads (the
+ * records still exactly as the seed wrote them (`isUntouchedTestSyncRecord`;
+ * one a real run has claimed is the drain's and stays). Bounded reads (the
  * caller's newest 200 orders, 200 queued cards and 200 records per platform).
  * Safety as `seedMyTestSale`.
  */
@@ -1656,7 +1685,7 @@ export const clearMyTestDashboardSeeds = mutation({
         .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", userId).eq("platform", platform))
         .take(200);
       for (const record of records) {
-        if (!(record.lastError ?? "").startsWith(TEST_SYNC_MARK)) continue;
+        if (!isUntouchedTestSyncRecord(record)) continue;
         await ctx.db.delete(record._id);
         out.records += 1;
       }

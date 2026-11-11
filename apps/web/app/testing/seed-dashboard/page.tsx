@@ -10,9 +10,11 @@ import { api } from "@/convex/_generated/api";
 //   /testing/seed-dashboard?syncError=1     one set whose last sync failed (a card held back), per marketplace
 //   /testing/seed-dashboard?clear=1         take every seed above back off
 // (combine them: ?sale=1&syncError=1&syncPending=1), then it forwards to
-// `redirect` (default /dashboard). Everything lands on the signed-in caller's
-// own account and no marketplace is ever called (`convex/testing.ts`). The
-// sale goes on a marketplace NB neither lists on nor polls for them. The sync
+// `redirect` (default /dashboard; only a path on this site, see
+// `seedRedirect`). Everything lands on the signed-in caller's own account,
+// and nothing written makes NB call a marketplace for it (`convex/testing.ts`):
+// the sale goes on a marketplace NB neither lists on nor polls for them, and
+// the order poll leaves a seeded order out even once they list there. The sync
 // seeds go on every listing marketplace (BuySportsCards and eBay), except a
 // waiting card on one NB lists them on (a real sync would send it) and a
 // failed set where that set has a real sync record; the readout names each
@@ -34,6 +36,17 @@ export function seedsAsked(params: URLSearchParams): { clear: boolean; sale: boo
   return { clear, sale: !clear && sale, syncPending: !clear && syncPending, syncError: !clear && syncError };
 }
 
+/**
+ * Where the page forwards once done: `redirect` when it is a path on this
+ * site ("/..."), else /dashboard. A protocol-relative or backslash form
+ * ("//host", "/\host") or an absolute URL would leave the site.
+ */
+export function seedRedirect(params: URLSearchParams): string {
+  const raw = params.get("redirect");
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return "/dashboard";
+  return raw;
+}
+
 /** One line per marketplace: what the sync seed wrote there, and why not when it skipped one. */
 export function syncReadout(
   platforms: ReadonlyArray<{ platform: string; pending: boolean; error: boolean; note?: string }>,
@@ -51,7 +64,7 @@ function TestingSeedDashboardContent() {
   const clearSeeds = useMutation(api.testing.clearMyTestDashboardSeeds);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const redirect = searchParams.get("redirect") || "/dashboard";
+  const redirect = seedRedirect(searchParams);
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 

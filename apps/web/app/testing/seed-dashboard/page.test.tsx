@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { seedsAsked, syncReadout } from "./page";
+import { seedRedirect, seedsAsked, syncReadout } from "./page";
 
 const ask = (query: string) => seedsAsked(new URLSearchParams(query));
 
@@ -38,5 +38,25 @@ describe("syncReadout: what the sync seed says it did, per marketplace", () => {
 
   it("says nothing was written when a marketplace got nothing", () => {
     expect(syncReadout([{ platform: "ebay", pending: false, error: false, note: "x" }])).toEqual(["sync on ebay: nothing (x)"]);
+  });
+});
+
+describe("seedRedirect: where the page forwards once done", () => {
+  const to = (query: string) => seedRedirect(new URLSearchParams(query));
+
+  it("a path on this site is honoured, query and all", () => {
+    expect(to("redirect=/inventory")).toBe("/inventory");
+    expect(to(`redirect=${encodeURIComponent("/inventory?tab=boxes")}`)).toBe("/inventory?tab=boxes");
+  });
+
+  it("no redirect, or an empty one, is the dashboard", () => {
+    expect(to("")).toBe("/dashboard");
+    expect(to("redirect=")).toBe("/dashboard");
+  });
+
+  it("anything that could leave the site is the dashboard", () => {
+    for (const raw of ["//evil.example", "/\\evil.example", "https://evil.example/", "evil.example", "javascript:alert(1)"]) {
+      expect(to(`redirect=${encodeURIComponent(raw)}`)).toBe("/dashboard");
+    }
   });
 });

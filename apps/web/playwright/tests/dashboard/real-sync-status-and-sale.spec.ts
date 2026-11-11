@@ -12,8 +12,9 @@
 // `seedMyTestSync`, `clearMyTestDashboardSeeds`: the caller's own rows only,
 // refused off testing deployments; the sale on a marketplace NB neither lists
 // on nor polls for this account, the sync records on every listing
-// marketplace, a waiting card only where NB does not list them). No
-// marketplace is called.
+// marketplace, a waiting card only for a boxed card and only where NB
+// does not list them). Nothing seeded makes NB call a marketplace: the order
+// poll leaves a seeded order out, and a seeded failed set claims no success.
 //
 // R7/R7a: writes only the signed-in user's own rows: a box and one copy in it
 // on one card of the seed's 2024 Topps Chrome Base (registered in
