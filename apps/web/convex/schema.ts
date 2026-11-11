@@ -2891,6 +2891,10 @@ export default defineSchema({
           v.literal("onlyNamesake"),
           v.literal("setHistory"),
           v.literal("hallOfFame"),
+          // NEO-490 rule 6b / team 2b: the card's team picked the player (or
+          // the card's player picked the team era). Comes back as the primary
+          // after Change, like the other two.
+          v.literal("careerTeam"),
         ),
       })),
       // team-only
@@ -3198,6 +3202,10 @@ export default defineSchema({
         autoLinked: v.optional(v.union(
           v.literal("setHistory"),
           v.literal("hallOfFame"),
+          // NEO-490: rule 6b (the one same-name player with a stint on the
+          // card's team) or 2b (the one team era the card's player played
+          // for). Decided row, "played for the …" / "…'s club".
+          v.literal("careerTeam"),
         )),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —

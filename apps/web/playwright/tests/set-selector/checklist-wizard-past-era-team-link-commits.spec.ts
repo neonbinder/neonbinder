@@ -21,6 +21,13 @@
 // card only at commit. Fresh-only: a re-run finds the checklist committed and
 // fails at "No cards in this checklist yet." Re-seed before re-running.
 //
+// NEO-490: the catalogue's Jimmie Foxx has a stint at exactly ONE of the four Athletics eras (the
+// 1901-1954 club, 1925-1935), so the fetch no longer asks about the club: the card's player settles
+// the era and the wizard opens on the Save step with the link as a decided row ("the player on the
+// card played there"; the longer "<player> played there" needs ONE card naming the player and the
+// club, and Foxx is on two). That link is the product's guess, so the operator can Change it: PART 2
+// does, and the claim above (the operator's pick is the era the commit writes) still holds.
+//
 // No card surface prints a team's ERA (the sub-line, the drawer's chip and
 // Player Management print the full name only), so the card reads prove the
 // link reached the cards, and the era options prove which era was offered and
@@ -32,6 +39,7 @@ import { editCardButton } from "../../support/cards";
 import {
   fetchOneMarketplaceSetChecklistToWizard,
   advanceToSave,
+  openDecidedList,
   openOneMarketplaceSetBase,
   reviewWizard,
   stepCounter,
@@ -57,13 +65,21 @@ test(
     await fetchOneMarketplaceSetChecklistToWizard(page, env, TARGET);
     const wizard = reviewWizard(page);
 
-    // R2(a): the notice counts what reached the review: ONE name (PART 2 shows
-    // it is a team). The set's other clubs, Brooklyn Dodgers included, were
-    // settled before it. NEO-335: one count, no per-type split.
+    // R2(a): the notice counts what reached the review: ONE name, and it was LINKED for the
+    // operator (NEO-490: Foxx's own career picks the era), not asked. The set's other clubs,
+    // Brooklyn Dodgers included, were settled before it. NEO-335: one count, no per-type split.
     await expect(
-      page.getByText(/Kept all [0-9]+ cards from BSC.* 1 name needs a look before this saves\./),
+      page.getByText(/Kept all [0-9]+ cards from BSC.* 1 name was linked for you\. Give it a look before this saves\./),
     ).toBeVisible();
-    // Nothing decided: on a name step x is the decided count plus one.
+    // The only name is decided, so the wizard stands on the Save step (nothing left to ask).
+    await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
+    const decided = await openDecidedList(page);
+    const linked = decided.getByRole("listitem").filter({ hasText: CLUB });
+    await expect(linked).toContainText(`Linked to ${CLUB} · the player on the card played there`);
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, past-era club linked from the player's career" });
+
+    // The operator disagrees with the guess: Change reopens the step, nothing decided.
+    await linked.getByRole("button", { name: `Change decision for ${CLUB}` }).click();
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
     // ── PART 2: the operator's past-era link ──
@@ -117,6 +133,8 @@ test(
     await expect(wizard.getByText(/^Save [0-9]+ cards?\?$/)).toBeVisible();
     await expect(wizard.getByText("Linked to existing", { exact: true })).toBeVisible();
     await expect(wizard.getByText(`Linked to ${CLUB}`, { exact: true })).toBeVisible();
+    // The operator's pick stands in place of the career-team guess.
+    await expect(wizard.getByText(/the player on the card played there/)).toHaveCount(0);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
 
     // ── PART 3: commit ──

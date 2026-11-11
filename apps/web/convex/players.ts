@@ -1483,11 +1483,19 @@ const CARD_YEAR_TEAM_READS_PER_NAME = 8;
  * stay position-independent — which is only possible because the caller can
  * resume.
  *
- * ## The number
+ * ## The number, and the real worst case
  *
- * 240 reads, plus ~300 name lookups and the prelude's fixed preamble, lands
- * near ~600 — inside the ~900 comfortable line with the ancestry tail to
- * spare. It is also well past any real year's team vocabulary (a full MLB
+ * The ceiling is checked BEFORE each rule that reads teams (rules 4, 6 and
+ * 6b), never in the middle of one, so it can be overshot. The real worst
+ * case is bounded by the last name to start: it begins at no more than
+ * `budget − 1` reads, and from there spends no more than the sum of its
+ * per-name allowances — rule 4's and rule 6's `CARD_YEAR_TEAM_READS_PER_NAME`
+ * (8 + 8) and rule 6b's `CAREER_TEAM_READS_PER_NAME` (24). That is 239 + 40,
+ * about 279 team reads in one transaction, not 240.
+ *
+ * About 279 reads, plus ~300 name lookups and the prelude's fixed preamble,
+ * lands near ~650 — still inside the ~900 comfortable line with the ancestry
+ * tail to spare. It is also well past any real year's team vocabulary (a full MLB
  * season is ~30 rows, a college football year a couple of hundred), and the
  * memo means a team is read ONCE per transaction however many names name it.
  * So a real commit never reaches this; what it bounds is the pathological
@@ -1498,6 +1506,26 @@ const CARD_YEAR_TEAM_READS_PER_NAME = 8;
  * charged the other way round, on consultation, because it bounds EVIDENCE.)
  */
 export const CARD_YEAR_TEAM_READS_PER_TRANSACTION = 240;
+
+/**
+ * NEO-490 — how many DISTINCT teams the career-team tie-break (rule 6b) may
+ * consult **for ONE NAME**, across every candidate's whole career.
+ *
+ * Rule 4 reads only the stints covering the card's year, so its allowance
+ * (`CARD_YEAR_TEAM_READS_PER_NAME`, 8) prices one season. Rule 6b reads the
+ * CAREER, any year, of every same-name candidate, so it prices careers: a
+ * journeyman has played for ten or twelve clubs, and the name it is asked
+ * about has two or three namesakes on file, most of whom stop at the first
+ * club the card names. 24 covers two long careers in full, or three ordinary
+ * ones, before the memo is counted.
+ *
+ * Charged on CONSULTATION like rule 4's, for the same reason: a team already
+ * in the shared memo still costs this name a unit, so the answer never
+ * depends on what earlier names warmed. Blowing it abandons rule 6b and sends
+ * the name to review — a "the only one who ever played there" decided on
+ * half the careers would be no answer at all.
+ */
+export const CAREER_TEAM_READS_PER_NAME = 24;
 
 /**
  * NEO-254 — team lookups shared across one commit's worth of narrowing.
@@ -1596,7 +1624,59 @@ export type CardYearNarrowing = {
    * the other one.
    */
   viaHallOfFame?: boolean;
+  /**
+   * NEO-490 — `playerId` came from the career-team tie-break (rule 6b): the
+   * one namesake with a stint, in any year, on a team the card names. Set
+   * only alongside a `playerId`. Like `viaHallOfFame` the gate shows it as a
+   * decided row the operator can Change ("played for the Houston Astros"),
+   * because a career is weaker evidence than the card's own year.
+   */
+  viaCareerTeam?: boolean;
 };
+
+/**
+ * NEO-490 — rule 6b's read: which candidates have a stint, in ANY year, on a
+ * team the card names?
+ *
+ * Reads through the same memo and transaction meter as rules 4 and 6, under
+ * its own per-name allowance (`CAREER_TEAM_READS_PER_NAME`). A candidate stops
+ * being read at its first matching stint. Returns `"blown"` when the allowance
+ * runs out before every candidate's career was consulted; the caller then
+ * links nobody.
+ */
+async function candidatesWithACardTeamStint(
+  ctx: QueryCtx | MutationCtx,
+  candidates: ReadonlyArray<Doc<"players">>,
+  teamKeys: ReadonlySet<string>,
+  cache: CardYearTeamCache,
+): Promise<Array<Doc<"players">> | "blown"> {
+  const consulted = new Set<string>();
+  const onTeam: Array<Doc<"players">> = [];
+  for (const player of candidates) {
+    for (const stint of player.teamYears ?? []) {
+      const key = stint.teamId as string;
+      if (!consulted.has(key)) {
+        if (consulted.size >= CAREER_TEAM_READS_PER_NAME) return "blown";
+        consulted.add(key);
+      }
+      if (!cache.keysById.has(key)) {
+        cache.reads++;
+        const team = await ctx.db.get(stint.teamId);
+        cache.keysById.set(
+          key,
+          team
+            ? [normalizeEntityName(teamFullName(team)), normalizeEntityName(team.name)]
+            : [],
+        );
+      }
+      if (cache.keysById.get(key)!.some((k) => k && teamKeys.has(k))) {
+        onTeam.push(player);
+        break;
+      }
+    }
+  }
+  return onTeam;
+}
 
 /**
  * NEO-424 — the Hall of Fame tie-break's guard: does any RIVAL of the Hall of
@@ -1674,6 +1754,14 @@ async function rivalsNameACardTeam(
  *    everybody out). Exactly one Hall of Famer in the pool wins, provided no
  *    rival has a stint on a team the card names (`rivalsNameACardTeam`). Two
  *    Hall of Famers, or none, is review. Reported as `viaHallOfFame`.
+ * 6b. NEO-490 — the career-team tie-break. Only when rules 1–6 picked nobody
+ *    and the card names a team. Exactly one candidate (of ALL of them, any
+ *    year) has a stint on a team the card names, and EVERY other candidate
+ *    has at least one stint on file — a namesake with no career recorded
+ *    might have played there too, and unknown is not absent. Read under its
+ *    own per-name allowance (`CAREER_TEAM_READS_PER_NAME`); a blown
+ *    allowance — its own, or rule 4's — is review. Reported as
+ *    `viaCareerTeam`.
  * 7. Anything else is review.
  *
  * ## Why this is a narrowing and never a decision
@@ -1735,8 +1823,24 @@ export async function narrowSameNamePlayersByCardYear(
       .filter((key) => key.length > 0),
   );
 
+  /*
+   * NEO-490 — one cache for this call's rules 4, 6 and 6b. A caller that
+   * shares one across names passes it; a one-shot caller gets a fresh one
+   * here, ONCE, so a team rule 4 read is a memo hit for rule 6 or 6b instead
+   * of a second read. It cannot move an answer: the memo returns the keys the
+   * read would have, the per-name allowances are charged on consultation
+   * whatever the memo holds, and one name can read at most 8 + 8 + 24 teams,
+   * far below a fresh cache's ceiling, so a one-shot call is never deferred.
+   */
+  const cache = opts.teamCache ?? createCardYearTeamCache();
+
+  /*
+   * NEO-490 — rule 4 ran out of allowance. A season's worth of stints past
+   * eight teams is a corrupt or hand-edited career, and rule 6b would read
+   * the same career to answer the same question; the name goes to a human.
+   */
+  let yearTeamReadBlown = false;
   if (teamKeys.size > 0 && survivors.length > 1) {
-    const cache = opts.teamCache ?? createCardYearTeamCache();
     // NEO-296 (audit condition 2) — checked BEFORE any of this name's
     // consultations, so a name is either evaluated on its full allowance or
     // deferred whole. Half a tie-break is the one thing that must not happen:
@@ -1783,7 +1887,8 @@ export async function narrowSameNamePlayersByCardYear(
           // The one place the transaction meter moves: an actual document
           // read. A memo hit below costs the transaction nothing and so is
           // charged nothing. The ceiling may be overshot by at most this
-          // name's remaining per-name allowance, which is what "a name is
+          // name's remaining per-name allowances (rules 4, 6 and 6b; see
+          // `CARD_YEAR_TEAM_READS_PER_TRANSACTION`), which is what "a name is
           // evaluated whole or deferred whole" costs.
           cache.reads++;
           const team = await ctx.db.get(stint.teamId);
@@ -1807,6 +1912,7 @@ export async function narrowSameNamePlayersByCardYear(
     }
     // A partial read must not pick a winner — see
     // `CARD_YEAR_TEAM_READS_PER_NAME`.
+    if (budgetBlown) yearTeamReadBlown = true;
     if (!budgetBlown && onThatTeam.length === 1) {
       return { playerId: onThatTeam[0]._id, activePlayerIds };
     }
@@ -1829,7 +1935,6 @@ export async function narrowSameNamePlayersByCardYear(
       if (teamKeys.size === 0) {
         return { playerId: famer._id, activePlayerIds, viaHallOfFame: true };
       }
-      const cache = opts.teamCache ?? createCardYearTeamCache();
       // Same contract as the year tie-break's check above: evaluated whole on
       // a fresh allowance, or deferred whole to the next transaction.
       if (cache.reads >= cache.budget) {
@@ -1840,6 +1945,32 @@ export async function narrowSameNamePlayersByCardYear(
       if (contradicted === false) {
         return { playerId: famer._id, activePlayerIds, viaHallOfFame: true };
       }
+    }
+  }
+
+  /*
+   * NEO-490 — rule 6b, the career-team tie-break. Last, after every rule that
+   * reads the card's year or the Hall of Fame: it is the weakest evidence the
+   * card offers, and only ever fills a silence.
+   *
+   * Every candidate must have a career on file before any team is read. The
+   * winner needs one by definition, and a rival with none could have played
+   * for the card's team without NB knowing, so one empty career already
+   * makes the answer "ask" — and costs no reads to find out.
+   */
+  if (
+    teamKeys.size > 0 &&
+    !yearTeamReadBlown &&
+    candidates.every((player) => (player.teamYears ?? []).length > 0)
+  ) {
+    // Same contract as rules 4 and 6: evaluated whole on a fresh allowance,
+    // or deferred whole to the next transaction.
+    if (cache.reads >= cache.budget) {
+      return { playerId: null, activePlayerIds, transactionBudgetExhausted: true };
+    }
+    const onTeam = await candidatesWithACardTeamStint(ctx, candidates, teamKeys, cache);
+    if (onTeam !== "blown" && onTeam.length === 1) {
+      return { playerId: onTeam[0]._id, activePlayerIds, viaCareerTeam: true };
     }
   }
 
@@ -1908,11 +2039,14 @@ const resolveNameForReviewResult = v.object({
    * `narrowedByCardYear` is. `"cardYear"` is the year (and team) tie-break,
    * an inference the gate makes silently and logs; `"hallOfFame"` is rule 6
    * of `narrowSameNamePlayersByCardYear`, which the gate turns into a
-   * VISIBLE decided row the operator can Change. `narrowedByCardYear` stays
-   * true for both so its existing readers keep their meaning ("not the only
-   * row of that name").
+   * VISIBLE decided row the operator can Change. NEO-490 `"careerTeam"` is
+   * rule 6b (the one namesake with a stint on the card's team, any year),
+   * shown the same way. `narrowedByCardYear` stays true for all three so its
+   * existing readers keep their meaning ("not the only row of that name").
    */
-  narrowedBy: v.optional(v.union(v.literal("cardYear"), v.literal("hallOfFame"))),
+  narrowedBy: v.optional(
+    v.union(v.literal("cardYear"), v.literal("hallOfFame"), v.literal("careerTeam")),
+  ),
   /**
    * NEO-424 — the in-sport rows behind `matchCount`, when there are two or
    * more (capped like `matchCount`). The set-history gate offers them beside
@@ -1926,7 +2060,7 @@ type ResolveNameForReviewResult = {
   matchCount: number;
   playerId?: Id<"players">;
   narrowedByCardYear?: boolean;
-  narrowedBy?: "cardYear" | "hallOfFame";
+  narrowedBy?: "cardYear" | "hallOfFame" | "careerTeam";
   candidatePlayerIds?: Array<Id<"players">>;
 };
 
@@ -1969,7 +2103,9 @@ async function resolveOneNameForReview(
           narrowedByCardYear: true,
           narrowedBy: narrowed.viaHallOfFame
             ? ("hallOfFame" as const)
-            : ("cardYear" as const),
+            : narrowed.viaCareerTeam
+              ? ("careerTeam" as const)
+              : ("cardYear" as const),
         }
       : {}),
   };

@@ -109,3 +109,4 @@
 - [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic, measured-wait credit, blocked Next via Enter, radiogroup per card
 - [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
 - [Checklist upload team claim blocks career prefill](patterns_checklist_upload_team_claim_blocks_career_prefill.md) — NEO-478: an uploaded row's team is a permanent claim; Roanoke spec cannot take the upload; aria-disabled Use via Enter; burst 429s
+- [Name-fallback Match Cards solo + cancel confirm](patterns_name_fallback_match_cards_solo_and_modal_cancel_confirm.md) — NEO-490: nameFallbackFacts, Cancel opens a discard confirm, virtualized list, two-phase fresh-only spec
