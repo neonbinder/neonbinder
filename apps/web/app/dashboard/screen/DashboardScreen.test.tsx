@@ -6,13 +6,14 @@
  * of that data taken away.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import { bindersOf, getDashboard, type DashboardData } from "../fake-data";
 import DashboardScreen, { summary } from "./DashboardScreen";
 import { priceWords } from "./NewListings";
+import { HELD_PREVIEW } from "./SyncStatus";
 import type { ShelfBinder } from "./shelf-model";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -287,15 +288,52 @@ describe("the sync status (review round 4)", () => {
     expect(link.textContent).toContain(first.reason);
   });
 
-  it("a set whose last sync failed says so, and counts the cards it does not name", () => {
+  it("a set whose last sync failed says so after its held-back cards; the cards it does not name open on Sync status", () => {
     const data = getDashboard();
     const set = { ...data.syncStatus!.problems[0], failure: "The marketplace didn't answer.", heldBack: 5 };
     draw({ ...data, syncStatus: { pending: [], problems: [set], more: true } });
     const sync = screen.getByRole("region", { name: "Sync status" });
-    expect(within(sync).getByText("The marketplace didn't answer.")).toBeTruthy();
-    expect(within(sync).getByText("and 3 more cards")).toBeTruthy();
+    const failure = within(sync).getByText("The marketplace didn't answer.");
+    expect(within(sync).getByText("5 cards held back from eBay. Fix each one on its card:")).toBeTruthy();
+    // Held-back cards lead: every named card comes before the failure sentence.
+    for (const link of within(sync).getAllByRole("link", { name: /No price yet|need a photo/ })) {
+      expect(before(link, failure)).toBe(true);
+    }
+    const rest = within(sync).getByRole("link", { name: `3 more cards on Sync status, held back in ${set.setLabel} on eBay` });
+    expect(rest.getAttribute("href")).toBe("/demo/inventory?tab=sync");
     expect(within(sync).getByText("More sets need a look on Sync status.")).toBeTruthy();
     expect(within(sync).queryByText(/waiting for the next sync/)).toBeNull();
+  });
+
+  it(`more than ${HELD_PREVIEW} held-back cards: the rest behind Show all, each still opening its card`, () => {
+    const data = getDashboard();
+    const base = data.syncStatus!.problems[0];
+    const cards = Array.from({ length: HELD_PREVIEW + 3 }, (_, i) => ({
+      reason: "No price yet. Set one on the card, or a common price for the set.",
+      card: { ...base.cards[0].card, id: `${base.cards[0].card.id}-${i}`, title: `Held card ${i}` },
+    }));
+    const set = { ...base, heldBack: cards.length, cards };
+    draw({ ...data, syncStatus: { pending: [], problems: [set], more: false } });
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    const held = () => within(sync).getAllByRole("link", { name: /^Held card \d+/ });
+    expect(held()).toHaveLength(HELD_PREVIEW);
+    const showAll = within(sync).getByRole("button", { name: `Show all ${cards.length} held back in ${set.setLabel} on eBay (+3)` });
+    expect(showAll.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(showAll);
+    expect(held()).toHaveLength(cards.length);
+    const last = held()[cards.length - 1];
+    expect(last.getAttribute("href")).toBe(`/demo/inventory?tab=cards&detail=${encodeURIComponent(cards[cards.length - 1].card.id)}`);
+    expect(last.textContent).toContain("No price yet.");
+    expect(within(sync).getByRole("button", { name: /^Show fewer/ }).getAttribute("aria-expanded")).toBe("true");
+    // Every card the read named is on the page: nothing points elsewhere.
+    expect(within(sync).queryByRole("link", { name: /more cards? on Sync status/ })).toBeNull();
+  });
+
+  it("sets needing a look come before the cards waiting for the next sync", () => {
+    draw(getDashboard());
+    const sync = screen.getByRole("region", { name: "Sync status" });
+    const set = within(sync).getAllByRole("heading", { level: 3 })[0];
+    expect(before(set, within(sync).getByText("4 cards waiting for the next sync."))).toBe(true);
   });
 
   it("only cards waiting: no set, and a count that may be a floor", () => {

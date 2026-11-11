@@ -1322,7 +1322,49 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
     expect((await me.mutation(api.testing.seedMyTestSale, {})).platform).toBe("ebay");
     await listing(t, "ebay");
     await expect(me.mutation(api.testing.seedMyTestSale, {})).rejects.toThrow(/every marketplace/);
-    await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).rejects.toThrow(/every marketplace/);
+  });
+
+  test("the sync seed never queues a card where NB lists the caller (a real sync would send it); the failed set still goes there", async () => {
+    const { t, fx, me } = await withBoxedCard();
+    await listing(t, "ebay");
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: true, error: true },
+        {
+          platform: "ebay",
+          pending: false,
+          error: true,
+          note: "no queued card: NB lists this account here, so a real sync would pick it up",
+        },
+      ],
+    });
+    const queued = await t.run((ctx) =>
+      ctx.db
+        .query("listingOutbox")
+        .withIndex("by_owner_platform_changed", (q) => q.eq("ownerId", USER_A).eq("platform", "ebay"))
+        .collect(),
+    );
+    expect(queued).toEqual([]);
+    // On the platform NB pushes, the record reads to the next real run exactly as no record: a full read.
+    const records = await t.run((ctx) =>
+      ctx.db
+        .query("marketplaceListingSyncs")
+        .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", USER_A).eq("variantId", fx.baseId))
+        .collect(),
+    );
+    const byPlatform = Object.fromEntries(records.map((r) => [r.platform, r]));
+    expect(byPlatform.ebay.lastSuccessAt).toBeUndefined();
+    expect(byPlatform.ebay.conditionsPushed).toEqual([]);
+    expect(byPlatform.bsc.lastSuccessAt).toBeTypeOf("number");
+
+    // Listed everywhere: no card is queued anywhere, the failed sets still are.
+    await me.mutation(api.testing.clearMyTestDashboardSeeds, {});
+    await listing(t, "bsc");
+    const all = await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true });
+    expect(all.platforms.map((p) => [p.platform, p.pending, p.error])).toEqual([
+      ["bsc", false, true],
+      ["ebay", false, true],
+    ]);
   });
 
   test("with no card at all, the sale is a line NB could not tie to a card; the sync seed is refused", async () => {
@@ -1340,15 +1382,30 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
     await t.run((ctx) =>
       ctx.db.insert("listingOutbox", { ownerId: USER_A, platform: "bsc", cardId: fx.gold1, variantId: fx.goldId, seq: 3, changedAt: 1 }),
     );
-    await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true });
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: true, error: true },
+        { platform: "ebay", pending: true, error: true },
+      ],
+    });
     const alerts = await me.query(api.dashboard.syncAlerts, {});
-    expect(alerts.pending).toEqual([{ platform: "bsc", cards: 2, more: false }]);
-    expect(alerts.sets).toHaveLength(1);
-    expect(alerts.sets[0]).toMatchObject({ platform: "bsc", variantId: fx.baseId, failed: true, heldBack: 1 });
-    expect(alerts.sets[0].cards).toEqual([{ cardId: fx.gooden1, reason: "noPrice", detail: "(Test) No price set." }]);
+    expect(alerts.pending).toEqual([
+      { platform: "bsc", cards: 2, more: false },
+      { platform: "ebay", cards: 1, more: false },
+    ]);
+    expect(alerts.sets).toHaveLength(2);
+    expect(alerts.sets.map((s) => s.platform).sort()).toEqual(["bsc", "ebay"]);
+    for (const set of alerts.sets) {
+      expect(set).toMatchObject({ variantId: fx.baseId, failed: true, heldBack: 1 });
+      expect(set.cards).toEqual([{ cardId: fx.gooden1, reason: "noPrice", detail: "(Test) No price set." }]);
+    }
     expect(await other.query(api.dashboard.syncAlerts, {})).toEqual({ pending: [], sets: [], more: false });
 
-    expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 1, records: 1 });
+    // Seeding again rewrites its own records rather than stacking a second failure.
+    await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true });
+    expect((await me.query(api.dashboard.syncAlerts, {})).sets).toHaveLength(2);
+
+    expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 2, records: 2 });
     expect(await me.query(api.dashboard.syncAlerts, {})).toEqual({
       pending: [{ platform: "bsc", cards: 1, more: false }],
       sets: [],
@@ -1369,6 +1426,22 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
         lastUpdated: 1,
       }),
     );
-    await expect(me.mutation(api.testing.seedMyTestSync, { pending: false, error: true })).rejects.toThrow(/real sync record/);
+    // Only that platform is skipped, with a note; the other is still seeded.
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: false, error: false, note: "no failed set: that set already has a real sync record here" },
+        { platform: "ebay", pending: false, error: true },
+      ],
+    });
+    const real = await t.run((ctx) =>
+      ctx.db
+        .query("marketplaceListingSyncs")
+        .withIndex("by_owner_variant_platform", (q) =>
+          q.eq("ownerId", USER_A).eq("variantId", fx.baseId).eq("platform", "bsc"),
+        )
+        .unique(),
+    );
+    expect(real).toMatchObject({ status: "idle", problems: [] });
+    expect(real?.lastError).toBeUndefined();
   });
 });

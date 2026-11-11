@@ -150,8 +150,14 @@ export const SYNC_PENDING_SCAN = 100;
 export const SYNC_RECORD_SCAN = 50;
 /** Sets with an unresolved problem `syncAlerts` returns across platforms. */
 export const SYNC_ALERTS_SHOWN = 6;
-/** Held-back cards named for one set (the rest are counted). */
-export const SYNC_CARDS_NAMED = 3;
+/**
+ * Held-back cards named for one set (the rest are counted, and open on Sync
+ * status). Every named card is a way to its fix on the dashboard (Jason,
+ * 2026-11-11: held-back cards are "probably more important than other things
+ * within sync"), so this is generous; the cap keeps the card reads that
+ * follow a few hundred at most (`SYNC_ALERTS_SHOWN` sets of it).
+ */
+export const SYNC_CARDS_NAMED = 30;
 /** New on NeonBinder: how many entries (a set, or one variant of it) it shows. */
 export const NEW_SETS_SHOWN = 6;
 /** How many variants' worth of newest cards it steps back through to find them. */
@@ -1148,8 +1154,9 @@ export const sales = query({
  *
  * - `pending`: per platform with any, the cards waiting (at most
  *   `SYNC_PENDING_SCAN` counted; `more` past that).
- * - `sets`: the sets whose last run failed or held cards back, most recent
- *   run first, at most `SYNC_ALERTS_SHOWN`, each naming up to
+ * - `sets`: the sets whose last run failed or held cards back, those holding
+ *   cards back first, then most recent run first, at most
+ *   `SYNC_ALERTS_SHOWN`, each naming up to
  *   `SYNC_CARDS_NAMED` held-back cards (the rest counted). `more`: another
  *   set has one too, or the scan stopped short.
  *
@@ -1206,7 +1213,11 @@ export const syncAlerts = query({
         if (outcome.failed || outcome.heldBack > 0) found.push({ record, ...outcome });
       }
     }
-    found.sort((a, b) => (b.record.lastRunAt ?? 0) - (a.record.lastRunAt ?? 0));
+    // Sets holding cards back come first (each card is something the collector can fix), then the newest run.
+    found.sort(
+      (a, b) =>
+        Number(b.heldBack > 0) - Number(a.heldBack > 0) || (b.record.lastRunAt ?? 0) - (a.record.lastRunAt ?? 0),
+    );
     if (found.length > SYNC_ALERTS_SHOWN) more = true;
     const labels = new ListingLabels(ctx);
     const sets = [];

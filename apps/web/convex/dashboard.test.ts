@@ -1619,12 +1619,13 @@ describe("syncAlerts", () => {
     expect(out.sets).toEqual([]);
   });
 
-  test("a later failure shows with NB's sentence; held-back cards show by name (first few) and count; newest run first", async () => {
+  test("a later failure shows with NB's sentence; held-back cards show by name (up to SYNC_CARDS_NAMED) and count; sets holding cards back first", async () => {
     const s = await setup();
     await record(s, {
       platform: "bsc",
       status: "error",
-      lastRunAt: NOW - 1000,
+      // The newer run: still after the set that holds cards back.
+      lastRunAt: NOW + 1000,
       lastSuccessAt: NOW - DAY,
       lastError: "BuySportsCards didn't answer. NB tries again on the next sync.",
     });
@@ -1638,15 +1639,14 @@ describe("syncAlerts", () => {
         { cardId: s.fx.gold1, reason: "noPrice" },
         { reason: "noLink" },
         { cardId: s.fx.gold1, reason: "rejected", detail: "Too blurry" },
-        { cardId: s.fx.gold1, reason: "noPrice" },
-        { cardId: s.fx.gold1, reason: "noPrice" },
+        ...Array.from({ length: SYNC_CARDS_NAMED + 2 }, () => ({ cardId: s.fx.gold1, reason: "noPrice" as const })),
       ],
-      problemsTotal: 9,
+      problemsTotal: SYNC_CARDS_NAMED + 40,
     });
     await record(s, { status: "error", lastRunAt: NOW, lastError: "theirs", ownerId: THEM.subject });
     const out = await s.me.query(api.dashboard.syncAlerts, {});
     expect(out.sets.map((x) => [x.platform, x.failed, x.heldBack])).toEqual([
-      ["ebay", false, 9],
+      ["ebay", false, SYNC_CARDS_NAMED + 40],
       ["bsc", true, 0],
     ]);
     expect(out.sets[1].message).toBe("BuySportsCards didn't answer. NB tries again on the next sync.");

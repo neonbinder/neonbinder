@@ -1509,21 +1509,39 @@ export const seedMyTestSale = mutation({
 });
 
 /**
- * NEO-464: what the dashboard's sync status looks like, for the CALLER only.
- * `pending`: one card queued for the next sync (`listingOutbox`, seq
+ * NEO-464: what the dashboard's sync status looks like, for the CALLER only,
+ * on EVERY listing platform (`LISTING_PLATFORMS`), each one reported on its
+ * own. `pending`: one card queued for the next sync (`listingOutbox`, seq
  * `TEST_OUTBOX_SEQ`). `error`: one set whose last run failed and held a card
  * back (`marketplaceListingSyncs`, its sentences led by `TEST_SYNC_MARK`).
  * Both name the caller's most recently touched catalog copy (a boxed one
  * first); with none it is refused.
  *
- * It never calls a marketplace: the records go on a platform NB does not
- * list on for the caller (`quietPlatformOf`), so no drain ever reads them; a
- * set that already has a real record there is left alone (refused). Safety
- * as `seedMyTestSale`: production refuses it; caller only.
+ * It never calls a marketplace:
+ * - the queued card goes only on a platform NB does not push for the caller
+ *   (`pushesCounts`, as `quietPlatformOf`): a drain reads the queue and would
+ *   list it. On a platform NB pushes, it is skipped and the result says so.
+ * - the failed-set record is only a summary NB shows; no drain or cron acts on
+ *   an `error` record, and the next real run of that set rewrites it. On a
+ *   platform NB pushes it carries no `lastSuccessAt` and no conditions pushed,
+ *   so that next run treats it exactly like no record (a full read). A set
+ *   that already has a real record on a platform is left alone there (that
+ *   platform is skipped with a note, the others still seeded).
+ *
+ * Safety as `seedMyTestSale`: production refuses it; caller only.
  */
 export const seedMyTestSync = mutation({
   args: { pending: v.boolean(), error: v.boolean() },
-  returns: v.object({ platform: listingPlatformValidator }),
+  returns: v.object({
+    platforms: v.array(
+      v.object({
+        platform: listingPlatformValidator,
+        pending: v.boolean(),
+        error: v.boolean(),
+        note: v.optional(v.string()),
+      }),
+    ),
+  }),
   handler: async (ctx, args) => {
     if (!process.env.TESTING_RESET_SECRET) {
       throw new Error("Test sync seeding is not enabled on this deployment");
@@ -1532,52 +1550,64 @@ export const seedMyTestSync = mutation({
     if (!userId) {
       throw new Error("Not authenticated");
     }
-    const platform = await quietPlatformOf(ctx, userId);
-    if (!platform) {
-      throw new Error("This account lists on every marketplace, so a test sync record would be read by a real sync.");
-    }
     const copy = await seedCopyOf(ctx, userId);
     if (!copy) {
       throw new Error("Add a card to a box first: the test sync names one of your cards.");
     }
     const now = Date.now();
-    if (args.pending) {
-      await ctx.db.insert("listingOutbox", {
-        ownerId: userId,
-        platform,
-        cardId: copy.cardId,
-        variantId: copy.variantId,
-        seq: TEST_OUTBOX_SEQ,
-        changedAt: now,
-      });
-    }
-    if (args.error) {
-      const existing = await ctx.db
-        .query("marketplaceListingSyncs")
-        .withIndex("by_owner_variant_platform", (q) =>
-          q.eq("ownerId", userId).eq("variantId", copy.variantId).eq("platform", platform),
-        )
-        .first();
-      if (existing && !(existing.lastError ?? "").startsWith(TEST_SYNC_MARK)) {
-        throw new Error("That set already has a real sync record, so the test one was not written.");
+    const platforms = [];
+    for (const platform of LISTING_PLATFORMS) {
+      const state = await listingStateOf(ctx, userId, platform);
+      const pushes = state !== null && pushesCounts(state);
+      const notes: string[] = [];
+      let pending = false;
+      let error = false;
+      if (args.pending) {
+        if (pushes) {
+          notes.push("no queued card: NB lists this account here, so a real sync would pick it up");
+        } else {
+          await ctx.db.insert("listingOutbox", {
+            ownerId: userId,
+            platform,
+            cardId: copy.cardId,
+            variantId: copy.variantId,
+            seq: TEST_OUTBOX_SEQ,
+            changedAt: now,
+          });
+          pending = true;
+        }
       }
-      const record = {
-        ownerId: userId,
-        variantId: copy.variantId,
-        platform,
-        status: "error" as const,
-        lastRunAt: now - 10 * 60_000,
-        lastSuccessAt: now - 86_400_000,
-        lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
-        problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
-        problemsTotal: 1,
-        conditionsPushed: [],
-        lastUpdated: now,
-      };
-      if (existing) await ctx.db.replace(existing._id, record);
-      else await ctx.db.insert("marketplaceListingSyncs", record);
+      if (args.error) {
+        const existing = await ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) =>
+            q.eq("ownerId", userId).eq("variantId", copy.variantId).eq("platform", platform),
+          )
+          .first();
+        if (existing && !(existing.lastError ?? "").startsWith(TEST_SYNC_MARK)) {
+          notes.push("no failed set: that set already has a real sync record here");
+        } else {
+          const record = {
+            ownerId: userId,
+            variantId: copy.variantId,
+            platform,
+            status: "error" as const,
+            lastRunAt: now - 10 * 60_000,
+            ...(pushes ? {} : { lastSuccessAt: now - 86_400_000 }),
+            lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
+            problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
+            problemsTotal: 1,
+            conditionsPushed: [],
+            lastUpdated: now,
+          };
+          if (existing) await ctx.db.replace(existing._id, record);
+          else await ctx.db.insert("marketplaceListingSyncs", record);
+          error = true;
+        }
+      }
+      platforms.push({ platform, pending, error, ...(notes.length > 0 ? { note: notes.join("; ") } : {}) });
     }
-    return { platform };
+    return { platforms };
   },
 });
 

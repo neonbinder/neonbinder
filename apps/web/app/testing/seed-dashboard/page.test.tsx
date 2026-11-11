@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { seedsAsked } from "./page";
+import { seedsAsked, syncReadout } from "./page";
 
 const ask = (query: string) => seedsAsked(new URLSearchParams(query));
 
@@ -20,5 +20,23 @@ describe("seedsAsked: what /testing/seed-dashboard seeds", () => {
 
   it("only 1 means yes", () => {
     expect(ask("syncError=true")).toEqual({ clear: false, sale: true, syncPending: false, syncError: false });
+  });
+});
+
+describe("syncReadout: what the sync seed says it did, per marketplace", () => {
+  it("names each marketplace, what it got, and why a seed was skipped", () => {
+    expect(
+      syncReadout([
+        { platform: "bsc", pending: true, error: true },
+        { platform: "ebay", pending: false, error: true, note: "no queued card: NB lists this account here" },
+      ]),
+    ).toEqual([
+      "sync on bsc: waiting card + failed set",
+      "sync on ebay: failed set (no queued card: NB lists this account here)",
+    ]);
+  });
+
+  it("says nothing was written when a marketplace got nothing", () => {
+    expect(syncReadout([{ platform: "ebay", pending: false, error: false, note: "x" }])).toEqual(["sync on ebay: nothing (x)"]);
   });
 });

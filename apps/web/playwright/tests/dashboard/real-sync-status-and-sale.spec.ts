@@ -8,8 +8,10 @@
 // order poll, a sync problem from a real sync), so the spec seeds NB's own
 // records of them with /testing/seed-dashboard (`seedMyTestSale`,
 // `seedMyTestSync`, `clearMyTestDashboardSeeds`: the caller's own rows only,
-// on a marketplace NB neither lists on nor polls for this account, refused off
-// testing deployments). No marketplace is called.
+// refused off testing deployments; the sale on a marketplace NB neither lists
+// on nor polls for this account, the sync records on every listing
+// marketplace, a waiting card only where NB does not list them). No
+// marketplace is called.
 //
 // R7/R7a: writes only the signed-in user's own rows: a box and one copy in it
 // on one card of the seed's 2024 Topps Chrome Base (registered in
@@ -67,9 +69,10 @@ test(
     const sync = page.getByRole("region", { name: "Sync status" });
     await expect(sync).toBeVisible();
     await expect(sync.getByText(/^\d+\+? cards? waiting for the next sync\.$/).first()).toBeVisible();
-    await expect(sync.getByText(TEST_FAILURE)).toBeVisible();
-    // The failed set names its marketplace for a reader.
-    await expect(sync.getByRole("heading", { level: 3, name: / on (BuySportsCards|eBay)$/ }).first()).toBeVisible();
+    // The failed set names its marketplace for a reader. The seed writes one on every listing marketplace
+    // (this account has no eBay sync record of its own for the set to hold eBay's back), so eBay's stands there.
+    const ebaySet = sync.getByRole("article").filter({ has: page.getByRole("heading", { level: 3, name: / on eBay$/ }) });
+    await expect(ebaySet.getByText(TEST_FAILURE)).toBeVisible();
     // It stands at the top: above Out the Door, which the order put up.
     const outTheDoor = page.getByRole("region", { name: "Out the Door" });
     await expect(outTheDoor.getByRole("heading", { level: 3, name: / order #TEST-[0-9A-F]+$/ })).toBeVisible();
@@ -77,11 +80,22 @@ test(
     expect(syncBox!.y).toBeLessThan(doorBox!.y);
     await expectAccessible(page, { label: "Dashboard, sync status and an order to ship" });
 
-    // A real move: the held-back card (one of this account's boxed cards) opens on Inventory, where the fix
-    // is; Back returns to the dashboard.
-    await sync.getByRole("link", { name: /No price yet\./ }).first().click();
+    // Held-back cards lead the set: this card, with its reason, comes before the failure sentence.
+    const heldBack = ebaySet
+      .getByRole("link", { name: /No price yet\./ })
+      .filter({ hasText: card.player })
+      .filter({ hasText: `#${card.number}` });
+    await expect(heldBack).toBeVisible();
+    const [cardBox, failureBox] = [await heldBack.boundingBox(), await ebaySet.getByText(TEST_FAILURE).boundingBox()];
+    expect(cardBox!.y).toBeLessThan(failureBox!.y);
+
+    // A real move: the held-back card opens its own card panel on Inventory, where its price is fixed;
+    // Back returns to the dashboard.
+    await heldBack.click();
     await expect(page).toHaveURL(/\/inventory\?tab=cards&detail=[^&]+$/);
-    await expect(page.getByRole("dialog").filter({ has: page.getByRole("region", { name: /^Your copies of / }) })).toBeVisible();
+    await expect(drawer).toBeVisible();
+    await yourCopies.getByRole("button", { name: `Edit ${card.short}, Raw, Excellent`, exact: true }).click();
+    await expect(drawer.getByRole("spinbutton", { name: "Price", exact: true })).toBeVisible();
     await page.goBack();
     await expect(greeting).toBeVisible();
     await sync.getByRole("link", { name: "Open Sync status", exact: true }).click();

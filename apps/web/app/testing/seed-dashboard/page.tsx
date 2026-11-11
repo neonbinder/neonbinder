@@ -6,13 +6,17 @@ import { api } from "@/convex/_generated/api";
 // Test-only dashboard seeds (NEO-464). Signed in, open
 //   /testing/seed-dashboard                 a paid order waiting to ship (the default)
 //   /testing/seed-dashboard?sale=1          the same, named
-//   /testing/seed-dashboard?syncPending=1   one card waiting for the next sync
-//   /testing/seed-dashboard?syncError=1     one set whose last sync failed, a card held back
+//   /testing/seed-dashboard?syncPending=1   one card waiting for the next sync, per marketplace
+//   /testing/seed-dashboard?syncError=1     one set whose last sync failed (a card held back), per marketplace
 //   /testing/seed-dashboard?clear=1         take every seed above back off
 // (combine them: ?sale=1&syncError=1&syncPending=1), then it forwards to
 // `redirect` (default /dashboard). Everything lands on the signed-in caller's
-// own account, on a marketplace NB neither lists on nor polls for them, so no
-// marketplace is ever called (`convex/testing.ts`).
+// own account and no marketplace is ever called (`convex/testing.ts`). The
+// sale goes on a marketplace NB neither lists on nor polls for them. The sync
+// seeds go on every listing marketplace (BuySportsCards and eBay), except a
+// waiting card on one NB lists them on (a real sync would send it) and a
+// failed set where that set has a real sync record; the readout names each
+// marketplace and what it got.
 //
 // It exists because a sale only reaches NB from a marketplace's order poll,
 // and a sync problem only from a real sync: neither can be made on demand.
@@ -28,6 +32,16 @@ export function seedsAsked(params: URLSearchParams): { clear: boolean; sale: boo
   const syncError = on("syncError");
   const sale = on("sale") || (!clear && !syncPending && !syncError);
   return { clear, sale: !clear && sale, syncPending: !clear && syncPending, syncError: !clear && syncError };
+}
+
+/** One line per marketplace: what the sync seed wrote there, and why not when it skipped one. */
+export function syncReadout(
+  platforms: ReadonlyArray<{ platform: string; pending: boolean; error: boolean; note?: string }>,
+): string[] {
+  return platforms.map((p) => {
+    const wrote = [p.pending ? "waiting card" : null, p.error ? "failed set" : null].filter((w) => w !== null);
+    return `sync on ${p.platform}: ${wrote.length > 0 ? wrote.join(" + ") : "nothing"}${p.note ? ` (${p.note})` : ""}`;
+  });
 }
 
 function TestingSeedDashboardContent() {
@@ -70,7 +84,7 @@ function TestingSeedDashboardContent() {
         }
         if (asked.syncPending || asked.syncError) {
           const r = await seedSync({ pending: asked.syncPending, error: asked.syncError });
-          done.push(`sync records on ${r.platform}`);
+          done.push(...syncReadout(r.platforms));
         }
         setStatus(`Done: ${done.join("; ")} — redirecting...`);
         navigate(redirect);
