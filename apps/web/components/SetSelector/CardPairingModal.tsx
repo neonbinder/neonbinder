@@ -780,7 +780,7 @@ function PairableRow({
       {...listeners}
       className={`flex items-center gap-2 rounded cursor-grab active:cursor-grabbing ${
         isDragging ? "opacity-40" : ""
-      } ${isLinkTarget ? "ring-2 ring-selection bg-neon-blue/10" : ""}`}
+      } ${isLinkTarget ? "ring-2 ring-selection bg-pick-blue" : ""}`}
     >
       {children}
     </li>
@@ -854,8 +854,10 @@ function ChecklistCardTarget({
   return (
     <li
       ref={setNodeRef}
-      className={`flex flex-wrap items-center gap-2 rounded bg-raised/60 px-2 py-1 text-sm text-ink-2 ${
-        highlight ? "ring-2 ring-selection bg-neon-blue/10" : ""
+      className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm text-ink-2 ${
+        highlight
+          ? "bg-pick-blue border-pick-blue-rule ring-2 ring-selection"
+          : "bg-row border-row-rule"
       }`}
     >
       {children}
@@ -2272,7 +2274,7 @@ export const CHECKLIST_COLUMN_SUBTITLE =
 
 /** NEO-490 — the checklist's own gesture, said on screen like the card one. */
 export const CHECKLIST_LINK_HINT =
-  "Drag a checklist row onto its card (or pick a row, then hit Link on the card).";
+  "Pick a checklist row, then hit Link on its card (or drag the row onto it).";
 
 /**
  * NEO-490 — "14 cards already matched to your checklist — they're saved
@@ -3281,17 +3283,37 @@ export default function CardPairingModal({
     state.checklistUnused.includes(selectedRow)
       ? selectedRow
       : null;
-  /** "Checklist #1" on a linked card. */
+  /**
+   * "Checklist #1" on a linked card, with the card's own Unlink inside the
+   * chip: the operator looking at the card can drop its row without hunting
+   * for the row in the checklist column. Same move as the row's Unlink.
+   *
+   * Its name starts "Unlink card", so it never contains (or sits inside)
+   * a marketplace "Unlink <card label>" or the row's "Unlink checklist row
+   * … from <card label>"; specs match those by prefix and by substring.
+   */
   const checklistChip = (cardKey: string) => {
     const rowIndex = state.checklistLinks.get(cardKey);
     const row = rowIndex === undefined ? undefined : checklistRows?.[rowIndex];
-    if (!row) return null;
+    if (rowIndex === undefined || !row) return null;
+    const cardLabel = cardLabels.get(cardKey) ?? "this card";
     return (
-      <span
-        className="shrink-0 rounded border border-pick-teal-rule bg-pick-teal px-1.5 py-0.5 text-xs text-pick-teal-ink"
-        title="Number on your checklist"
-      >
-        Checklist {row.noNumber ? row.number : `#${row.number}`}
+      <span className="inline-flex shrink-0 items-stretch rounded border border-pick-teal-rule bg-pick-teal text-xs text-pick-teal-ink">
+        <span className="flex items-center px-1.5 py-0.5" title="Number on your checklist">
+          Checklist {row.noNumber ? row.number : `#${row.number}`}
+        </span>
+        <button
+          type="button"
+          className="min-h-6 rounded-r border-l border-pick-teal-rule px-1.5 font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
+          onClick={() => {
+            explicitUnlinkRef.current = cardKey;
+            dispatch({ type: "UNLINK_CHECKLIST", cardKey });
+            focusChecklistRow(rowIndex);
+          }}
+          aria-label={`Unlink card ${cardLabel} from checklist row ${checklistRowLine(row)}`}
+        >
+          Unlink
+        </button>
       </span>
     );
   };
@@ -3301,14 +3323,17 @@ export default function CardPairingModal({
     if (activeRow === null || state.checklistLinks.has(key)) return null;
     if (!isChecklistTarget(state, c)) return null;
     return (
-      <button
+      <NeonButton
         type="button"
-        className="shrink-0 rounded border border-pick-teal-rule px-2 py-1 text-xs font-semibold text-pick-teal-ink hover:bg-pick-teal"
+        variant="secondary"
+        outline
+        size="1"
+        className="shrink-0 min-h-8 min-w-11"
         onClick={() => performChecklistLink(activeRow, key)}
         aria-label={`Link selected checklist row to ${label(c)}`}
       >
         Link
-      </button>
+      </NeonButton>
     );
   };
   const soloCards = solo
@@ -3528,7 +3553,7 @@ export default function CardPairingModal({
               </p>
               <button
                 type="button"
-                className="min-h-6 shrink-0 rounded px-2 py-0.5 text-xs font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
+                className="min-h-8 shrink-0 rounded px-2 py-0.5 text-xs font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
                 onClick={() => {
                   const rowIndex = activeRow;
                   setSelectedRow(null);
@@ -4148,7 +4173,7 @@ export default function CardPairingModal({
                 <Input
                   bare
                   ref={bscFilterRef}
-                  className={`${bscFieldClass()} w-full`}
+                  className={`${bscFieldClass()} w-full px-3 py-1.5 text-base sm:text-sm`}
                   type="text"
                   value={bscFilter}
                   onChange={(e) => setBscFilter(e.target.value)}
@@ -4176,10 +4201,10 @@ export default function CardPairingModal({
                     >
                       <button
                         type="button"
-                        className={`flex-1 text-left text-sm rounded px-2 py-1 ${
+                        className={`flex-1 text-left text-sm rounded border px-2 py-1 ${
                           selectedBsc === candidateKey(c)
-                            ? "bg-selection/20 text-ink ring-2 ring-selection"
-                            : "bg-raised/60 text-ink-2"
+                            ? "bg-pick-blue border-pick-blue-rule text-pick-blue-ink selection-edge"
+                            : "bg-row border-row-rule text-ink-2 hover:bg-row-hover"
                         }`}
                         onClick={() =>
                           setSelectedBsc(
@@ -4238,7 +4263,7 @@ export default function CardPairingModal({
                 <Input
                   bare
                   ref={slFilterRef}
-                  className={`${slFieldClass()} w-full`}
+                  className={`${slFieldClass()} w-full px-3 py-1.5 text-base sm:text-sm`}
                   type="text"
                   value={slFilter}
                   onChange={(e) => setSlFilter(e.target.value)}
@@ -4263,7 +4288,7 @@ export default function CardPairingModal({
                       <button
                         type="button"
                         disabled={!selectedBsc}
-                        className="flex-1 text-left text-sm rounded px-2 py-1 bg-raised/60 text-ink-2 disabled:opacity-60"
+                        className="flex-1 text-left text-sm rounded border border-row-rule px-2 py-1 bg-row text-ink-2 enabled:hover:bg-row-hover disabled:opacity-60"
                         onClick={() => {
                           if (!selectedBsc) return;
                           // Same operation the drag path performs — including
@@ -4311,7 +4336,7 @@ export default function CardPairingModal({
                   <Input
                     bare
                     ref={solo === "sl" ? slFilterRef : bscFilterRef}
-                    className={`${(solo === "sl" ? slFieldClass : bscFieldClass)()} w-full`}
+                    className={`${(solo === "sl" ? slFieldClass : bscFieldClass)()} w-full px-3 py-1.5 text-base sm:text-sm`}
                     type="text"
                     value={solo === "sl" ? slFilter : bscFilter}
                     onChange={(e) =>
@@ -4357,7 +4382,7 @@ export default function CardPairingModal({
                   <Input
                     bare
                     ref={checklistFilterRef}
-                    className="w-full"
+                    className="w-full px-3 py-1.5 text-base sm:text-sm"
                     type="text"
                     value={checklistFilter}
                     onChange={(e) => {
@@ -4411,24 +4436,32 @@ export default function CardPairingModal({
                         const cardLabel = cardLabels.get(linkedTo) ?? "a card";
                         return (
                           <ChecklistRowItem key={rowIndex} rowIndex={rowIndex} linked>
-                            <span className="min-w-0 flex-1 rounded border border-pick-teal-rule bg-raised/60 px-2 py-1 text-sm text-ink-2">
-                              <span className="block">{line}</span>
-                              <span className="block text-xs text-pick-teal-ink">
-                                Linked to {cardLabel}
+                            {/* The teal edge says "linked" on the tile; the
+                                Unlink sits inside it so every row spans the
+                                column. On a dark tile ink-3 and the pink
+                                text both miss 4.5:1, so the quiet Unlink is
+                                ink-2 and turns pink-filled under the pointer
+                                (DESIGN.md: Rows, chips and neutral buttons). */}
+                            <div className="flex min-w-0 flex-1 items-start justify-between gap-2 rounded border border-pick-teal-rule bg-row px-2 py-1 text-sm text-ink-2">
+                              <span className="min-w-0">
+                                <span className="block">{line}</span>
+                                <span className="block text-xs text-pick-teal-ink">
+                                  Linked to {cardLabel}
+                                </span>
                               </span>
-                            </span>
-                            <button
-                              type="button"
-                              className="shrink-0 text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
-                              onClick={() => {
-                                explicitUnlinkRef.current = linkedTo;
-                                dispatch({ type: "UNLINK_CHECKLIST", cardKey: linkedTo });
-                                focusChecklistRow(rowIndex);
-                              }}
-                              aria-label={`Unlink checklist row ${named} from ${cardLabel}`}
-                            >
-                              Unlink
-                            </button>
+                              <button
+                                type="button"
+                                className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink"
+                                onClick={() => {
+                                  explicitUnlinkRef.current = linkedTo;
+                                  dispatch({ type: "UNLINK_CHECKLIST", cardKey: linkedTo });
+                                  focusChecklistRow(rowIndex);
+                                }}
+                                aria-label={`Unlink checklist row ${named} from ${cardLabel}`}
+                              >
+                                Unlink
+                              </button>
+                            </div>
                           </ChecklistRowItem>
                         );
                       }
@@ -4437,10 +4470,10 @@ export default function CardPairingModal({
                         <ChecklistRowItem key={rowIndex} rowIndex={rowIndex} linked={false}>
                           <button
                             type="button"
-                            className={`min-w-0 flex-1 text-left text-sm rounded px-2 py-1 ${
+                            className={`min-w-0 flex-1 text-left text-sm rounded border px-2 py-1 ${
                               picked
-                                ? "bg-selection/20 text-ink ring-2 ring-selection"
-                                : "bg-raised/60 text-ink-2"
+                                ? "bg-pick-teal border-pick-teal-rule text-pick-teal-ink selection-edge"
+                                : "bg-row border-row-rule text-ink-2 hover:bg-row-hover"
                             }`}
                             onClick={() => {
                               if (picked) {
