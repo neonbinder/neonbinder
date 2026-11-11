@@ -97,3 +97,4 @@
 - [Neo475 body scrubber](patterns_neo475_body_scrubber.md) — run adversarial inputs; x-amzn-* wildcard + unredacted headers; slice-before-redact; free-text kept keys; key names; entities
 - [Playwright WebSocket route proxy](patterns_playwright_websocket_route_proxy.md) — route-group calls never reach reporters; local trace holds the JWT; close-code 1005 remap; forward before side work
 - [Neo478 operator checklist ingest](patterns_neo478_operator_checklist_ingest.md) — pasted-file ingest: bounds after the gate, quadratic \s+ split, uncapped pair list, CSV injection only with an export
+- [Neo495 scoped capped list](patterns_neo495_scoped_capped_list.md) — new arg on a capped admin list: registry must hit the new arg; filter-after-take makes `truncated` lie
