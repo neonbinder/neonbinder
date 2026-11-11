@@ -24,7 +24,7 @@ import {
   screen,
   within,
 } from "@testing-library/react";
-import React, { useImperativeHandle } from "react";
+import React, { useEffect, useImperativeHandle } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import { cardMatchesSearch } from "../../lib/cards/card-search";
@@ -55,18 +55,27 @@ vi.mock("../../convex/_generated/api", () => ({
 }));
 
 const scrollToIndex = vi.fn();
+/** The `initialTopMostItemIndex` each Virtuoso mount was given, in order. */
+const virtuosoMounts: Array<number | undefined> = [];
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: function VirtuosoStub({
     data,
     itemContent,
     ref,
+    initialTopMostItemIndex,
   }: {
     data: unknown[];
     itemContent: (index: number, item: unknown) => React.ReactNode;
     ref?: React.Ref<unknown>;
+    initialTopMostItemIndex?: number;
   }) {
     useImperativeHandle(ref, () => ({ scrollToIndex }));
+    // Read once per mount, as the real list does.
+    useEffect(() => {
+      virtuosoMounts.push(initialTopMostItemIndex);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     return (
       <div data-testid="virtuoso">
         {data.map((item, i) => (
@@ -522,5 +531,38 @@ describe("what the row shows is what search finds (NEO-343)", () => {
     for (const part of [...parts, "SL", "BSC"]) {
       expect(cardMatchesSearch(c, part, lookups)).toBe(true);
     }
+  });
+});
+
+/**
+ * NEO-482 — where the list opens. Coming back to a checklist that has cards
+ * opens it at its END (what the operator last worked on); a checklist that was
+ * EMPTY when it loaded and is filled in this sitting (its first save) opens at
+ * #1, because the operator reads a freshly saved set from the top.
+ */
+describe("where the card list opens (NEO-482)", () => {
+  beforeEach(() => {
+    virtuosoMounts.length = 0;
+    state.teams = [{ _id: "team-sd", name: "Padres", location: "San Diego" }];
+    state.players = [];
+  });
+
+  const three = () => [card("1", "One"), card("2", "Two"), card("3", "Three")];
+
+  it("a checklist that loads with cards opens at its last row", () => {
+    state.cards = three();
+    render(ui());
+    expect(virtuosoMounts).toEqual([2]);
+  });
+
+  it("a checklist that loaded empty and then fills opens at its first row", () => {
+    state.cards = [];
+    const { rerender } = render(ui());
+    expect(screen.getByText("No cards in this checklist yet.")).toBeTruthy();
+    expect(virtuosoMounts).toEqual([]);
+    state.cards = three();
+    rerender(ui());
+    expect(shownNumbers()).toEqual(["1", "2", "3"]);
+    expect(virtuosoMounts).toEqual([0]);
   });
 });

@@ -99,6 +99,7 @@ import {
   type BscSellerResult,
   type BscSellerSession,
 } from "./adapters/bscSeller";
+import type { BscWaitEdge } from "./lib/bscCallTelemetry";
 
 // ── Limits ─────────────────────────────────────────────────────────────────
 
@@ -836,9 +837,13 @@ export function settleSteps(
   return steps
     .filter((s) => s.status !== "waiting")
     .slice(0, MAX_PROGRESS_STEPS)
-    .map((s) =>
-      s.status === "working" ? { ...s, status: outcome === "ok" ? ("done" as const) : ("failed" as const), finishedAt: now } : s,
-    );
+    .map((s) => {
+      // PR 451: a finished run waits on nothing. The measured total stays.
+      const { marketplaceWaitingSince: _open, ...rest } = s;
+      return rest.status === "working"
+        ? { ...rest, status: outcome === "ok" ? ("done" as const) : ("failed" as const), finishedAt: now }
+        : rest;
+    });
 }
 
 /**
@@ -889,6 +894,16 @@ export interface PlannedStep {
  */
 export class ProgressLedger {
   private entries: Array<{ key: string; step: ListingSyncStep }> = [];
+  /** PR 451: the BSC session's last wait edge said a call is outstanding. */
+  private bscWaiting = false;
+  /** Set by `finishWaits`: the record is being finished, edges are ignored. */
+  private waitsFinished = false;
+  /**
+   * Every `writeProgress` of this ledger, in order, so a wait edge's write
+   * and a step's write never land out of order. Each write sends the ledger
+   * as it stands when it runs.
+   */
+  private chain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly ctx: DrainCtx,
@@ -935,14 +950,18 @@ export class ProgressLedger {
   /** Marks a step failed (the run goes on past it). No write. */
   fail(key: string): void {
     const entry = this.entries.find((e) => e.key === key);
-    if (entry) entry.step = { ...entry.step, status: "failed", finishedAt: this.now() };
+    if (!entry) return;
+    const at = this.now();
+    entry.step = { ...ProgressLedger.closeWait(entry.step, at), status: "failed", finishedAt: at };
   }
 
   /** Ends the working step `done`. No write. */
   endWorking(): void {
     const at = this.now();
     for (const e of this.entries) {
-      if (e.step.status === "working") e.step = { ...e.step, status: "done", finishedAt: at };
+      if (e.step.status === "working") {
+        e.step = { ...ProgressLedger.closeWait(e.step, at), status: "done", finishedAt: at };
+      }
     }
   }
 
@@ -952,12 +971,86 @@ export class ProgressLedger {
     if (!entry || entry.step.status === "working") return;
     this.endWorking();
     entry.step = { ...entry.step, status: "working" };
+    // A BSC burst still open when the step changes carries on in the new one.
+    if (this.bscWaiting && !this.waitsFinished) entry.step = { ...entry.step, marketplaceWaitingSince: this.now() };
     await this.write();
   }
 
   /** Writes the ledger as it stands (the plan, before the first step starts). */
   async write(): Promise<void> {
+    const write = this.chain.then(() => this.send());
+    this.chain = write.catch(() => undefined);
+    await write;
+  }
+
+  private async send(): Promise<void> {
     await this.ctx.runMutation(internal.listingDrain.writeProgress, { ...this.ids, steps: this.steps() });
+  }
+
+  /** A step with its open wait (if any) added to its total and closed. */
+  private static closeWait(step: ListingSyncStep, at: number): ListingSyncStep {
+    if (step.marketplaceWaitingSince === undefined) return step;
+    const { marketplaceWaitingSince: since, ...rest } = step;
+    return { ...rest, marketplaceWaitMs: (step.marketplaceWaitMs ?? 0) + Math.max(0, at - since) };
+  }
+
+  /**
+   * PR 451 (NEO-487) — one wait edge of the run's BSC session recorder
+   * (`openBscSellerSession`'s `onWaitEdge`): measured, never the step's
+   * elapsed time. `waiting: true` (a BSC call went out with none
+   * outstanding) stamps the working step's `marketplaceWaitingSince`;
+   * `waiting: false` (no call outstanding for the recorder's idle grace) adds
+   * the interval to its `marketplaceWaitMs` and clears it. Each change is one
+   * `writeProgress`, chained behind the step writes, so the status is live
+   * while the call is out. Synchronous for the recorder; a failed write is
+   * logged and dropped (the status is a convenience, never a reason to stop
+   * a run). An edge with no working step writes nothing; `start` picks the
+   * wait up if it is still open.
+   */
+  waitEdge(edge: BscWaitEdge): void {
+    if (this.waitsFinished) return;
+    this.bscWaiting = edge.waiting;
+    let changed = false;
+    for (const e of this.entries) {
+      if (edge.waiting) {
+        if (e.step.status === "working" && e.step.marketplaceWaitingSince === undefined) {
+          e.step = { ...e.step, marketplaceWaitingSince: edge.at };
+          changed = true;
+        }
+      } else if (e.step.marketplaceWaitingSince !== undefined) {
+        e.step = ProgressLedger.closeWait(e.step, edge.at);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    const write = this.chain.then(() => this.send());
+    this.chain = write.catch((error: unknown) => {
+      try {
+        console.warn(
+          JSON.stringify({
+            msg: "listing_wait_write_failed",
+            platform: this.ids.platform,
+            operation: "writeProgress",
+            error: error instanceof Error ? error.name : "unknown",
+          }),
+        );
+      } catch {
+        // never throws into a call
+      }
+    });
+  }
+
+  /**
+   * Before the run's record is finished: closes any open wait now, stops
+   * taking edges, and waits for every queued write to land, so none lands
+   * after `finishVariant` (it would be refused anyway: the lease is gone).
+   */
+  async finishWaits(): Promise<void> {
+    this.waitsFinished = true;
+    this.bscWaiting = false;
+    const at = this.now();
+    for (const e of this.entries) e.step = ProgressLedger.closeWait(e.step, at);
+    await this.chain;
   }
 
   steps(): ListingSyncStep[] {
@@ -1322,6 +1415,11 @@ export function rejectedPushDetail(sent: number, bscCondition: string, era: BscE
 
 // ── The drain ──────────────────────────────────────────────────────────────
 
+/** PR 451: where a drain's BSC session sends its wait edges (the running variant's ledger). */
+interface BscWaitTarget {
+  ledger?: ProgressLedger;
+}
+
 /** What `drainOwnerImpl` needs of an action ctx (a stub in tests). */
 export type DrainCtx = Pick<ActionCtx, "runQuery" | "runMutation" | "runAction">;
 
@@ -1429,8 +1527,13 @@ export async function drainOwnerImpl(
   let opened: SessionResult | null = null;
   // NEO-475: the open session, closed (its call summary flushed) in `finally`.
   const held: { session?: BscSellerSession } = {};
+  // PR 451: the session's BSC wait edges go to the variant running now.
+  const waitTarget: BscWaitTarget = {};
   const getSession = async (): Promise<SessionResult> => {
-    opened ??= await openBscSellerSession(ctx, args.ownerId, { op: "drainOwner" });
+    opened ??= await openBscSellerSession(ctx, args.ownerId, {
+      op: "drainOwner",
+      onWaitEdge: (edge) => waitTarget.ledger?.waitEdge(edge),
+    });
     if (opened.ok) held.session = opened.value;
     return opened;
   };
@@ -1474,7 +1577,12 @@ export async function drainOwnerImpl(
       }
       if (variantId === null) continue;
       done.add(variantId);
-      const result = await syncVariant(ctx, { ...args, variantId, leaseToken }, getSession, bindSeller, opts, tally);
+      let result: VariantResult;
+      try {
+        result = await syncVariant(ctx, { ...args, variantId, leaseToken }, getSession, bindSeller, opts, tally, waitTarget);
+      } finally {
+        waitTarget.ledger = undefined;
+      }
       report.variants.push({ variantId, result: result.kind });
       if (result.kind === "sellerConflict") {
         report.stoppedFor = "sellerConflict";
@@ -1558,6 +1666,7 @@ async function syncVariant(
   bindSeller: (accountId: string) => Promise<"bound" | "conflict" | "off">,
   opts: DrainOptions,
   tally: { conditionsRead: number },
+  waitTarget: BscWaitTarget,
 ): Promise<VariantResult> {
   const { ownerId, platform, variantId, leaseToken } = args;
   const snapshot = await ctx.runQuery(internal.listingDrain.outboxSnapshot, { ownerId, platform, variantId });
@@ -1587,8 +1696,11 @@ async function syncVariant(
 
   // NEO-415: the run's steps, ticked off on the sync record as they land.
   const ledger = new ProgressLedger(ctx, { ownerId, platform, variantId, leaseToken }, opts.now);
-  const finish = async (outcome: FinishOutcome, clearMine: boolean): Promise<unknown> =>
-    await ctx.runMutation(internal.listingDrain.finishVariant, {
+  // PR 451: this variant's ledger hears the session's BSC wait edges until it finishes.
+  waitTarget.ledger = ledger;
+  const finish = async (outcome: FinishOutcome, clearMine: boolean): Promise<unknown> => {
+    await ledger.finishWaits();
+    return await ctx.runMutation(internal.listingDrain.finishVariant, {
       ownerId,
       platform,
       variantId,
@@ -1598,6 +1710,7 @@ async function syncVariant(
       repoint: rows.repoint,
       progress: ledger.steps(),
     });
+  };
 
   const input = await ctx.runQuery(internal.listingDrain.variantSyncInput, { ownerId, variantId });
   if (input.kind === "gone") {

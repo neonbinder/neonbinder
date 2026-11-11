@@ -28,6 +28,7 @@
 // each team/league step's heading, acts on the checklist club "New Haven
 // Ravens" and skips every other step (a skip creates nothing, R7).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { CHECKLISTS } from "../../support/published-checklist";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
 import { recordedNoMatchPlayer } from "../../support/recorded-names";
 import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readStep, reviewWizard, stepCounter } from "../../support/wizard";
@@ -96,7 +97,7 @@ test(
     await expect(page.getByRole("button", { name: `Remove team ${FIXTURE_TEAM}` })).toBeVisible();
 
     // ── PART 2: the set; decline SportLots (it does not carry this set), fetch BSC only ──
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { sport: "Baseball", year: "1996", set: SET });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, { sport: "Baseball", year: "1996", set: SET, checklist: CHECKLISTS.newHavenRavens });
     const wizard = reviewWizard(page);
 
     // ── PART 3: walk the team and league steps, acting on one club by name ──

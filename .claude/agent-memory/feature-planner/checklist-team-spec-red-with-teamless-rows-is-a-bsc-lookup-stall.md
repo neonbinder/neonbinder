@@ -1,6 +1,6 @@
 ---
 name: checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall
-description: A checklist spec that asserts a card's team sub-line, red after "Saved N cards" with EVERY row teamless, is BSC's per-card team lookup timing out, not the PR; grep bsc_card_team_lookup_failures
+description: Checklist team/player specs red (teamless rows, unchecked career-team pre-fill, an extra "Which X is this?" step) = BSC per-card team lookup failing (timeout OR awselb 429), not the PR; grep bsc_card_team_lookup_failures
 metadata:
   type: project
 ---
@@ -23,3 +23,13 @@ resolveChecklistEntities), but the teams are lost before that code runs.
 **How to apply:** check the lookup-failure line before blaming the diff; it is
 a BSC flake, full rerun ([[bsc-profile-stalls-are-long-standing]]). The spec
 cannot name it today; a named guard is an optional spec improvement.
+
+**Second signature (seen 2026-11-10, every PR for hours):** the same lookup
+answers HTTP 429 in under 30 ms with `server: awselb/2.0` and an empty body
+(`bsc_call_failed ... card-listing ... status 429`). Same downstream effects,
+plus two more that look like wizard bugs: a created player's in-window career
+team is NOT pre-checked (rule 8: no data, no guess), and a namesake that the
+card's team would have settled shows up as a "Which <name> is this?" step,
+so a spec expecting one undecided name lands on a different one. Bucket the
+429s by minute against each failing spec's start/end in the shard log; a
+spec that passes inside the window simply needed no card team.

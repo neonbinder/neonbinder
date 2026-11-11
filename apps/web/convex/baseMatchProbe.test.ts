@@ -1667,3 +1667,39 @@ describe("a non-numeric SportLots set id refuses the whole call before any cooki
     expect(out.map((r) => r.id)).toEqual(["328996"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR 451 (NEO-487) — "Waiting on BuySportsCards…" for the probe
+// ---------------------------------------------------------------------------
+
+describe("probeBscSets: waitKey", () => {
+  const waitRows = (t: T) => t.run(async (ctx) => ctx.db.query("marketplaceWaits").collect());
+
+  test("the batch's wait row is written under the caller's key, and the key never reaches BSC", async () => {
+    const calls = stubBsc(() => [bscCard("1", "Mike Trout")]);
+    const t = convexTest(schema, modules);
+    const { parallel } = await seedTree(t);
+
+    await asAdmin(t).action(api.baseMatchProbe.probeBscSets, {
+      variantTypeId: parallel,
+      variantNameIds: ["gold"],
+      waitKey: "probe_run-487",
+    });
+
+    const rows = await waitRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ownerId: ADMIN.subject, runKey: "probe_run-487", platform: "bsc" });
+    expect(rows[0].waitingSince).toBeUndefined();
+    expect(JSON.stringify(calls)).not.toContain("probe_run-487");
+  });
+
+  test("no key: nothing is written", async () => {
+    stubBsc(() => [bscCard("1", "Mike Trout")]);
+    const t = convexTest(schema, modules);
+    const { parallel } = await seedTree(t);
+
+    await probeBsc(t, parallel, ["gold"]);
+
+    expect(await waitRows(t)).toEqual([]);
+  });
+});

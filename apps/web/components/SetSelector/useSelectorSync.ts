@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import posthog from "posthog-js";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 
 /**
  * Front-end backstop budget for a single `fetchAggregatedOptions` sync.
@@ -44,8 +45,11 @@ interface UseSelectorSyncArgs {
    * Runs the actual `fetchAggregatedOptions` action. Returning `undefined`
    * means "preconditions not ready" (e.g. ancestor chain still loading) — the
    * sync is treated as a no-op and stays idle without arming the backstop.
+   *
+   * PR 451 (NEO-487) — `waitKey` is this attempt's fresh run key for
+   * "Waiting on BuySportsCards…"; pass it to the action as `waitKey`.
    */
-  run: () => Promise<SelectorSyncResult | undefined>;
+  run: (waitKey: string) => Promise<SelectorSyncResult | undefined>;
   /** Called on the happy path (success, or an empty-but-non-error result). */
   onDone?: () => void;
 }
@@ -61,6 +65,12 @@ interface UseSelectorSyncState {
   retry: () => void;
   /** Fire the initial sync (call once, e.g. from a mount effect). */
   start: () => void;
+  /**
+   * PR 451 (NEO-487) — the current attempt's run key, for
+   * `<WaitingOnMarketplaceRun runKey={waitKey} active={loading} />`. Null
+   * before the first attempt.
+   */
+  waitKey: string | null;
 }
 
 /**
@@ -86,6 +96,7 @@ export function useSelectorSync({
 }: UseSelectorSyncArgs): UseSelectorSyncState {
   const [phase, setPhase] = useState<Phase>("idle");
   const [message, setMessage] = useState<string | null>(null);
+  const [waitKey, setWaitKey] = useState<string | null>(null);
 
   // Monotonic token: only the most recent run may mutate state. Bumped on every
   // start/retry and on unmount, which invalidates any in-flight promise/timer.
@@ -121,6 +132,10 @@ export function useSelectorSync({
     clearTimer();
     setPhase("syncing");
     setMessage(null);
+    // A fresh key per attempt, so a Retry's wait line reads only its own
+    // BSC calls.
+    const key = mintWaitKey();
+    setWaitKey(key);
 
     // Backstop: if the action hasn't resolved in budget, give up + recover.
     timerRef.current = setTimeout(() => {
@@ -133,7 +148,7 @@ export function useSelectorSync({
 
     void (async () => {
       try {
-        const result = await run();
+        const result = await run(key);
 
         // A superseded run (retry) or unmount invalidates this resolution.
         if (runIdRef.current !== runId || !mountedRef.current) return;
@@ -186,5 +201,6 @@ export function useSelectorSync({
     message,
     retry: doRun,
     start: doRun,
+    waitKey,
   };
 }

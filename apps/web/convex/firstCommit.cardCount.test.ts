@@ -326,12 +326,12 @@ describe("the seed's first Base commit saves every card", () => {
     // NEO-247: draining alone is not enough on this path. The commit's
     // finalize step schedules `processBscTeamEnrichmentQueue`, which pops ONE
     // card, resolves it, and reschedules the tail behind
-    // `BSC_TEAM_ENRICH_DELAY_MS` (300ms). `finishAllScheduledFunctions` can
+    // `BSC_TEAM_ENRICH_DELAY_MS` (1.7 s). `finishAllScheduledFunctions` can
     // only force work whose scheduled time has already passed, so the delayed
     // tail survives the drain, outlives `afterEach`'s `unstubAllGlobals()` —
     // which puts the network GUARD back in place of this file's throwing stub
     // — and then fires against it. With 335 cards enqueued the chain is long,
-    // and whether the 300ms timer lands before the file ends depends on how
+    // and whether the paced timer lands before the file ends depends on how
     // loaded the run is: green alone, red in a full parallel suite.
     //
     // Same drain-then-cancel pair as the sibling

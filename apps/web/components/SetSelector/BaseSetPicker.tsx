@@ -86,6 +86,13 @@ type BaseSetPickerProps = {
    * not even the set listing — and the other side carries the confirm alone.
    */
   pausedSides?: readonly string[];
+  /**
+   * PR 451 (NEO-487) — the caller's "Waiting on BuySportsCards…" line for
+   * the fetch behind `loading`. The dialog covers the page's own copy while
+   * it is open, so it carries the line in its footer instead. Rendered
+   * unconditionally (the line handles its own idle state).
+   */
+  waitingSlot?: React.ReactNode;
 };
 
 /**
@@ -283,6 +290,7 @@ export default function BaseSetPicker({
   remapNotice,
   notice,
   pausedSides = [],
+  waitingSlot,
 }: BaseSetPickerProps) {
   const slPaused = pausedSides.includes("sportlots");
   const bscPaused = pausedSides.includes("bsc");
@@ -921,13 +929,16 @@ export default function BaseSetPicker({
             {/* The disabled-state REASON lives here rather than on the button:
                 the confirm label is a Maestro landmark in five flows and has to
                 stay constant. */}
-            <p className="text-xs text-ink-3" role="status">
-              {loading
-                ? "Loading marketplace options…"
-                : hasPick
-                  ? ""
-                  : "Pick a SportLots or BSC set to continue."}
-            </p>
+            <div className="min-w-0">
+              <p className="text-xs text-ink-3" role="status">
+                {loading
+                  ? "Loading marketplace options…"
+                  : hasPick
+                    ? ""
+                    : "Pick a SportLots or BSC set to continue."}
+              </p>
+              {waitingSlot}
+            </div>
             <div className="flex justify-end gap-3 shrink-0">
               <NeonButton variant="negative" onClick={onClose} disabled={confirming}>
                 Cancel

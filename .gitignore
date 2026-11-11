@@ -61,3 +61,7 @@ scratchpad/
 .playwright-mcp/
 test-results/
 playwright-report/
+
+# NEO-478: the BSC checklist capture tool's resume cache (it now defaults to
+# the OS temp directory; an older run wrote it beside the fixture).
+apps/web/playwright/fixtures/checklists/*.cache.json

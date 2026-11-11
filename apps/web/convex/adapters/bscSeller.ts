@@ -34,6 +34,7 @@ import {
   type BscCallToken,
   type BscFlushResult,
   type BscRecorder,
+  type BscWaitEdge,
 } from "../lib/bscCallTelemetry";
 import { deploymentName } from "../observability";
 
@@ -198,8 +199,12 @@ const DEFAULT_SESSION_OP = "bscSellerSession";
  * name an order, a buyer, an address or a phone, and redaction is pattern
  * based, so only key names and safe-shaped `code` / `status` values are kept.
  */
-function newSessionRecorder(op: string): BscRecorder {
-  return createBscRecorder(op, { deployment: deploymentName(), bodyMode: "keysOnly" });
+function newSessionRecorder(op: string, onWaitEdge?: (edge: BscWaitEdge) => void): BscRecorder {
+  return createBscRecorder(op, {
+    deployment: deploymentName(),
+    bodyMode: "keysOnly",
+    ...(onWaitEdge ? { onWaitEdge } : {}),
+  });
 }
 
 function recorderFor(session: BscSellerSession): BscRecorder {
@@ -268,11 +273,18 @@ export async function closeBscSellerSession(ctx: unknown, session: BscSellerSess
  *
  * `opts.op` names the session's call summary (NEO-475); the opener closes it
  * with `closeBscSellerSession`.
+ *
+ * `opts.onWaitEdge` (PR 451, NEO-487) hears the session recorder's wait
+ * edges: `waiting: true` when the first BSC call of a burst goes out, and
+ * `waiting: false` once no call has been outstanding for the recorder's idle
+ * grace (and at `closeBscSellerSession`). The drain turns them into the
+ * running step's `marketplaceWaitingSince` / `marketplaceWaitMs`. It must not
+ * throw (the recorder swallows it if it does) and must not await.
  */
 export async function openBscSellerSession(
   ctx: SessionCtx,
   ownerId: string,
-  opts: { op?: string } = {},
+  opts: { op?: string; onWaitEdge?: (edge: BscWaitEdge) => void } = {},
 ): Promise<BscSellerResult<BscSellerSession>> {
   if (isPlatformPaused(SITE)) {
     return { ok: false, failure: failure("paused", "BuySportsCards is paused on NeonBinder right now.") };
@@ -292,7 +304,7 @@ export async function openBscSellerSession(
     };
   }
   const session: BscSellerSession = { ownerId, token: token.token, reauthAttempted: false, dead: false };
-  sessionRecorders.set(session, newSessionRecorder(opts.op ?? DEFAULT_SESSION_OP));
+  sessionRecorders.set(session, newSessionRecorder(opts.op ?? DEFAULT_SESSION_OP, opts.onWaitEdge));
   return { ok: true, value: session };
 }
 

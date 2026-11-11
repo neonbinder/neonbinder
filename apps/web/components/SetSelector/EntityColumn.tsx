@@ -33,6 +33,8 @@ import {
   VARIANT_TYPE_RENAME_REFUSED,
 } from "../../convex/variantRole";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 
 type Level =
   | "sport"
@@ -434,6 +436,24 @@ export default function EntityColumn({
   const ensureOptions = useAction(
     api.selectorOptions.ensureSelectorOptions,
   );
+  // PR 451 (NEO-487) — THIS column's own ensure call: the run key it was
+  // given and whether it is still pending, for "Waiting on BuySportsCards…"
+  // in the syncing panel. A fresh key per call; a settled call only clears
+  // its own key, so an older call finishing never hides a newer one's wait.
+  const [ensureWait, setEnsureWait] = useState<{ key: string; pending: boolean } | null>(
+    null,
+  );
+  const runEnsure = (args: {
+    level: NonNullable<typeof level>;
+    parentId: typeof parentId;
+    force?: boolean;
+  }) => {
+    const waitKey = mintWaitKey();
+    setEnsureWait({ key: waitKey, pending: true });
+    void ensureOptions({ ...args, waitKey }).finally(() => {
+      setEnsureWait((w) => (w?.key === waitKey ? { key: waitKey, pending: false } : w));
+    });
+  };
 
   // NEO-427: the idle buttons wait for the status read, so a status read that
   // stalls has to recover the way a stalled items read does.
@@ -835,7 +855,8 @@ export default function EntityColumn({
     const key = `${level}:${parentId ?? "root"}`;
     if (ensuredRef.current.has(key)) return;
     ensuredRef.current.add(key);
-    void ensureOptions({ level, parentId });
+    runEnsure({ level, parentId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runEnsure is rebuilt every render; it only closes over ensureOptions, which is listed
   }, [useEnsureSync, isVisible, level, parentId, items, ensureOptions]);
 
   const addCustomOption = useMutation(
@@ -1633,6 +1654,16 @@ export default function EntityColumn({
           <p className="text-ink-3">
             Fetching from marketplaces…
           </p>
+          {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while THIS
+              column's own sync is held up by a BSC call. Mounted with the
+              panel, which shows before any wait can reach 1.5 s, so the
+              status region exists before it speaks. */}
+          <WaitingOnMarketplaceRun
+            runKey={ensureWait?.key ?? null}
+            active={!!ensureWait?.pending}
+            marketplace="BuySportsCards"
+            className="mt-2"
+          />
         </div>
       );
     }
@@ -1641,7 +1672,7 @@ export default function EntityColumn({
       // Mark this as a sync THIS session explicitly asked for, so the panel
       // above still shows even though the click also set hasInteracted true.
       setSelfRequestedSync(true);
-      void ensureOptions({ level, parentId, force: true });
+      runEnsure({ level, parentId, force: true });
     };
     return (
       <>

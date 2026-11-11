@@ -273,7 +273,13 @@ describe("a seller session samples failed bodies keysOnly", () => {
     const samples = scheduled[0].args.samples as Array<Record<string, unknown>>;
     expect(samples).toHaveLength(1);
     expect(samples[0].body).toBe(body);
-    for (const out of [JSON.stringify(failures()[0]), JSON.stringify(scheduled[0].args)]) {
+    // `at` is an epoch-ms timestamp whose digits can by chance contain "555",
+    // "867" or "5309"; drop that one key everywhere and check every other field.
+    const withoutAt = (_key: string, v: unknown) => (_key === "at" ? undefined : v);
+    for (const out of [
+      JSON.stringify(failures()[0], withoutAt),
+      JSON.stringify(scheduled[0].args, withoutAt),
+    ]) {
       for (const leak of ["ORD-88123", "ord-77", "Jane", "Doe", "Elm", "Springfield", "555", "867", "5309"]) {
         expect(out).not.toContain(leak);
       }
