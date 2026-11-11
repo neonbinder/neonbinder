@@ -50,6 +50,12 @@ export const CHECKLISTS = {
   topps2014FootballBase: "2014-football-topps-base",
   /** Baseball 2024 Topps Chrome Insert Future Stars: 20 cards (`FS-1`..`FS-20`), the setup's insert fetch. */
   futureStars2024: "2024-topps-chrome-insert-future-stars",
+  /**
+   * Future Stars as a publisher would number it: `101`..`119`, the same 19 players (FS-20 Brayan Rocchio left
+   * out). No number is a BSC `FS-n` or a SportLots number, and 19 rows against 20 cards means the counts
+   * differ, so every row pairs by player name and none is applied until the operator confirms.
+   */
+  futureStars2024PublisherNumbering: "2024-topps-chrome-insert-future-stars-publisher-numbering",
   /** Hockey 1995 Roanoke Express ECHL Base: 25 cards, every one `NNO`, so each pairs by player. */
   roanokeExpress1995: "1995-hockey-roanoke-express-echl-base",
   /**
@@ -79,6 +85,21 @@ export const CHECKLISTS = {
    * it, so exactly five cards are asked of BSC live: #1-#3 are the stalled ids, #24 and #25 answer.
    */
   halifaxMooseheads1995FiveLive: "1995-hockey-halifax-mooseheads-qmjhl-base-five-live",
+  /**
+   * Baseball 2026 Donruss Insert Retro 1997 Donruss Signature Series Autographs (NEO-490): Panini's OWN
+   * published checklist, 14 rows. Its numbers are the publisher's (1-8, 10, 11, 13, 14, 16, 17) and
+   * BuySportsCards numbers the same 14 cards `SIG-AM`..`SIG-RL`, so no number meets another and every
+   * row pairs by player. It is no capture of BSC's answers: BSC names a team on none of these cards.
+   */
+  signatureSeries2026: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs",
+  /** The same file with row 17 (Mike Lowell) left out: 13 rows against BSC's 14 cards, so the counts differ. */
+  signatureSeries2026WithoutLowell: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-without-lowell",
+  /**
+   * The whole file with row 11 misspelled ("Rhett Lowdr"): 14 rows against 14 cards, so the counts match and
+   * the server pairs the 13 unique names itself, but Rhett Lowder's card and the misspelled row are left for
+   * the operator, so Match Cards opens for that one pair.
+   */
+  signatureSeries2026MisspelledLowder: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-misspelled-lowder",
 } as const;
 
 export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];
@@ -160,23 +181,32 @@ function teamNames(cell: string): string[] {
   return cell.split(";").map((n) => n.trim()).filter(Boolean);
 }
 
+// A number cell is read when it is one word of letters, digits, "." and "-" (any case; "1a",
+// "PPR-DLa", "TBD"), with a leading "#" and a trailing "." or ":" set aside (NEO-489, D6), or
+// is the unnumbered "NNO" (kept as a row; a card printed with no number is paired by player).
+// Anything else is a skipped line.
+const numberOf = (r: ChecklistRow) => r.number.trim().replace(/^#/, "").replace(/[.:]$/, "");
+const isNnoRow = (r: ChecklistRow) => numberOf(r).toUpperCase() === "NNO";
+const readable = (r: ChecklistRow) => /^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(numberOf(r)) || isNnoRow(r);
+/** "No Team" beside a real team in one cell is a row the product skips (it cannot say both). */
+const sayingBoth = (r: ChecklistRow) => {
+  const names = teamNames(r.team);
+  return names.some(isNoTeamText) && !names.every(isNoTeamText);
+};
+/** The rows the dialog reads: readable, and not saying both "No Team" and a team. */
+const readRows = (name: ChecklistName) => checklistRows(name).filter(readable).filter((r) => !sayingBoth(r));
+/**
+ * A paired row answers its card's team when it names a team or says "No Team" (a card with no
+ * team, the publisher's own claim). A BLANK cell, or one saying "None", "N/A", "TBD" or a dash,
+ * makes no claim, so BSC is still asked for that card.
+ */
+const answersTeam = (r: ChecklistRow) => teamNames(r.team).length > 0;
+
 export function checklistFacts(name: ChecklistName): ChecklistFacts {
-  // A number cell is read when it is one word of letters, digits, "." and "-" (any case; "1a",
-  // "PPR-DLa", "TBD"), with a leading "#" and a trailing "." or ":" set aside (NEO-489, D6), or
-  // is the unnumbered "NNO" (kept as a row; a card printed with no number is paired by player,
-  // below). Anything else is a skipped line. A number is compared exactly as printed, case
-  // included; the product only pairs two numbers that differ by case when each is on one card
-  // and one row, which a captured set has no row to prove, so a file holding two such rows
-  // is refused here rather than guessed at.
-  const numberOf = (r: ChecklistRow) => r.number.trim().replace(/^#/, "").replace(/[.:]$/, "");
-  const isNnoRow = (r: ChecklistRow) => numberOf(r).toUpperCase() === "NNO";
-  const readable = (r: ChecklistRow) => /^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(numberOf(r)) || isNnoRow(r);
-  // "No Team" beside a real team in one cell is a row the product skips (it cannot say both).
-  const sayingBoth = (r: ChecklistRow) => {
-    const names = teamNames(r.team);
-    return names.some(isNoTeamText) && !names.every(isNoTeamText);
-  };
-  const rows = checklistRows(name).filter(readable).filter((r) => !sayingBoth(r));
+  // A number is compared exactly as printed, case included; the product only pairs two numbers
+  // that differ by case when each is on one card and one row, which a captured set has no row to
+  // prove, so a file holding two such rows is refused here rather than guessed at.
+  const rows = readRows(name);
   const numbered = rows.filter((r) => !isNnoRow(r));
   const unnumbered = rows.filter(isNnoRow);
   const countOf = new Map<string, number>();
@@ -194,18 +224,73 @@ export function checklistFacts(name: ChecklistName): ChecklistFacts {
   // A numbered card is matched when its number is on exactly one row (rule 7). An unnumbered card
   // is matched by player, only when exactly one such card and exactly one NNO row name that player
   // (the captured set has one card per row, so the rows count for both sides). A matched card counts
-  // here only when its row answers the team: it names a team or says "No Team" (a card with no team,
-  // the publisher's own claim). A BLANK cell, or one saying "None", "N/A", "TBD" or a dash, makes no claim, so BSC is still asked for that card.
-  const answered = (r: ChecklistRow) => teamNames(r.team).length > 0;
-  const matchedNumbered = numbered.filter((r) => countOf.get(numberOf(r)) === 1 && answered(r)).length;
+  // here only when its row answers the team (`answersTeam`).
+  // NEO-490: when no number pairs at all, the product pairs by player name instead; that is
+  // `nameFallbackFacts`' reading, not this one, so a file that would reach it is refused here.
+  if (numbered.length > 0 && !numbered.some((r) => countOf.get(numberOf(r)) === 1)) {
+    throw new Error(`${name}.csv pairs no card by number, so the product pairs it by player name: read it with nameFallbackFacts (NEO-490).`);
+  }
+  const matchedNumbered = numbered.filter((r) => countOf.get(numberOf(r)) === 1 && answersTeam(r)).length;
   const matchedUnnumbered = unnumbered.filter((r) => {
     const key = namesKey(r.player);
-    return key !== "" && playerCountOf.get(key) === 1 && answered(r);
+    return key !== "" && playerCountOf.get(key) === 1 && answersTeam(r);
   }).length;
   return {
     path: `${DIRECTORY}${name}.csv`,
     rows: rows.length,
     matched: matchedNumbered + matchedUnnumbered,
+  };
+}
+
+/**
+ * NEO-490: what a checklist whose numbers meet NO card's number answers, when each row is paired
+ * to a card by player name instead. `cardsOf` is the file listing the set's cards (their players);
+ * BSC's own list for the set is that file's rows, so the card side is read off a file, never typed.
+ *
+ * A name is paired when exactly one row and exactly one card carry it (the exactly-one guard; a
+ * name two rows share pairs nothing). With EQUAL counts the unique pairs are applied by the fetch
+ * (`matched` = those whose row answers the team, naming one or saying "No Team": N in "Teams from
+ * your checklist: N of M cards"); with
+ * DIFFERENT counts nothing is applied by the fetch (`matched` = 0) and the unique pairs are only
+ * SUGGESTED (`suggested`) to the operator in the Match Cards dialog.
+ */
+export interface NameFallbackFacts extends ChecklistFacts {
+  /** The cards the pairing is made against. */
+  cards: number;
+  /** Rows and cards of equal number: the fetch applies the unique pairs itself. */
+  equalCounts: boolean;
+  /** Unique name pairs: applied by an equal-count fetch, offered as suggestions otherwise. */
+  suggested: number;
+}
+
+export function nameFallbackFacts(name: ChecklistName, cardsOf: ChecklistName): NameFallbackFacts {
+  // The rows the dialog reads (the same reading as `checklistFacts`, NEO-489 case and No Team rules
+  // included). Only NUMBERED rows and cards take part in the name pass: an NNO row pairs by player
+  // with an NNO card in its own pass, and the counts compared are the numbered ones on each side.
+  const all = readRows(name);
+  const rows = all.filter((r) => !isNnoRow(r));
+  const cards = readRows(cardsOf).filter((r) => !isNnoRow(r));
+  const tally = (list: ChecklistRow[]) => {
+    const counts = new Map<string, number>();
+    for (const r of list) counts.set(namesKey(r.player), (counts.get(namesKey(r.player)) ?? 0) + 1);
+    return counts;
+  };
+  const rowCounts = tally(rows);
+  const cardCounts = tally(cards);
+  const paired = rows.filter((r) => {
+    const key = namesKey(r.player);
+    return key !== "" && rowCounts.get(key) === 1 && cardCounts.get(key) === 1;
+  });
+  const equalCounts = rows.length === cards.length;
+  return {
+    path: `${DIRECTORY}${name}.csv`,
+    rows: all.length,
+    cards: cards.length,
+    equalCounts,
+    suggested: paired.length,
+    // A row saying "No Team" answers its card too (no team, never looked up); a no-claim cell
+    // ("None", "N/A", blank) does not.
+    matched: equalCounts ? paired.filter(answersTeam).length : 0,
   };
 }
 

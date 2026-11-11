@@ -125,6 +125,7 @@ import {
   isAmbiguousPlayerRow,
   autoLinkOtherSport,
   autoLinkedSummaryNote,
+  careerTeamContextFor,
   preselectFor,
   preselectReasonLine,
   resolveNav,
@@ -5247,6 +5248,7 @@ export default function EntityReviewWizard({
                           current.name,
                           sameNameLinkDetailFor(current),
                           autoLinkOtherSport(current),
+                          careerTeamContextFor(current, incomingPreviewCards),
                         )}
                       </span>
                     </p>
@@ -6094,6 +6096,8 @@ export default function EntityReviewWizard({
                           row.name,
                           sameNameLinkDetailFor(row),
                           autoLinkOtherSport(row),
+                          // NEO-490 — what on the card settled a careerTeam link.
+                          careerTeamContextFor(row, incomingPreviewCards),
                         )}
                       </span>
                       <button

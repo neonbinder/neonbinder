@@ -97,3 +97,4 @@
 - [Neo475 body scrubber](patterns_neo475_body_scrubber.md) — run adversarial inputs; x-amzn-* wildcard + unredacted headers; slice-before-redact; free-text kept keys; key names; entities
 - [Playwright WebSocket route proxy](patterns_playwright_websocket_route_proxy.md) — route-group calls never reach reporters; local trace holds the JWT; close-code 1005 remap; forward before side work
 - [Neo478 operator checklist ingest](patterns_neo478_operator_checklist_ingest.md) — pasted-file ingest: bounds after the gate, quadratic \s+ split, uncapped pair list, CSV injection only with an export
+- [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start: ceiling = budget + sum of allowances; uncached gate re-arms per name; pure admin action shape

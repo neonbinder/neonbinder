@@ -69,3 +69,5 @@
 - [Workpool cancelAll semantics](reference_workpool_cancel_all_semantics.md) — pending/runAt items get `canceled`; a running item finishes with its real result and its re-enqueue escapes
 - [settleOnFakeClock drifts on first import](reference_settle_on_fake_clock_drifts_on_first_import.md) — first adapter action in a file moves the fake clock ~26 s before its first read; warm with a throwaway item, reset to NOW
 - [Token leg is BSC wait time](reference_token_leg_is_bsc_wait_time.md) — wrap getBscToken/re-auth in whileWaitingOnBsc (one wait with the calls); recorder before the token read
+- [Checklist row field rides five hops](reference_checklist_row_field_rides_five_hops.md) — compare → apply → validator → Match Cards request → action args/answer fold; the link path drops unknown fields silently
+- [Wall-clock unit tests red under load](reference_wall_clock_unit_tests_red_under_load.md) — parser 2 MB bound and theme-allowlist scan time out at load ~30+; rerun alone, never raise the bound

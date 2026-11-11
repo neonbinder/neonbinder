@@ -25,7 +25,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
-import { checkPublishedChecklist } from "./selectorOptions";
+import { checkPublishedChecklist, checklistLeftoverCardKeys } from "./selectorOptions";
 import { parsePublishedChecklist } from "../lib/checklists/parse-published-checklist";
 import { matchPublishedChecklist } from "../lib/checklists/match-published-checklist";
 
@@ -816,5 +816,235 @@ describe("checkPublishedChecklist and the parser agree on no-claim team cells (N
     const { result } = await run({ rows: [{ number: "1", players: ["A One"], teams: ["N/A"] }] });
     expect(mockState.teamLookupCalls).toEqual([["bsc-1"]]);
     expect(result.checklistTeams).toEqual({ matched: 0, total: 1 });
+  });
+});
+
+// NEO-490 — no number pairs: the numbered cards and rows pair by player name
+// (equal counts), or go to the operator (counts differ).
+describe("fetchCardChecklist with a publisher checklist: NEO-490 player-name fallback", () => {
+  // Letter codes ("SIG-BW"): no digit after the letters, so the prefix strip
+  // never reaches them and no number pairs.
+  const CODES = ["AA", "BB", "CC"];
+  const sig = (n: number, player: string, extra: Partial<BscCard> = {}) =>
+    bsc(`SIG-${CODES[n - 1]}`, { players: [player], ...extra });
+
+  test("equal counts: name pairs skip the per-card lookup and the line reads N of M", async () => {
+    mockState.bscCards = [sig(1, "A One"), sig(2, "B Two"), sig(3, "C Three")];
+    const { t, result } = await run({
+      rows: [
+        { number: "1", players: ["A One"], teams: ["Boston Red Sox"] },
+        { number: "2", players: ["B Two"], teams: ["Chicago Cubs"] },
+        { number: "3", players: ["C Three"], teams: ["New York Mets"] },
+      ],
+    });
+    expect(result.success).toBe(true);
+    expect(mockState.teamLookupCalls).toEqual([]);
+    expect(result.checklistTeams).toEqual({ matched: 3, total: 3 });
+    const rows = await candidates(t);
+    // The card keeps the number it was fetched with.
+    expect(rows.get("SIG-AA")).toMatchObject({ teams: ["Boston Red Sox"], teamLookup: "checklist" });
+    expect(rows.get("SIG-CC")).toMatchObject({ teams: ["New York Mets"], teamLookup: "checklist" });
+    expect(result.checklistMatch).toEqual({
+      needsOperator: false,
+      byNumber: 0,
+      byPlayerName: 3,
+      unusedRowIndices: [],
+      leftoverCardKeys: [],
+    });
+  });
+
+  test("equal counts with a leftover: N of M counts only the paired, the rest are looked up, leftovers are reported", async () => {
+    mockState.bscCards = [sig(1, "A One"), sig(2, "B Two"), sig(3, "C Three")];
+    mockState.teamNamesResult = {
+      "bsc-SIG-CC": { rawTeamName: "New York Mets", teamNames: ["New York Mets"] },
+    };
+    const { result } = await run({
+      rows: [
+        { number: "1", players: ["A One"], teams: ["Boston Red Sox"] },
+        { number: "2", players: ["B Two"], teams: ["Chicago Cubs"] },
+        { number: "3", players: ["Someone Else"], teams: ["Texas Rangers"] },
+      ],
+    });
+    expect(mockState.teamLookupCalls).toEqual([["bsc-SIG-CC"]]);
+    expect(result.checklistTeams).toEqual({ matched: 2, total: 3 });
+    expect(result.checklistMatch).toEqual({
+      needsOperator: true,
+      byNumber: 0,
+      byPlayerName: 2,
+      unusedRowIndices: [2],
+      leftoverCardKeys: ["bsc-SIG-CC"],
+    });
+  });
+
+  test("count mismatch: every card is looked up, nothing is stamped, the operator is asked", async () => {
+    mockState.bscCards = [sig(1, "A One"), sig(2, "B Two"), sig(3, "C Three")];
+    mockState.teamNamesResult = {
+      "bsc-SIG-AA": { rawTeamName: "Boston Red Sox", teamNames: ["Boston Red Sox"] },
+      "bsc-SIG-BB": { rawTeamName: "Chicago Cubs", teamNames: ["Chicago Cubs"] },
+      "bsc-SIG-CC": { rawTeamName: "New York Mets", teamNames: ["New York Mets"] },
+    };
+    const { t, result } = await run({
+      rows: [
+        { number: "1", players: ["A One"], teams: ["Texas Rangers"] },
+        { number: "2", players: ["B Two"], teams: ["Texas Rangers"] },
+      ],
+    });
+    expect(mockState.teamLookupCalls.flat().sort()).toEqual(["bsc-SIG-AA", "bsc-SIG-BB", "bsc-SIG-CC"]);
+    expect(result.checklistTeams).toEqual({ matched: 0, total: 3 });
+    const rows = await candidates(t);
+    for (const n of ["SIG-AA", "SIG-BB", "SIG-CC"]) {
+      expect(rows.get(n)?.teamLookup).toBe("answered");
+      expect(rows.get(n)?.checklistConflict).toBeUndefined();
+    }
+    expect(rows.get("SIG-AA")?.teams).toEqual(["Boston Red Sox"]);
+    expect(result.checklistMatch).toEqual({
+      needsOperator: true,
+      byNumber: 0,
+      byPlayerName: 0,
+      unusedRowIndices: [0, 1],
+      leftoverCardKeys: ["bsc-SIG-AA", "bsc-SIG-BB", "bsc-SIG-CC"],
+    });
+  });
+
+  test("a number match means no fallback: byNumber counts and nothing is asked of the operator", async () => {
+    mockState.bscCards = [bsc("1", { players: ["A One"] })];
+    const { result } = await run({
+      rows: [{ number: "1", players: ["A One"], teams: ["Boston Red Sox"] }],
+    });
+    expect(result.checklistMatch).toEqual({
+      needsOperator: false,
+      byNumber: 1,
+      byPlayerName: 0,
+      unusedRowIndices: [],
+      leftoverCardKeys: [],
+    });
+  });
+
+  test("a name pair whose team disagrees keeps the marketplace's team and carries the conflict", async () => {
+    mockState.bscCards = [sig(1, "A One", { teams: ["New York Mets"] })];
+    const { t, result } = await run({
+      rows: [{ number: "9", players: ["A One"], teams: ["Philadelphia Phillies"] }],
+    });
+    const row = (await candidates(t)).get("SIG-AA");
+    expect(row?.teams).toEqual(["New York Mets"]);
+    expect(row?.checklistConflict).toEqual({
+      teams: { marketplace: ["New York Mets"], checklist: ["Philadelphia Phillies"] },
+    });
+    expect(result.checklistMatch?.byPlayerName).toBe(1);
+  });
+
+  test("a name tie leaves both cards looked up and listed as leftovers", async () => {
+    mockState.bscCards = [
+      sig(1, "A One", { platformRef: "bsc-x" }),
+      sig(2, "A One", { platformRef: "bsc-y" }),
+    ];
+    const { result } = await run({
+      rows: [
+        { number: "1", players: ["A One"], teams: ["Boston Red Sox"] },
+        { number: "2", players: ["Other"], teams: [] },
+      ],
+    });
+    expect(mockState.teamLookupCalls.flat().sort()).toEqual(["bsc-x", "bsc-y"]);
+    expect(result.checklistMatch).toMatchObject({
+      needsOperator: true,
+      unusedRowIndices: [0, 1],
+      leftoverCardKeys: ["bsc-x", "bsc-y"],
+    });
+  });
+
+  test("a leftover card with no marketplace ref is left out, never keyed #number", async () => {
+    // Card numbers are not unique (product invariant 7), so a `#number` key
+    // could name two cards. A fetched card always carries its side's ref, so
+    // this card is impossible in practice; it is pinned so the fallback
+    // cannot come back.
+    mockState.bscCards = [sig(1, "A One", { platformRef: undefined })];
+    const { result } = await run({
+      rows: [
+        { number: "1", players: ["Nobody"], teams: [] },
+        { number: "2", players: ["Nobody Else"], teams: [] },
+      ],
+    });
+    expect(result.checklistMatch?.leftoverCardKeys).toEqual([]);
+  });
+});
+
+describe("checklistLeftoverCardKeys: leftovers are keyed by marketplace ref only (NEO-490)", () => {
+  const card = (bsc?: string, sportlots?: string, cardNumber = "7") => ({
+    cardNumber,
+    platformData: {
+      ...(bsc !== undefined ? { bsc: { ref: bsc } } : {}),
+      ...(sportlots !== undefined ? { sportlots: { ref: sportlots } } : {}),
+    },
+  });
+
+  test("BSC ref first, else the SportLots ref", () => {
+    const cards = [card("bsc-1", "sl-1"), card(undefined, "sl-2")];
+    expect(checklistLeftoverCardKeys(cards, [0, 1])).toEqual(["bsc-1", "sl-2"]);
+  });
+
+  test("a card with neither ref is left out, even when another card shares its number", () => {
+    // Two cards numbered 7: a `#7` key would name both, and a link would land
+    // on whichever the dialog found first.
+    const cards = [card(undefined, undefined, "7"), card("bsc-7", undefined, "7")];
+    expect(checklistLeftoverCardKeys(cards, [0, 1])).toEqual(["bsc-7"]);
+    expect(checklistLeftoverCardKeys(cards, [0])).toEqual([]);
+  });
+
+  test("an empty ref counts as none", () => {
+    const cards = [card("", "sl-3"), card("", "")];
+    expect(checklistLeftoverCardKeys(cards, [0, 1])).toEqual(["sl-3"]);
+  });
+
+  test("only the indices asked for, in their order; an index past the end is skipped", () => {
+    const cards = [card("a"), card("b"), card("c")];
+    expect(checklistLeftoverCardKeys(cards, [2, 0, 9])).toEqual(["c", "a"]);
+  });
+});
+
+// NEO-489 × NEO-490 — a No Team row paired by the player-name fallback is the
+// same claim a number pair makes: the card is answered with no team and never
+// looked up, or a card with a team keeps it and carries the conflict.
+describe("fetchCardChecklist with a publisher checklist: a No Team row paired by player name", () => {
+  test("equal counts: the No Team card is answered, counted and never asked; the teamed card conflicts", async () => {
+    mockState.bscCards = [
+      bsc("SIG-AA", { players: ["Host One"] }),
+      bsc("SIG-BB", { players: ["B Two"], teams: ["Boston Red Sox"] }),
+    ];
+    const { t, result } = await run({
+      rows: [
+        { number: "1", players: ["Host One"], teams: [], noTeam: true },
+        { number: "2", players: ["B Two"], teams: ["No Team"] },
+      ],
+    });
+    expect(result.success).toBe(true);
+    expect(mockState.teamLookupCalls).toEqual([]);
+    const rows = await candidates(t);
+    expect(rows.get("SIG-AA")).toMatchObject({ teamLookup: "checklist", status: "ready" });
+    expect(rows.get("SIG-AA")?.teams ?? []).toEqual([]);
+    expect(rows.get("SIG-BB")?.teams).toEqual(["Boston Red Sox"]);
+    expect(rows.get("SIG-BB")?.teamLookup).not.toBe("checklist");
+    expect(rows.get("SIG-BB")?.checklistConflict).toEqual({
+      teams: { marketplace: ["Boston Red Sox"], checklist: [] },
+    });
+    expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
+    expect(result.checklistMatch).toMatchObject({ byNumber: 0, byPlayerName: 2, needsOperator: false });
+  });
+
+  test("counts differ: a No Team row's name pair is only a suggestion, so its card is still looked up", async () => {
+    mockState.bscCards = [
+      bsc("SIG-AA", { players: ["Host One"] }),
+      bsc("SIG-BB", { players: ["B Two"] }),
+    ];
+    mockState.teamNamesResult = {
+      "bsc-SIG-AA": { rawTeamName: "", teamNames: [] },
+      "bsc-SIG-BB": { rawTeamName: "", teamNames: [] },
+    };
+    const { t, result } = await run({
+      rows: [{ number: "1", players: ["Host One"], teams: [], noTeam: true }],
+    });
+    expect(mockState.teamLookupCalls.flat().sort()).toEqual(["bsc-SIG-AA", "bsc-SIG-BB"]);
+    expect((await candidates(t)).get("SIG-AA")?.teamLookup).not.toBe("checklist");
+    expect(result.checklistTeams).toEqual({ matched: 0, total: 2 });
+    expect(result.checklistMatch).toMatchObject({ needsOperator: true, byPlayerName: 0 });
   });
 });
