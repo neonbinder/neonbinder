@@ -49,7 +49,15 @@ vi.mock("../../convex/_generated/api", () => ({
       probeSlFirstPage: "probeSlFirstPage",
       probeSlCount: "probeSlCount",
     },
+    // PR 451 (NEO-487): the panel's "Waiting on BuySportsCards…" line.
+    marketplaceWaits: { forRun: "marketplaceWaits.forRun" },
   },
+}));
+
+/** PR 451 — `marketplaceWaits.forRun`'s answer for any key, and the keys asked. */
+const waitState = vi.hoisted(() => ({
+  answer: undefined as unknown,
+  asked: [] as string[],
 }));
 
 /**
@@ -103,7 +111,12 @@ vi.mock("convex/react", () => ({
     ref === "fetchRawOptions" ? mockFetchRawOptions : vi.fn(),
   useMutation: (ref: string) =>
     ref === "storeReconciledOptions" ? mockStore : vi.fn(),
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
+    if (ref === "marketplaceWaits.forRun") {
+      if (args === "skip") return undefined;
+      waitState.asked.push((args as { runKey: string }).runKey);
+      return waitState.answer;
+    }
     if (ref === "getAncestorChain") {
       return variantTypeRow
         ? CHAIN.map((row) => (row.level === "variantType" ? variantTypeRow : row))
@@ -176,6 +189,8 @@ beforeEach(() => {
   savedRows = [];
   variantTypeRow = null;
   mockConvexQuery.mockResolvedValue({ status: "noBase" });
+  waitState.answer = undefined;
+  waitState.asked = [];
 });
 
 describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
@@ -1607,5 +1622,28 @@ describe("VariantForm — the Base match check is for the parallel variant type 
     await openDialogFor("Gold");
     expect(mockUseConvex).not.toHaveBeenCalled();
     expect(mockConvexQuery).not.toHaveBeenCalled();
+  });
+});
+
+describe("VariantForm — waiting on BuySportsCards (PR 451)", () => {
+  it("the panel shows one wait line while the fetch is pending, keyed by the key the fetch was given", async () => {
+    waitState.answer = { waitingSince: 1, accumulatedMs: 0 };
+    let release!: (v: unknown) => void;
+    mockFetchRawOptions.mockReturnValue(new Promise((r) => (release = r)));
+    await renderForm();
+
+    await waitFor(() => expect(mockFetchRawOptions).toHaveBeenCalledTimes(1));
+    const sent = mockFetchRawOptions.mock.calls[0][0].waitKey as string;
+    expect(sent).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+
+    const line = await screen.findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    expect(line.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
+    expect(new Set(waitState.asked)).toEqual(new Set([sent]));
+
+    await act(async () => {
+      release(bscOnly());
+    });
+    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
   });
 });

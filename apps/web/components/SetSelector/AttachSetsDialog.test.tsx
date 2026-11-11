@@ -45,7 +45,7 @@
  * from an independently-controlled fixture per test.
  */
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
   BSC_NO_LINKED_SET_MESSAGE,
@@ -65,7 +65,18 @@ vi.mock("../../convex/_generated/api", () => ({
     selectorOptions: {
       attachPlatformIds: "attachPlatformIds",
     },
+    // PR 451 (NEO-487): the BSC pane's "Waiting on BuySportsCards…" line.
+    marketplaceWaits: { forRun: "marketplaceWaits.forRun" },
   },
+}));
+
+/**
+ * PR 451 — what `marketplaceWaits.forRun` answers for any run key, and every
+ * run key it was asked about. Undefined: no wait open.
+ */
+const waitState = vi.hoisted(() => ({
+  answer: undefined as { waitingSince?: number; accumulatedMs: number } | undefined,
+  asked: [] as string[],
 }));
 
 const mockFetchSl = vi.fn();
@@ -80,6 +91,11 @@ vi.mock("convex/react", () => ({
   },
   useMutation: (ref: string) =>
     ref === "attachPlatformIds" ? mockAttach : vi.fn(),
+  useQuery: (ref: string, args: unknown) => {
+    if (ref !== "marketplaceWaits.forRun" || args === "skip") return undefined;
+    waitState.asked.push((args as { runKey: string }).runKey);
+    return waitState.answer;
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -183,6 +199,8 @@ const slPane = () => screen.getByLabelText("SportLots candidates");
 
 beforeEach(() => {
   vi.clearAllMocks();
+  waitState.answer = undefined;
+  waitState.asked = [];
   mockFetchSl.mockResolvedValue({
     success: true,
     options: SL_SETS,
@@ -212,6 +230,8 @@ describe("AttachSetsDialog — opening pools", () => {
     expect(mockFetchBsc.mock.calls[0][0]).toEqual({
       selectorOptionId: ROW_ID,
       view: "variants",
+      // PR 451 (NEO-487): a fresh run key per fetch, for the wait line.
+      waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
     });
 
     // SportLots is asked its own question — NOT the NB row's level, which is
@@ -251,6 +271,8 @@ describe("AttachSetsDialog — the BSC browse control changes the pool", () => {
     expect(mockFetchBsc.mock.calls[1][0]).toEqual({
       selectorOptionId: ROW_ID,
       view: "sets",
+      // PR 451 (NEO-487): a fresh run key per fetch, for the wait line.
+      waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
     });
 
     // The pool genuinely swapped — the own-set variants are gone, the year's
@@ -274,6 +296,8 @@ describe("AttachSetsDialog — the BSC browse control changes the pool", () => {
       selectorOptionId: ROW_ID,
       view: "variants",
       setSlug: "topps-heritage",
+      // PR 451 (NEO-487): a fresh run key per fetch, for the wait line.
+      waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
     });
 
     const bscDown = within(bscPane());
@@ -1268,5 +1292,55 @@ describe("AttachSetsDialog — two candidates with one name (NEO-325)", () => {
     // candidate in the pane and reads bare.
     expect(within(slPane()).queryByLabelText("Toggle Anime (#378117)")).toBeNull();
     expect(within(slPane()).getByLabelText("Toggle Anime")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 451 (NEO-487) — "Waiting on BuySportsCards…" in the BSC pane
+// ---------------------------------------------------------------------------
+
+describe("AttachSetsDialog — waiting on BuySportsCards", () => {
+  test("while the BSC fetch is held up the BSC pane says so, keyed by the run key the fetch was given", async () => {
+    waitState.answer = { waitingSince: 1, accumulatedMs: 0 };
+    let release!: () => void;
+    mockFetchBsc.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ success: true, options: OWN_SET_VARIANTS, message: "" });
+        }),
+    );
+    renderDialog();
+
+    const line = await within(bscPane()).findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    expect(line.closest('[role="status"]')).not.toBeNull();
+    // Only the BSC pane carries one.
+    expect(within(slPane()).queryByText("Waiting on BuySportsCards…")).toBeNull();
+    expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
+
+    const sentKey = mockFetchBsc.mock.calls[0][0].waitKey as string;
+    expect(sentKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(waitState.asked).toContain(sentKey);
+
+    await act(async () => release());
+    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
+  });
+
+  test("each rung change is a fresh key", async () => {
+    renderDialog();
+    await within(bscPane()).findByText("Gold Foil");
+    fireEvent.click(screen.getByLabelText("Browse all BSC sets"));
+    await waitFor(() => expect(mockFetchBsc).toHaveBeenCalledTimes(2));
+
+    const [first, second] = mockFetchBsc.mock.calls.map((c) => c[0].waitKey as string);
+    expect(first).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(second).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(second).not.toBe(first);
+  });
+
+  test("the SportLots fetch is never given a key", async () => {
+    renderDialog();
+    await within(slPane()).findByText("Series 1");
+
+    expect(mockFetchSl.mock.calls[0][0]).not.toHaveProperty("waitKey");
   });
 });

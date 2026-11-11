@@ -16,6 +16,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import type { BaseSignature } from "@/lib/cards/base-match";
 import {
   BSC_BATCH,
+  BSC_CALLS_PER_WAIT_KEY,
   MAX_IN_FLIGHT_PER_SIDE,
   SL_COUNT_BATCH,
   SL_FIRST_PAGE_BATCH,
@@ -639,5 +640,64 @@ describe("useBaseMatchProbe — a scope rebuilt every render", () => {
     expect(renders).toBeLessThan(30);
     expect(h.raw.query).toHaveBeenCalledTimes(1);
     expect(h.of(FN.bsc).map((c) => c.ids.length)).toEqual([4, 2]);
+  });
+});
+
+describe("useBaseMatchProbe — the BSC wait key (PR 451, NEO-487)", () => {
+  const KEY = /^[A-Za-z0-9_-]{1,64}$/;
+  const keyOf = (c: Call) => (c.args as { waitKey?: string }).waitKey;
+
+  test("active while a BSC call is in flight, keyed by the key the call carried; idle once all settle", async () => {
+    const h = harness();
+    const { result } = mount(h, sides(ids("b", BSC_BATCH)));
+    expect(result.current.bscWait).toEqual({ runKey: null, active: false });
+    await settle();
+
+    const [call] = h.of(FN.bsc);
+    expect(keyOf(call)).toMatch(KEY);
+    expect(result.current.bscWait).toEqual({ runKey: keyOf(call), active: true });
+
+    await answer(call, call.ids.map((id) => bscOk(id)));
+    expect(result.current.bscWait.active).toBe(false);
+  });
+
+  test("SportLots calls carry no key and never make the BSC line active", async () => {
+    const h = harness();
+    const { result } = mount(h, sides([], ids("s", 2)));
+    await settle();
+
+    const [call] = h.of(FN.slFirst);
+    expect(call.args).not.toHaveProperty("waitKey");
+    expect(result.current.bscWait.active).toBe(false);
+  });
+
+  test(`every call of one sitting shares a key until ${BSC_CALLS_PER_WAIT_KEY} calls, then a fresh one`, async () => {
+    const h = harness();
+    const { result } = mount(h, sides(ids("b", BSC_BATCH * (BSC_CALLS_PER_WAIT_KEY + 1))));
+    await settle();
+    for (let guard = 0; guard < BSC_CALLS_PER_WAIT_KEY + 5; guard++) {
+      const open = h.outstanding(FN.bsc);
+      if (open.length === 0) break;
+      await answer(open[0], open[0].ids.map((id) => bscOk(id)));
+    }
+
+    const keys = h.of(FN.bsc).map(keyOf);
+    expect(keys).toHaveLength(BSC_CALLS_PER_WAIT_KEY + 1);
+    const first = keys.slice(0, BSC_CALLS_PER_WAIT_KEY);
+    expect(new Set(first).size).toBe(1);
+    expect(keys[BSC_CALLS_PER_WAIT_KEY]).toMatch(KEY);
+    expect(keys[BSC_CALLS_PER_WAIT_KEY]).not.toBe(first[0]);
+    expect(result.current.bscWait.active).toBe(false);
+  });
+
+  test("closing the dialog drops the key and the line", async () => {
+    const h = harness();
+    const { result, rerender } = mount(h, sides(ids("b", BSC_BATCH)));
+    await settle();
+    expect(result.current.bscWait.active).toBe(true);
+
+    rerender({ client: null, variantTypeId: undefined, scope: sides(), view: sides() });
+    await settle();
+    expect(result.current.bscWait).toEqual({ runKey: null, active: false });
   });
 });

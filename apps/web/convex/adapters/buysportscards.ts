@@ -433,6 +433,9 @@ export const fetchBscSelectorOptions = action({
     // Optional correlation id from a parent aggregator call. When absent we
     // mint a fresh one so standalone calls are still self-correlatable.
     requestId: v.optional(v.string()),
+    // PR 451 (NEO-487) — see `fetchBscChecklist.waitKey`. Absent or
+    // malformed: nothing is written. Never sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -484,7 +487,13 @@ export const fetchBscSelectorOptions = action({
     }
 
     // NEO-475 — this invocation's BSC calls (the filters attempts below).
-    const rec = createBscRecorder("fetchBscSelectorOptions", { deployment: deploymentName() });
+    // PR 451 (NEO-487) — and their wait edges, for "Waiting on
+    // BuySportsCards…" on the Sync that asked.
+    const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "fetchBscSelectorOptions");
+    const rec = createBscRecorder("fetchBscSelectorOptions", {
+      deployment: deploymentName(),
+      ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
+    });
     try {
       // Get BSC token
       const tokenStart = Date.now();
@@ -821,6 +830,7 @@ export const fetchBscSelectorOptions = action({
       };
     } finally {
       await flushBscRecorder(ctx, rec);
+      await waits?.drain();
     }
   },
 });

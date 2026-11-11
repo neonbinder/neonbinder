@@ -83,6 +83,8 @@ type FakeOptions = {
   /** The signature call's answer; "hold" never answers. */
   signature?: unknown;
   verdicts?: Record<string, Verdict>;
+  /** PR 451 — what `marketplaceWaits.forRun` answers; absent: no wait open. */
+  wait?: { waitingSince?: number; accumulatedMs: number };
 };
 
 function fake(opts: FakeOptions = {}) {
@@ -119,6 +121,14 @@ function fake(opts: FakeOptions = {}) {
           if (mode === "auto") resolve(answerFor(call));
         }),
     ),
+    // PR 451 (NEO-487) — the dialog's "Waiting on BuySportsCards…" line
+    // subscribes to `marketplaceWaits.forRun` while a BSC call is in flight.
+    // It answers `opts.wait` (no wait open unless a test says so).
+    watchQuery: vi.fn((_ref: never, _args: { runKey: string }) => ({
+      onUpdate: () => () => undefined,
+      localQueryResult: () => opts.wait,
+      journal: () => undefined,
+    })),
   };
   return {
     client,
@@ -619,5 +629,39 @@ describe("ReconciliationModal Base check — Save and the strip", () => {
     expect(ownSetButton("Anime (#222)")).toBeTruthy();
     expect(within(rowOf("Anime (#111)")).getByText("(#111)")).toBeTruthy();
     expect(srStatusIn(rowOf("Anime (#222)"))).toBe(`, ${BASE_MATCH_COPY.srMatch}`);
+  });
+});
+
+describe("ReconciliationModal Base check — waiting on BuySportsCards (PR 451)", () => {
+  test("a held BSC check call shows one wait line, keyed by the key the call carried", async () => {
+    const f = fake({ mode: "hold", wait: { waitingSince: 1, accumulatedMs: 0 } });
+    await renderModal(f, { bsc: [item("Bsc A", "b-a")] });
+
+    const bscCall = f.calls.find((c) => c.name === FN.bsc);
+    expect(bscCall).toBeDefined();
+    const bscArgs = f.client.action.mock.calls.find(
+      (c) => getFunctionName(c[0]) === FN.bsc,
+    )?.[1] as { waitKey?: string };
+    expect(bscArgs.waitKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+
+    const line = await screen.findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    expect(line.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
+    const watched = f.client.watchQuery.mock.calls.map((c) => (c[1] as { runKey: string }).runKey);
+    expect(new Set(watched)).toEqual(new Set([bscArgs.waitKey]));
+
+    await f.answer(bscCall!);
+    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
+  });
+
+  test("SportLots check calls carry no key", async () => {
+    const f = fake();
+    await renderModal(f, { sl: [item("Sl A", "sl-a")] });
+
+    const slArgs = f.client.action.mock.calls
+      .filter((c) => getFunctionName(c[0]) !== FN.bsc)
+      .map((c) => c[1] as Record<string, unknown>);
+    expect(slArgs.length).toBeGreaterThan(0);
+    for (const a of slArgs) expect(a).not.toHaveProperty("waitKey");
   });
 });

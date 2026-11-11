@@ -3,6 +3,8 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import { primarySlot, slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import { variantTypeKind } from "../../convex/variantRole";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
@@ -85,6 +87,8 @@ export default function VariantForm({
     id: variantTypeId,
   });
   const [loading, setLoading] = useState(false);
+  // PR 451 (NEO-487) — the current fetch's run key for the wait line.
+  const [waitKey, setWaitKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [showReconciliation, setShowReconciliation] = useState(false);
   const [reconciliationData, setReconciliationData] = useState<RawOptionsResult | null>(null);
@@ -235,8 +239,11 @@ export default function VariantForm({
     setHeldTotal(0);
     setBrandHeldSkipped([]);
     setStoreHolds(null);
+    const key = mintWaitKey();
+    setWaitKey(key);
     try {
       const result = await fetchRawOptions({
+        waitKey: key,
         level: "insert",
         parentId: variantTypeId,
         parentFilters: {
@@ -658,6 +665,16 @@ export default function VariantForm({
             Fetching {variantsLabel.toLowerCase()} for {setNameValue || "..."} from all connected platforms...
           </p>
         )}
+        {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while the
+            fetch is held up by a BSC call. Not while the Reconcile dialog is
+            open over this panel: it carries its own line for its Base
+            check, and one wait line on the page is the rule. */}
+        <WaitingOnMarketplaceRun
+          runKey={waitKey}
+          active={loading && !showReconciliation}
+          marketplace="BuySportsCards"
+          className="mb-4"
+        />
 
         {(() => {
           const isError =

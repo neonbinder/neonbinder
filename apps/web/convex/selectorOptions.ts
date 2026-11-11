@@ -11025,6 +11025,10 @@ export const ensureSelectorOptions = action({
     level: levelValidator,
     parentId: v.optional(v.id("selectorOptions")),
     force: v.optional(v.boolean()),
+    // PR 451 (NEO-487) — the client's run key for "Waiting on
+    // BuySportsCards…" (`marketplaceWaits`), passed down to the BSC selector
+    // fetch. Shape-checked after the admin gate; never sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     ran: v.boolean(),
@@ -11056,6 +11060,10 @@ export const ensureSelectorOptions = action({
   }> => {
     await requireAdmin(ctx);
     const { level, parentId, force } = args;
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("ensureSelectorOptions: waitKey must be 1-64 letters, digits, _ or -.");
+    }
+    const waitKeyArg = args.waitKey !== undefined ? { waitKey: args.waitKey } : {};
 
     // NEO-237 — the Sets column may be opened from the All Brands VIEW, in
     // which case its parent is the YEAR, not a manufacturer. Read once; it
@@ -11271,12 +11279,13 @@ export const ensureSelectorOptions = action({
             ...(parentRow?.level === "manufacturer"
               ? { manufacturerId: parentRow._id }
               : {}),
+            ...waitKeyArg,
           },
         );
       } else {
         res = await ctx.runAction(
           api.selectorOptions.fetchAggregatedOptions,
-          { level, parentId, parentFilters },
+          { level, parentId, parentFilters, ...waitKeyArg },
         );
       }
       if (!res.success) {
@@ -11479,6 +11488,8 @@ export const fetchAggregatedOptions = action({
         variantType: v.optional(v.string()),
       }),
     ),
+    // PR 451 (NEO-487) — see `ensureSelectorOptions.waitKey`.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -11515,6 +11526,10 @@ export const fetchAggregatedOptions = action({
     // cleanly to the client instead of being rewritten as "Failed to fetch
     // options: Admin access required" by the generic catch below.
     await requireAdmin(ctx);
+    // PR 451 (NEO-487) — outside the try for the same reason.
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("fetchAggregatedOptions: waitKey must be 1-64 letters, digits, _ or -.");
+    }
 
     // Correlation id for the adapter-perf dashboard. Generated here at the
     // outermost aggregator so child BSC/SL calls can tag their own
@@ -11793,6 +11808,7 @@ export const fetchAggregatedOptions = action({
                   ? { platformFilters: bscPlatformFilters }
                   : {}),
                 requestId,
+                ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}),
               }),
               BSC_CHILD_DEADLINE_MS,
             )
@@ -13260,6 +13276,8 @@ export const syncSetsAcrossManufacturers = action({
      * every brand of the year. The BSC phase is year-wide either way.
      */
     manufacturerId: v.optional(v.id("selectorOptions")),
+    // PR 451 (NEO-487) — see `ensureSelectorOptions.waitKey`.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -13305,6 +13323,11 @@ export const syncSetsAcrossManufacturers = action({
     // NEO-306 — the SportLots phase mints nothing, so no identity is
     // threaded anywhere; the review's save records its own caller.
     await requireAdmin(ctx);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError(
+        "syncSetsAcrossManufacturers: waitKey must be 1-64 letters, digits, _ or -.",
+      );
+    }
     const requestId = newRequestId();
     try {
       // 1. Build ancestor chain from yearId to get sport/year values + slugs
@@ -13383,6 +13406,7 @@ export const syncSetsAcrossManufacturers = action({
               year: slotIds(yearAncestor, "bsc"),
             },
             requestId,
+            ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}),
           },
         );
 
@@ -14361,6 +14385,11 @@ export function checkPublishedChecklist(
     const number = row.number.trim();
     if (number.length > MAX_PLAYER_NAME_LENGTH) {
       throw new ConvexError(`${where} has a card number over ${MAX_PLAYER_NAME_LENGTH} characters.`);
+    }
+    // The subset is dropped below, but it still crossed the wire: held to the
+    // same cap as a name, so an unread field cannot carry an unbounded string.
+    if (row.subset !== undefined && row.subset.trim().length > MAX_PLAYER_NAME_LENGTH) {
+      throw new ConvexError(`${where} has a set name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
     }
     const clean = (names: string[], max: number, unit: string) => {
       const kept = names.map((n) => n.trim()).filter(Boolean);
