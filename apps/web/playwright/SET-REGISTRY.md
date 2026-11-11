@@ -107,6 +107,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 1996 → All Brands → Line Up Venezuelan Winter League | none since NEO-475 — RETIRED as a fixture (300 cards, 200 unknown players + 8 clubs) | was `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` (NEO-330); no flow touches it now. Its players' recorded no-matches still back `support/recorded-names.ts` |
 | Baseball → 2025 (the whole year) → Topps → Topps Welcome to the Club: 3X MVP | `Base` — 36 cards, BSC only (the SportLots picker is CANCELLED in-flow), fetched and COMMITTED in-flow (NOT pre-synced): the one team step, `Philadelphia Athletics`, LINKED by the operator to the catalogue's 1901–1954 row (remember-box unticked, no alias written); Brooklyn Dodgers linked automatically at the fetch. The year's Manufacturers and Topps Sets syncs are this flow's too: no other flow drills Baseball → 2025 | `tests/set-selector/checklist-wizard-past-era-team-link-commits.spec.ts` — **sole writer** of the year. ✅ **Approved by Jason 2026-10-11** (NEO-330). Measured: **0 unknown players + 1 unknown team** (1 row once its lookup settles) — see "The PAST-ERA team fixture" |
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `tests/setup.spec.ts` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `tests/set-selector/bowman-insert-grouping-builds-parallels.spec.ts` (Bowman › Insert's BSC inserts and their grouping), `tests/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.spec.ts` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
+| Baseball → 2026 → All Brands (the pinned view; the set is filed under the year's `Unknown` row) → Donruss › `Insert` › Retro 1997 Donruss Signature Series Autographs | `Insert` set `Retro 1997 Donruss Signature Series Autographs` — 14 cards `SIG-AM`..`SIG-RL`, BSC only (SportLots paused: the Insert column fills straight from BSC, no Reconcile), fetched twice in-flow: a 13-row upload that opens Match Cards and is DISCARDED, then a 14-row upload that is COMMITTED (NOT pre-synced; see "Baseball → 2026 → Donruss › Insert › Retro 1997 Donruss Signature Series Autographs" below) | `tests/set-selector/checklist-published-numbers-differ-pairs-by-player.spec.ts` — **sole writer**, fresh-only. Approved by Jason 2026-11-11 (NEO-490, plan decision J6). It shares Baseball → 2026 with the seed's Bowman rows and writes none of them |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `tests/set-selector/known-brand-files-set-and-operator-move-sticks.spec.ts` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 | Baseball → 2025 (the whole year) | the year's Manufacturers and year-wide Sets synced cold in-flow (SportLots' Bowman review left UNSAVED); `Bowman Draft`'s Variant Types synced; Bowman Draft › `Insert` reconciled and SAVED (every Ready set, the `Prospect Dual Autographs` family made its own sets by "Keep all"); `Prospect Dual Autographs`' checklist COMMITTED (on the catalogue every name is known, so the fetch commits with no wizard; any name the wizard does stage is SKIPPED) — no player, team or league minted (NOT pre-synced) | `tests/set-selector/checklist-dual-team-card-links-both-teams.spec.ts` — **sole writer** of the year, not self-cleaning (the run-start reset is its cleanup). Owner chose an uncontested set, 2026-10-10 (NEO-333 option B); see "Baseball → 2025 — the NEO-333 dual-team fixture" |
 | Baseball → 2025 → Bowman › Bowman Draft › Insert › Bowman Draft Nights Autographs | `Insert` set `Bowman Draft Nights Autographs` — made its own set from the Reconcile Inserts dialog by its exact "Make its own set" button (its four refractor siblings are NOT made sets); its 5 cards (BDNA-SH, -EW, -GF, -KA, -XN, each AU + SN99 in BSC's attribute field) fetched and COMMITTED in-flow (NOT pre-synced); every name the wizard stages is SKIPPED, no player, team or league minted; the part's autograph format answered in the wizard, changed in Set details, cleared and answered again from the header, and card BDNA-KA's `autographed` toggled once by hand | `tests/set-selector/checklist-autograph-format-asked-applied-and-changeable.spec.ts` — **sole writer** of those five cards, not self-cleaning (the run-start reset is its cleanup). ✅ **Approved by Jason 2026-10-14** (NEO-345); shares the YEAR and the Bowman Draft Insert reconcile with the dual-team spec above (a different insert, different rows) — see "Baseball → 2025 — the NEO-345 autograph fixture" |
@@ -1876,6 +1877,12 @@ club held once, and the operator's link among several eras) live in
 
 ### The PAST-ERA team fixture — Baseball / 2025 / Topps / Topps Welcome to the Club: 3X MVP (NEO-330) — approved by Jason 2026-10-11
 
+NEO-490: Jimmie Foxx's catalogue row has a stint at exactly ONE of the four
+`Philadelphia Athletics` eras (the 1901-1954 club, 1925-35; probed 2026-11-11), so
+the fetch now LINKS the club from his career (a decided row, "the player on the
+card played there"; the Save step is the first screen) instead of asking. The
+flow Changes that link and picks the era by its label as before, so the operator's
+choice is still what the commit writes.
 One real set, touched by exactly one flow,
 `tests/set-selector/checklist-wizard-past-era-team-link-commits.spec.ts`, which fetches and COMMITS
 its `Base`. The flow also claims the whole of **Baseball → 2025**: its drill
@@ -2059,6 +2066,38 @@ The rules of the NPB section below carry over unchanged: the flow is
 **read-only** on the set (Cancel → Discard); ⚠️ **no other flow may fetch a
 checklist carrying `Shuya Yamada`**, and ⚠️ **no flow may commit this set**;
 re-runs are idempotent (the b. 1851 row is adopted).
+
+NEO-490: the same flow now ALSO gives the b. 1851 row a 2024 stint at the
+`Yomiuri Giants` (Player Management > Career history; a NPB club the catalogue
+holds once, 1934-present) to prove the career-team rule: with a career on file
+on both Yamadas and only the catalogue's at `Hanshin Tigers` (the club RP03
+names), the fetch links him as a decided row ("Linked to Shuya Yamada · played
+for the Hanshin Tigers") and the pick step never comes. The flow removes the
+stint again at its end, and removes a stray one a red attempt left at its start
+(the pick-step claim needs a rival with NO career). ⚠️ no other flow may give
+either Shuya Yamada a stint.
+
+### Baseball → 2026 → Donruss › Insert › Retro 1997 Donruss Signature Series Autographs — the published-checklist-by-player fixture (NEO-490) ✅ APPROVED by Jason 2026-11-11 (plan decision J6)
+
+One flow, `checklist-published-numbers-differ-pairs-by-player`, **sole writer** and
+**fresh-only** (it commits in its second half; a re-run fails at "No cards in this
+checklist yet." by name: re-seed first). It uploads PANINI'S OWN published
+checklist (public; not a capture of BSC's answers) whose numbers (1-8, 10, 11,
+13, 14, 16, 17) meet none of BSC's `SIG-xx`, so every row pairs to its card by
+player name.
+
+| | |
+| -- | -- |
+| the drill | Baseball > 2026 > **All Brands** > Sets `Donruss` (its option reads "Donruss Unknown": the set sits under the year's `Unknown` brand; there is NO `Donruss` brand row, and `Donruss Elite` sits beside it) > Variant Types `Insert` > Inserts `Retro 1997 Donruss Signature Series Autographs`. Probed 2026-11-11 on a fresh seed, SportLots paused: Variant Types listed 1.5 s after the set was picked, the Inserts column filled 0.2 s after `Insert` was clicked, no Reconcile dialog |
+| BSC cards | **14**, `SIG-AM`, `-BW`, `-DC`, `-FT`, `-GL`, `-HK`, `-JC`, `-JM`, `-JW`, `-KC`, `-KG`, `-ML`, `-MS`, `-RL`; every one tagged AU. BSC names **no team** on any of them (`card-listing` `teamName` is empty: captured with `capture-bsc-checklist-teams.mjs`, 0 rows with a team, 0 429s), so every team on screen comes from the checklist |
+| fetch cost | measured 2026-11-11 (one marketplace, 13-row upload, SportLots paused): about 1.3 s from the Sync press to the Match Cards dialog / the "Kept all 14 cards from BSC" line; one bulk catalogue request plus 14 per-card lookups (all 200, 21-86 ms, no 429) |
+| names | every one of the 14 players is on the reference catalogue (`players:resolveNamesForReview`, card year 2026): no player is minted and no live lookup is waited on. **Frank Thomas** is two players on file and is linked as the Hall of Famer (a decided row); **Jacob Wilson** is two on file and is picked silently by the card's year; **Bobby Witt Jr.** and **George Lombard Jr.** carry the suffix in BOTH sources ("Jr." is not folded by `normalizeEntityName`, and the senior Bobby Witt / George Lombard are separate rows) |
+| the one new club | Panini writes **"Oakland A's"** for Jacob Wilson. NB holds no club, alias or era of that name (`nameHeldAsAliasBy` is empty for it), so the wizard asks (rule 8: the checklist's claim is never rewritten). The flow links it to the **1968-2024 "Oakland Athletics"** row (`Oakland Athletics · 1968–2024`, the club the checklist names; the 2025-on "Athletics" row, which holds the alias "Oakland Athletics", is not it) with the remember-box OFF: **no alias is saved and no team is minted**. The other 12 clubs resolve to one row each for set year 2026 |
+| files | `fixtures/checklists/2026-donruss-insert-retro-1997-donruss-signature-series-autographs.csv` (14 rows) and `…-without-lowell.csv` (13 rows, row 17 Mike Lowell left out so the counts differ) |
+| live SportLots | **unmeasured**: SportLots is paused everywhere the suite runs. With it live this set may pair through Match Cards in two-marketplace mode and show under a real brand |
+
+`SIG-FT`, `SIG-BW` and `SIG-JW` are read back after the commit (team and number).
+No other flow may fetch or write this insert.
 
 ### Topps Chrome NPB — the same-name PICK STEP fixture (NEO-332) — RETIRED by NEO-475
 
@@ -3161,6 +3200,8 @@ the reason the specs upload instead of fetching card by card.
 | `2026-bowman-insert-anime` | Baseball > 2026 > Bowman > Insert > Anime | 36 lines, 35 read (the `TBD` line is no card number we can read, so that one card, Terrell Owens, is asked of BSC live); six of the cards are football players | 35 | `bowman-insert-grouping-builds-parallels`, PART 4 (Anime's fetch) |
 | `1995-hockey-halifax-mooseheads-qmjhl-base-full` | Hockey > 1995 > Halifax Mooseheads QMJHL > Base | 26 (cards 1-25 and one `NNO`) | 26 | none uploaded whole: the source of the next file |
 | `1995-hockey-halifax-mooseheads-qmjhl-base-five-live` | same | 21 (cards 1, 2, 3, 24 and 25 left OUT, so BSC is asked for exactly those five: #1-#3 are the stalled ids, #24 and #25 answer) | 21 | `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`. Made from the full file with no BSC call: `node playwright/tools/capture-bsc-checklist-teams.mjs --out <file> --cache <the full file's cache> --sport hockey --year 1995 --set-name halifax-mooseheads-qmjhl --variant base --omit-number 1 --omit-number 2 --omit-number 3 --omit-number 24 --omit-number 25` |
+| `2026-donruss-insert-retro-1997-donruss-signature-series-autographs` | Baseball > 2026 > Donruss > Insert > Retro 1997 Donruss Signature Series Autographs (see its section above) | 14, **PANINI'S OWN checklist, not a capture of BSC**: numbers 1-8, 10, 11, 13, 14, 16, 17 against BSC's `SIG-xx`, so no number matches and each row pairs by player (the counts are equal) | 14 | `checklist-published-numbers-differ-pairs-by-player` (second half, committed). N is read by `nameFallbackFacts`, not `checklistFacts` |
+| `2026-donruss-insert-retro-1997-donruss-signature-series-autographs-without-lowell` | same | 13 (row 17, Mike Lowell, left OUT: the counts differ, so the fetch applies nothing and Match Cards offers the 13 name pairs as suggestions) | 13 | `checklist-published-numbers-differ-pairs-by-player` (first half, discarded) |
 
 **Why a published-checklist upload is not a different flow to the ones it
 replaced.** Every moved spec asserts the wizard's decisions, the saved cards or

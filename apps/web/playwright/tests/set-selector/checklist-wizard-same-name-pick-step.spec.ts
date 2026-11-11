@@ -32,14 +32,46 @@
 // relative to K, the walk's skips, and only the counter's x is asserted (on a
 // name step x is the decided count plus one; y grows while lookups land).
 // NEO-335: the header's one counter is "Step x of y" (it was "N of M reviewed").
+// NEO-490: STEP 6-8 add the career-team rule. Once the b. 1851 row has a stint (2024, Yomiuri
+// Giants) the catalogue's Shuya Yamada is the ONLY one of the two with a stint on the club the card
+// names (RP03 says "Hanshin Tigers"), and neither is ruled out by the card's year or fame, so the
+// fetch links him and shows it as a decided row: no pick step. The stint is removed again at the
+// end, and a stray one a red attempt left is removed at the start, because the pick step above
+// needs a rival with NO career on file.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, emptyListAndPickSport, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { CHECKLISTS } from "../../support/published-checklist";
-import { fetchChecklistToWizard, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import { cancelAndDiscard, fetchChecklistToWizard, openDecidedList, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import type { Page } from "@playwright/test";
 
 const SET = "BBM Rookie Edition Premium";
 const TARGET = { manufacturer: "BBM", set: SET };
 const NAME = "Shuya Yamada";
+/** A club that is not the card's (RP03 is Hanshin): the rival's career, once he has one. */
+const OTHER_CLUB = "Yomiuri Giants";
+
+/**
+ * Add the b. 1851 Baseball Shuya Yamada, or open the row a previous run left (the add form adopts
+ * him: "already exists"). Contract: ENTRY /admin/players is loaded. EXIT his detail is open and
+ * the list is on Baseball.
+ */
+async function addOrOpenRival(page: Page): Promise<void> {
+  await emptyListAndPickSport(page, "Baseball");
+  const newName = page.getByRole("textbox", { name: "New player name" });
+  const birthYear = page.getByRole("spinbutton", { name: /^Birth year \(optional\)/ });
+  // With the catalogue's row on file creation is the demoted "anyway" control;
+  // without it (no catalogue) the plain one. A re-run adopts the b. 1851 row
+  // ("already exists"). A REFUSAL renders neither result line, so this fails by
+  // name if the server will not file him.
+  const create = page.getByRole("button", { name: new RegExp(`^Create player ${NAME}( anyway)?$`) });
+  const result = page.getByText(new RegExp(`(Added ${NAME}\\.|That player already exists — opened it\\.)`));
+  await page.getByRole("button", { name: "Add player" }).click();
+  await expect(page.getByRole("heading", { name: "Add a player" })).toBeVisible();
+  await newName.fill(NAME);
+  await birthYear.fill("1851");
+  await create.click();
+  await expect(result).toBeVisible();
+}
 
 test(
   "Entity review — a checklist name two players on file share asks which one it is, and Create new is a step you can back out of",
@@ -50,21 +82,18 @@ test(
     await expectPlayersLoaded(page, LAUNCH_GATE);
 
     // ── FIXTURE: a second Baseball Shuya Yamada, b. 1851, beside the catalogue's ──
-    await emptyListAndPickSport(page, "Baseball");
-    const newName = page.getByRole("textbox", { name: "New player name" });
-    const birthYear = page.getByRole("spinbutton", { name: /^Birth year \(optional\)/ });
-    // With the catalogue's row on file creation is the demoted "anyway" control;
-    // without it (no catalogue) the plain one. A re-run adopts the b. 1851 row
-    // ("already exists"). A REFUSAL renders neither result line, so this fails by
-    // name if the server will not file him.
-    const create = page.getByRole("button", { name: new RegExp(`^Create player ${NAME}( anyway)?$`) });
-    const result = page.getByText(new RegExp(`(Added ${NAME}\\.|That player already exists — opened it\\.)`));
-    await page.getByRole("button", { name: "Add player" }).click();
-    await expect(page.getByRole("heading", { name: "Add a player" })).toBeVisible();
-    await newName.fill(NAME);
-    await birthYear.fill("1851");
-    await create.click();
-    await expect(result).toBeVisible();
+    await addOrOpenRival(page);
+
+    // A stint a red attempt of STEP 6 left on him would turn the pick step below into a link: take
+    // it off first, so the claim of the pick step (a rival with NO career on file) holds.
+    const strayStint = page.getByRole("button", { name: new RegExp(`^Remove ${OTHER_CLUB} [0-9]+ stint$`) });
+    await expect(strayStint.or(page.getByText("No stints recorded yet.")).first()).toBeVisible();
+    if (await strayStint.isVisible()) {
+      await strayStint.click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(page.getByText(`Saved ${NAME}`)).toBeVisible();
+    }
+    await expect(page.getByText("No stints recorded yet.")).toBeVisible();
 
     // The b. 1851 row is on file (a server search, so read back from the
     // database). No count is asserted: the search matches ANY token, so other
@@ -169,5 +198,46 @@ test(
     await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
     await page.getByRole("button", { name: "Discard", exact: true }).click();
     await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
+
+    // ── STEP 6 (NEO-490): the rival gets a career at ANOTHER club (2024, not Hanshin) ──
+    // Through Player Management's career editor, as an operator would record it. Both Yamadas now
+    // have a career on file and only the catalogue's has a stint at the club the card names.
+    await page.goto("/admin/players");
+    await expectPlayersLoaded(page, 30_000);
+    await addOrOpenRival(page);
+    await expect(page.getByText("No stints recorded yet.")).toBeVisible();
+    await page.getByRole("button", { name: "Add team" }).click();
+    await page.getByRole("textbox", { name: "Search teams" }).fill(OTHER_CLUB);
+    await page.getByRole("option", { name: new RegExp(`^Add ${OTHER_CLUB}`) }).click();
+    await page.getByRole("heading", { name: "Career history" }).click(); // closes the typeahead
+    await page.getByLabel(/Stint from year/).fill("2024");
+    await page.getByLabel(/Stint to year/).fill("2024");
+    await page.getByRole("button", { name: "Add stint" }).click();
+    await expect(page.getByRole("link", { name: new RegExp(`${OTHER_CLUB} · 2024`) })).toBeVisible();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText(`Saved ${NAME}`)).toBeVisible();
+
+    // ── STEP 7: fetch again: no pick step, the catalogue's Shuya Yamada is linked as a decided row ──
+    await fetchChecklistToWizard(page, env, TARGET, { checklist: CHECKLISTS.bbmRookieEditionPremium });
+    // The link is a decided row the operator can Change, and it says what settled it: the club on
+    // the card ("Hanshin Tigers", RP03) is one only the catalogue's man ever played for.
+    const decided = await openDecidedList(page);
+    await expect(decided.getByRole("listitem").filter({ hasText: NAME })).toContainText(
+      `Linked to ${NAME} · played for the Hanshin Tigers`,
+    );
+    // And the pick step never comes: the walk reaches a player row with the question nowhere.
+    await walkToPlayerRow(page);
+    await expect(wizard.getByText(`Which ${NAME} is this?`)).toBeHidden();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, career-team link decided" });
+    await cancelAndDiscard(page);
+
+    // ── STEP 8: take the stint off again, so the pick step above is true on the next run ──
+    await page.goto("/admin/players");
+    await expectPlayersLoaded(page, 30_000);
+    await addOrOpenRival(page);
+    await page.getByRole("button", { name: new RegExp(`^Remove ${OTHER_CLUB} 2024 stint$`) }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText(`Saved ${NAME}`)).toBeVisible();
+    await expect(page.getByText("No stints recorded yet.")).toBeVisible();
   },
 );
