@@ -233,14 +233,52 @@ export function previewRowCount(dialog: Locator, rows: number): Locator {
   return dialog.getByText(new RegExp(`\\b${rows} ${rows === 1 ? "row" : "rows"}\\b`)).first();
 }
 
+/** One cell into CSV (quoted when it holds a comma, a quote or a newline). */
+function csvCell(cell: string): string {
+  return /[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
+}
+
+/**
+ * A captured file with ONE card's team cell replaced by `No Team`: the publisher
+ * saying the card shows no team (NEO-489). Throws when the file has no such number,
+ * so a spec built on it fails by name rather than uploading an unchanged file.
+ */
+function csvWithNoTeamOn(name: ChecklistName, number: string): string {
+  const lines = readFileSync(`${DIRECTORY}${name}.csv`, "utf8").split("\n").filter((l) => l.trim() !== "");
+  const header = cells(lines[0]);
+  const numberAt = header.indexOf("number");
+  const teamAt = header.indexOf("team");
+  let changed = 0;
+  const out = lines.map((line, i) => {
+    if (i === 0) return line;
+    const row = cells(line);
+    if (row[numberAt] !== number) return line;
+    row[teamAt] = "No Team";
+    changed++;
+    return row.map(csvCell).join(",");
+  });
+  if (changed !== 1) throw new Error(`${name}.csv has ${changed} rows numbered "${number}": expected exactly one to say No Team on.`);
+  return `${out.join("\n")}\n`;
+}
+
 /**
  * Upload a captured checklist and use it. Contract: ENTRY a checklist section
  * with "Add the publisher's checklist" on screen (the set's Base or variant is
  * open). EXIT the dialog is closed and the chip "Publisher's checklist: N rows"
  * is showing, N read off the file; nothing is fetched. Returns the file's facts
  * for the result line (`expectTeamsFromChecklist`).
+ *
+ * `noTeamOn` uploads the file with that one card's team cell changed to `No Team`
+ * (the publisher's claim that the card shows no team). The facts are the unchanged
+ * file's: the row is answered either way, but a card the marketplace already gives a
+ * team is a disagreement the operator settles, which the fetch does not count as
+ * answered by the checklist (the caller subtracts it from `matched`).
  */
-export async function usePublishersChecklist(page: Page, name: ChecklistName): Promise<ChecklistFacts> {
+export async function usePublishersChecklist(
+  page: Page,
+  name: ChecklistName,
+  options: { noTeamOn?: string } = {},
+): Promise<ChecklistFacts> {
   const facts = checklistFacts(name);
   // A second visit to the same open checklist (a discarded review fetched again)
   // may still hold the file the first visit used: the chip is then the proof.
@@ -250,7 +288,9 @@ export async function usePublishersChecklist(page: Page, name: ChecklistName): P
   await publishersChecklistButton(page).click();
   const dialog = publishersChecklistDialog(page);
   await expect(dialog).toBeVisible();
-  await dialog.getByLabel("Choose a file").setInputFiles(facts.path);
+  const file = dialog.getByLabel("Choose a file");
+  if (options.noTeamOn === undefined) await file.setInputFiles(facts.path);
+  else await file.setInputFiles({ name: `${name}.csv`, mimeType: "text/csv", buffer: Buffer.from(csvWithNoTeamOn(name, options.noTeamOn)) });
   await expect(previewRowCount(dialog, facts.rows)).toBeVisible();
   await dialog.getByRole("button", { name: "Use this checklist" }).click();
   await expect(dialog).toBeHidden();

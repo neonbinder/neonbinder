@@ -37,14 +37,19 @@
 //      a shared row this spec does not mint. The backend's own log line for the
 //      fetch ("calls":1 for 18 cards) is what shows BSC was asked once.
 //
-// BEFORE THE REAL PASTE the dialog is shown two things that are not a checklist:
+// BEFORE THE REAL PASTE the dialog is shown three things that are not the checklist:
 //   * a paste that reads as no card: the count's status says "Nothing reads as a
 //     card yet. Each line starts with its card number.", pressing Use says
 //     "Nothing to use yet", and the dialog stays open (axe on that state);
 //   * a paste with a "Card Set" column naming two subsets: the question "Which of
 //     these belong to this set?" shows with NOTHING ticked, Use refuses with "Tick
 //     at least one subset first", and ticking one subset narrows the preview to
-//     that subset's rows (axe on that state).
+//     that subset's rows (axe on that state);
+//   * NEO-489: four of the set's cards with four kinds of team cell. The preview's Teams
+//     column reads the team, "No team" (a "No Team" cell is the checklist's claim), and
+//     "We'll look it up" (a blank cell is no claim); a "No Team; <team>" line is no row and is
+//     listed under Skipped lines with "Says No Team and names a team — pick one." (axe on
+//     that state). A throwaway paste: the real one below is unchanged.
 // AFTER USING the real paste, "Remove the publisher's checklist" takes the chip
 // away (and the button to add one is back); the checklist is then used again for
 // the flow below. No plain Sync follows the Remove: that would ask BSC for each of
@@ -191,6 +196,38 @@ test(
     await expectAccessible(page, { within: dialog, label: "Publisher's checklist dialog, one of two subsets ticked" });
     await baseBox.check();
     await expect(previewRowsShown).toHaveCount(base.length + insert.length + 1);
+
+    // NEO-489 (Jason, 2026-11-11): what the preview's Teams column says for each kind of team cell.
+    // A throwaway paste, read and replaced by the real one below, so the fetch's own arithmetic
+    // ("17 of 18") and its BSC lookups are untouched: four of the set's own cards, each with a
+    // different team cell. A named team reads as itself; "No Team" is the checklist's CLAIM that
+    // the card shows no team, so it reads "No team"; a blank cell makes no claim, so it reads
+    // "We'll look it up"; "No Team" beside a team contradicts itself, so that line is not a row
+    // and is listed under Skipped lines with the parser's own reason.
+    const [teamed, claimed, blank, both] = rows.slice(0, 4);
+    await paste.fill(
+      [
+        "number,player,team",
+        `${teamed.number},${teamed.player},${teamed.team}`,
+        `${claimed.number},${claimed.player},No Team`,
+        `${blank.number},${blank.player},`,
+        `${both.number},${both.player},No Team; ${both.team}`,
+      ].join("\n"),
+    );
+    await expect(subsetQuestion).toBeHidden();
+    await expect(previewRowCount(dialog, 3)).toBeVisible();
+    const previewTable = dialog.getByRole("table", { name: "Preview of the rows the sync will use" });
+    const teamCell = (player: string, text: string) =>
+      previewTable.getByRole("row").filter({ hasText: player }).getByRole("cell", { name: text, exact: true });
+    await expect(teamCell(teamed.player, teamed.team)).toBeVisible();
+    await expect(teamCell(claimed.player, "No team")).toBeVisible();
+    await expect(teamCell(blank.player, "We'll look it up")).toBeVisible();
+    // The contradicting line is no row of the preview, and is listed with the reason, not dropped.
+    await expect(previewTable.getByRole("row").filter({ hasText: both.player })).toHaveCount(0);
+    const contradiction = dialog.getByRole("listitem").filter({ hasText: both.player });
+    await expect(contradiction).toBeVisible();
+    await expect(contradiction).toContainText("Says No Team and names a team — pick one.");
+    await expectAccessible(page, { within: dialog, label: "Publisher's checklist dialog, preview with No Team, a blank team and a contradiction" });
 
     // The real paste: the published line format, no subsets.
     await paste.fill(lines.join("\n"));

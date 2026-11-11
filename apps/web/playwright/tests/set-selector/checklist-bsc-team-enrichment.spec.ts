@@ -32,7 +32,10 @@ test(
     // Answered: the chip names Seattle Mariners and NO other team. Skipped (a 429 or an open
     // cooldown at the seed): the card waits in the background queue, so the checklist says
     // "Still looking up teams for 1 card." and the card holds no team chip at all. A DIFFERENT
-    // team is never accepted in either branch.
+    // team is never accepted in either branch. The status line belongs to the checklist behind the
+    // drawer, and it stays in the accessibility tree while the drawer is open: proved on a run
+    // with BSC's cooldown open at the seed (the `bsc-lookup` annotation read "cooldown" and this
+    // line was the element that resolved), so it is read here, not before the drawer opens.
     await expect(drawer.getByText("Teams", { exact: true })).toBeVisible();
     const mariners = drawer.getByRole("button", { name: "Remove team Seattle Mariners" });
     const lookingUp = page.getByRole("status").filter({ hasText: "Still looking up teams for 1 card." });

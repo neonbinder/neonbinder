@@ -123,12 +123,18 @@ test(
     // stalled cards always wait. The two live lookups (#24, #25) wait too when BSC rate-limits them
     // or its cooldown is open, so M is 3 (both answered) up to 5 (neither). Whatever M is, the
     // cards BSC DID answer end teamless and are the operator's, exactly CARDS - M.
-    const queued = Number((((await lookupStatus.textContent()) ?? "").match(/for ([0-9]+) cards?/) ?? [])[1]);
-    expect(queued, "the stalled cards plus at most the two live ones wait in the queue").toBeGreaterThanOrEqual(STALLED);
-    expect(queued, "the stalled cards plus at most the two live ones wait in the queue").toBeLessThanOrEqual(STALLED + 2);
+    // The line and the button are read TOGETHER and retried together: the queue drains while the
+    // page is open, so a count read once and a button asserted a moment later could straddle a
+    // drain and disagree about the same instant. Each pass reads M, then asserts 26 - M need you
+    // (a count that is not CARDS - M fails by its number). Exact, positive.
+    let queued = 0;
+    await expect(async () => {
+      queued = Number((((await lookupStatus.textContent({ timeout: 1_000 })) ?? "").match(/for ([0-9]+) cards?/) ?? [])[1]);
+      expect(queued, "the stalled cards plus at most the two live ones wait in the queue").toBeGreaterThanOrEqual(STALLED);
+      expect(queued, "the stalled cards plus at most the two live ones wait in the queue").toBeLessThanOrEqual(STALLED + 2);
+      await expect(page.getByRole("button", { name: `${CARDS - queued} need you`, exact: true })).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 7_000 });
     bscLookupOutcome(queued === STALLED ? "answered" : "cooldown", `Halifax #24, #25 (${queued} cards waiting)`);
-    // Positive, exact: a count that is not CARDS - M fails by its number.
-    await expect(page.getByRole("button", { name: `${CARDS - queued} need you`, exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Halifax checklist saved, the unanswered cards waiting in the background" });
   },
 );
