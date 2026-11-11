@@ -42,7 +42,8 @@
 - [Review gate cost is the sequential name loop](review-gate-cost-is-the-sequential-name-loop.md) — ~5 s at 200 names before any feature adds to it; 7 s after "Kept all" has under 2 s headroom
 - [Open-if-visible races the selection change](open-if-visible-races-the-selection-change.md) — panel returns null mid-selection, click skipped; gate on the new heading; blob steps prove it
 - [Player match panels: fixture + stored text](player-match-panels-fixture-and-stored-text.md) — prove NearMatchPanel on /admin/players, not the wizard; careerSummary is stored text
-- [Teamless-rows checklist red = BSC lookup stall](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — every row teamless after Saved N = `bsc_card_team_lookup_failures` failed==requested; rerun, not the PR
+- [Teamless-rows checklist red = BSC lookup stall](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — failed==requested on bsc_card_team_lookup_failures (timeout or awselb 429); also no pre-fill + extra namesake step; rerun
 - [BSC cold sheet read is per job](bsc-cold-sheet-read-is-per-job-not-per-condition.md) — first read 503s at 30 s whatever the condition; fewer sheets needs a 503-only serial retry beside it
 - [BSC profile stalls heal with time](bsc-profile-stalls-heal-with-time-not-new-sessions.md) — new session/token does not escape a stall, time does (~50% 30 s, ~70% 60 s); seller id always live; seed re-signs in
 - [Workpool lanes and throttle rows survive the E2E reset](workpool-lanes-and-throttle-rows-survive-the-e2e-reset.md) — reset drains allSteps only; add the table, cancelAll the pool, item reads its row before any cooldown wait
+- [Seller Send step past 7 s = seller-id read](seller-send-step-past-7s-is-the-seller-id-read.md) — spinning Send + sellerProfile timeout x2, or (NEO-482) seed hop "stalled on every sign-in (5 tries)" with 11-21 s logins; env, rerun
