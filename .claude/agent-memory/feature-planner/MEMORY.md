@@ -51,3 +51,6 @@
 - [Publisher checklist claim is per card](publisher-checklist-claim-is-per-card-omit-the-card-under-test.md) — omit the tested card's row (blank team keeps the lookup); Saved line carries the checklist tail
 - [Blank checklist team cell still asks BSC](checklist-fixture-blank-team-cell-still-asks-bsc.md) — blank/None/N/A/TBD = no claim, card looked up; a no-team card reads "No Team" (NEO-489); count from checklist_published_match
 - [Live-lookup 429 is a pass](live-lookup-429-is-a-pass-converge-by-operator-pick.md) — failed lookup withholds pre-fill; assert both via checked-role .or(), annotate, converge with check() (NEO-489)
+- [Commit prelude walks teams before players](commit-prelude-walks-teams-before-players.md) — team row picked from the card's player must be a decided review row, not a commit-time inference (NEO-490)
+- [Pairing modal absorbs only teams](checklist-pairing-modal-absorbs-only-teams.md) — post-stream answers apply to PairingResult cards client-side, not candidate rows (NEO-490)
+- [Publisher checklist is a Match Cards source](publisher-checklist-is-a-match-cards-source.md) — third column in CardPairingModal; rows discardable, marketplace cards never (NEO-490)
