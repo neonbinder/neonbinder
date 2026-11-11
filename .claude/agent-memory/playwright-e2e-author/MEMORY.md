@@ -103,3 +103,4 @@
 - [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
 - [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic, measured-wait credit, blocked Next via Enter, radiogroup per card
+- [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
