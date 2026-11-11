@@ -1,15 +1,16 @@
 import { useState, type ReactNode } from "react";
 
 /**
- * NEO-335 — the header every "tidy up this set" screen wears: the entity
- * review wizard before a save, and the post-save attention walker after one.
+ * NEO-335 — the header every "tidy up" screen wears: the entity review
+ * wizard before a save, and the post-save attention walker after one.
  *
- * Jason, 2026-10-10: one generic title, each screen type its own subtitle, and
- * ONE "Step x of y" counter that sums every screen still to come. No per-type
- * counts anywhere.
+ * Jason, 2026-10-10: one title, each screen type its own subtitle, and ONE
+ * "Step x of y" counter that sums every screen still to come. No per-type
+ * counts anywhere. NEO-497: the title names the set it is tidying ("Tidy up
+ * 2024 Topps Chrome Base", `tidyUpTitleFromChain`) instead of "this set".
  *
  *   ┌──────────────────────────────────────────────┐
- *   │ Tidy up this set                Step 3 of 12 │
+ *   │ Tidy up 2024 Topps Chrome Base  Step 3 of 12 │
  *   │ New team         2 more steps: teams for Jim │
  *   ├██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░┤  ← the rail IS the header's edge
  *
@@ -28,7 +29,8 @@ import { useState, type ReactNode } from "react";
  * ## Screen readers
  *
  * - The title is the dialog's name — the host points `aria-labelledby` at
- *   `titleId`.
+ *   `titleId`. A long set name wraps (it never truncates: the name is the
+ *   point of the title) and the counter keeps its own column beside it.
  * - "Step x of y" is real text in a `role="status"` region, so it is read
  *   with the header and announced when it moves, as the "N of M reviewed"
  *   line it replaces was. One text node, so an E2E matcher on its visible
@@ -44,7 +46,53 @@ import { useState, type ReactNode } from "react";
  * wizard's footer already lives by.
  */
 
+/** The title while the set's names are still loading, or none is known. */
 export const WIZARD_TITLE = "Tidy up this set";
+
+/**
+ * NEO-497 — "Tidy up 2026 Donruss Unleashed Base": the year, the set and the
+ * variant the checklist belongs to, so the operator always knows which set
+ * the dialog is tidying. Each part is skipped when it is missing or blank,
+ * and with none known (the chain still loading) the title stays
+ * `WIZARD_TITLE`. Display only: nothing reads this string back.
+ */
+export function tidyUpTitle({
+  year,
+  setName,
+  variant,
+}: {
+  year?: string | null;
+  setName?: string | null;
+  variant?: string | null;
+}): string {
+  const parts = [year, setName, variant]
+    .map((part) => part?.trim() ?? "")
+    .filter((part) => part !== "");
+  return parts.length > 0 ? `Tidy up ${parts.join(" ")}` : WIZARD_TITLE;
+}
+
+/** The levels a checklist leaf can sit at below its set. */
+const VARIANT_LEVELS: ReadonlySet<string> = new Set(["variantType", "insert", "parallel"]);
+
+/**
+ * `tidyUpTitle` read off a `getAncestorChain` result, which runs root first
+ * and INCLUDES the leaf itself. The year and set come from their own levels
+ * (the set is the `setName` row, not the manufacturer); the variant is the
+ * leaf's own value, and only when the leaf sits below the set, so a chain
+ * that ends at the set never names it twice. Undefined (loading) gives
+ * `WIZARD_TITLE`.
+ */
+export function tidyUpTitleFromChain(
+  chain: ReadonlyArray<{ level: string; value: string }> | null | undefined,
+): string {
+  if (!chain) return WIZARD_TITLE;
+  const leaf = chain.at(-1);
+  return tidyUpTitle({
+    year: chain.find((row) => row.level === "year")?.value,
+    setName: chain.find((row) => row.level === "setName")?.value,
+    variant: leaf && VARIANT_LEVELS.has(leaf.level) ? leaf.value : undefined,
+  });
+}
 
 export interface WizardChromeProps {
   /** 1-based step on screen. */
@@ -53,7 +101,7 @@ export interface WizardChromeProps {
   total: number;
   /** The screen type — "New team", "Cards with no team", "Ready to save". */
   subtitle: string;
-  /** Defaults to "Tidy up this set". */
+  /** "Tidy up 2024 Topps Chrome Base" (`tidyUpTitle`); defaults to `WIZARD_TITLE`. */
   title?: string;
   /** Id for the title, so the host dialog can be `aria-labelledby` it. */
   titleId?: string;
@@ -100,7 +148,10 @@ export default function WizardChrome({
     <header className="shrink-0">
       <div className="px-6 pt-4 pb-3">
         <div className="flex items-baseline justify-between gap-4">
-          <h2 id={titleId} className="min-w-0 text-lg font-semibold text-ink">
+          {/* A long set name wraps in balanced lines beside the counter;
+              `wrap-anywhere` breaks a single unbroken word rather than
+              pushing the counter off a phone screen. */}
+          <h2 id={titleId} className="min-w-0 text-lg font-semibold text-ink text-balance wrap-anywhere">
             {title}
           </h2>
           {/* Always mounted, so the first step is announced as reliably as

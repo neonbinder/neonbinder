@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/checklist-title-length-limits-and-fixer.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
+import { tidyUpName } from "../../support/wizard";
 
 test(
   "Listing length limits — an over-long card title is refused, and an over-long variation is walked to a fix",
@@ -97,7 +98,8 @@ test(
 
     // ── Walk it to a fix: opened by hand from the pill (the walker never opens itself) ──
     await pill.click();
-    const fixer = page.getByRole("dialog", { name: "Tidy up this set" });
+    // NEO-497: named for the checklist it tidies (year, set, the Insert row).
+    const fixer = page.getByRole("dialog", { name: tidyUpName({ year: "2024", set, variant: "Base" }), exact: true });
     await expect(fixer).toBeVisible();
     // The walker and the wizard share title and counter; its own Skip control
     // says which this is, and the subtitle names the question.

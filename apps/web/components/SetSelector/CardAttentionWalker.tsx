@@ -92,7 +92,7 @@ export function walkStep(
  * save, so what reaches this walk is what that could not settle: a team
  * lookup that failed, a review the operator cancelled, an edit made since, a
  * set saved before the wizard asked. It wears the wizard's chrome
- * (`WizardChrome`): "Tidy up this set", ONE "Step x of y" across every card
+ * (`WizardChrome`): "Tidy up <year set variant>" (NEO-497), ONE "Step x of y" across every card
  * the sitting walks (`walkStep`), and the question's type as the subtitle
  * (`attentionWalkSubtitle`). No per-kind counts anywhere.
  *
@@ -147,6 +147,7 @@ export default function CardAttentionWalker({
   contextOptionId,
   onClose,
   restoreFocusRef,
+  title,
 }: {
   isOpen: boolean;
   /**
@@ -173,6 +174,12 @@ export default function CardAttentionWalker({
    * instead — same reasoning as SyncReviewModal's prop of the same name.
    */
   restoreFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * NEO-497 — the header's title and so the dialog's name: "Tidy up 2024
+   * Topps Chrome Base" (`tidyUpTitleFromChain`). Absent, WizardChrome's
+   * "Tidy up this set".
+   */
+  title?: string;
 }) {
   // Mount-scoped session state. CardChecklist mounts this only while it is
   // open, so a fresh sitting starts with fresh state and there is no reset to
@@ -451,8 +458,8 @@ export default function CardAttentionWalker({
         */}
         <div className="flex max-h-full w-full max-w-[45rem] flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset">
           {/*
-            NEO-335 Phase 2 (D9) — the wizard's own header: "Tidy up this
-            set", "Step x of y" (a role="status" region, so moving it is
+            NEO-335 Phase 2 (D9) — the wizard's own header: "Tidy up" plus
+            the set's year, name and variant (NEO-497), "Step x of y" (a role="status" region, so moving it is
             announced, as the "N cards need attention · K fixed" line it
             replaces was), the question's type as the subtitle, and the neon
             rail as the header's bottom edge. The rail only animates forward
@@ -461,6 +468,7 @@ export default function CardAttentionWalker({
           */}
           <WizardChrome
             titleId="card-attention-walker-title"
+            title={title}
             step={step}
             total={total}
             subtitle={subtitle}

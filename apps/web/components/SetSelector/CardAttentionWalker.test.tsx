@@ -370,11 +370,22 @@ describe("CardAttentionWalker — presentation", () => {
       "#1 American League Leaders ERA LL",
     );
     expect(screen.getByText(/Tarik Skubal · Garrett Crochet/)).toBeTruthy();
+    // No title from the parent: the generic one (NEO-497 names the set below).
     expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Tidy up this set");
     expect(counter()).toBe("Step 1 of 2");
     expect(screen.getByText("Cards with no team")).toBeTruthy();
     // No per-kind count anywhere: the counter is the only number.
     expect(document.body.textContent).not.toMatch(/need attention|fixed/);
+  });
+
+  it("is named by the parent's title, the set it tidies (NEO-497)", () => {
+    renderWalker([needsTeamRow()], { title: "Tidy up 2024 Topps Chrome Base" });
+
+    expect(
+      screen.getByRole("dialog", { name: "Tidy up 2024 Topps Chrome Base" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("Tidy up this set")).toBeNull();
+    expect(counter()).toBe("Step 1 of 1");
   });
 
   it("never renders a marketplace ref, in text or in an attribute", () => {

@@ -2222,7 +2222,7 @@ because the Decided list folds past five.
 **What a green CI run must show** (fill in from the first green run on the
 catalogue preview): in the flow's `maestro.log`, STEP 1's
 `"Which Shuya Yamada is this\?", Below "Step 1 of [0-9]+"` COMPLETED within
-~1-2s of the fetch util's `Tidy up this set` gate (NEO-335 Phase 2: the
+~1-2s of the fetch util's `Tidy up …` dialog gate (NEO-335 Phase 2: the
 header's counter is "Step x of y" and no longer carries the "· N still being
 looked up" tail, so STEP 1's "still looked up" half rests on that timing); in `convex-logs`, the 20 NPB names' `enrichment_fixture`
 miss lines spread over ≥ ~12s and the first staged `team` lookup starting after

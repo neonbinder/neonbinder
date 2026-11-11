@@ -192,7 +192,10 @@ vi.mock("./EntityReviewWizard", () => ({
     onListingShortNameChange,
     hasAutographFormat,
     onAutographFormatChange,
+    title,
   }: {
+    // NEO-497 — the header's title, which the parent reads off the chain.
+    title?: string;
     // NEO-345 — the autograph step, reduced to the parent's half: whether the
     // leaf already has a format, and the answer channel.
     hasAutographFormat?: boolean;
@@ -231,6 +234,7 @@ vi.mock("./EntityReviewWizard", () => ({
       <p>
         {`Wizard summary: ${summary.cardCount} cards, ${summary.deleteCount} deletions, ${summary.reviewDecisionCount} field decisions`}
       </p>
+      {title !== undefined && <p>{`Wizard title: ${title}`}</p>}
       {commitError && <p>{`Wizard commit error: ${commitError}`}</p>}
       {teamsOnly && <p>Wizard opened teams-only</p>}
       {onTeamAnswersChange && (
@@ -2021,6 +2025,9 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
       expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
       expect(screen.getByText(/Wizard summary: 2 cards/)).toBeTruthy();
+      // NEO-497: the wizard is titled with the set and variant off the chain
+      // (this chain has no year row, so the title simply leaves it out).
+      expect(screen.getByText("Wizard title: Tidy up Test Set Base")).toBeTruthy();
       expect(mockCommitChecklist).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByText("Answer every card with no team"));
@@ -3563,6 +3570,25 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     expect(screen.queryByText(/needs? you/)).toBeNull();
   });
 
+  it("names the walker after the set's year, set and variant (NEO-497)", async () => {
+    state.ancestorChain = [
+      { _id: SPORT_ID, level: "sport", value: "Baseball", platformData: {} },
+      { _id: "year_2024", level: "year", value: "2024", platformData: {} },
+      { _id: "mfr_topps", level: "manufacturer", value: "Topps", platformData: {} },
+      { _id: SET_ID, level: "setName", value: "Topps Chrome", platformData: {} },
+      { _id: VARIANT_ID, level: "variantType", value: "Base", platformData: {} },
+    ];
+    renderChecklist();
+
+    fireEvent.click(needsYou());
+
+    // The title is the dialog's accessible name, and the manufacturer row is
+    // not part of it.
+    expect(
+      await screen.findByRole("dialog", { name: "Tidy up 2024 Topps Chrome Base" }),
+    ).toBeTruthy();
+  });
+
   it("offers no grid filter any more — every row stays listed", () => {
     renderChecklist();
 
@@ -3578,8 +3604,9 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
 
     fireEvent.click(needsYou());
 
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("Tidy up this set");
+    // NEO-497: titled off the chain (this one has no year row).
+    const dialog = await screen.findByRole("dialog", { name: "Tidy up Test Set Base" });
+    expect(dialog).toBeTruthy();
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
       "#1 AL Leaders ERA LL",
     );

@@ -64,7 +64,7 @@ import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
 // NEO-335: the cards that would save with no team, on their own step.
 import TeamsOnCardsSection from "./TeamsOnCardsSection";
-// NEO-335 Phase 2: the shared "Tidy up this set" header and the step model.
+// NEO-335 Phase 2: the shared "Tidy up …" header and the step model.
 import WizardChrome from "./WizardChrome";
 // NEO-335 Phase 2: the "Card titles" step (unit B).
 import CardTitlesStep from "./CardTitlesStep";
@@ -489,6 +489,7 @@ export default function EntityReviewWizard({
   hasSetTeam = false,
   hasAutographFormat = false,
   onAutographFormatChange,
+  title,
 }: {
   isOpen: boolean;
   selectorOptionId: Id<"selectorOptions">;
@@ -632,6 +633,12 @@ export default function EntityReviewWizard({
    * Reported as `undefined` while unanswered or when the step does not apply.
    */
   onAutographFormatChange?: (value: AutographFormat | undefined) => void;
+  /**
+   * NEO-497 — the header's title and so the dialog's name: "Tidy up 2024
+   * Topps Chrome Base" (`tidyUpTitleFromChain`). Absent, WizardChrome's
+   * "Tidy up this set".
+   */
+  title?: string;
 }) {
   const batchRows = useQuery(
     api.entityReviewQueue.getBatch,
@@ -4580,7 +4587,8 @@ export default function EntityReviewWizard({
         */}
         <div className="bg-raised-deep border border-rule-strong rounded-lg shadow-xl shadow-offset w-full max-w-2xl h-[min(40rem,100%)] flex flex-col">
           {/*
-            NEO-335 Phase 2 — the shared header: "Tidy up this set", ONE
+            NEO-335 Phase 2 — the shared header: "Tidy up" plus the set's
+            year, name and variant (NEO-497, `title`), ONE
             "Step x of y" over every screen to expect, the screen type below,
             and the neon rail as the header's edge. It replaces "Confirm New
             Players & Teams" and the "N of M reviewed · N still being looked
@@ -4588,6 +4596,7 @@ export default function EntityReviewWizard({
           */}
           <WizardChrome
             titleId="entity-review-wizard-title"
+            title={title}
             step={stepX}
             total={stepY}
             subtitle={expired ? "" : STEP_SUBTITLE[stepKind]}

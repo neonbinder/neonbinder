@@ -2,7 +2,7 @@
 // NEO-102: the attention walker answers a card's missing team, one card at a
 // time. Since NEO-335 its one door is the checklist header's amber "N need you"
 // pill ("1 needs you" for one card) and it wears the wizard's chrome (title
-// "Tidy up this set", subtitle = the question, one "Step x of y" counter, no
+// "Tidy up <year> <set> <variant>" since NEO-497, subtitle = the question, one "Step x of y" counter, no
 // "fixed" count); the wizard shares that title, so the walker is told apart by
 // its own "Skip for now, card <number>" control. SKIP defers (nothing written); NO TEAM is a persisted
 // answer; a PICKED TEAM saved with "Save & Next" clears the badge because the
@@ -12,6 +12,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm } from "../../support/cards";
+import { TIDY_UP_NAME, tidyUpName } from "../../support/wizard";
 
 test(
   "Attention walker — answering a card's missing team, one card at a time",
@@ -48,7 +49,9 @@ test(
     // Open the walker from the pill: it pins the first flagged row, #801, and
     // its counter agrees with the pill (two cards, the first on screen).
     await pill("2 need you").click();
-    const walker = page.getByRole("dialog", { name: "Tidy up this set" });
+    // NEO-497: the walker is named for the checklist it tidies, the year, set
+    // and Insert row this spec drilled to, never "this set".
+    const walker = page.getByRole("dialog", { name: tidyUpName(target), exact: true });
     await expect(walker).toBeVisible();
     await expect(walker.getByRole("button", { name: skipFor("801") })).toBeVisible();
     await expect(walker.getByText("Step 1 of 2", { exact: true })).toBeVisible();
@@ -105,7 +108,7 @@ test(
     await expectAccessible(page, { within: walker, label: "Attention walker, team picked" });
 
     // Click the walker's title to dismiss the open picker, then Save & Next.
-    await walker.getByRole("heading", { name: "Tidy up this set" }).click();
+    await walker.getByRole("heading", { name: TIDY_UP_NAME }).click();
     await expect(search).toBeHidden();
     await walker.getByRole("button", { name: /Save & Next/ }).click();
     await expect(walker.getByText("All clear — nothing on this checklist needs attention.")).toBeVisible();

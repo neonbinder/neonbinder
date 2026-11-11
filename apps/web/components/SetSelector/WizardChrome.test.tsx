@@ -1,20 +1,41 @@
 /**
- * NEO-335 Phase 2 — the shared "Tidy up this set" header.
+ * NEO-335 Phase 2 — the shared "Tidy up …" header. NEO-497 — its title names
+ * the set ("Tidy up 2024 Topps Chrome Base").
  */
 import { render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it } from "vitest";
-import WizardChrome, { railFraction, stepCounterText, WIZARD_TITLE } from "./WizardChrome";
+import WizardChrome, {
+  railFraction,
+  stepCounterText,
+  tidyUpTitle,
+  tidyUpTitleFromChain,
+  WIZARD_TITLE,
+} from "./WizardChrome";
 import { STEP_SUBTITLE, type WizardStepKind } from "./entity-review-steps";
 
 const fill = () => document.querySelector<HTMLElement>("[data-rail-fill]")!;
 
 describe("WizardChrome", () => {
-  it("titles the screen 'Tidy up this set' and exposes the title by id", () => {
+  it("titles the screen 'Tidy up this set' by default and exposes the title by id", () => {
     render(<WizardChrome titleId="t-id" step={3} total={12} subtitle="New team" />);
     const heading = screen.getByRole("heading", { name: WIZARD_TITLE });
     expect(WIZARD_TITLE).toBe("Tidy up this set");
     expect(heading.id).toBe("t-id");
+  });
+
+  it("shows the host's title, and lets a long one wrap beside the counter", () => {
+    const long = "Tidy up 2024 Topps Chrome Update Series Gold Wave Refractors";
+    render(<WizardChrome titleId="t-id" title={long} step={3} total={12} subtitle="New team" />);
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading.textContent).toBe(long);
+    expect(heading.id).toBe("t-id");
+    expect(screen.queryByText(WIZARD_TITLE)).toBeNull();
+    // Wraps (never truncates) and may shrink; the counter never does.
+    expect(heading.className).toContain("min-w-0");
+    expect(heading.className).toContain("wrap-anywhere");
+    expect(heading.className).not.toContain("truncate");
+    expect(screen.getByText("Step 3 of 12").className).toContain("shrink-0");
   });
 
   it("says 'Step x of y' as one text node in a status region", () => {
@@ -122,3 +143,67 @@ describe("WizardChrome", () => {
 });
 
 void React;
+
+describe("tidyUpTitle (NEO-497)", () => {
+  it("joins year, set and variant after 'Tidy up'", () => {
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "Base" })).toBe(
+      "Tidy up 2026 Donruss Unleashed Base",
+    );
+  });
+
+  it("skips any part that is missing or blank", () => {
+    expect(tidyUpTitle({ setName: "Donruss Unleashed", variant: "Base" })).toBe(
+      "Tidy up Donruss Unleashed Base",
+    );
+    expect(tidyUpTitle({ year: "2026", setName: null, variant: "Gold" })).toBe("Tidy up 2026 Gold");
+    expect(tidyUpTitle({ year: "  ", setName: " Donruss ", variant: "" })).toBe("Tidy up Donruss");
+  });
+
+  it("falls back to 'Tidy up this set' when nothing is known", () => {
+    expect(tidyUpTitle({})).toBe(WIZARD_TITLE);
+    expect(tidyUpTitle({ year: null, setName: undefined, variant: " " })).toBe(WIZARD_TITLE);
+  });
+});
+
+describe("tidyUpTitleFromChain (NEO-497)", () => {
+  const chain = [
+    { level: "sport", value: "Baseball" },
+    { level: "year", value: "2024" },
+    { level: "manufacturer", value: "Topps" },
+    { level: "setName", value: "Topps Chrome" },
+  ];
+
+  it("reads the year and set by level, never the manufacturer, and the leaf as the variant", () => {
+    expect(tidyUpTitleFromChain([...chain, { level: "variantType", value: "Base" }])).toBe(
+      "Tidy up 2024 Topps Chrome Base",
+    );
+  });
+
+  it("names an insert or a parallel leaf by its own value", () => {
+    expect(
+      tidyUpTitleFromChain([
+        ...chain,
+        { level: "variantType", value: "Parallel" },
+        { level: "insert", value: "Gold Wave Refractors" },
+      ]),
+    ).toBe("Tidy up 2024 Topps Chrome Gold Wave Refractors");
+    expect(
+      tidyUpTitleFromChain([
+        ...chain,
+        { level: "variantType", value: "Insert" },
+        { level: "insert", value: "Future Stars" },
+        { level: "parallel", value: "Gold" },
+      ]),
+    ).toBe("Tidy up 2024 Topps Chrome Gold");
+  });
+
+  it("never names the set twice when the chain ends at the set", () => {
+    expect(tidyUpTitleFromChain(chain)).toBe("Tidy up 2024 Topps Chrome");
+  });
+
+  it("is 'Tidy up this set' while the chain is loading or empty", () => {
+    expect(tidyUpTitleFromChain(undefined)).toBe(WIZARD_TITLE);
+    expect(tidyUpTitleFromChain(null)).toBe(WIZARD_TITLE);
+    expect(tidyUpTitleFromChain([])).toBe(WIZARD_TITLE);
+  });
+});
