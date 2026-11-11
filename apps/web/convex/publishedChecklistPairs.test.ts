@@ -2,11 +2,12 @@
  * NEO-490 — `applyPublishedChecklistPairs`: the operator's own checklist links,
  * answered the way `fetchCardChecklist` answers its own (the pure rules are in
  * `lib/checklists/apply-published-row.test.ts`). Pinned here: the admin gate,
- * the row bound, comma-text resolution, the empty answer, and that nothing is
- * written.
+ * the row bound, the refusal of a set with no sport, comma-text resolution,
+ * the empty answer, and that nothing is written.
  */
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
+import { ConvexError } from "convex/values";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -105,6 +106,59 @@ describe("applyPublishedChecklistPairs: access", () => {
         pairs: [pair({ players: [], teams: [] })],
       }),
     ).rejects.toThrow(/admin access required/i);
+  });
+});
+
+describe("applyPublishedChecklistPairs: the set must have a sport", () => {
+  /** A setName row with no parent: no sport above it. */
+  async function seedOrphanSet(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "2024 Topps",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("refuses a set with no sport above it, before answering anything", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedOrphanSet(t);
+    const before = await tableCounts(t);
+    await expect(
+      t.withIdentity(ADMIN).action(api.publishedChecklistPairs.applyPublishedChecklistPairs, {
+        selectorOptionId: id,
+        pairs: [pair({ players: [], teams: [] }, { players: ["A One"], teams: ["Phillies, Braves"] })],
+      }),
+    ).rejects.toThrow(/applyPublishedChecklistPairs: the set has no sport above it/);
+    expect(await tableCounts(t)).toEqual(before);
+  });
+
+  test("refuses an id that names no row, even with no pairs", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedOrphanSet(t);
+    await t.run(async (ctx) => ctx.db.delete(id));
+    await expect(
+      t.withIdentity(ADMIN).action(api.publishedChecklistPairs.applyPublishedChecklistPairs, {
+        selectorOptionId: id,
+        pairs: [],
+      }),
+    ).rejects.toThrow(/the set has no sport above it/);
+  });
+
+  test("the refusal is a ConvexError, so the dialog can show its message", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedOrphanSet(t);
+    const err = await t
+      .withIdentity(ADMIN)
+      .action(api.publishedChecklistPairs.applyPublishedChecklistPairs, {
+        selectorOptionId: id,
+        pairs: [pair({ players: [], teams: [] })],
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConvexError);
   });
 });
 

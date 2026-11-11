@@ -25,7 +25,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
-import { checkPublishedChecklist } from "./selectorOptions";
+import { checkPublishedChecklist, checklistLeftoverCardKeys } from "./selectorOptions";
 import { parsePublishedChecklist } from "../lib/checklists/parse-published-checklist";
 import { matchPublishedChecklist } from "../lib/checklists/match-published-checklist";
 
@@ -791,7 +791,11 @@ describe("fetchCardChecklist with a publisher checklist: NEO-490 player-name fal
     });
   });
 
-  test("a leftover card with no marketplace ref is keyed #number", async () => {
+  test("a leftover card with no marketplace ref is left out, never keyed #number", async () => {
+    // Card numbers are not unique (product invariant 7), so a `#number` key
+    // could name two cards. A fetched card always carries its side's ref, so
+    // this card is impossible in practice; it is pinned so the fallback
+    // cannot come back.
     mockState.bscCards = [sig(1, "A One", { platformRef: undefined })];
     const { result } = await run({
       rows: [
@@ -799,6 +803,39 @@ describe("fetchCardChecklist with a publisher checklist: NEO-490 player-name fal
         { number: "2", players: ["Nobody Else"], teams: [] },
       ],
     });
-    expect(result.checklistMatch?.leftoverCardKeys).toEqual(["#SIG-AA"]);
+    expect(result.checklistMatch?.leftoverCardKeys).toEqual([]);
+  });
+});
+
+describe("checklistLeftoverCardKeys: leftovers are keyed by marketplace ref only (NEO-490)", () => {
+  const card = (bsc?: string, sportlots?: string, cardNumber = "7") => ({
+    cardNumber,
+    platformData: {
+      ...(bsc !== undefined ? { bsc: { ref: bsc } } : {}),
+      ...(sportlots !== undefined ? { sportlots: { ref: sportlots } } : {}),
+    },
+  });
+
+  test("BSC ref first, else the SportLots ref", () => {
+    const cards = [card("bsc-1", "sl-1"), card(undefined, "sl-2")];
+    expect(checklistLeftoverCardKeys(cards, [0, 1])).toEqual(["bsc-1", "sl-2"]);
+  });
+
+  test("a card with neither ref is left out, even when another card shares its number", () => {
+    // Two cards numbered 7: a `#7` key would name both, and a link would land
+    // on whichever the dialog found first.
+    const cards = [card(undefined, undefined, "7"), card("bsc-7", undefined, "7")];
+    expect(checklistLeftoverCardKeys(cards, [0, 1])).toEqual(["bsc-7"]);
+    expect(checklistLeftoverCardKeys(cards, [0])).toEqual([]);
+  });
+
+  test("an empty ref counts as none", () => {
+    const cards = [card("", "sl-3"), card("", "")];
+    expect(checklistLeftoverCardKeys(cards, [0, 1])).toEqual(["sl-3"]);
+  });
+
+  test("only the indices asked for, in their order; an index past the end is skipped", () => {
+    const cards = [card("a"), card("b"), card("c")];
+    expect(checklistLeftoverCardKeys(cards, [2, 0, 9])).toEqual(["c", "a"]);
   });
 });

@@ -1454,7 +1454,9 @@ export const startBatch = internalMutation({
             link.playerId === undefined &&
             // NEO-490: a team is auto-linked by set history (rule F) or by
             // the card's own player (careerTeam), never by Hall of Fame.
-            link.origin !== "hallOfFame";
+            // An allowlist, not a denylist: an origin added later is refused
+            // for teams until someone decides it may link one.
+            (link.origin === "setHistory" || link.origin === "careerTeam");
       const key = keyFor(link.kind, link.name);
       if (!wellFormed || isBlankKey(link.kind, key)) {
         malformedFacts += 1;

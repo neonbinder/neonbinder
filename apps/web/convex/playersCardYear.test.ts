@@ -1683,6 +1683,51 @@ describe("NEO-490: the career-team tie-break (rule 6b) names the one namesake wh
     expect(resolved.matchCount).toBe(2);
   });
 
+  test("two namesakes with stints on the card's team in different eras, among other clubs: rule 6b does not decide", async () => {
+    // Collector review (NEO-490): the second Bob Allen reached the Padres
+    // twenty years after the first, mid-way through a longer career. Each is
+    // "a namesake who played for the card's team", so the career-team rule
+    // has two answers and must give none; neither era is the card's year, so
+    // no year rule can separate them either.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const mets = await insertTeam(t, sportId, "New York", "Mets", "mets new york");
+    await insertBobAllen(t, sportId, [
+      { teamId: padres, fromYear: 1972, toYear: 1975 },
+      { teamId: cubs, fromYear: 1976, toYear: 1978 },
+    ]);
+    await insertBobAllen(t, sportId, [
+      { teamId: mets, fromYear: 1990, toYear: 1993 },
+      { teamId: cubs, fromYear: 1994, toYear: 1995 },
+      { teamId: padres, fromYear: 1996, toYear: 1998 },
+    ]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.narrowedBy).toBeUndefined();
+    expect(resolved.matchCount).toBe(2);
+
+    // The narrowing itself, so the reason is pinned too, not only the gate.
+    await t.run(async (ctx) => {
+      const candidates = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "allen bob").eq("sportId", sportId),
+        )
+        .collect();
+      const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 2024,
+        cardTeamNames: ["San Diego Padres"],
+      });
+      expect(narrowed.playerId).toBeNull();
+      expect(narrowed.viaCareerTeam).toBeUndefined();
+      expect(narrowed.transactionBudgetExhausted).toBeUndefined();
+    });
+  });
+
   test("nobody ever played for the card's team: review", async () => {
     const t = convexTest(schema, modules);
     const { sportId } = await seedSetOfYear(t, "2024");

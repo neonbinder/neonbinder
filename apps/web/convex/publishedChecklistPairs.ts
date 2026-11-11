@@ -19,11 +19,15 @@
  *
  * Writes nothing: the rows are never stored, and the cards live in the
  * client until the commit. Admin-only, like every entry point onto the set
- * builder, and bounded by the same row cap the fetch takes.
+ * builder, bounded by the same row cap the fetch takes, and refused for a
+ * set with no sport above it (no scope to resolve a team text in).
  */
 import { ConvexError, v } from "convex/values";
-import { action } from "./_generated/server";
+import { action, internalQuery } from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
+import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 import { applyChecklistRow } from "../lib/checklists/apply-published-row";
@@ -71,6 +75,19 @@ function checkCardNames(
   return kept;
 }
 
+/**
+ * The set's sport row, through the same bounded ancestor walk the team-text
+ * resolver scopes by (`checklistCandidates.resolveChecklistTeamTexts`), or
+ * null when the id names no row or no sport sits above it. Internal: only
+ * `applyPublishedChecklistPairs` asks, from behind its `requireAdmin`.
+ */
+export const sportOfPairsSet = internalQuery({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.union(v.id("selectorOptions"), v.null()),
+  handler: async (ctx, args) =>
+    (await findSportForSelectorOption(ctx, args.selectorOptionId)) ?? null,
+});
+
 export const applyPublishedChecklistPairs = action({
   args: {
     /** The set being built: scopes the team texts to its sport and year. */
@@ -94,6 +111,20 @@ export const applyPublishedChecklistPairs = action({
     if (args.pairs.length > MAX_PUBLISHED_CHECKLIST_ROWS) {
       throw new ConvexError(
         `${args.pairs.length} checklist links; the limit is ${MAX_PUBLISHED_CHECKLIST_ROWS}.`,
+      );
+    }
+    // A set with no sport above it has no scope to resolve a team text in:
+    // the resolver would answer every comma text against no sport at all.
+    // Refused like the fetch refuses a bad input, before any work and
+    // outside any try. (Annotated: the query lives in this module, so an
+    // inferred type would be circular.)
+    const sportId: Id<"selectorOptions"> | null = await ctx.runQuery(
+      internal.publishedChecklistPairs.sportOfPairsSet,
+      { selectorOptionId: args.selectorOptionId },
+    );
+    if (sportId === null) {
+      throw new ConvexError(
+        "applyPublishedChecklistPairs: the set has no sport above it.",
       );
     }
     if (args.pairs.length === 0) return [];

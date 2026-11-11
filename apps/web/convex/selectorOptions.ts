@@ -14583,6 +14583,35 @@ const checklistMatchSummaryValidator = v.object({
 export type ChecklistMatchSummary = Infer<typeof checklistMatchSummaryValidator>;
 
 /**
+ * NEO-490 — `checklistMatch.leftoverCardKeys`: the cards no checklist row
+ * paired, each keyed by its marketplace ref (BSC, else SportLots), which the
+ * Match Cards dialog's `candidateKey` / `cardRefs` answer to. Read inside the
+ * adapter boundary only to route the operator's link back to the same card.
+ *
+ * A card with neither ref is LEFT OUT, never keyed `#number` the way the
+ * dialog's last-resort `candidateKey` is: card numbers are not unique
+ * (product invariant 7), so a number key could name two cards and route a
+ * link to the wrong one. It costs nothing real: every card the fetch returns
+ * came from a marketplace side, and a fetched card always carries that
+ * side's ref. An empty ref counts as none.
+ */
+export function checklistLeftoverCardKeys(
+  cards: ReadonlyArray<{
+    platformData: { bsc?: { ref?: string }; sportlots?: { ref?: string } };
+  }>,
+  indices: ReadonlyArray<number>,
+): string[] {
+  const keys: string[] = [];
+  for (const i of indices) {
+    const card = cards[i];
+    if (!card) continue;
+    const key = card.platformData.bsc?.ref || card.platformData.sportlots?.ref;
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+/**
  * PR 451 / NEO-490 — resolve the publisher checklist's team texts that carry a
  * comma, once each, through `checklistCandidates.resolveChecklistTeamTexts`
  * (the whole-name-first rule BSC's raw value takes), and hand back the
@@ -15942,15 +15971,7 @@ export const fetchCardChecklist = action({
           byNumber: match.matches.filter((m) => m.via !== "playerName").length,
           byPlayerName: match.matches.filter((m) => m.via === "playerName").length,
           unusedRowIndices: match.unusedRowIndices,
-          // The Match Cards dialog's `candidateKey`, exactly: BSC ref, else
-          // SportLots ref, else `#number`. Read inside the adapter boundary
-          // only to route the operator's link back to the same card.
-          leftoverCardKeys: match.unmatchedCardIndices.map((i) => {
-            const c = out[i];
-            return (
-              c.platformData.bsc?.ref ?? c.platformData.sportlots?.ref ?? `#${c.cardNumber}`
-            );
-          }),
+          leftoverCardKeys: checklistLeftoverCardKeys(out, match.unmatchedCardIndices),
         };
         // Counts only — never a name.
         console.log(

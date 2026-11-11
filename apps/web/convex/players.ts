@@ -1483,11 +1483,19 @@ const CARD_YEAR_TEAM_READS_PER_NAME = 8;
  * stay position-independent — which is only possible because the caller can
  * resume.
  *
- * ## The number
+ * ## The number, and the real worst case
  *
- * 240 reads, plus ~300 name lookups and the prelude's fixed preamble, lands
- * near ~600 — inside the ~900 comfortable line with the ancestry tail to
- * spare. It is also well past any real year's team vocabulary (a full MLB
+ * The ceiling is checked BEFORE each rule that reads teams (rules 4, 6 and
+ * 6b), never in the middle of one, so it can be overshot. The real worst
+ * case is bounded by the last name to start: it begins at no more than
+ * `budget − 1` reads, and from there spends no more than the sum of its
+ * per-name allowances — rule 4's and rule 6's `CARD_YEAR_TEAM_READS_PER_NAME`
+ * (8 + 8) and rule 6b's `CAREER_TEAM_READS_PER_NAME` (24). That is 239 + 40,
+ * about 279 team reads in one transaction, not 240.
+ *
+ * About 279 reads, plus ~300 name lookups and the prelude's fixed preamble,
+ * lands near ~650 — still inside the ~900 comfortable line with the ancestry
+ * tail to spare. It is also well past any real year's team vocabulary (a full MLB
  * season is ~30 rows, a college football year a couple of hundred), and the
  * memo means a team is read ONCE per transaction however many names name it.
  * So a real commit never reaches this; what it bounds is the pathological
@@ -1816,13 +1824,23 @@ export async function narrowSameNamePlayersByCardYear(
   );
 
   /*
+   * NEO-490 — one cache for this call's rules 4, 6 and 6b. A caller that
+   * shares one across names passes it; a one-shot caller gets a fresh one
+   * here, ONCE, so a team rule 4 read is a memo hit for rule 6 or 6b instead
+   * of a second read. It cannot move an answer: the memo returns the keys the
+   * read would have, the per-name allowances are charged on consultation
+   * whatever the memo holds, and one name can read at most 8 + 8 + 24 teams,
+   * far below a fresh cache's ceiling, so a one-shot call is never deferred.
+   */
+  const cache = opts.teamCache ?? createCardYearTeamCache();
+
+  /*
    * NEO-490 — rule 4 ran out of allowance. A season's worth of stints past
    * eight teams is a corrupt or hand-edited career, and rule 6b would read
    * the same career to answer the same question; the name goes to a human.
    */
   let yearTeamReadBlown = false;
   if (teamKeys.size > 0 && survivors.length > 1) {
-    const cache = opts.teamCache ?? createCardYearTeamCache();
     // NEO-296 (audit condition 2) — checked BEFORE any of this name's
     // consultations, so a name is either evaluated on its full allowance or
     // deferred whole. Half a tie-break is the one thing that must not happen:
@@ -1869,7 +1887,8 @@ export async function narrowSameNamePlayersByCardYear(
           // The one place the transaction meter moves: an actual document
           // read. A memo hit below costs the transaction nothing and so is
           // charged nothing. The ceiling may be overshot by at most this
-          // name's remaining per-name allowance, which is what "a name is
+          // name's remaining per-name allowances (rules 4, 6 and 6b; see
+          // `CARD_YEAR_TEAM_READS_PER_TRANSACTION`), which is what "a name is
           // evaluated whole or deferred whole" costs.
           cache.reads++;
           const team = await ctx.db.get(stint.teamId);
@@ -1916,7 +1935,6 @@ export async function narrowSameNamePlayersByCardYear(
       if (teamKeys.size === 0) {
         return { playerId: famer._id, activePlayerIds, viaHallOfFame: true };
       }
-      const cache = opts.teamCache ?? createCardYearTeamCache();
       // Same contract as the year tie-break's check above: evaluated whole on
       // a fresh allowance, or deferred whole to the next transaction.
       if (cache.reads >= cache.budget) {
@@ -1945,7 +1963,6 @@ export async function narrowSameNamePlayersByCardYear(
     !yearTeamReadBlown &&
     candidates.every((player) => (player.teamYears ?? []).length > 0)
   ) {
-    const cache = opts.teamCache ?? createCardYearTeamCache();
     // Same contract as rules 4 and 6: evaluated whole on a fresh allowance,
     // or deferred whole to the next transaction.
     if (cache.reads >= cache.budget) {
