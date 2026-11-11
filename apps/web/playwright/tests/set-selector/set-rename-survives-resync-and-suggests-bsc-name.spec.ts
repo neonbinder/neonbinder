@@ -23,7 +23,16 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
-    await drillToColdManufacturer(page, env, { sport: "Hockey", year: "2024", manufacturer: "Topps" });
+    // GUIDE hard rule 3, the live-BSC exception: "Topps" is a hand-made brand
+    // under the SportLots pause, so its Sets are filed by BSC on this first
+    // visit. Wait for them here (the drill's COLD_SYNC ceiling) so the row
+    // click below never races that live sync.
+    await drillToColdManufacturer(page, env, {
+      sport: "Hockey",
+      year: "2024",
+      manufacturer: "Topps",
+      expectSets: true,
+    });
 
     // The set is listed under whichever name it currently carries.
     await columnSearch(page, "Sets").fill("C");
