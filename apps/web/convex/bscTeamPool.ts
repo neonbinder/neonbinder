@@ -35,6 +35,7 @@ import { components, internal } from "./_generated/api";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { markBscTeamCheckGivenUpImpl } from "./bscTeamCheck";
+import { assertResetArmed } from "./resetArming";
 
 /** One BSC call at a time, deployment wide. */
 export const BSC_TEAM_POOL_MAX_PARALLELISM = 1;
@@ -169,7 +170,44 @@ export const enqueueBscTeamChecks = internalMutation({
   },
 });
 
-/** The work item's answer, read defensively (a stale item may return anything). */
+/**
+ * PR 451 (NEO-482) — empties the lane, for the E2E reset: a reset wipes the
+ * cards, but items queued by the previous seed would otherwise stay on the
+ * one slot (pushed back behind an open cooldown for up to 30 minutes) in
+ * front of the new run's cards.
+ *
+ * Armed like every reset step (`assertResetArmed`), because it throws away
+ * real work on any deployment it runs on.
+ *
+ * What the pool does with it (`@convex-dev/workpool` 0.4.15): every item not
+ * yet started, `runAt` push-backs and retries included, reaches
+ * `onBscTeamCheckComplete` as `canceled`, which is "done" there: no
+ * re-enqueue, no hand-off to the operator, no write. An item already RUNNING
+ * is let finish and reports its real result; if that re-enqueues it, the new
+ * item is not cancelled, but its row is gone by then, so its first run reads
+ * the row, answers `notNeeded` with no cooldown read and no call, and ends.
+ */
+export const cancelAllBscTeamChecks = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx): Promise<null> => {
+    assertResetArmed();
+    await bscTeamPool.cancelAll(ctx);
+    console.log(
+      JSON.stringify({
+        msg: "bsc_team_check_cancel_all",
+        platform: "bsc",
+        operation: "cancelAllBscTeamChecks",
+      }),
+    );
+    return null;
+  },
+});
+
+/**
+ * The work item's answer, read defensively (a stale item may return anything).
+ * null = cancelled (`cancelAllBscTeamChecks`): nothing more to do for the card.
+ */
 function readItemResult(result: RunResult): BscTeamCheckItemResult | null {
   if (result.kind === "canceled") return null;
   if (result.kind === "failed") return { outcome: "failed" };
@@ -194,6 +232,8 @@ export const onBscTeamCheckComplete = bscTeamPool.defineOnComplete({
     { context, result }: { context: BscTeamCheckItem; result: RunResult },
   ) => {
     const read = readItemResult(result);
+    // Cancelled: done. Never a retry (it was not a failure) and never the
+    // operator (no lookup was attempted).
     if (!read) return;
     const step = nextBscTeamCheckStep(read, context, Date.now());
     if (step.kind === "done") return;

@@ -2439,12 +2439,30 @@ async function resolveBscCardTeamOnce(
   ctx: ActionCtx,
   cardChecklistId: Id<"cardChecklist">,
 ): Promise<"answered" | "notNeeded" | "failed" | { rateLimited: true; until: number }> {
-  const row: { bscCardId: string; needsCheck: boolean } | null =
-    await ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, {
-      cardChecklistId,
-    });
+  const row = await readBscTeamCheckRow(ctx, cardChecklistId);
   if (!row || !row.needsCheck) return "notNeeded";
+  return askBscCardTeam(ctx, cardChecklistId, row);
+}
 
+/** The card's BSC id and whether it still needs asking; null when the row is gone or unlinked. */
+type BscTeamCheckRow = { bscCardId: string; needsCheck: boolean };
+
+function readBscTeamCheckRow(
+  ctx: Pick<ActionCtx, "runQuery">,
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<BscTeamCheckRow | null> {
+  return ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, { cardChecklistId });
+}
+
+/**
+ * The one `card-listing` call for a row already read and found to need it,
+ * and the write of its answer. Never "notNeeded": the caller decided that.
+ */
+async function askBscCardTeam(
+  ctx: ActionCtx,
+  cardChecklistId: Id<"cardChecklist">,
+  row: BscTeamCheckRow,
+): Promise<"answered" | "failed" | { rateLimited: true; until: number }> {
   // NEO-475 — the one call is recorded, and its summary goes to the log
   // only: this runs once per card from the background queue, and a table
   // row per card would swamp the per-invocation rows the table is for.
@@ -2686,6 +2704,11 @@ export const processBscTeamEnrichmentQueue = internalAction({
  * PR 451 (NEO-487) — one card on the `bscTeamPool` lane (one slot,
  * deployment wide). See bscTeamPool.ts for the ladder its completion applies.
  *
+ *  - the card's row FIRST: gone, unlinked from BSC or already settled is
+ *    `notNeeded` at once, with no cooldown read and no call. An item left on
+ *    the lane by a previous E2E seed (its row wiped by the reset) therefore
+ *    ends on its first run instead of being pushed back for 30 minutes
+ *    behind an open window;
  *  - an open card-listing cooldown: no call, `deferred` to the window's end;
  *  - a 429: `record429` opens the window, `deferred` to its end (no pass
  *    spent);
@@ -2702,12 +2725,7 @@ export const runBscTeamCheckItem = internalAction({
   },
   returns: bscTeamCheckItemResultValidator,
   handler: async (ctx, args): Promise<BscTeamCheckItemResult> => {
-    const until = await cardListingCooldownUntil(ctx);
-    if (until !== null) return { outcome: "deferred", until };
-    let outcome: Awaited<ReturnType<typeof resolveBscCardTeamOnce>> = "failed";
-    try {
-      outcome = await resolveBscCardTeamOnce(ctx, args.cardChecklistId);
-    } catch (error) {
+    const logError = (error: unknown) =>
       // Name only: a thrown mutation error can echo its arguments, which
       // carry BSC's team value.
       console.error(
@@ -2715,8 +2733,24 @@ export const runBscTeamCheckItem = internalAction({
           error instanceof Error ? error.name : "unknown"
         }`,
       );
+    let row: BscTeamCheckRow | null;
+    try {
+      row = await readBscTeamCheckRow(ctx, args.cardChecklistId);
+    } catch (error) {
+      // No call was made, so no pacing pause; the ladder decides the retry.
+      logError(error);
+      return { outcome: "failed" };
     }
-    if (outcome !== "notNeeded") await sleep(BSC_TEAM_ENRICH_DELAY_MS);
+    if (!row || !row.needsCheck) return { outcome: "notNeeded" };
+    const until = await cardListingCooldownUntil(ctx);
+    if (until !== null) return { outcome: "deferred", until };
+    let outcome: Awaited<ReturnType<typeof askBscCardTeam>> = "failed";
+    try {
+      outcome = await askBscCardTeam(ctx, args.cardChecklistId, row);
+    } catch (error) {
+      logError(error);
+    }
+    await sleep(BSC_TEAM_ENRICH_DELAY_MS);
     if (typeof outcome !== "string") return { outcome: "deferred", until: outcome.until };
     return { outcome };
   },

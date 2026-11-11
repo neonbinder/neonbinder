@@ -45,3 +45,4 @@
 - [Teamless-rows checklist red = BSC lookup stall](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — every row teamless after Saved N = `bsc_card_team_lookup_failures` failed==requested; rerun, not the PR
 - [BSC cold sheet read is per job](bsc-cold-sheet-read-is-per-job-not-per-condition.md) — first read 503s at 30 s whatever the condition; fewer sheets needs a 503-only serial retry beside it
 - [BSC profile stalls heal with time](bsc-profile-stalls-heal-with-time-not-new-sessions.md) — new session/token does not escape a stall, time does (~50% 30 s, ~70% 60 s); seller id always live; seed re-signs in
+- [Workpool lanes and throttle rows survive the E2E reset](workpool-lanes-and-throttle-rows-survive-the-e2e-reset.md) — reset drains allSteps only; add the table, cancelAll the pool, item reads its row before any cooldown wait

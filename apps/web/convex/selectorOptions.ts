@@ -14,6 +14,7 @@ import { ConvexError, v, type Infer } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
+import { assertResetArmed } from "./resetArming";
 import {
   recordAdapterCall,
   newRequestId,
@@ -8885,6 +8886,14 @@ function resetTimeBudgetMs(): number {
 
 /** The per-table reset counts, plus whether the run got through every table. */
 type SetBuilderResetResult = {
+  /**
+   * PR 451 (NEO-482) — the deployment-wide BSC 429 cooldown rows. A window
+   * left open by the last run would hold the next run's team lookups for up
+   * to 10 minutes before any of its cards were asked.
+   */
+  marketplaceCooldownsDeleted: number;
+  /** PR 451 (NEO-482) — the "Waiting on BuySportsCards…" rows of earlier runs. */
+  marketplaceWaitsDeleted: number;
   /** NEO-306 — pending SportLots set reviews, one per (year, brand). */
   slSetReviewsDeleted: number;
   /** NEO-358 — the transient per-column sync notices, drained before the rows they name. */
@@ -9014,7 +9023,24 @@ async function runSetBuilderReset(
   const startedAt = Date.now();
   const budgetMs = resetTimeBudgetMs();
 
+  // PR 451 (NEO-482) — empty the BSC team lane before the cards it would ask
+  // about are drained, so the previous seed's queued checks (pushed back
+  // behind a cooldown for up to 30 minutes) never sit on the one slot in
+  // front of the next run's cards. Scheduled rather than awaited, the way
+  // the commit path enqueues onto the lane: the cancel touches the workpool
+  // component, and the reset must not fail on it. The cancel is armed itself
+  // (`assertResetArmed`), and every caller of this function has already
+  // asserted the flag. A resumed call schedules it again; cancelling an empty
+  // lane is a no-op.
+  await ctx.scheduler.runAfter(
+    0,
+    internal.bscTeamPool.cancelAllBscTeamChecks,
+    {},
+  );
+
   const counts = {
+    marketplaceCooldownsDeleted: 0,
+    marketplaceWaitsDeleted: 0,
     slSetReviewsDeleted: 0,
     selectorSyncStatusDeleted: 0,
     collectionCopiesDeleted: 0,
@@ -9053,8 +9079,24 @@ async function runSetBuilderReset(
   // the NEO-370 listing tables, cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
-    // NEO-306 — FIRST: a review doc points at a year and a brand row, so it
-    // drains before the table it references. A handful of docs at most.
+    // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows, FIRST.
+    // Neither names a row of any other table, so their place in the order is
+    // about the run, not about references: the cooldown is deployment-wide
+    // and a window the previous run opened would push every team lookup of
+    // the next one behind it. Not reference-seed tables: every scope drains
+    // them. The per-user `/testing/reset` deliberately leaves both alone,
+    // because eight shards run it at once and the cooldown is shared.
+    [
+      "marketplaceCooldownsDeleted",
+      internal.selectorOptions.resetMarketplaceCooldownsBatch,
+    ],
+    [
+      "marketplaceWaitsDeleted",
+      internal.selectorOptions.resetMarketplaceWaitsBatch,
+    ],
+    // NEO-306 — first of the catalogue's dependants: a review doc points at a
+    // year and a brand row, so it drains before the table it references. A
+    // handful of docs at most.
     ["slSetReviewsDeleted", internal.selectorOptions.resetSlSetReviewsBatch],
     // NEO-358 — the per-column sync notices ("SportLots could not be
     // reached…"). A row names its column's parent selector row, so it drains
@@ -9297,33 +9339,9 @@ async function runSetBuilderReset(
  */
 const RESET_BATCH_SIZE = 500;
 
-/**
- * The arming check, asserted at BOTH layers of the reset — the entry point and
- * every batch mutation it loops.
- *
- * The duplication is the point (NEO-214 security review). There is no identity
- * check anywhere under this entry point, because a CLI run carries no identity
- * (see `resetSetBuilderDataFromCli`), so the flag is the ONLY thing standing
- * between a call and a drained table. Asserting it solely at the entry point
- * would mean a future internal caller — a migration, a cron, a well-meaning
- * `ctx.runMutation` — could empty a table by going straight to a batch. So the
- * check lives next to each delete, which is exactly where the old
- * `requireAdmin` used to sit and for the same defence-in-depth reason.
- *
- * `ConvexError` rather than `Error`: production Convex REDACTS a plain `Error`
- * message, and the whole point of this refusal is to name the flag you have to
- * set.
- */
-function assertResetArmed(): void {
-  if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-    throw new ConvexError(
-      "Set Builder reset is not armed on this deployment. Set " +
-        "ALLOW_RESET_SET_BUILDER_DATA=true on it first " +
-        "(`npx convex env set ALLOW_RESET_SET_BUILDER_DATA true`), and " +
-        "unset it again afterwards on production.",
-    );
-  }
-}
+// `assertResetArmed` lives in `./resetArming` (PR 451, NEO-482) so the BSC
+// team lane's armed cancel (`bscTeamPool.cancelAllBscTeamChecks`) can assert
+// the same flag; its docblock there says why it sits at both layers.
 
 /**
  * The ONLY entry point to the Set Builder reset (NEO-214). Wipes
@@ -9332,6 +9350,9 @@ function assertResetArmed(): void {
  * `playerSports`, `players`, `playerAliases`, `teams`, `teamAliases`,
  * `franchises` and `leagues`. With `scope: "exceptReferenceSeed"` (NEO-330)
  * it skips the eight reference-seed tables among those and wipes the rest.
+ * Every scope also clears the BSC 429 cooldown (`marketplaceCooldowns`), the
+ * BSC wait rows (`marketplaceWaits`) and the BSC team lane (PR 451, NEO-482);
+ * the per-user `/testing/reset` touches none of the three.
  *
  * Runbook: `docs/operations/neo214-set-builder-admin-scripts.md`. Take a
  * **Backup Now** first (NEO-190 §3) and run it with the app CLOSED — resetting
@@ -9400,7 +9421,11 @@ export const resetSetBuilderDataFromCli = internalAction({
     ),
   },
   returns: v.object({
-    // NEO-306 — pending SportLots set reviews, drained first.
+    // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows, drained
+    // first in every scope.
+    marketplaceCooldownsDeleted: v.number(),
+    marketplaceWaitsDeleted: v.number(),
+    // NEO-306 — pending SportLots set reviews, drained right after them.
     slSetReviewsDeleted: v.number(),
     // NEO-358 — the transient per-column sync notices.
     selectorSyncStatusDeleted: v.number(),
@@ -9572,6 +9597,50 @@ export const resetEntityReviewQueueBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("entityReviewQueue").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `marketplaceCooldowns` (PR 451, NEO-482), looped by
+ * `runSetBuilderReset` first in every scope. One row per (platform, endpoint),
+ * so this is a handful of rows at most; paged like every other batch anyway.
+ */
+export const resetMarketplaceCooldownsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("marketplaceCooldowns")
+      .take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `marketplaceWaits` (PR 451, NEO-482), looped by
+ * `runSetBuilderReset` in every scope. Each row's own `expire` job is left
+ * scheduled; it reads the row by id and does nothing once it is gone.
+ */
+export const resetMarketplaceWaitsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("marketplaceWaits").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
