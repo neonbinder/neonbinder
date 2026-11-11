@@ -112,3 +112,4 @@
 - [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic, measured-wait credit, blocked Next via Enter, radiogroup per card
 - [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
 - [Checklist upload team claim blocks career prefill](patterns_checklist_upload_team_claim_blocks_career_prefill.md) — NEO-478: an uploaded row's team is a permanent claim; Roanoke spec cannot take the upload; aria-disabled Use via Enter; burst 429s
+- [Full local run on one account](patterns_full_local_run_on_one_account.md) — reds that are the single-account run: 12/hour cap, CI-only env switches, dirty reruns, box clutter, newest-N lists, near-budget photo step

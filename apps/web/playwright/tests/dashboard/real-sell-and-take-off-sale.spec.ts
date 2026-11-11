@@ -75,7 +75,7 @@ test.afterEach(async ({ context }, testInfo) => {
 test(
   "Dashboard: a card sold from a binder into a box moves from Fresh Pulls to New Listings, and taking it off sale takes it off the dashboard",
   { tag: ["@dashboard"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, context }) => {
     const box = `Sold${env.ATTEMPT_TOKEN}`;
     const greeting = page.getByRole("heading", { level: 1, name: "Welcome back, slugger." });
 
@@ -114,14 +114,29 @@ test(
     const pull = page.getByRole("region", { name: "Fresh Pulls" }).getByRole("link", { name: named });
     const listings = page.getByRole("region", { name: "New Listings" });
     const listing = listings.getByRole("link", { name: new RegExp(`${named.source}.*\\$5\\.00 1 in ${escapeRegExp(box)}$`) });
-    const boxEnd = (cards: number) =>
-      page.getByRole("list", { name: /^Shelf \d+, boxes$/ }).getByRole("link", {
-        name: `${box}, box, ${cards} ${cards === 1 ? "card" : "cards"} for sale`,
-        exact: true,
-      });
+    const countWords = (cards: number) => `${cards} ${cards === 1 ? "card" : "cards"} for sale`;
+    const shelf = page.getByRole("list", { name: /^Shelf \d+, boxes$/ });
+    const boxEnd = (cards: number) => shelf.getByRole("link", { name: `${box}, box, ${countWords(cards)}`, exact: true });
+    const more = shelf.getByRole("link", { name: /^\d+ more boxes? on My Boxes$/ });
+    // The box counts what it holds, on the shelf's own end for it. Boxes stand in the order they were made, and a
+    // shelf holds a few ends (three on a phone) before "N more boxes on My Boxes", so an account holding older boxes
+    // leaves this one behind that link: its count is then read where every box stands, on My Boxes, in a page of its own.
+    const expectBoxHolds = async (cards: number) => {
+      await expect(boxEnd(cards).or(more)).toBeVisible();
+      if ((await boxEnd(cards).count()) > 0) return;
+      const mine = await context.newPage();
+      try {
+        await mine.goto("/inventory?tab=boxes");
+        await expect(
+          mine.getByRole("list", { name: "Your boxes" }).getByLabel(`${box}, box, ${countWords(cards)}`, { exact: true }),
+        ).toBeVisible();
+      } finally {
+        await mine.close();
+      }
+    };
     await expect(pull).toBeVisible();
     await expect(listing).toHaveCount(0);
-    await expect(boxEnd(0)).toBeVisible();
+    await expectBoxHolds(0);
 
     // --- Sell it from its panel over the dashboard: the dashboard under it follows ---------------------------
     await pull.click();
@@ -141,7 +156,7 @@ test(
     // A card for sale is not a pull; it is a New Listing with its price and its box, and the box counts it.
     await expect(listing).toBeVisible();
     await expect(pull).toHaveCount(0);
-    await expect(boxEnd(1)).toBeVisible();
+    await expectBoxHolds(1);
 
     // --- Take it off sale from the New Listing's panel: it leaves the dashboard -------------------------------
     await listing.click();
@@ -158,7 +173,7 @@ test(
     await expect(greeting).toBeVisible();
 
     await expect(listing).toHaveCount(0);
-    await expect(boxEnd(0)).toBeVisible();
+    await expectBoxHolds(0);
     // It was moved, not added to the collection: it does not come back as a Fresh Pull.
     await expect(pull).toHaveCount(0);
 

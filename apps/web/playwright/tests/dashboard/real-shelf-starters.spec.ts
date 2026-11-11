@@ -18,7 +18,7 @@
 // R7/R7a: writes only the signed-in user's own rows (`collectionContainers`): one empty
 // box, no cards, so nothing of any set. Self-cleaning, and on a failure too (an afterEach
 // deletes it through the UI). Its name is a single token minted from `env.ATTEMPT_TOKEN`.
-import { backToBoxes, createBox, deleteBoxNamed } from "../../support/collection";
+import { backToBoxes, createBox, deleteBoxNamed, nameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 let made: string | undefined;
@@ -96,17 +96,25 @@ test("Dashboard: empty shelves lead into Add cards on Collection and on Inventor
   await page.goto("/dashboard");
   await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible();
   // The boxes stand on the third shelf (a box end is one link: "<name>, box, <n> cards for sale") and the
-  // Inventory starter, which stands only while no box is in use, has gone.
+  // Inventory starter, which stands only while no box is in use, has gone. Boxes stand in the order they were
+  // made (Unsorted first), and a shelf holds a few ends (three on a phone) before "N more boxes on My Boxes", so
+  // an account holding older boxes leaves this one behind that link: the shelf is there, with this box on it
+  // or counted by the link.
   await expect(boxShelf).toBeVisible();
   const end = boxShelf.getByRole("link", { name: `${box}, box, 0 cards for sale`, exact: true });
-  await expect(end).toBeVisible();
+  const more = boxShelf.getByRole("link", { name: /^\d+ more boxes? on My Boxes$/ });
+  await expect(end.or(more)).toBeVisible();
+  const ends = boxShelf.getByRole("link", { name: /, box, [\d,]+ cards? for sale$/ });
+  await expect(ends.first()).toBeVisible();
   await expect(toInventory).toHaveCount(0);
   await expectAccessible(page, { label: "Dashboard, a box on the third shelf" });
-  // The box end opens the box on My Boxes, and Back comes home.
-  await end.click();
+  // A box end opens its box on My Boxes, and Back comes home. The first end stands whatever else the account holds.
+  const first = ends.first();
+  const firstBox = (await nameOf(first)).replace(/, box, [\d,]+ cards? for sale$/, "");
+  await first.click();
   await expect(page).toHaveURL(/\/inventory\?tab=boxes&b=[^&]+$/);
-  await expect(page.getByRole("heading", { level: 2, name: box, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: firstBox, exact: true })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(end).toBeVisible();
+  await expect(first).toBeVisible();
 });
