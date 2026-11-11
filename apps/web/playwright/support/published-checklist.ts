@@ -50,6 +50,11 @@ export const CHECKLISTS = {
   futureStars2024: "2024-topps-chrome-insert-future-stars",
   /** Hockey 1995 Roanoke Express ECHL Base: 25 cards, every one `NNO`, so each pairs by player. */
   roanokeExpress1995: "1995-hockey-roanoke-express-echl-base",
+  /**
+   * The Roanoke file with Chris Pollack's row LEFT OUT: 24 rows, so exactly one card is asked of BSC
+   * live per fetch. The one-marketplace spec uploads it; that card is the player it creates.
+   */
+  roanokeExpress1995OneLive: "1995-hockey-roanoke-express-echl-base-one-live",
   /** Baseball 2025 Bowman Draft Insert Bowman Draft Nights Autographs: 5 cards (`BDNA-EW`..), the autograph-format spec's set. */
   bowmanDraftNightsAutographs2025: "2025-bowman-draft-insert-bowman-draft-nights-autographs",
   /**

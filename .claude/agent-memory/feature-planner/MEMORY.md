@@ -47,3 +47,4 @@
 - [BSC profile stalls heal with time](bsc-profile-stalls-heal-with-time-not-new-sessions.md) — new session/token does not escape a stall, time does (~50% 30 s, ~70% 60 s); seller id always live; seed re-signs in
 - [Workpool lanes and throttle rows survive the E2E reset](workpool-lanes-and-throttle-rows-survive-the-e2e-reset.md) — reset drains allSteps only; add the table, cancelAll the pool, item reads its row before any cooldown wait
 - [Seller Send step past 7 s = seller-id read](seller-send-step-past-7s-is-the-seller-id-read.md) — spinning Send + sellerProfile timeout x2, or (NEO-482) seed hop "stalled on every sign-in (5 tries)" with 11-21 s logins; env, rerun
+- [Publisher checklist claim is per card](publisher-checklist-claim-is-per-card-omit-the-card-under-test.md) — omit the tested card's row (blank team keeps the lookup); Saved line carries the checklist tail

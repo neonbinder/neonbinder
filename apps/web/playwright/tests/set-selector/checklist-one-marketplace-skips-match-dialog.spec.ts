@@ -12,8 +12,8 @@
 // nobody offered, the "N need you" count being FINAL at "Saved", the answers
 // read back off the cards in the drawer, and a teams-only re-sync review.
 //
-// WRITES BEYOND THE CARDS, deliberately: ONE player (whichever Roanoke name the
-// wizard presents first) and TWO teams: the career team, a real one-word club
+// WRITES BEYOND THE CARDS, deliberately: ONE player (Chris Pollack, below) and TWO
+// teams: the career team, a real one-word club
 // from support/recorded-names.ts (NEO-413: it is looked up when it stages, and the
 // recording holds it as a Hockey no-match the catalogue does not hold, so the
 // lookup sends nothing to Wikidata and its step still reads "New Team"), and
@@ -24,15 +24,19 @@
 // pick). All three are global; the same trade
 // checklist-wizard-career-team-commits makes.
 //
-// NO PUBLISHER'S CHECKLIST HERE, on purpose (NEO-478, tried 2026-11-10 with
-// fixtures/checklists/1995-hockey-roanoke-express-echl-base.csv, 25 NNO rows paired
-// by player, and put back). A team the operator's checklist names is a data claim
-// that stays (components/SetSelector/teams-on-cards.ts, `checklistClaim`): no rule
-// fills another team over it, and skipping the New Team step does not release it. So
-// every card came up on "Leave for later" and the created player's career-team
-// PRE-FILL (STEP 6, the NEO-335 behaviour this spec exists to prove) never happened:
-// `Templetuohy` stayed unchecked. A live BSC lookup is the fetch whose team name the
-// skip DOES release, so this spec keeps its own live fetch.
+// ONE LIVE BSC LOOKUP PER SYNC, ON PURPOSE (NEO-489). Both syncs (STEP 5 and the
+// STEP 10 re-sync) upload `roanokeExpress1995OneLive` first: the publisher's
+// checklist for 24 of the 25 cards, Chris Pollack's row LEFT OUT. A team the
+// checklist names is a data claim that stays (components/SetSelector/teams-on-cards.ts,
+// `checklistClaim`): no rule fills another team over it and skipping the New Team
+// step does not release it (NEO-478, tried 2026-11-10 with the whole file and put
+// back). That is exactly why ONE card keeps its live lookup: Chris Pollack's card
+// is asked of BSC, whose "Roanoke Express" the New Team step's skip DOES release,
+// so the created player's career-team PRE-FILL (STEP 6, the NEO-335 behaviour this
+// spec exists to prove) still happens on his card. The other 24 cards are claimed:
+// they land on "Cards with no players" under Leave for later with nothing pre-filled,
+// which is all this spec ever asked of them. Before this the two syncs made 50
+// live BSC lookups (25 cards twice), enough to get the next spec rate-limited.
 //
 // Sole writer of the Roanoke Express ECHL set; fresh-only (it commits the
 // checklist). Re-seed before re-running.
@@ -50,17 +54,60 @@ import {
 import { editCardButton } from "../../support/cards";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
+  CHECKLISTS,
+  expectTeamsFromChecklist,
+  usePublishersChecklist,
+} from "../../support/published-checklist";
+import {
+  addAsNewPlayerButton,
   answerPlayerAsNew,
   advanceToSave,
+  awaitLookupsSettled,
   confirmSaveButton,
+  personSkip,
   readStep,
   reviewWizard,
   stepCounter,
-  walkToPlayerRow,
 } from "../../support/wizard";
 
 const SET = "Roanoke Express ECHL";
 const YEAR = "1995";
+/**
+ * The one card left out of the uploaded checklist (its row is not in
+ * `roanokeExpress1995OneLive`), so BSC is asked about it live. A Hockey no-match in the
+ * enrichment recording that the catalogue does not hold, so the review offers "Add as New
+ * Player" (never a "Link to" preselect, as Daniel Berthiaume and Matt DelGuidice get).
+ */
+const LIVE_PLAYER = "Chris Pollack";
+
+/**
+ * Walk the review's name steps to LIVE_PLAYER's row: each team/league step is skipped ("that is
+ * not a team": a skip creates nothing, and it is what releases a live-looked-up team from
+ * the card), and every other person is skipped via "not a person". A skipped person creates no
+ * player and raises none of the per-team steps. Contract: ENTRY the wizard is open on a name
+ * step. EXIT `Skip <LIVE_PLAYER> - not a person` is on screen and nothing is pressed on it.
+ * Bounded; each press is proved to have landed (its own skip goes) before the next look.
+ */
+async function walkToLivePlayer(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  const person = personSkip(page);
+  const stepSkip = wizard.getByRole("button", {
+    name: /^Skip .* — (not a team|this team has no league)$/,
+    disabled: false,
+  });
+  for (let i = 0; i < 60; i++) {
+    await awaitLookupsSettled(page);
+    // The batch-lookups ceiling walkToPlayerRow waits at (support/wizard.ts LOOKUPS): the rows
+    // behind a decided step settle in the deployment-wide lookup pool, shared with every shard.
+    const skip = person.or(stepSkip).first();
+    await expect(skip).toBeVisible({ timeout: 180_000 });
+    const name = (await skip.getAttribute("aria-label")) ?? "";
+    if (name === `Skip ${LIVE_PLAYER} — not a person`) return;
+    await skip.click();
+    await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
+  }
+  await expect(person, `${LIVE_PLAYER} was never presented`).toBeVisible();
+}
 
 /**
  * Press the drawer's "Next card" until a card with a team chip is on screen.
@@ -123,11 +170,15 @@ test(
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     await expectAccessible(page, { label: "Empty checklist with an unmapped base" });
+    // The publisher's checklist, 24 of the 25 cards (LIVE_PLAYER's row left out), so BSC is
+    // asked about ONE card and not 25 (NEO-489).
+    const facts = await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
     await syncChecklistButton(page).click();
 
     // One live BSC round trip, and the solo path says what it kept (NEO-255).
     const kept = page.getByText(/Kept all [0-9]+ cards? from /);
     await expect(kept).toBeVisible({ timeout: 60_000 });
+    await expectTeamsFromChecklist(page, facts);
     const FETCHED = Number(((await kept.textContent()) ?? "").match(/[0-9]+/)?.[0]);
     expect(FETCHED).toBeGreaterThan(0);
     await expect(
@@ -150,16 +201,19 @@ test(
 
     // ── STEP 6: create ONE player with ONE career team, then skip every other name ──
     // NEO-335 needs ONE card whose team the evidence knows, and none of these
-    // cards carries a team, so the evidence has to be a player's career. The
-    // cheapest honest source is the review itself: create the first player the
-    // wizard presents with ONE career team staged by hand. A career pre-fills
-    // only when EXACTLY ONE of its teams covers [setYear-1, setYear]
+    // cards carries a team the evidence can fill, so the evidence has to be a
+    // player's career. The cheapest honest source is the review itself: create
+    // LIVE_PLAYER (the one card BSC is asked about, so his card is the one a
+    // checklist claim does not hold) with ONE career team staged by hand. A career
+    // pre-fills only when EXACTLY ONE of its teams covers [setYear-1, setYear]
     // (careerTeamVerdict): the set year is 1995 and the staged stint 1994-1996
     // covers it. The mechanics are checklist-wizard-career-team-commits, reused
-    // step for step. readyToCreate: this spec creates the player.
+    // step for step.
     const team = recordedNoMatchName(env, "checklist-one-marketplace-skips-match-dialog");
     const other = `RXO${env.ATTEMPT_TOKEN}T`;
-    await walkToPlayerRow(page, { readyToCreate: true });
+    await walkToLivePlayer(page);
+    // Not a "Link to <name>" preselect and not held: this spec creates the player.
+    await expect(addAsNewPlayerButton(page)).toHaveText("Add as New Player");
     const careerTeam = wizard.getByRole("combobox", { name: "Career team name" });
     await expect(careerTeam).toBeVisible();
     await expect(wizard.getByText("New player", { exact: true })).toBeVisible();
@@ -378,6 +432,8 @@ test(
     // stored with no player link against an incoming name, both content
     // changes, so "Skip changes" (apply nothing, keep NeonBinder's version) is
     // the deterministic way through. No Match Cards: still one marketplace attached.
+    // The same checklist again (the chip may still hold it): ONE live BSC lookup this time too.
+    await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
     await syncChecklistButton(page).click();
     // A live BSC fetch, then the diff: the 60 s ceiling STEP 5 has.
     const skipChanges = page.getByRole("button", { name: "Skip reviewing changes and continue" });
@@ -413,14 +469,19 @@ test(
     await expect(wizard.getByText(new RegExp(`Save ${FETCHED} cards?\\?`))).toBeVisible();
 
     // Never gated: Confirm & Save with every line on its default saves the same
-    // cards again, and the count must hold. EXACTLY "Saved N cards.", with NO
-    // tail: every name was answered in the first sitting, so this commit has
-    // nothing to report beyond the count. The banner is ONE text node holding
-    // the count and every note the commit appends, so any note fails here by
-    // name (the one this pins: "N names were not reviewed; those cards have no
+    // cards again, and the count must hold. EXACTLY "Saved N cards." plus the
+    // checklist's own tail ("Teams from your checklist: 24 of N cards."), and NOTHING
+    // else: every name was answered in the first sitting, so this commit has nothing
+    // more to report. The banner is ONE text node holding the count and every note
+    // the commit appends, so any other note fails the full-string anchor by name
+    // (the one this pins: "N names were not reviewed; those cards have no
     // player/team link", the commit treating names found in the set's stored
     // skips as unanswered and stamping them back as pending names).
     await confirmSaveButton(page).click();
-    await expect(page.getByText(new RegExp(`^Saved ${FETCHED} cards\\.$`))).toBeVisible();
+    await expect(
+      page.getByText(
+        new RegExp(`^Saved ${FETCHED} cards\\. Teams from your checklist: ${facts.matched} of ${FETCHED} cards\\.$`),
+      ),
+    ).toBeVisible();
   },
 );
