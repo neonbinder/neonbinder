@@ -50,7 +50,7 @@ test(
     // its counter agrees with the pill (two cards, the first on screen).
     await pill("2 need you").click();
     // NEO-497: the walker is named for the checklist it tidies, the year, set
-    // and Insert row this spec drilled to, never "this set".
+    // and the "Base" row under Insert this spec drilled to, never "this set".
     const walker = page.getByRole("dialog", { name: tidyUpName(target), exact: true });
     await expect(walker).toBeVisible();
     await expect(walker.getByRole("button", { name: skipFor("801") })).toBeVisible();

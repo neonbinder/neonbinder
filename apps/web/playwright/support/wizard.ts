@@ -61,7 +61,11 @@ export const TIDY_UP_NAME = /^Tidy up /;
 /**
  * NEO-497 — a tidy-up dialog's full name for the checklist at
  * `<year> / <set> / <variant>`: the year row, the SET row (never the
- * manufacturer) and the checklist's own row, in that order.
+ * manufacturer) and the checklist's own row, in that order. `variant` is the
+ * words the title shows, taken exactly: a parallel under an insert reads
+ * "<insert> <parallel>" (the insert's name first, unless the parallel's own
+ * name already starts with it), so the caller passes that whole text; this
+ * helper does not re-derive the rule, so it cannot agree with a broken one.
  */
 export function tidyUpName({ year, set, variant }: { year: string; set: string; variant: string }): string {
   return `Tidy up ${year} ${set} ${variant}`;

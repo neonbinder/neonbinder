@@ -170,7 +170,7 @@ test(
     }
 
     // Either new names need review, or the cards save straight away. Since
-    // NEO-335 the wizard ("Tidy up <the set>") has THREE shapes: names to decide
+    // NEO-335 the wizard ("Tidy up <year> <set> <variant>" since NEO-497) has THREE shapes: names to decide
     // (footer "Skip remaining names (N)"), or every name known and the open
     // question is a teamless card or a trimmed title (it opens on that step with
     // "Next (Enter)"). Same branch below: past the names, advanceToSave leaves

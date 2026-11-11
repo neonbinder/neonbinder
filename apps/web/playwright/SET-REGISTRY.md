@@ -2436,6 +2436,7 @@ would put the wrong question on screen.
 | `cft-` | `tests/set-selector/card-features-editor-toggle.spec.ts` |
 | `cna-` | `tests/set-selector/checklist-attention-badge-and-filter.spec.ts` (also `-${ATTEMPT_ID}`) |
 | `cnw-` | `tests/set-selector/checklist-attention-walker-missing-team.spec.ts` (also `-${ATTEMPT_ID}`) |
+| `tuplongset` | `tests/set-selector/tidy-up-title-names-the-insert-and-parallel.spec.ts` (NEO-497) — ONE set per attempt, `tuplongset` + `x` padding + `ATTEMPT_TOKEN`, ONE unbroken 60-character token (the worst case for the tidy-up title's wrap; 200 is the set-name cap), under `E2E Test Sport <w>` › 2026 › `Topps` (drillToCustomSet). Hand-made, so no marketplace side is resolvable beneath it. Inside it, under `Insert`, `tuphost<token>` holds the parallel `tupgold<token>` (moved with Group Parallels), and each of the two checklists gets one team-less card (`901`, `902`) so the attention walker opens. Nothing is deleted; the set stands. |
 | `clt-` | `tests/set-selector/custom-card-row-opens-panel-with-autotitle.spec.ts` |
 | `cpx-` | `tests/set-selector/set-attributes-card-prefix.spec.ts` — an Insert row `CPXROW` under it carries the Card prefix under test; the flow clears the prefix before it ends. |
 | `cvar-` | `tests/set-selector/variation-link-group-and-unlink.spec.ts` |
