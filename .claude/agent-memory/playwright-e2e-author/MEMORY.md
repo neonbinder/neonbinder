@@ -104,3 +104,6 @@
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
 - [Shell tabs live in the Menu on a phone](patterns_shell_tabs_phone_menu.md) — use goViaShell for /demo and signed-in shell tabs; match [?&]tab= in URLs
 - [Keep failure artifacts across runs](patterns_keep_failure_artifacts.md) — every run wipes results/; use --output=<scratch> when chasing an intermittent red
+- [Responsive duplicates and text locators](patterns_responsive_duplicates_and_text_locators.md) — getByText matches the CSS-hidden twin; filter({ visible: true }); branch on isMobile only for layout facts
+- [Failure hook that finishes every step](patterns_failure_hook_that_finishes_every_step.md) — afterEach with a fresh context page, attempt() collecting errors, idempotent steps, deleteBoxNamed
+- [Dashboard shelf boxes and demo limits](reference_dashboard_shelf_boxes_and_demo_limits.md) — demo has one box; 7 real boxes = 5 ends desktop / 3 phone; Sell vs Fresh Pulls; Hunt tray; stale panel run

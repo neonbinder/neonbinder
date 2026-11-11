@@ -16,7 +16,7 @@
 // insert parallel.
 //
 // R7: read-only. R3: the cascade comes from support/collection.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   collectorCascade,
   drillToCollectorChecklist,
@@ -83,6 +83,9 @@ test(
       // And its cards are dealt out: a row a collector can open.
       await expect(checklist.getByRole("button", { name: /^Details for #/ }).first()).toBeVisible();
     }
+
+    // The parallel's checklist, opened cold from its link, is a screen of its own to check (the loop ended on it).
+    await expectAccessible(page, { label: "Collection checklist opened by a dashboard-style deep link, a parallel" });
 
     // A real move: the link was a step in the history, and Back returns to the insert's own place.
     await page.goBack();

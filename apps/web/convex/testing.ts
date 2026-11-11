@@ -1410,11 +1410,13 @@ export { TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK, TEST_OUTBOX_SEQ };
  * `progress` ledger without clearing `lastError`, and a run that dies keeps
  * the mark under `status: "error"` with the ledger and any conditions it
  * pushed. Such a record is the drain's, so the seed never replaces it and the
- * clear never deletes it.
+ * clear never deletes it. The seed writes two shapes, both marked: a failed
+ * set (`status: "error"`) and a recovered one (`status: "idle"`, a later clean
+ * run: the mark rides on `lastError`, which a real finish always clears).
  */
 function isUntouchedTestSyncRecord(record: Doc<"marketplaceListingSyncs">): boolean {
   return (
-    record.status === "error" &&
+    (record.status === "error" || record.status === "idle") &&
     (record.lastError ?? "").startsWith(TEST_SYNC_MARK) &&
     record.leaseToken === undefined &&
     record.progress === undefined &&
@@ -1551,16 +1553,26 @@ export const seedMyTestSale = mutation({
  *   a seeded one a real run has claimed) is left alone there: that platform
  *   is skipped with a note, the others still seeded.
  *
+ * `recovered` (instead of `error`, never with it): the set's failure, then a
+ * later clean sync, as the dashboard reads them: ONE record per set and
+ * marketplace, so the later run is the record. It is written as an idle record
+ * with a run time and no problems, no `lastSuccessAt` (so the next real run
+ * still reads in full, as for a failed seed) and the mark on `lastError`. It
+ * replaces a failed seed on the same set (the dashboard then shows the set no
+ * more: it put itself right) and, like the failed seed, is left alone where a
+ * real record stands, and cleared by the same clear.
+ *
  * Safety as `seedMyTestSale`: production refuses it; caller only.
  */
 export const seedMyTestSync = mutation({
-  args: { pending: v.boolean(), error: v.boolean() },
+  args: { pending: v.boolean(), error: v.boolean(), recovered: v.optional(v.boolean()) },
   returns: v.object({
     platforms: v.array(
       v.object({
         platform: listingPlatformValidator,
         pending: v.boolean(),
         error: v.boolean(),
+        recovered: v.optional(v.boolean()),
         note: v.optional(v.string()),
       }),
     ),
@@ -1572,6 +1584,9 @@ export const seedMyTestSync = mutation({
     const userId = await getCurrentUserId(ctx);
     if (!userId) {
       throw new Error("Not authenticated");
+    }
+    if (args.error && args.recovered) {
+      throw new Error("Ask for a failed set or a recovered one: a recovered set is one a later sync put right.");
     }
     const copy = await seedCopyOf(ctx, userId);
     if (!copy) {
@@ -1602,7 +1617,9 @@ export const seedMyTestSync = mutation({
           pending = true;
         }
       }
-      if (args.error) {
+      let recovered = false;
+      if (args.error || args.recovered) {
+        const asked = args.recovered ? "recovered set" : "failed set";
         const existing = await ctx.db
           .query("marketplaceListingSyncs")
           .withIndex("by_owner_variant_platform", (q) =>
@@ -1612,28 +1629,49 @@ export const seedMyTestSync = mutation({
         if (existing && !isUntouchedTestSyncRecord(existing)) {
           notes.push(
             (existing.lastError ?? "").startsWith(TEST_SYNC_MARK)
-              ? "no failed set: a real sync has picked up the test record here"
-              : "no failed set: that set already has a real sync record here",
+              ? `no ${asked}: a real sync has picked up the test record here`
+              : `no ${asked}: that set already has a real sync record here`,
           );
         } else {
-          const record = {
-            ownerId: userId,
-            variantId: copy.variantId,
-            platform,
-            status: "error" as const,
-            lastRunAt: now - 10 * 60_000,
-            lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
-            problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
-            problemsTotal: 1,
-            conditionsPushed: [],
-            lastUpdated: now,
-          };
+          const record = args.recovered
+            ? {
+                ownerId: userId,
+                variantId: copy.variantId,
+                platform,
+                status: "idle" as const,
+                lastRunAt: now - 60_000,
+                // The mark stays on a finished-clean record so the clear finds it; a real finish clears `lastError`.
+                lastError: `${TEST_SYNC_MARK}A sync failed here once, and a later one went through.`,
+                problems: [],
+                problemsTotal: 0,
+                conditionsPushed: [],
+                lastUpdated: now,
+              }
+            : {
+                ownerId: userId,
+                variantId: copy.variantId,
+                platform,
+                status: "error" as const,
+                lastRunAt: now - 10 * 60_000,
+                lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
+                problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
+                problemsTotal: 1,
+                conditionsPushed: [],
+                lastUpdated: now,
+              };
           if (existing) await ctx.db.replace(existing._id, record);
           else await ctx.db.insert("marketplaceListingSyncs", record);
-          error = true;
+          if (args.recovered) recovered = true;
+          else error = true;
         }
       }
-      platforms.push({ platform, pending, error, ...(notes.length > 0 ? { note: notes.join("; ") } : {}) });
+      platforms.push({
+        platform,
+        pending,
+        error,
+        ...(args.recovered ? { recovered } : {}),
+        ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
+      });
     }
     return { platforms };
   },

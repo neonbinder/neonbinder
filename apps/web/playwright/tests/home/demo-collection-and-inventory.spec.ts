@@ -220,26 +220,26 @@ test(
     await expect(only.getByRole("button", { name: "Rookies" })).toBeVisible();
     await expect(only.getByRole("button", { name: /for sale/i })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /, for sale/ })).toHaveCount(0);
-    // The card is among the pockets (the pile turns in pages, and past its
-    // first window (the whole '89 Score set comes first) Show more cards
-    // loads the rest: a bounded walk to its page).
-    const pile = page.getByRole("region", { name: "All my cards, open", exact: true });
-    const pocket = // A plain-string name (a substring match), not a RegExp: inside .or(), a
-    // RegExp holding an apostrophe ("Artist's Proof") breaks Playwright's selector parser.
-    pile.getByRole("button", { name: label }).first();
-    const turn = page.getByRole("button", { name: /^Next pages?$/ });
-    const more = page.getByRole("button", { name: "Show more cards" });
-    for (let i = 0; i < 60; i++) {
-      await expect(pocket.or(turn).first()).toBeVisible();
-      if (await pocket.isVisible()) break;
-      // The last page of the window: load more, then keep turning.
-      if (await turn.isEnabled()) await turn.click();
-      else await more.click();
-    }
-    await expect(pocket).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, All my cards without a for-sale card" });
+    // The card is among the cards the collector owns: the pile is 400-odd pockets in pages, so it is
+    // found the way a collector would, by name and number in the Card hunt, which says where each copy
+    // lives; pressing the place goes straight to its pocket.
+    const player = /#\S+ ([^,]+)/.exec(label)?.[1] ?? "";
+    const cardNumber = /#(\S+) /.exec(label)?.[1] ?? "";
+    expect(`${player} ${cardNumber}`, `a card label with a player and a number (read: ${label})`).toMatch(/\S \S/);
+    await page.getByRole("searchbox", { name: "Hunt for one of your cards" }).fill(`${player} ${cardNumber}`);
+    const owned = page
+      .getByRole("list", { name: "In your binders" })
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("button", { name: `${label}, have ` }) });
+    await expect(owned).toHaveCount(1);
+    await owned.getByRole("button", { name: /^Find .* in Main, page \d+, pocket \d+$/ }).click();
+    const pile = page.getByRole("region", { name: "Main, open", exact: true });
+    const pocket = // A plain-string name (a substring match), not a RegExp: an apostrophe ("Artist's Proof") breaks Playwright's selector parser inside .or().
+    pile.getByRole("button", { name: label }).first();
+    await expect(pocket).toBeVisible();
 
-    // Sell it again from its pocket: the Sell panel, then it is gone from the pile.
+    // Sell it again from its pocket: the Sell panel, then it is gone from Main.
     await pocket.click();
     await drawer.getByRole("button", { name: `Sell ${line}` }).first().click();
     const sellForm = drawer.getByRole("form", { name: /^Sell / });
@@ -255,10 +255,14 @@ test(
     await expect(drawer.getByText(/For sale · Show box/).first()).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
-    await expect(page.getByRole("heading", { level: 2, name: "All my cards", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Main", exact: true })).toBeVisible();
     await expect(pocket).toHaveCount(0);
 
-    // Back to the shelf: All my cards is back to where it started.
+    // Back steps out of Main to the pile the hunt started in (still without a for-sale card), then to the
+    // shelf: All my cards is back to where it started.
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]all=1/);
+    await expect(page.getByRole("heading", { level: 2, name: "All my cards", exact: true })).toBeVisible();
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=binders/);
     await expect(page).not.toHaveURL(/[?&]all=1/);

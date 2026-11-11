@@ -1543,4 +1543,125 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
     expect(real).toMatchObject({ status: "idle", problems: [] });
     expect(real?.lastError).toBeUndefined();
   });
+
+  describe("a recovered set: a failure a later sync put right", () => {
+    type Harness = Awaited<ReturnType<typeof withBoxedCard>>;
+    const recordOn = (t: Harness["t"], variantId: Harness["fx"]["baseId"], platform: "bsc" | "ebay") =>
+      t.run((ctx) =>
+        ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", USER_A).eq("variantId", variantId).eq("platform", platform))
+          .unique(),
+      );
+
+    test("replaces the failed seed on the same set, and the dashboard stops naming it; the waiting cards stay", async () => {
+      const { t, fx, me, other } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true });
+      expect((await me.query(api.dashboard.syncAlerts, {})).sets).toHaveLength(2);
+
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true })).toEqual({
+        platforms: [
+          { platform: "bsc", pending: false, error: false, recovered: true },
+          { platform: "ebay", pending: false, error: false, recovered: true },
+        ],
+      });
+      const alerts = await me.query(api.dashboard.syncAlerts, {});
+      expect(alerts.sets).toEqual([]);
+      expect(alerts.pending.map((p) => p.platform).sort()).toEqual(["bsc", "ebay"]);
+      // One record per set and marketplace: the later clean run IS the record. Marked, idle, run time, no
+      // success time (the next real run still reads in full), nothing held back.
+      const record = await recordOn(t, fx.baseId, "ebay");
+      expect(record).toMatchObject({ status: "idle", problems: [], problemsTotal: 0, conditionsPushed: [] });
+      expect(record?.lastError?.startsWith("(Test) ")).toBe(true);
+      expect(record?.lastSuccessAt).toBeUndefined();
+      expect(record?.leaseToken).toBeUndefined();
+      expect(record?.progress).toBeUndefined();
+      expect(await other.query(api.dashboard.syncAlerts, {})).toEqual({ pending: [], sets: [], more: false });
+
+      // The same clear takes it away, and the set stays absent.
+      expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 2, records: 2 });
+      expect(await recordOn(t, fx.baseId, "ebay")).toBeNull();
+    });
+
+    test("a failed seed replaces a recovered one: the set is back on the dashboard", async () => {
+      const { me } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true });
+      expect((await me.query(api.dashboard.syncAlerts, {})).sets).toEqual([]);
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true });
+      expect((await me.query(api.dashboard.syncAlerts, {})).sets).toHaveLength(2);
+    });
+
+    test("asking for both a failed and a recovered set is refused, and nothing is written", async () => {
+      const { t, me } = await withBoxedCard();
+      await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: true, recovered: true })).rejects.toThrow(
+        /failed set or a recovered one/,
+      );
+      expect(await t.run((ctx) => ctx.db.query("marketplaceListingSyncs").collect())).toEqual([]);
+      expect(await t.run((ctx) => ctx.db.query("listingOutbox").collect())).toEqual([]);
+    });
+
+    test("never replaces a real record, or a seeded one a real run has claimed; the clear leaves a claimed one too", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      // A real clean record on BuySportsCards.
+      await t.run((ctx) =>
+        ctx.db.insert("marketplaceListingSyncs", {
+          ownerId: USER_A,
+          variantId: fx.baseId,
+          platform: "bsc",
+          status: "idle",
+          lastSuccessAt: 5,
+          problems: [],
+          conditionsPushed: [],
+          lastUpdated: 1,
+        }),
+      );
+      const real = await recordOn(t, fx.baseId, "bsc");
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true })).toEqual({
+        platforms: [
+          { platform: "bsc", pending: false, error: false, recovered: false, note: "no recovered set: that set already has a real sync record here" },
+          { platform: "ebay", pending: false, error: false, recovered: true },
+        ],
+      });
+      expect(await recordOn(t, fx.baseId, "bsc")).toEqual(real);
+
+      // A real run claims the seeded recovered record on eBay (running, leased, a fresh ledger, the mark still on it).
+      const seeded = await recordOn(t, fx.baseId, "ebay");
+      await t.run((ctx) =>
+        ctx.db.patch(seeded!._id, {
+          status: "running",
+          leaseToken: "real-run",
+          leaseExpiresAt: Date.now() + 60_000,
+          progress: { runStartedAt: Date.now(), steps: [] },
+        }),
+      );
+      const claimed = await recordOn(t, fx.baseId, "ebay");
+      expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 0 });
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true })).toMatchObject({
+        platforms: [
+          { platform: "bsc", recovered: false },
+          { platform: "ebay", recovered: false, note: "no recovered set: a real sync has picked up the test record here" },
+        ],
+      });
+      expect(await recordOn(t, fx.baseId, "ebay")).toEqual(claimed);
+    });
+
+    test("a recovered idle record a real run finished (mark cleared) is a real record: not cleared, not replaced", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true });
+      const seeded = await recordOn(t, fx.baseId, "bsc");
+      // What `listingDrain.finishVariant` leaves after an ok run: idle, `lastError` cleared, a success time and a ledger.
+      await t.run((ctx) =>
+        ctx.db.patch(seeded!._id, {
+          lastError: undefined,
+          lastSuccessAt: Date.now(),
+          progress: { runStartedAt: Date.now(), steps: [] },
+        }),
+      );
+      const finished = await recordOn(t, fx.baseId, "bsc");
+      // Only the untouched seeded record on eBay goes; the finished one on BuySportsCards is the drain's.
+      expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 1 });
+      expect(await recordOn(t, fx.baseId, "bsc")).toEqual(finished);
+      expect(await recordOn(t, fx.baseId, "ebay")).toBeNull();
+    });
+  });
 });

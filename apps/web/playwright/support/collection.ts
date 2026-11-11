@@ -308,6 +308,25 @@ export async function deleteOpenBox(
   await expect(confirm).toBeHidden();
 }
 
+/**
+ * From anywhere: open My Boxes, open the box with this name and delete it
+ * through its "Rename or delete" dialog (an empty box; the spec has emptied it).
+ * The box must exist: a hook calls it only for a box whose creation the body saw
+ * finish (`createBox` returned), and the click waits for the box like any other.
+ * (A "skip it when it is not listed" branch was tried and leaked boxes: a shelf
+ * that has painted is no proof that a name is absent.)
+ */
+export async function deleteBoxNamed(page: Page, name: string): Promise<void> {
+  await page.goto("/inventory?tab=boxes");
+  const spine = page
+    .getByRole("list", { name: "Your boxes" })
+    .getByLabel(new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, box, `));
+  await spine.click();
+  await deleteOpenBox(page, name);
+  await expect(page.getByRole("list", { name: "Your boxes" })).toBeVisible();
+  await expect(spine).toHaveCount(0);
+}
+
 /** A checklist row's quantity field on the inventory side: "Quantity of <card> in <box>". */
 export function quantityField(scope: Locator, short: string, box: string): Locator {
   return scope.getByRole("textbox", { name: `Quantity of ${short} in ${box}`, exact: true });

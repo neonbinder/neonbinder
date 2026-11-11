@@ -8,6 +8,7 @@ import { api } from "@/convex/_generated/api";
 //   /testing/seed-dashboard?sale=1          the same, named
 //   /testing/seed-dashboard?syncPending=1   one card waiting for the next sync, per marketplace
 //   /testing/seed-dashboard?syncError=1     one set whose last sync failed (a card held back), per marketplace
+//   /testing/seed-dashboard?syncRecovered=1 that set after a later sync went through (it replaces a failed one: gone from the dashboard)
 //   /testing/seed-dashboard?clear=1         take every seed above back off
 // (combine them: ?sale=1&syncError=1&syncPending=1), then it forwards to
 // `redirect` (default /dashboard; only a path on this site, see
@@ -26,14 +27,27 @@ import { api } from "@/convex/_generated/api";
 // Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutations
 // themselves also fail closed on production Convex (no TESTING_RESET_SECRET there).
 
-/** What the URL asks for. No ask at all is a sale. */
-export function seedsAsked(params: URLSearchParams): { clear: boolean; sale: boolean; syncPending: boolean; syncError: boolean } {
+/** What the URL asks for. No ask at all is a sale. A set cannot be both failed and recovered: the failed one wins. */
+export function seedsAsked(params: URLSearchParams): {
+  clear: boolean;
+  sale: boolean;
+  syncPending: boolean;
+  syncError: boolean;
+  syncRecovered: boolean;
+} {
   const on = (key: string) => params.get(key) === "1";
   const clear = on("clear");
   const syncPending = on("syncPending");
   const syncError = on("syncError");
-  const sale = on("sale") || (!clear && !syncPending && !syncError);
-  return { clear, sale: !clear && sale, syncPending: !clear && syncPending, syncError: !clear && syncError };
+  const syncRecovered = on("syncRecovered") && !syncError;
+  const sale = on("sale") || (!clear && !syncPending && !syncError && !syncRecovered);
+  return {
+    clear,
+    sale: !clear && sale,
+    syncPending: !clear && syncPending,
+    syncError: !clear && syncError,
+    syncRecovered: !clear && syncRecovered,
+  };
 }
 
 /**
@@ -49,10 +63,12 @@ export function seedRedirect(params: URLSearchParams): string {
 
 /** One line per marketplace: what the sync seed wrote there, and why not when it skipped one. */
 export function syncReadout(
-  platforms: ReadonlyArray<{ platform: string; pending: boolean; error: boolean; note?: string }>,
+  platforms: ReadonlyArray<{ platform: string; pending: boolean; error: boolean; recovered?: boolean; note?: string }>,
 ): string[] {
   return platforms.map((p) => {
-    const wrote = [p.pending ? "waiting card" : null, p.error ? "failed set" : null].filter((w) => w !== null);
+    const wrote = [p.pending ? "waiting card" : null, p.error ? "failed set" : null, p.recovered ? "recovered set" : null].filter(
+      (w) => w !== null,
+    );
     return `sync on ${p.platform}: ${wrote.length > 0 ? wrote.join(" + ") : "nothing"}${p.note ? ` (${p.note})` : ""}`;
   });
 }
@@ -95,8 +111,8 @@ function TestingSeedDashboardContent() {
           const r = await seedSale({});
           done.push(`sale ${r.orderNo} on ${r.platform}${r.matched ? "" : " (no card to name)"}`);
         }
-        if (asked.syncPending || asked.syncError) {
-          const r = await seedSync({ pending: asked.syncPending, error: asked.syncError });
+        if (asked.syncPending || asked.syncError || asked.syncRecovered) {
+          const r = await seedSync({ pending: asked.syncPending, error: asked.syncError, recovered: asked.syncRecovered });
           done.push(...syncReadout(r.platforms));
         }
         setStatus(`Done: ${done.join("; ")} — redirecting...`);
