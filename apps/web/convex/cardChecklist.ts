@@ -1029,7 +1029,7 @@ function reaskDeploymentIsArmed(): boolean {
  * Operator reruns passing the returned `continueCursor` until `isDone`.
  *
  * IMPORTANT — do not rerun before the previous call's queue has drained.
- * Enqueued cards only stop looking "eligible" once `processBscTeamEnrichmentQueue`
+ * Enqueued cards only stop looking "eligible" once the `bscTeamPool` lane
  * actually resolves them (one every BSC_TEAM_ENRICH_DELAY_MS, serially), which
  * takes `enqueued * BSC_TEAM_ENRICH_DELAY_MS` in the best case. Rerunning
  * sooner re-scans the same still-pending rows and schedules a second,
@@ -1129,6 +1129,8 @@ export const enqueueBscTeamBackfill = internalMutation({
       answeredNoTeam: v.number(),
       /** BSC answered with a team NB could not link (a hint is kept). */
       answeredHinted: v.number(),
+      /** PR 451 — the publisher checklist answered and named no team. Never re-asked. */
+      checklistNoTeam: v.number(),
       /** The lookup never ran. */
       unchecked: v.number(),
     }),
@@ -1161,6 +1163,7 @@ export const enqueueBscTeamBackfill = internalMutation({
       gaveUp: 0,
       answeredNoTeam: 0,
       answeredHinted: 0,
+      checklistNoTeam: 0,
       unchecked: 0,
     };
     const candidateIds: Id<"cardChecklist">[] = [];
@@ -1181,12 +1184,18 @@ export const enqueueBscTeamBackfill = internalMutation({
       else if (row.teamCheckOutcome === "answered") {
         if (row.bscTeamName) counts.answeredHinted += 1;
         else counts.answeredNoTeam += 1;
-      } else counts.legacyNoOutcome += 1;
+      } else if (row.teamCheckOutcome === "checklist") counts.checklistNoTeam += 1;
+      else counts.legacyNoOutcome += 1;
 
+      // PR 451 (NEO-478): a card the publisher checklist answered is never
+      // re-asked either: BSC was not the source, and the checklist's answer
+      // is the operator's own.
       const needsCheck =
         mode === "unchecked"
           ? !row.teamCheckDoneAt
-          : !!row.teamCheckDoneAt && row.teamCheckOutcome !== "answered";
+          : !!row.teamCheckDoneAt &&
+            row.teamCheckOutcome !== "answered" &&
+            row.teamCheckOutcome !== "checklist";
       if (!needsCheck) continue;
       if (candidateIds.length < batchSize) {
         candidateIds.push(row._id);
@@ -1209,9 +1218,10 @@ export const enqueueBscTeamBackfill = internalMutation({
           });
         }
       }
+      // PR 451 (NEO-487) — onto the one-slot `bscTeamPool` lane.
       await ctx.scheduler.runAfter(
         0,
-        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        internal.bscTeamPool.enqueueBscTeamChecks,
         { cardChecklistIds: candidateIds },
       );
     }
@@ -1220,7 +1230,7 @@ export const enqueueBscTeamBackfill = internalMutation({
     // action file and this one isn't; cross-runtime imports of a directive
     // file are unsupported in Convex's bundler. Keep in sync with
     // BSC_TEAM_ENRICH_DELAY_MS there.
-    const BSC_TEAM_ENRICH_DELAY_MS = 300;
+    const BSC_TEAM_ENRICH_DELAY_MS = 1_700;
     const enqueued = dryRun ? 0 : candidateIds.length;
     console.log(
       JSON.stringify({

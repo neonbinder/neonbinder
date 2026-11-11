@@ -4,6 +4,7 @@
 // "Racing in view, Baseball (first) not in view" is the proof. Read-only.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
+  expectAfterBscSync,
   columnHeading,
   columnOption,
   columnSearch,
@@ -27,10 +28,15 @@ test(
     // settle). Re-expanding Sports before that lands means the late scroll
     // carries the row back to Years, and Racing sits off screen to the left
     // however well its list was scrolled. The Years heading is up in the first
-    // frame, so only a Years row proves the column has settled.
-    await expect(
+    // frame, so only a Years row proves the column has settled. Racing's years
+    // are not seeded: the column syncs them live from BSC on this very click,
+    // so the wait is 7 s plus the seconds "Waiting on BuySportsCards…" is up
+    // (NEO-487), never a flat budget.
+    await expectAfterBscSync(
+      page,
       page.getByRole("listbox", { name: "Years" }).getByRole("option").first(),
-    ).toBeVisible();
+      "Racing's Years sync",
+    );
 
     // Collapse the column, then re-expand it.
     await columnSelection(page, "Sports", "Racing").click();

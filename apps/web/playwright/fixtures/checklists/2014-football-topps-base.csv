@@ -1,0 +1,555 @@
+number,player,team
+1a,Jeremy Kerley,New York Jets
+1b,Drew Brees,New Orleans Saints
+2a,T.Y. Hilton,Indianapolis Colts
+2b,Victor Cruz,New York Giants
+3a,Brandon Carr,Dallas Cowboys
+3b,Rob Gronkowski,New England Patriots
+4a,Kyle Rudolph,Minnesota Vikings
+4b,Peyton Manning,Denver Broncos
+5a,Matthew Stafford,Detroit Lions
+5b,DeSean Jackson,Washington Redskins
+6a,New England Patriots,New England Patriots
+6b,Alshon Jeffery,Chicago Bears
+7a,Jordy Nelson,Green Bay Packers
+7b,Demaryius Thomas,Denver Broncos
+8a,Ryan Broyles,Detroit Lions
+8b,Matthew Stafford,Detroit Lions
+9a,Julius Thomas,Denver Broncos
+9b,Julius Thomas,Denver Broncos
+10a,Coby Fleener,Indianapolis Colts
+10b,Tony Romo,Dallas Cowboys
+11a,A.J. Green,Cincinnati Bengals
+11b,Kiko Alonso,Buffalo Bills
+12a,Emmanuel Sanders,Denver Broncos
+12b,Jay Cutler,Chicago Bears
+13a,Sean Lee,Dallas Cowboys
+13b,Ray Rice,Baltimore Ravens
+14a,Zach Ertz,Philadelphia Eagles
+14b,Kenny Stills,New Orleans Saints
+15a,Mohamed Sanu,Cincinnati Bengals
+15b,Andre Johnson,Houston Texans
+16a,Kenny Vaccaro,New Orleans Saints
+16b,Nick Foles,Philadelphia Eagles
+17a,DeSean Jackson,Washington Redskins
+17b,Colin Kaepernick,San Francisco 49ers
+18a,Antoine Bethea,San Francisco 49ers
+18b,Zac Stacy,St. Louis Rams
+19a,Ace Sanders,Jacksonville Jaguars
+19b,Giovani Bernard,Cincinnati Bengals
+20a,Cameron Jordan,New Orleans Saints
+20b,Ben Roethlisberger,Pittsburgh Steelers
+21a,Nick Foles,Philadelphia Eagles
+21b,Philip Rivers,San Diego Chargers
+22a,Victor Cruz,New York Giants
+22b,Richard Sherman,Seattle Seahawks
+23a,Captain Munnerlyn,Minnesota Vikings
+23b,EJ Manuel,Buffalo Bills
+24a,Charles Tillman,Chicago Bears
+24b,T.Y. Hilton,Indianapolis Colts
+25a,James Jones,Oakland Raiders
+25b,Matt Ryan,Atlanta Falcons
+26a,Brandon Pettigrew,Detroit Lions
+26b,Tamba Hali,Kansas City Chiefs
+27a,Matt Ryan,Atlanta Falcons
+27b,Robert Quinn,St. Louis Rams
+28a,Santonio Holmes,New York Jets
+28b,Vernon Davis,San Francisco 49ers
+29a,Sheldon Richardson,New York Jets
+29b,Ryan Mathews,San Diego Chargers
+30a,Maurice Jones-Drew,Oakland Raiders
+30b,Cam Newton,Carolina Panthers
+31a,Jay Cutler,Chicago Bears
+31b,Antonio Brown,Pittsburgh Steelers
+32a,Russell Wilson,Seattle Seahawks
+32b,Adrian Peterson,Minnesota Vikings
+33a,Peyton Manning,Denver Broncos
+33b,J.J. Watt,Houston Texans
+34a,Frank Gore,San Francisco 49ers
+34b,LeSean McCoy,Philadelphia Eagles
+35a,Johnny Hekker,St. Louis Rams
+35b,NaVorro Bowman,San Francisco 49ers
+36a,Cordarrelle Patterson,Minnesota Vikings
+36b,Ndamukong Suh,Detroit Lions
+37a,Peyton Manning,Denver Broncos
+37b,Tom Brady,New England Patriots
+38a,Kansas City Chiefs,Kansas City Chiefs
+38b,Andrew Luck,Indianapolis Colts
+39a,Pittsburgh Steelers,Pittsburgh Steelers
+39b,Josh Gordon,Cleveland Browns
+40a,Calais Campbell,Arizona Cardinals
+40b,Luke Kuechly,Carolina Panthers
+41a,Tyrann Mathieu,Arizona Cardinals
+41b,Jimmy Graham,New Orleans Saints
+42a,Steven Jackson,Atlanta Falcons
+42b,Calvin Johnson,Detroit Lions
+43a,Jimmy Smith,Baltimore Ravens
+43b,Jason Witten,Dallas Cowboys
+44a,EJ Manuel,Buffalo Bills
+44b,Andy Dalton,Cincinnati Bengals
+45a,Cam Newton,Carolina Panthers
+45b,Patrick Willis,San Francisco 49ers
+46a,Domata Peko,Cincinnati Bengals
+46b,Eddie Lacy,Green Bay Packers
+47a,DeMarco Murray,Dallas Cowboys
+47b,Dez Bryant,Dallas Cowboys
+48a,Dez Bryant,Dallas Cowboys
+48b,Alfred Morris,Washington Redskins
+49a,Jason Witten,Dallas Cowboys
+49b,Keenan Allen,San Diego Chargers
+50a,A.J. Hawk,Green Bay Packers
+50b,Le'Veon Bell,Pittsburgh Steelers
+51a,Adrian Peterson,Minnesota Vikings
+51b,Randall Cobb,Green Bay Packers
+52a,Tom Brady,New England Patriots
+52b,Michael Crabtree,San Francisco 49ers
+53a,Drew Brees,New Orleans Saints
+53b,Tavon Austin,St. Louis Rams
+54a,Pierre Thomas,New Orleans Saints
+54b,Eric Berry,Kansas City Chiefs
+55a,Darren Sproles,Philadelphia Eagles
+55b,Mike Glennon,Tampa Bay Buccaneers
+56a,Marques Colston,New Orleans Saints
+56b,Alex Smith,Kansas City Chiefs
+57a,David Wilson,New York Giants
+57b,Arian Foster,Houston Texans
+58a,Stephen Hill,New York Jets
+58b,Sheldon Richardson,New York Jets
+59a,Matt McGloin,Oakland Raiders
+59b,Patrick Peterson,Arizona Cardinals
+60a,Antonio Gates,San Diego Chargers
+60b,Darrelle Revis,New England Patriots
+61a,Manti Te'o,San Diego Chargers
+61b,Cordarrelle Patterson,Minnesota Vikings
+62a,Michael Crabtree,San Francisco 49ers
+62b,Jamaal Charles,Kansas City Chiefs
+63a,Sidney Rice,Seattle Seahawks
+63b,A.J. Green,Cincinnati Bengals
+64a,Jake Long,St. Louis Rams
+64b,Marshawn Lynch,Seattle Seahawks
+65a,Mike Glennon,Tampa Bay Buccaneers
+65b,Russell Wilson,Seattle Seahawks
+66a,Brian Orakpo,Washington Redskins
+66b,Aaron Rodgers,Green Bay Packers
+67a,J.J. Watt,Houston Texans
+67b,Reggie Bush,Detroit Lions
+68a,Minnesota Vikings,Minnesota Vikings
+68b,Roddy White,Atlanta Falcons
+69a,Andrew Luck,Indianapolis Colts
+69b,Malcolm Smith,Seattle Seahawks
+70,Brian Robison,Minnesota Vikings
+71,Robert Quinn,St. Louis Rams
+72,Perry Riley,Washington Redskins
+73,San Diego Chargers,San Diego Chargers
+74,Chris Givens,St. Louis Rams
+75,Mario Williams,Buffalo Bills
+76,Morris Claiborne,Dallas Cowboys
+77,Ryan Tannehill,Miami Dolphins
+78,Le'Veon Bell,Pittsburgh Steelers
+79,B.J. Raji,Green Bay Packers
+80,Nate Burleson,Cleveland Browns
+81,Donald Brown,San Diego Chargers
+82,Brian Hoyer,Cleveland Browns
+83,Brandon Marshall,Chicago Bears
+84,DeMarcus Ware,Denver Broncos
+85,C.J. Spiller,Buffalo Bills
+86,Joique Bell,Detroit Lions
+87,Darren McFadden,Oakland Raiders
+88,2014 NFLPA Rookie Premiere,
+89,Justin Hunter,Tennessee Titans
+90,Vincent Jackson,Tampa Bay Buccaneers
+91,Anquan Boldin,San Francisco 49ers
+92,Eric Decker,New York Jets
+93,Vontaze Burfict,Cincinnati Bengals
+94,Miami Dolphins,Miami Dolphins
+95,Kyle Long,Chicago Bears
+96,Zac Stacy,St. Louis Rams
+97,Andre Johnson,Houston Texans
+98,Ryan Succop,Kansas City Chiefs
+99,New Orleans Saints,New Orleans Saints
+100,Daryl Richardson,St. Louis Rams
+101,Baltimore Ravens,Baltimore Ravens
+102,Torrey Smith,Baltimore Ravens
+103,Jason Campbell,Cincinnati Bengals
+104,Darrelle Revis,New England Patriots
+105,Tennessee Titans,Tennessee Titans
+106,Golden Tate,Detroit Lions
+107,Joe Haden,Cleveland Browns
+108,Oakland Raiders,Oakland Raiders
+109,Percy Harvin,Seattle Seahawks
+110,Buffalo Bills,Buffalo Bills
+111,Wesley Woodyard,Tennessee Titans
+112,Cameron Wake,Miami Dolphins
+113,Garrett Graham,Houston Texans
+114,Evan Mathis,Philadelphia Eagles
+115,Clay Matthews,Green Bay Packers
+116,Washington Redskins,Washington Redskins
+117,Alex Smith,Kansas City Chiefs
+118,Brooks Reed,Houston Texans
+119,Lavonte David,Tampa Bay Buccaneers
+120,Marvin Jones,Cincinnati Bengals
+121,LeSean McCoy,Philadelphia Eagles
+122,Dominique Rodgers-Cromartie,New York Giants
+123,Michael Vick,New York Jets
+124,Leonard Hankerson,Washington Redskins
+125,Kendall Wright,Tennessee Titans
+126,Geno Atkins,Cincinnati Bengals
+127,Sheldon Richardson,New York Jets
+128,Stephen Gostkowski,New England Patriots
+129,Charles Clay,Miami Dolphins
+130,Philadelphia Eagles,Philadelphia Eagles
+131,DeAngelo Williams,Carolina Panthers
+132,Matt Prater,Denver Broncos
+133,Nick Fairley,Detroit Lions
+134,Theo Riddick,Detroit Lions
+135,Julio Jones,Atlanta Falcons
+136,Jason Pierre-Paul,New York Giants
+137,Stevan Ridley,New England Patriots
+138,Nate Washington,Tennessee Titans
+139,Terrell Suggs,Baltimore Ravens
+140,Steve Smith,Baltimore Ravens
+141,Colin Kaepernick,San Francisco 49ers
+142,Ronnie Hillman,Denver Broncos
+143,Scott Chandler,Buffalo Bills
+144,Shane Vereen,New England Patriots
+145,Doug Martin,Tampa Bay Buccaneers
+146,Carolina Panthers,Carolina Panthers
+147,Kirk Cousins,Washington Redskins
+148,Julian Edelman,New England Patriots
+149,DeAndre Hopkins,Houston Texans
+150,Jairus Byrd,New Orleans Saints
+151,Martellus Bennett,Chicago Bears
+152,Pierre Garcon,Washington Redskins
+153,Jarrett Boykin,Green Bay Packers
+154,Brian Hartline,Miami Dolphins
+155,Heath Miller,Pittsburgh Steelers
+156,Reggie Bush,Detroit Lions
+157,Derrick Coleman,Seattle Seahawks
+158,St. Louis Rams,St. Louis Rams
+159,Greg Olsen,Carolina Panthers
+160,Matt Kalil,Minnesota Vikings
+161,Aaron Dobson,New England Patriots
+162,Troy Polamalu,Pittsburgh Steelers
+163,Joseph Fauria,Detroit Lions
+164,Kenny Stills,New Orleans Saints
+165,Rod Streater,Oakland Raiders
+166,Chicago Bears,Chicago Bears
+167,Randall Cobb,Green Bay Packers
+168,Bobby Rainey,Tampa Bay Buccaneers
+169,Jermaine Gresham,Cincinnati Bengals
+170,Mike Tolbert,Carolina Panthers
+171,Sebastian Janikowski,Oakland Raiders
+172,Aaron Rodgers,Green Bay Packers
+173,Matt Forte,Chicago Bears
+174,Peyton Manning,Denver Broncos
+175,Carson Palmer,Arizona Cardinals
+176,Von Miller,Denver Broncos
+177,Wes Welker,Denver Broncos
+178,Daniel Thomas,Miami Dolphins
+179,Eli Manning,New York Giants
+180,Malcom Floyd,San Diego Chargers
+181,Jamaal Charles,Kansas City Chiefs
+182,Denver Broncos,Denver Broncos
+183,Eddie Lacy,Green Bay Packers
+184,Shea McClellin,Chicago Bears
+185,Dion Jordan,Miami Dolphins
+186,Justin Tucker,Baltimore Ravens
+187,Gerald McCoy,Tampa Bay Buccaneers
+188,Andre Brown,Houston Texans
+189,Bernard Pierce,Baltimore Ravens
+190,Tyler Eifert,Cincinnati Bengals
+191,San Francisco 49ers,San Francisco 49ers
+192,Roddy White,Atlanta Falcons
+193,Indianapolis Colts,Indianapolis Colts
+194,Ted Ginn,Arizona Cardinals
+195,Robert Mathis,Indianapolis Colts
+196,NaVorro Bowman,San Francisco 49ers
+197,Jake Locker,Tennessee Titans
+198,Denarius Moore,Oakland Raiders
+199,Janoris Jenkins,St. Louis Rams
+200,Desmond Trufant,Atlanta Falcons
+201,Calvin Johnson,Detroit Lions
+202,Harrison Smith,Minnesota Vikings
+203,Matt Flynn,Green Bay Packers
+204,Seattle Seahawks,Seattle Seahawks
+205,Greg Hardy,Carolina Panthers
+206,Eric Weddle,San Diego Chargers
+207,Lance Briggs,Chicago Bears
+208,James Laurinaitis,St. Louis Rams
+209,Jason Peters,Philadelphia Eagles
+210,Andre Roberts,Arizona Cardinals
+211,Philip Rivers,San Diego Chargers
+212,New York Giants,New York Giants
+213,Detroit Lions,Detroit Lions
+214,Lardarius Webb,Baltimore Ravens
+215,Brandon LaFell,New England Patriots
+216,DJ Swearinger,Houston Texans
+217,Jared Allen,Chicago Bears
+218,Lamar Miller,Miami Dolphins
+219,Paul Kruger,Cleveland Browns
+220,Josh Gordon,Cleveland Browns
+221,Green Bay Packers,Green Bay Packers
+222,Andre Ellington,Arizona Cardinals
+223,Jordan Cameron,Cleveland Browns
+224,Case Keenum,Houston Texans
+225,Demaryius Thomas,Denver Broncos
+226,Tampa Bay Buccaneers,Tampa Bay Buccaneers
+227,Haloti Ngata,Baltimore Ravens
+228,Vernon Davis,San Francisco 49ers
+229,Alterraun Verner,Tampa Bay Buccaneers
+230,Bobby Wagner,Seattle Seahawks
+231,Eddie Lacy,Green Bay Packers
+232,Sam Bradford,St. Louis Rams
+233,Brent Celek,Philadelphia Eagles
+234,Jimmy Graham,New Orleans Saints
+235,Ben Tate,Cleveland Browns
+236,New York Jets,New York Jets
+237,Matt Schaub,Oakland Raiders
+238,Star Lotulelei,Carolina Panthers
+239,Muhammad Wilkerson,New York Jets
+240,Jacoby Jones,Baltimore Ravens
+241,Eric Fisher,Kansas City Chiefs
+242,Arian Foster,Houston Texans
+243,Alshon Jeffery,Chicago Bears
+244,Nick Perry,Green Bay Packers
+245,Ray Rice,Baltimore Ravens
+246,Ndamukong Suh,Detroit Lions
+247,Robert Griffin III,Washington Redskins
+248,Eric Berry,Kansas City Chiefs
+249,Joel Dreessen,Denver Broncos
+250,Terrelle Pryor,Seattle Seahawks
+251,Cincinnati Bengals,Cincinnati Bengals
+252,BenJarvus Green-Ellis,Cincinnati Bengals
+253,Champ Bailey,New Orleans Saints
+254,Eric Reid,San Francisco 49ers
+255,Marshawn Lynch,Seattle Seahawks
+256,Bruce Irvin,Seattle Seahawks
+257,Super Bowl XLVIII,Seattle Seahawks
+258,Rob Gronkowski,New England Patriots
+259,Richard Sherman,Seattle Seahawks
+260,Mike Wallace,Miami Dolphins
+261,Mike Williams,Buffalo Bills
+262,Patrick Willis,San Francisco 49ers
+263,Dennis Pitta,Baltimore Ravens
+264,Ben Roethlisberger,Pittsburgh Steelers
+265,Fred Jackson,Buffalo Bills
+266,Christian Ponder,Minnesota Vikings
+267,Justin Tuck,Oakland Raiders
+268,Cleveland Browns,Cleveland Browns
+269,Paul Worrilow,Atlanta Falcons
+270,Kiko Alonso,Buffalo Bills
+271,Dallas Cowboys,Dallas Cowboys
+272,Luke Kuechly,Carolina Panthers
+273,Trent Richardson,Indianapolis Colts
+274,Tony Romo,Dallas Cowboys
+275,Patrick Peterson,Arizona Cardinals
+276,Julius Peppers,Green Bay Packers
+277,Chris Johnson,New York Jets
+278,Andy Dalton,Cincinnati Bengals
+279,Bilal Powell,New York Jets
+280,Ryan Mathews,San Diego Chargers
+281,Cecil Shorts,Jacksonville Jaguars
+282,Brian Cushing,Houston Texans
+283,Earl Thomas,Seattle Seahawks
+284,Dwayne Bowe,Kansas City Chiefs
+285,Giovani Bernard,Cincinnati Bengals
+286,Luke Kuechly,Carolina Panthers
+287,Harry Douglas,Atlanta Falcons
+288,Rey Maualuga,Cincinnati Bengals
+289,Greg Jennings,Minnesota Vikings
+290,Antrel Rolle,New York Giants
+291,Jordan Reed,Washington Redskins
+292,Brandon Myers,New York Giants
+293,Antonio Brown,Pittsburgh Steelers
+294,Tamba Hali,Kansas City Chiefs
+295,Tavon Austin,St. Louis Rams
+296,Steven Hauschka,Seattle Seahawks
+297,Carlos Dunlap,Cincinnati Bengals
+298,Arizona Cardinals,Arizona Cardinals
+299,Jacksonville Jaguars,Jacksonville Jaguars
+300,Keenan Allen,San Diego Chargers
+301,Joe Flacco,Baltimore Ravens
+302,Larry Fitzgerald,Arizona Cardinals
+303,Alec Ogletree,St. Louis Rams
+304,Malcolm Smith,Seattle Seahawks
+305,Knowshon Moreno,Miami Dolphins
+306,Montee Ball,Denver Broncos
+307,Miles Austin,Cleveland Browns
+308,Joe Thomas,Cleveland Browns
+309,Ed Dickson,Baltimore Ravens
+310,Chandler Jones,New England Patriots
+311,Charles Johnson,Carolina Panthers
+312,Alfred Morris,Washington Redskins
+313,Danny Amendola,New England Patriots
+314,Atlanta Falcons,Atlanta Falcons
+315,Ryan Kalil,Carolina Panthers
+316,Kenbrell Thompkins,New England Patriots
+317,Sam Shields,Green Bay Packers
+318,Terrance Williams,Dallas Cowboys
+319,Michael Floyd,Arizona Cardinals
+320,Ed Reed,New York Jets
+321,Geno Smith,New York Jets
+322,Ezekiel Ansah,Detroit Lions
+323,Brett Keisel,Pittsburgh Steelers
+324,Louis Vasquez,Denver Broncos
+325,Antonio Cromartie,Arizona Cardinals
+326,Reggie Wayne,Indianapolis Colts
+327,Houston Texans,Houston Texans
+328,Owen Daniels,Baltimore Ravens
+329,Stevie Johnson,San Francisco 49ers
+330,Justin Blackmon,Jacksonville Jaguars
+331,Prince Amukamara,New York Giants
+332,Ha Ha Clinton-Dix,Green Bay Packers
+333,Jordan Lynch,Chicago Bears
+334,Arthur Lynch,Miami Dolphins
+335,Calvin Pryor,New York Jets
+336,Louis Nix,Houston Texans
+337a,Davante Adams,Green Bay Packers
+337b,Davante Adams,Green Bay Packers
+338,Lache Seastrunk,Washington Redskins
+339,Cody Latimer,Denver Broncos
+340a,Eric Ebron,Detroit Lions
+340b,Eric Ebron,Detroit Lions
+341a,De'Anthony Thomas,Kansas City Chiefs
+341b,De'Anthony Thomas,Kansas City Chiefs
+342,Austin Seferian-Jenkins,Tampa Bay Buccaneers
+343,Kyle Van Noy,Detroit Lions
+344,Bruce Ellington,San Francisco 49ers
+345,Jake Matthews,Atlanta Falcons
+346,Connor Shaw,Cleveland Browns
+347,Tom Savage,Houston Texans
+348,Ryan Shazier,Pittsburgh Steelers
+349,Trent Murphy,Washington Redskins
+350,Henry Josey,Philadelphia Eagles
+351,Silas Redd,Washington Redskins
+352a,Robert Herron,Tampa Bay Buccaneers
+352b,Robert Herron,Tampa Bay Buccaneers
+353a,Tajh Boyd,New York Jets
+353b,Tajh Boyd,New York Jets
+354a,Brandin Cooks,New Orleans Saints
+354b,Brandin Cooks,New Orleans Saints
+355a,Odell Beckham Jr.,New York Giants
+355b,Odell Beckham Jr.,New York Giants
+356a,Jadeveon Clowney,Houston Texans
+356b,Jadeveon Clowney,Houston Texans
+356c,Jadeveon Clowney,Houston Texans
+357,Cody Hoffman,Washington Redskins
+358,Taylor Lewan,Tennessee Titans
+359a,Zach Mettenberger,Tennessee Titans
+359b,Zach Mettenberger,Tennessee Titans
+360a,Bishop Sankey,Tennessee Titans
+360b,Bishop Sankey,Tennessee Titans
+361,Will Sutton,Chicago Bears
+362,Marcus Roberson,St. Louis Rams
+363,Dion Bailey,Seattle Seahawks
+364,Logan Thomas,Arizona Cardinals
+365a,Ka'Deem Carey,Chicago Bears
+365b,Ka'Deem Carey,Chicago Bears
+366,Bradley Roby,Denver Broncos
+367a,Teddy Bridgewater,Minnesota Vikings
+367b,Teddy Bridgewater,Minnesota Vikings
+367c,Teddy Bridgewater,Minnesota Vikings
+368a,Stephen Morris,Jacksonville Jaguars
+368b,Stephen Morris,Jacksonville Jaguars
+369,Jason Verrett,San Diego Chargers
+370a,Andre Williams,New York Giants
+370b,Andre Williams,New York Giants
+371a,Jeremy Hill,Cincinnati Bengals
+371b,Jeremy Hill,Cincinnati Bengals
+372,Tyler Gaffney,Carolina Panthers
+373a,Khalil Mack,Oakland Raiders
+373b,Khalil Mack,Oakland Raiders
+374a,Blake Bortles,Jacksonville Jaguars
+374b,Blake Bortles,Jacksonville Jaguars
+374c,Blake Bortles,Jacksonville Jaguars
+375a,Allen Robinson,Jacksonville Jaguars
+375b,Allen Robinson,Jacksonville Jaguars
+376a,Darqueze Dennard,Cincinnati Bengals
+376b,Darqueze Dennard,Cincinnati Bengals
+377,Dri Archer,Pittsburgh Steelers
+378,C.J. Mosley,Baltimore Ravens
+379,Devonta Freeman,Atlanta Falcons
+380,Loucheiz Purifoy,Indianapolis Colts
+381,A.J. McCarron,Cincinnati Bengals
+382,Xavier Grimble,New York Giants
+383a,Carlos Hyde,San Francisco 49ers
+383b,Carlos Hyde,San Francisco 49ers
+384,Terrance West,Cleveland Browns
+385,David Fales,Chicago Bears
+386,Jeff Janis,Green Bay Packers
+387a,Mike Evans,Tampa Bay Buccaneers
+387b,Mike Evans,Tampa Bay Buccaneers
+388,Kevin Norwood,Seattle Seahawks
+389a,Michael Sam,St. Louis Rams
+389b,Michael Sam,St. Louis Rams
+390,Deone Bucannon,Arizona Cardinals
+391,Kony Ealy,Carolina Panthers
+392,Storm Johnson,Jacksonville Jaguars
+393,Jeff Mathews,Atlanta Falcons
+394a,Jarvis Landry,Miami Dolphins
+394b,Jarvis Landry,Miami Dolphins
+395,Timmy Jernigan,Baltimore Ravens
+396,Shaquelle Evans,New York Jets
+397a,Devin Street,Dallas Cowboys
+397b,Devin Street,Dallas Cowboys
+398,LaDarius Perkins,Green Bay Packers
+399a,C.J. Fiedorowicz,Houston Texans
+399b,C.J. Fiedorowicz,Houston Texans
+400,Ra'Shede Hageman,Atlanta Falcons
+401a,Paul Richardson,Seattle Seahawks
+401b,Paul Richardson,Seattle Seahawks
+402,Marion Grice,San Diego Chargers
+403,Pierre Desir,Cleveland Browns
+404,Scott Crichton,Minnesota Vikings
+405,George Atkinson III,Oakland Raiders
+406,Zack Martin,Dallas Cowboys
+407,Josh Huff,Philadelphia Eagles
+408a,Jordan Matthews,Philadelphia Eagles
+408b,Jordan Matthews,Philadelphia Eagles
+409a,Kelvin Benjamin,Carolina Panthers
+409b,Kelvin Benjamin,Carolina Panthers
+410,Damien Williams,Miami Dolphins
+411,Mike Davis,Oakland Raiders
+412,Cyrus Kouandjio,Buffalo Bills
+413,Anthony Barr,Minnesota Vikings
+414,Aaron Murray,Kansas City Chiefs
+415,Jalen Saunders,New York Jets
+416,Stephon Tuitt,Pittsburgh Steelers
+417a,Greg Robinson,St. Louis Rams
+417b,Greg Robinson,St. Louis Rams
+418,Yawin Smallwood,Atlanta Falcons
+419a,Martavis Bryant,Pittsburgh Steelers
+419b,Martavis Bryant,Pittsburgh Steelers
+420,Antone Exum,Minnesota Vikings
+421,Charles Sims,Tampa Bay Buccaneers
+422a,Tre Mason,St. Louis Rams
+422b,Tre Mason,St. Louis Rams
+423,Jared Abbrederis,Green Bay Packers
+424a,Aaron Donald,St. Louis Rams
+424b,Aaron Donald,St. Louis Rams
+425,Caraun Reid,Detroit Lions
+426,Justin Gilbert,Cleveland Browns
+427,Donte Moncrief,Indianapolis Colts
+428a,Troy Niklas,Arizona Cardinals
+428b,Troy Niklas,Arizona Cardinals
+429a,Johnny Manziel,Cleveland Browns
+429b,Johnny Manziel,Cleveland Browns
+429c,Johnny Manziel,Cleveland Browns
+430,Kareem Martin,Arizona Cardinals
+431a,Marqise Lee,Jacksonville Jaguars
+431b,Marqise Lee,Jacksonville Jaguars
+432a,Jimmy Garoppolo,New England Patriots
+432b,Jimmy Garoppolo,New England Patriots
+433,Brandon Coleman,New Orleans Saints
+434a,Sammy Watkins,Buffalo Bills
+434b,Sammy Watkins,Buffalo Bills
+434c,Sammy Watkins,Buffalo Bills
+435,Craig Loston,Jacksonville Jaguars
+436,Aaron Colvin,Jacksonville Jaguars
+437,Ahmad Dixon,Dallas Cowboys
+438a,Derek Carr,Oakland Raiders
+438b,Derek Carr,Oakland Raiders
+439a,Jace Amaro,New York Jets
+439b,Jace Amaro,New York Jets
+440,Ryan Grant,Washington Redskins
+442,Jordan Lynch,Chicago Bears

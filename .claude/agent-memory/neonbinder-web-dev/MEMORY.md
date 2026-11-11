@@ -190,3 +190,8 @@
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
 - [canvas.toBlob waits ~1 s in the app page](reference_canvas_toblob_waits_a_second_in_the_app_page.md) — each encode ~1000 ms under Playwright Chromium (idle deadline) after a write; encode at pick time, concurrently
 - [vitest spies handle returned promises](reference_vitest_spies_handle_returned_promises.md) — a vi.fn rejection is never unhandled; an unhandled-rejection test through a mock can't go red
+- [axe radiogroup may wrap content](reference_axe_radiogroup_may_wrap_content.md) — no requiredOwned in axe 4.13; wrap the card in the radiogroup, keep the li plain
+- [Leak assertion matches the epoch](reference_leak_assertion_matches_the_epoch.md) — bscSeller.telemetry "555" check trips on the epoch-ms `at`; rerun before blaming
+- [Real-app screenshots via suite helpers](reference_real_app_screenshots_reuse_the_suite_helpers.md) — scratch config + {"type":"module"}; emulateMedia per mode; force-click an aria-disabled NeonButton
+- [Sticky header in a padded scroller](reference_sticky_header_in_a_padded_scroller.md) — sticks at the padding edge; thead bg does not paint; sticky+bg per th, border-separate, overflow-clip
+- [Wait line mounting breaks test mocks](reference_wait_line_mounting_breaks_test_mocks.md) — useQuery/watchQuery stubs, one-status pins, waitKey toEqual; 50 rows per key

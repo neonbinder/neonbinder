@@ -75,6 +75,8 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
 import {
   answerPlayerAsNew,
   advanceToSave,
@@ -120,10 +122,30 @@ const GIBSON = "Bob Gibson";
 const MORGAN = "Joe Morgan";
 const BROWNS = "St. Louis Browns";
 /**
+ * Each insert's captured publisher's checklist (NEO-478/482): BSC's own per-card
+ * answers, uploaded before the Sync, so no fetch here asks BSC for a card one by
+ * one. The whole flow's fetches read the same teams and names they always did;
+ * the files are registered in SET-REGISTRY.md. The Silk Collection's 201 cards are
+ * all numbered `NNO`, which a checklist row keeps and pairs by player, one card to
+ * one row (rule 7's exactly-one guard on the only key an unnumbered card has). Every
+ * one of its players is on one card only, so each pairs and the line reads
+ * "Teams from your checklist: 201 of 201 cards" (N is read off the file).
+ */
+const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
+  [FIRST]: CHECKLISTS.teamBonus2010,
+  [SECOND]: CHECKLISTS.silkCollection2010,
+  [THIRD]: CHECKLISTS.peakPerformance2010,
+  [FOURTH]: CHECKLISTS.turkeyRed2010,
+  [SIXTH]: CHECKLISTS.peakPerformanceRelics2010,
+  [PRIOR]: CHECKLISTS.careerBestJumboJerseys2009,
+};
+/**
  * GUIDE hard rule 3, the exception "a step that directly drives a live
  * BSC/SportLots round trip on data that is not pre-synced": a fetch of an
  * insert never fetched before, and the column's first sync. Only those waits
  * carry it; the wizard opening afterwards is our own backend at the 7 s default.
+ * The fetch itself (the bulk checklist, one BSC round trip) is waited on with
+ * `expectAfterMarketplace` (NEO-487): 7 s plus the seconds BSC is visibly holding it.
  */
 const LIVE_BSC_FETCH = 60_000;
 
@@ -295,13 +317,18 @@ async function fetchInsertToWizard(
   await columnOption(page, "Inserts", name).click();
   // The empty-checklist assert makes the saved cards below THIS fetch's (fresh-only guard).
   await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+  const checklist = CHECKLIST_OF[name];
+  const published = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 
   // A SportLots set paired with the insert opens "Match Cards"; one source takes
   // the one-marketplace path. NEO-287: paused, the dialog is the bug.
   const matchCards = page.getByText(/Match Cards/).first();
   const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-  await expect(matchCards.or(kept).or(wizard).first()).toBeVisible({ timeout: LIVE_BSC_FETCH });
+  await expectAfterMarketplace(page, matchCards.or(kept).or(wizard).first(), {
+    platform: "BuySportsCards",
+    what: `${name}'s fetch landing`,
+  });
   if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
   if (await matchCards.isVisible()) {
     const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
@@ -311,6 +338,7 @@ async function fetchInsertToWizard(
   }
   // Our own backend after the live fetch: the 7 s default.
   await expect(wizard, `${name}'s sync opens Tidy up this set`).toBeVisible();
+  if (published !== undefined) await expectTeamsFromChecklist(page, published);
 }
 
 test(
@@ -518,6 +546,16 @@ test(
     await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
     await fetchInsertToWizard(page, env, PRIOR, { reconcile: true, target: TARGET_2009, inserts: [PRIOR] });
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Two Chris Carpenters are on file (b. 1975, Cardinals 2004-2012; b. 1985, Cubs 2011 and Red Sox
+    // 2012) and Career Best has two of his cards, both "St. Louis Cardinals" in the uploaded file.
+    // The checklist's team reaches the name gate with the card, and only the b. 1975 Carpenter was on
+    // that club in 2009, so the name is answered for the operator and no "Which Chris Carpenter is
+    // this?" step is asked. A card left teamless (a row the file did not match, asked of BSC and
+    // not answered) would put both on the table, so this is where that shows, by name.
+    await expect(
+      wizard.getByRole("heading", { level: 3, name: /^Which Chris Carpenter is this\?$/ }),
+      "Chris Carpenter's pick step is open: the Cardinals on his Career Best cards did not reach the name gate",
+    ).toHaveCount(0);
     await walkToPlayerRow(page);
     await addAsFootballPlayer(page, WEEKS, "Entity review wizard, a 2009 name moved to Football");
     await skipEverythingLeft(page);

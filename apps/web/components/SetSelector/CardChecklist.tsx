@@ -54,7 +54,11 @@ import ChecklistSourceFilter, {
 import CrossListingImportModal from "./CrossListingImportModal";
 import CardAttentionWalker from "./CardAttentionWalker";
 import SkippedNamesPanel from "./SkippedNamesPanel";
-import { needsAttention } from "./card-attention";
+import {
+  isAwaitingTeamLookup,
+  needsAttention,
+  teamLookupStatusLine,
+} from "./card-attention";
 import ChecklistSearch, { searchEmptyText } from "./ChecklistSearch";
 import {
   cardSearchHaystack,
@@ -76,6 +80,7 @@ import { pausedSyncMessage } from "../../convex/selectorSyncStore";
 import { isKnownSite, sidesOfSites } from "../../convex/lib/marketplacePause";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
+import { useThrottledValue } from "@/src/hooks/useThrottledValue";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 import { streamedBatchSettled } from "@/lib/cards/streamed-batch";
 import {
@@ -98,6 +103,20 @@ import ParallelBuildPanel, {
   type ParallelBuildRole,
   type ParallelBuildRunner,
 } from "./ParallelBuildPanel";
+import PublishedChecklistDialog, {
+  PublishedChecklistChip,
+  checklistTeamsLine,
+  type PublishedChecklist,
+} from "./PublishedChecklistDialog";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
+import {
+  applyChecklistChoice,
+  checklistConflictIndexes,
+  type ChecklistChoice,
+  type ChecklistConflict,
+  type TeamLookupOutcome,
+} from "./checklist-conflict";
 
 type CardChecklistProps = {
   variantId: GenericId<"selectorOptions">;
@@ -169,7 +188,15 @@ type FetchPreview = {
      * NEO-335 — BSC's fetch-time team lookup outcome, carried from the pairing
      * so the commit can tell "BSC answered: no team" from "never asked".
      */
-    teamLookup?: "answered" | "failed";
+    teamLookup?: TeamLookupOutcome;
+    /**
+     * NEO-478 — the operator's published checklist and the marketplace
+     * disagree about this card's players or teams. Held while the preview is
+     * (the wizard's "Checklist says otherwise" step asks about it); the
+     * answers ride in `checklistChoices` and `runCommit` applies them, so the
+     * commit never sees a card still carrying one.
+     */
+    checklistConflict?: ChecklistConflict;
     /**
      * NEO-335 — BSC's unsplit team value, carried from the pairing so the
      * commit's "Listed as:" hint is what BSC listed (`PairingCard.rawTeamName`).
@@ -218,6 +245,13 @@ type FetchPreview = {
    * answers are never stored anywhere else.
    */
   teamAnswers?: Array<TeamAnswer | undefined>;
+  /**
+   * NEO-478 — the wizard's "Checklist says otherwise" answers, POSITIONALLY
+   * ALIGNED with `cards` (undefined = no disagreement, or unanswered). Client
+   * state only: `runCommit` applies each one to its card
+   * (`applyChecklistChoice`) and they are forgotten with the preview.
+   */
+  checklistChoices?: Array<ChecklistChoice | undefined>;
   /**
    * NEO-335 — no names to review, but some cards would save with no team or
    * (Phase 2 D7) some new cards' titles need a look, so the wizard opens past
@@ -591,6 +625,14 @@ const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
  * short enough that the announcement still lands with the change.
  */
 const ATTENTION_ANNOUNCE_DEBOUNCE_MS = 1500;
+
+/**
+ * PR 451 (NEO-487) — the "Still looking up teams" line moves its number at
+ * most this often. The background lookup answers cards one after another, a
+ * second or two apart; read out on every step, the line would talk over
+ * everything else on the page.
+ */
+const TEAM_LOOKUP_LINE_INTERVAL_MS = 5000;
 
 /** NEO-343: matches no term; never reached (every card has a haystack). */
 const NO_HAYSTACK: CardSearchHaystack = {
@@ -1089,6 +1131,56 @@ export default function CardChecklist({
     null,
   );
   /**
+   * NEO-487 — this run's key for `marketplaceWaits`, minted per Sync press
+   * and passed to the fetch, so "Waiting on BuySportsCards…" can show while
+   * the fetch is held up by a BSC call. Never in the URL: it names a call,
+   * not a place.
+   */
+  const [syncWaitKey, setSyncWaitKey] = useState<string | null>(null);
+  /**
+   * NEO-487 — the same for a parallel row's own "Build from …": the button
+   * hands its key over while the build is in flight, null once it lands.
+   */
+  const [buildWaitKey, setBuildWaitKey] = useState<string | null>(null);
+  /**
+   * NEO-478 — the publisher's checklist the operator added for THIS leaf:
+   * in-view state (never the URL, never stored). Keyed on the leaf, so
+   * moving to another row drops it, as the file itself is never kept.
+   */
+  const [publishedChecklist, setPublishedChecklist] = useState<{
+    variantId: Id<"selectorOptions">;
+    checklist: PublishedChecklist;
+  } | null>(null);
+  if (publishedChecklist !== null && publishedChecklist.variantId !== variantId) {
+    setPublishedChecklist(null);
+  }
+  const activePublished =
+    publishedChecklist?.variantId === variantId ? publishedChecklist.checklist : null;
+  const [publishedDialogOpen, setPublishedDialogOpen] = useState(false);
+  /** The button that opened the dialog, so focus goes back to it (or to the chip's Remove). */
+  const publishedOpenerRef = useRef<HTMLButtonElement>(null);
+  /**
+   * The chip's Remove. Using a checklist takes "Add the publisher's
+   * checklist" away (the chip is the handle while one is attached), so focus
+   * lands here instead of on a button that is gone.
+   */
+  const publishedRemoveRef = useRef<HTMLButtonElement>(null);
+  /**
+   * The chip's own text, a button that reopens the dialog on the checklist in
+   * use. Opened from there, the dialog hands focus back to it on close.
+   */
+  const publishedChipRef = useRef<HTMLButtonElement>(null);
+  /** Where the dialog was opened from, read when it closes. */
+  const publishedRestoreRef = useRef<HTMLElement | null>(null);
+  /** The set's year, so the dialog reads a "1995 …" heading line as a title. */
+  const setYearValue = ancestorChain?.find((c) => c.level === "year")?.value ?? null;
+  /**
+   * NEO-478 — "Teams from your checklist: N of M cards", for this run. A ref
+   * like `soloKeptRef`: every line the run says from the fetch to the save
+   * carries it.
+   */
+  const checklistTeamsRef = useRef<string | null>(null);
+  /**
    * a11y (NEO-255) — a one-sided run has ended and nothing took the screen, so
    * put focus back on the Sync button.
    *
@@ -1204,6 +1296,23 @@ export default function CardChecklist({
   // see no visible feedback after submit. Cleared once `cards` length has
   // grown.
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  /**
+   * NEO-482 — was this checklist EMPTY when it first loaded in this sitting?
+   * Then the list mounts only when a save (or the first Add Card) fills it,
+   * and it opens at its TOP: the operator has just saved the set and reads it
+   * from #1. Opening at the end (`initialTopMostItemIndex`) is for coming
+   * BACK to a checklist that already had cards. Recorded once per leaf, on
+   * the render its cards first arrive (render-phase, the previous-render
+   * pattern), so moving to another leaf and back reads that leaf afresh.
+   */
+  const [firstLoad, setFirstLoad] = useState<{
+    variantId: Id<"selectorOptions">;
+    empty: boolean;
+  } | null>(null);
+  if (cards !== undefined && firstLoad?.variantId !== variantId) {
+    setFirstLoad({ variantId, empty: cards.length === 0 });
+  }
+  const filledThisSitting = firstLoad?.variantId === variantId && firstLoad.empty;
   const newCardIdRef = useRef<Id<"cardChecklist"> | null>(null);
   const prevCardCountRef = useRef(0);
   // NEO-195: true from the moment a sync starts until the action resolves.
@@ -1490,6 +1599,7 @@ export default function CardChecklist({
   const handleSync = async () => {
     soloKeptRef.current = null;
     teamsLateRef.current = false;
+    checklistTeamsRef.current = null;
     // NEO-96: the sport row every downstream step keys on. It used to ride
     // back on the fetch action's return; the client walks the same ancestor
     // chain for its own pickers, so reading it here removes a third copy of
@@ -1567,10 +1677,26 @@ export default function CardChecklist({
     // NEO-341: a new run has reported nothing yet.
     setSettleTarget(null);
     try {
-      const result = await fetchChecklist({ selectorOptionId: variantId });
+      // NEO-487 — a fresh key per run, so the wait line reads this run's
+      // BSC calls and nothing older.
+      const waitKey = mintWaitKey();
+      setSyncWaitKey(waitKey);
+      const result = await fetchChecklist({
+        selectorOptionId: variantId,
+        waitKey,
+        // NEO-478 — the publisher's checklist, when the operator added one:
+        // its rows settle players and teams by card number, and BSC is asked
+        // only about the cards it has no row for.
+        ...(activePublished ? { publishedChecklist: { rows: activePublished.rows } } : {}),
+      });
       // Cancelled while the fetch was still running: leave the operator's own
       // message standing and drop the result on the floor.
       if (abandoned()) return;
+      checklistTeamsRef.current = result.success && result.checklistTeams
+        ? checklistTeamsLine(result.checklistTeams.matched, result.checklistTeams.total)
+        : null;
+      const withTeamsLine = (text: string) =>
+        checklistTeamsRef.current ? `${text} ${checklistTeamsRef.current}` : text;
       if (!result.success) {
         setPairingPhase("closed");
         setSoloFetch(null);
@@ -1684,7 +1810,7 @@ export default function CardChecklist({
         if (needsOperator) {
           setSoloFetch(null);
           setPairingPhase("review");
-          setSyncMessage(result.message);
+          setSyncMessage(withTeamsLine(result.message));
           return;
         }
         const cards = candidatesToPairingCards(live.cards);
@@ -1693,10 +1819,8 @@ export default function CardChecklist({
         // notice can keep this sentence in front of it: with no dialog, this
         // line is the only place the operator (and the E2E flow) learns how
         // many cards the fetch kept, and the wizard opens within a second.
-        soloKeptRef.current = soloKeptMessage(
-          serverSides[0],
-          cards.length,
-          pausedAttached,
+        soloKeptRef.current = withTeamsLine(
+          soloKeptMessage(serverSides[0], cards.length, pausedAttached),
         );
         setSyncMessage(
           [soloKeptRef.current, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]
@@ -1747,7 +1871,7 @@ export default function CardChecklist({
        * the fetch itself is over. Cancel, or a new Sync, supersedes the run,
        * and `abandoned()` then drops whatever this wait comes back with.
        */
-      setSyncMessage(result.message);
+      setSyncMessage(withTeamsLine(result.message));
       void awaitStreamedBatch(fence, previousBatchId, abandoned).then(
         (settled) => {
           if (abandoned()) return;
@@ -1758,7 +1882,7 @@ export default function CardChecklist({
           }
           if (!settled.teamsLate) return;
           teamsLateRef.current = true;
-          setSyncMessage(`${result.message} ${TEAMS_LATE_NOTICE}`);
+          setSyncMessage(`${withTeamsLine(result.message)} ${TEAMS_LATE_NOTICE}`);
           setSettleTarget((t) => (t ? { ...t, gaveUp: true } : t));
         },
       );
@@ -2017,7 +2141,12 @@ export default function CardChecklist({
       !!variantRow &&
       !leafAutographFormat &&
       autographCardIndexes(preview.cards, existingIndexes).length > 0;
-    if (noNames && !askTeams && !askTitles && !askAutograph) {
+    // NEO-478 — and any card the operator's published checklist disagrees
+    // with ALWAYS opens the wizard: its "Checklist says otherwise" step is
+    // the only place that disagreement is settled (rule 7: never silently),
+    // and the commit refuses a card still carrying one.
+    const askChecklist = checklistConflictIndexes(preview.cards).length > 0;
+    if (noNames && !askTeams && !askTitles && !askAutograph && !askChecklist) {
       // No wizard on this path — nothing to hold the preview for, and nothing
       // to render `commitError`. `runCommit` has already put the failure in the
       // sync banner (`Commit failed: …`), which is the only place an operator
@@ -2090,7 +2219,14 @@ export default function CardChecklist({
         //
         // NEO-335: and the wizard's team answer, on the same terms — only on a
         // card the operator (or a pre-fill they saw) answered.
-        cards: preview.cards.map((card, i) => {
+        cards: preview.cards.map((incoming, i) => {
+          // NEO-478: the operator's pick between their published checklist
+          // and the marketplace goes on first — every later answer was made
+          // against the card as it reads after that pick. A card still
+          // carrying a disagreement is sent as it is; the commit refuses it,
+          // and the wizard's step holds Save until there is none.
+          const choice = preview.checklistChoices?.[i];
+          const card = choice ? applyChecklistChoice(incoming, choice) : incoming;
           const decision = preview.decisions[i];
           const reviewed = decision?.applyFields?.length
             ? {
@@ -2207,6 +2343,14 @@ export default function CardChecklist({
         notes.push(TEAMS_LATE_NOTICE);
         teamsLateRef.current = false;
       }
+      // NEO-478 — the publisher's checklist did its job on this run: say so
+      // on the line the cards land with too. A run that needs no question
+      // commits straight away, and this banner replaces the sync line that
+      // carried it first, so without this the operator never sees it.
+      // Reset by the next sync, never by this one.
+      if (checklistTeamsRef.current) {
+        notes.push(`${checklistTeamsRef.current}.`);
+      }
       const committedText = [
         discardError
           ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
@@ -2316,6 +2460,21 @@ export default function CardChecklist({
       return { ...prev, listingShortName: value };
     });
   }, []);
+
+  /**
+   * NEO-478 — the wizard's "Checklist says otherwise" answers, held on the
+   * preview until commit. Same-content reports return the same preview.
+   */
+  const handleChecklistChoices = useCallback(
+    (choices: Array<ChecklistChoice | undefined>) => {
+      setPendingPreview((prev) => {
+        if (!prev) return prev;
+        if (JSON.stringify(prev.checklistChoices ?? []) === JSON.stringify(choices)) return prev;
+        return { ...prev, checklistChoices: choices };
+      });
+    },
+    [],
+  );
 
   /**
    * NEO-345 — the wizard's "Autographed cards" answer, held on the preview
@@ -2485,6 +2644,27 @@ export default function CardChecklist({
     attentionCount,
     ATTENTION_ANNOUNCE_DEBOUNCE_MS,
   );
+
+  /**
+   * PR 451 (NEO-487) — cards still waiting on the background team lookup
+   * (`isAwaitingTeamLookup`, the walker's own count), off the same live
+   * subscription. They are nobody's to answer yet, so the attention count
+   * leaves them out, and a set whose only open cards are queued would show
+   * nothing at all. The status line below is their handle. Read from the
+   * stored rows only: no lookup is started or hurried by showing it.
+   */
+  const awaitingLookupCount = useMemo(
+    () => (cards ?? []).filter(isAwaitingTeamLookup).length,
+    [cards],
+  );
+  const throttledLookupCount = useThrottledValue(
+    awaitingLookupCount,
+    TEAM_LOOKUP_LINE_INTERVAL_MS,
+  );
+  // The number moves at the throttle's pace, but the line leaves the moment
+  // the last card is answered (or handed to the operator, when the pill takes
+  // over), so the two are never on screen saying different things for long.
+  const shownLookupCount = awaitingLookupCount === 0 ? 0 : throttledLookupCount;
 
   // NEO-312 — see `parallelParkRef`. Re-checked whenever the card list or the
   // notice moves, which is when the pressed button can disappear.
@@ -3022,8 +3202,30 @@ export default function CardChecklist({
         runner={parallelRun}
         buttonRef={syncButtonRef}
         onResult={handleParallelBuildResult}
+        onWaitKey={setBuildWaitKey}
       />
     ) : null;
+  /**
+   * NEO-478 — "Add the publisher's checklist", beside Sync wherever Sync is.
+   * Purple (tertiary): a supporting input to the sync, not the sync itself.
+   * Not while a checklist is attached: the chip says so, and its Remove
+   * brings this back.
+   */
+  const publishedChecklistButton = activePublished ? null : (
+    <NeonButton
+      ref={publishedOpenerRef}
+      variant="tertiary"
+      outline
+      onClick={() => {
+        publishedRestoreRef.current = publishedOpenerRef.current;
+        setPublishedDialogOpen(true);
+      }}
+      disabled={busy}
+      aria-haspopup="dialog"
+    >
+      Add the publisher&apos;s checklist
+    </NeonButton>
+  );
   const fetchLabel = syncing
     ? "Fetching..."
     : committing
@@ -3076,19 +3278,42 @@ export default function CardChecklist({
                 (parallelBuild?.role === "parallel" ? (
                   parallelButton(false)
                 ) : (
-                  <NeonButton
-                    ref={syncButtonRef}
-                    variant="secondary"
-                    onClick={handleSync}
-                    disabled={busy}
-                    aria-label="Sync card checklist"
-                  >
-                    {fetchLabel}
-                  </NeonButton>
+                  <>
+                    <NeonButton
+                      ref={syncButtonRef}
+                      variant="secondary"
+                      onClick={handleSync}
+                      disabled={busy}
+                      aria-label="Sync card checklist"
+                    >
+                      {fetchLabel}
+                    </NeonButton>
+                    {publishedChecklistButton}
+                  </>
                 ))}
             </div>
           )}
         </div>
+        {/* NEO-478 — the publisher's checklist this sync will use. */}
+        {activePublished && (
+          <PublishedChecklistChip
+            rowCount={activePublished.rows.length}
+            skippedCount={activePublished.skippedCount}
+            disabled={busy}
+            openRef={publishedChipRef}
+            onOpen={() => {
+              // Reopens on what was pasted; "Use this checklist" replaces it.
+              publishedRestoreRef.current = publishedChipRef.current;
+              setPublishedDialogOpen(true);
+            }}
+            removeRef={publishedRemoveRef}
+            onRemove={() => {
+              setPublishedChecklist(null);
+              // The chip and its button go; land on the button that adds one.
+              requestAnimationFrame(() => publishedOpenerRef.current?.focus());
+            }}
+          />
+        )}
 
         {/* NEO-345 — a stored leaf whose AU cards are still marked not
             autographed, because nobody has said how this leaf's autographs
@@ -3318,6 +3543,31 @@ export default function CardChecklist({
             the Cancel button is not re-announced with every count update.
             Following the project's live-region pattern, the role carries the
             politeness and no explicit `aria-live` is set. */}
+        {/* NEO-487 — "Waiting on BuySportsCards… 12s" while this run's
+            fetch is held up by a BSC call. Not while the pairing dialog is
+            open: it carries its own, and two copies of one sentence on a
+            page is one too many for a reader and a text locator alike.
+            Always mounted (idle while the dialog is open), so its status
+            region exists before it speaks. */}
+        <WaitingOnMarketplaceRun
+          runKey={syncWaitKey}
+          active={syncing && pairingPhase !== "review"}
+          marketplace="BuySportsCards"
+          className="mb-3"
+        />
+        {/* NEO-487 — a parallel row's own "Build from …". This component
+            outlives a move to another row, so a single build started on a
+            parallel can still be in flight when the operator saves an
+            insert and a run of parallels starts. That run's panel (here or
+            in the Base section) carries its own wait line, so this one
+            stands down while a run is going: one wait line on the page,
+            never two copies of the sentence. */}
+        <WaitingOnMarketplaceRun
+          runKey={buildWaitKey}
+          active={buildWaitKey !== null && !parallelRun.active}
+          marketplace="BuySportsCards"
+          className="mb-3"
+        />
         {soloFetch && (
           // a11y (WCAG 2.4.3): the focus park for the START of a dialog-less
           // run — `tabIndex={-1}` so it can receive focus programmatically
@@ -3430,7 +3680,18 @@ export default function CardChecklist({
             save is what started it and that is where the operator is looking.
             The panel owns its own live line; see ParallelBuildPanel. */}
         {showParallelPanel && run && (
-          <ParallelBuildPanel run={run} onStop={parallelRun.stop} />
+          <ParallelBuildPanel
+            run={run}
+            onStop={parallelRun.stop}
+            waitingSlot={
+              <WaitingOnMarketplaceRun
+                runKey={run.waitKey ?? null}
+                active={parallelRun.active}
+                marketplace="BuySportsCards"
+                className="mt-2"
+              />
+            }
+          />
         )}
         {heldByOwnBuild &&
           parallelBuild?.role === "parallel" &&
@@ -3536,6 +3797,40 @@ export default function CardChecklist({
             : ""}
         </p>
 
+        {/* PR 451 (NEO-487) — "Still looking up teams for 3 cards. Nothing
+            for you to do yet." while any of this set's cards wait on the
+            background team lookup. Without it, a set whose only open cards
+            are queued shows no sign the lookups are still running: the
+            walker's done line says it, but the walker opens only from the
+            pill above, which is absent exactly then.
+
+            Shape follows `WaitingOnMarketplace`, its sibling a few lines up:
+            the role="status" paragraph is ALWAYS mounted (a live region that
+            appears with its text is often not read) and empty while idle, so
+            it takes no height; the layout sits on an inner wrapper rendered
+            only while there is something to say. The dot is blue rather than
+            the wait line's yellow: that one is a run the operator started and
+            is watching, this one is background work they can walk away from.
+
+            The number moves at most every 5 s (`useThrottledValue`) so a
+            screen reader is not read every card the lookup answers; the line
+            leaves at once when the last one is answered or given up on, and
+            a given-up card turns up in the pill. Blank while the walker is
+            open: its done line carries the same sentence, and one copy on
+            the page is enough for a reader and a text locator alike. Nothing
+            here names a marketplace. */}
+        <p role="status" data-team-lookup-status="">
+          {shownLookupCount > 0 && !walkerOpenedByHand && (
+            <span className="mb-3 flex items-center gap-2 text-sm text-ink-2">
+              <span
+                aria-hidden="true"
+                className="h-2 w-2 shrink-0 rounded-full bg-neon-blue-text shadow-[0_0_8px_rgb(0_194_255/var(--glow))] motion-safe:animate-pulse"
+              />
+              <span>{teamLookupStatusLine(shownLookupCount)}</span>
+            </span>
+          )}
+        </p>
+
         {/* NEO-343 — search, directly above the list it narrows. Shown once
             there is a list to search (and kept while a query is typed, so the
             field never vanishes from under the cursor). */}
@@ -3558,14 +3853,17 @@ export default function CardChecklist({
             {parallelBuild?.role === "parallel" ? (
               parallelButton(true)
             ) : (
-              <NeonButton
-                ref={syncButtonRef}
-                onClick={handleSync}
-                disabled={busy}
-                aria-label="Sync card checklist"
-              >
-                {fetchLabel}
-              </NeonButton>
+              <div className="flex flex-wrap justify-center gap-2">
+                <NeonButton
+                  ref={syncButtonRef}
+                  onClick={handleSync}
+                  disabled={busy}
+                  aria-label="Sync card checklist"
+                >
+                  {fetchLabel}
+                </NeonButton>
+                {publishedChecklistButton}
+              </div>
             )}
           </div>
         ) : (
@@ -3645,8 +3943,11 @@ export default function CardChecklist({
             // NEO-343: a search result opens at its FIRST match instead — the
             // list remounts when a query that found nothing starts finding
             // cards again.
+            //
+            // NEO-482: and a checklist that was empty when it loaded opens at
+            // #1 — its first save just filled it (see `filledThisSitting`).
             initialTopMostItemIndex={
-              searching || displayRows.length === 0
+              searching || filledThisSitting || displayRows.length === 0
                 ? 0
                 : displayRows.length - 1
             }
@@ -3762,11 +4063,41 @@ export default function CardChecklist({
           // run's whole batch with every team lookup landed.
           streamSettled={streamSettled}
           teamsLateNotice={TEAMS_LATE_NOTICE}
+          // NEO-487 — the dialog covers the page's own wait line while it is
+          // open, so it carries one of its own.
+          waitingSlot={
+            <WaitingOnMarketplaceRun
+              runKey={syncWaitKey}
+              active={syncing}
+              marketplace="BuySportsCards"
+              className="mt-1"
+            />
+          }
           streamProgress={
             liveCandidates
               ? { ready: liveCandidates.ready, total: liveCandidates.total }
               : undefined
           }
+        />
+      )}
+
+      {publishedDialogOpen && (
+        <PublishedChecklistDialog
+          initial={activePublished}
+          setYear={setYearValue}
+          onUse={(checklist) => {
+            setPublishedChecklist({ variantId, checklist });
+            setPublishedDialogOpen(false);
+            // Opened from "Add the publisher's checklist": that button goes
+            // with the dialog (the chip replaces it), so the dialog's own
+            // restore has nothing to land on and Remove takes it. Opened
+            // from the chip, the chip stays and the restore lands on it.
+            if (publishedRestoreRef.current !== publishedChipRef.current) {
+              requestAnimationFrame(() => publishedRemoveRef.current?.focus());
+            }
+          }}
+          onCancel={() => setPublishedDialogOpen(false)}
+          restoreFocusRef={publishedRestoreRef}
         />
       )}
 
@@ -3821,6 +4152,9 @@ export default function CardChecklist({
           // NEO-335: the teams step, for cards that would save with no team.
           previewCards={pendingPreview.cards}
           onTeamAnswersChange={handleTeamAnswers}
+          // NEO-478: the "Checklist says otherwise" step, first after the
+          // names, for cards the publisher's checklist disagrees with.
+          onChecklistChoicesChange={handleChecklistChoices}
           // NEO-335 Phase 2: the "Card titles" step, after Teams.
           titleContext={pendingPreview.titleContext}
           existingCardIndexes={pendingPreview.existingIndexes}

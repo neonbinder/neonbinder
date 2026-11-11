@@ -44,7 +44,7 @@
  *     credential lock.
  */
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { action, query } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -60,6 +60,7 @@ import {
 } from "./parallelChecklistBuild";
 import { missingBscChecklistScope, resolveBscFacetFilters } from "./bscFacets";
 import { isPlatformPaused } from "./marketplacePause";
+import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
 import {
   MAX_BSC_PROBE_IDS,
   MAX_BSC_PROBE_ID_LENGTH,
@@ -350,10 +351,18 @@ export const probeBscSets = action({
   args: {
     variantTypeId: v.id("selectorOptions"),
     variantNameIds: v.array(v.string()),
+    // PR 451 (NEO-487) — the client's run key for "Waiting on
+    // BuySportsCards…" (`marketplaceWaits`), passed to the batch so its
+    // recorder emits wait edges. Shape-checked after the admin gate; never
+    // sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.array(bscProbeResultValidator),
   handler: async (ctx, args): Promise<BscProbeResult[]> => {
     await requireAdmin(ctx);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("probeBscSets: waitKey must be 1-64 letters, digits, _ or -.");
+    }
     const ids = checkProbeIds(args.variantNameIds, {
       max: MAX_BSC_PROBE_IDS,
       maxLength: MAX_BSC_PROBE_ID_LENGTH,
@@ -390,7 +399,7 @@ export const probeBscSets = action({
     if (requests.length > 0) {
       const summaries: BscProbeSummary[] = await ctx.runAction(
         internal.adapters.buysportscards.probeBscChecklistBatch,
-        { requests },
+        { requests, ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}) },
       );
       for (const s of summaries) results.set(s.id, s);
     }

@@ -40,3 +40,12 @@ seeded with many rows (the 1200-card cursor test in
 Related: [[transient-parse-errors-are-hardware]], [[vitest-throwing-console-spy]].
 
 A mutation that enqueues directly (not through a schedule) throws the same error at the call. `vi.spyOn(pool, "enqueueAction").mockResolvedValue("work" as never)` in `beforeEach` stands in, and its `mock.calls` assert the enqueue really happened (NEO-427); restore in `afterEach`.
+
+**When MANY tests in a file trigger the schedule** (e.g. every armed run of
+`resetSetBuilderDataFromCli` schedules `bscTeamPool:cancelAllBscTeamChecks`):
+convex-test fires scheduled jobs on `globalThis.setTimeout` (fake-timer aware),
+so a file-level `vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })`
+keeps every such job pending without faking `Date` (budget tests still read the
+real clock). To prove the job itself, `vi.spyOn(pool, "cancelAll")` (or the
+method the job calls) then `await t.finishAllScheduledFunctions(vi.runAllTimers)`.
+Restore with `vi.useRealTimers()` + `vi.restoreAllMocks()` in `afterEach`.

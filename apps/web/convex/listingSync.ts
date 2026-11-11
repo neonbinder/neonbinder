@@ -833,6 +833,14 @@ const syncStepValidator = v.object({
   condition: v.optional(collectionCopyConditionValidator),
   conditions: v.optional(v.array(collectionCopyConditionValidator)),
   status: listingSyncStepStatusValidator,
+  /**
+   * PR 451 (NEO-487) — measured by the run's BSC call recorder: set while a
+   * BSC call of this (working) step is outstanding, and the time the step has
+   * spent waiting on BSC so far. The tab says "Waiting on BuySportsCards…"
+   * from the first and counts on from the second.
+   */
+  marketplaceWaitingSince: v.optional(v.number()),
+  marketplaceWaitMs: v.optional(v.number()),
 });
 type SyncStep = typeof syncStepValidator.type;
 
@@ -845,11 +853,17 @@ function stepsOf(record: Doc<"marketplaceListingSyncs">, died: boolean): SyncSte
   const out: SyncStep[] = [];
   for (const s of record.progress?.steps ?? []) {
     if (died && s.status === "waiting") continue;
+    const status = died && s.status === "working" ? "failed" : s.status;
     out.push({
       kind: s.kind,
       ...(s.condition !== undefined ? { condition: s.condition } : {}),
       ...(s.conditions !== undefined ? { conditions: s.conditions } : {}),
-      status: died && s.status === "working" ? "failed" : s.status,
+      status,
+      // Only a step still working is waiting; a dead run's step is not.
+      ...(status === "working" && s.marketplaceWaitingSince !== undefined
+        ? { marketplaceWaitingSince: s.marketplaceWaitingSince }
+        : {}),
+      ...(s.marketplaceWaitMs !== undefined ? { marketplaceWaitMs: s.marketplaceWaitMs } : {}),
     });
   }
   return out;

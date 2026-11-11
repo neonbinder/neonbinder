@@ -39,13 +39,14 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test, vi, afterEach } from "vitest";
+import { describe, expect, test, vi, afterEach, beforeEach } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 // @ts-expect-error plain .mjs with no declaration file; test files are not typechecked anyway
 import { SELECTOR_DEPENDANT_TABLES } from "../scripts/reference-seed/cli.mjs";
 import { insertTestCard } from "../lib/testing/card-row";
+import { bscTeamPool } from "./bscTeamPool";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -352,7 +353,22 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
   }));
 }
 
+/**
+ * PR 451 (NEO-482) — every armed reset schedules
+ * `bscTeamPool.cancelAllBscTeamChecks`, which reaches the `bscTeamPool`
+ * workpool component, and no test here registers it. convex-test fires a
+ * scheduled job on `setTimeout`, so faking only the timers keeps that job
+ * pending (no "Component is not registered" noise mid-reset) without touching
+ * `Date`, which the budget tests read. The one test that runs the job advances
+ * the fake timers itself, with the pool's `cancelAll` stubbed.
+ */
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+});
+
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
@@ -426,6 +442,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     const result = await runReset(t);
 
     expect(result).toEqual({
+      marketplaceCooldownsDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
@@ -548,6 +566,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     const t = convexTest(schema, modules);
 
     expect(await runReset(t)).toEqual({
+      marketplaceCooldownsDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 0,
       selectorSyncStatusDeleted: 0,
       collectionCopiesDeleted: 0,
@@ -600,9 +620,11 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     const result = await runReset(t);
 
     expect(result.complete).toBe(false);
-    // The first table in the order is slSetReviews (NEO-306: it points at
-    // selectorOptions, so it drains first); that batch ran and finished
-    // before the budget check could stop anything.
+    // The first table in the order holding rows is slSetReviews (NEO-306:
+    // it points at selectorOptions, so it drains first; PR 451's cooldown and
+    // wait tables come before it but are empty here, and an empty batch never
+    // spends the budget); that batch ran and finished before the budget check
+    // could stop anything.
     expect(result.slSetReviewsDeleted).toBe(2);
     const counts = await tableCounts(t);
     expect(counts.slSetReviews).toBe(0);
@@ -623,6 +645,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     let passes = 0;
     let complete = false;
     const totals = {
+      marketplaceCooldownsDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 0,
       selectorSyncStatusDeleted: 0,
       collectionCopiesDeleted: 0,
@@ -665,6 +689,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     // Every row was deleted exactly once across the passes — resuming never
     // double-counts or skips a table.
     expect(totals).toEqual({
+      marketplaceCooldownsDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
@@ -1386,6 +1412,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     await seedAll(t);
 
     expect(await runScoped(t, "exceptReferenceSeed")).toEqual({
+      marketplaceCooldownsDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
@@ -1504,4 +1532,132 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
 
     expect(await idsOf(t)).toEqual(before);
   });
+});
+
+/**
+ * PR 451 (NEO-482) — the global reset clears the BSC lane and the 429 cooldown.
+ *
+ * Both are deployment-wide. A cooldown window the previous run opened (up to
+ * 10 minutes), or team checks it left queued on the one-slot lane (pushed back
+ * for up to 30 minutes), would otherwise stand in front of the next seed's
+ * cards. The wait rows go too, so no "Waiting on BuySportsCards…" figure
+ * outlives its run. None of the three is a reference-seed table, so every
+ * scope clears them. (The per-user `/testing/reset` must not: eight shards
+ * run it at once.)
+ */
+describe("PR 451: the reset clears the BSC cooldown, the wait rows and the team lane", () => {
+  async function seedBscLaneState(t: ReturnType<typeof convexTest>) {
+    await t.run(async (ctx) => {
+      // One cooldown row (the table holds one per endpoint) with a window
+      // still open, and two wait rows, so the two counts cannot be swapped.
+      await ctx.db.insert("marketplaceCooldowns", {
+        platform: "bsc",
+        endpoint: "cardListing",
+        until: Date.now() + 10 * 60_000,
+        last429At: Date.now(),
+        streak: 4,
+        updatedAt: Date.now(),
+      });
+      for (const runKey of ["run-a", "run-b"]) {
+        await ctx.db.insert("marketplaceWaits", {
+          ownerId: "user",
+          runKey,
+          platform: "bsc",
+          waitingSince: Date.now(),
+          accumulatedMs: 1_500,
+          updatedAt: Date.now(),
+        });
+      }
+    });
+  }
+
+  const laneTableCounts = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ({
+      marketplaceCooldowns: (await ctx.db.query("marketplaceCooldowns").collect())
+        .length,
+      marketplaceWaits: (await ctx.db.query("marketplaceWaits").collect()).length,
+    }));
+
+  const cancelJobs = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (job) => job.name === "bscTeamPool:cancelAllBscTeamChecks",
+      ),
+    );
+
+  test.each(["all", "exceptReferenceSeed"] as const)(
+    "scope %s deletes the cooldown and wait rows, reports both counts, and schedules the lane cancel",
+    async (scope) => {
+      vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+      const t = convexTest(schema, modules);
+      await seedEveryDrainedTable(t);
+      await seedBscLaneState(t);
+
+      const result = await t.action(
+        internal.selectorOptions.resetSetBuilderDataFromCli,
+        { confirm: "RESET" as const, scope },
+      );
+
+      expect(result.complete).toBe(true);
+      expect(result.marketplaceCooldownsDeleted).toBe(1);
+      expect(result.marketplaceWaitsDeleted).toBe(2);
+      expect(await laneTableCounts(t)).toEqual({
+        marketplaceCooldowns: 0,
+        marketplaceWaits: 0,
+      });
+      const jobs = await cancelJobs(t);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].state.kind).toBe("pending");
+      expect(jobs[0].args).toEqual([{}]);
+    },
+  );
+
+  test("the scheduled cancel empties the lane through the pool", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const cancelAll = vi
+      .spyOn(bscTeamPool, "cancelAll")
+      .mockResolvedValue(undefined);
+    const t = convexTest(schema, modules);
+
+    await runReset(t);
+    expect(cancelAll).not.toHaveBeenCalled();
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(cancelAll).toHaveBeenCalledTimes(1);
+    const jobs = await cancelJobs(t);
+    expect(jobs.map((job) => job.state.kind)).toEqual(["success"]);
+  });
+
+  test("an unarmed deployment refuses, keeps both tables, and schedules no cancel", async () => {
+    const t = convexTest(schema, modules);
+    await seedBscLaneState(t);
+
+    await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
+
+    expect(await laneTableCounts(t)).toEqual({
+      marketplaceCooldowns: 1,
+      marketplaceWaits: 2,
+    });
+    expect(await cancelJobs(t)).toEqual([]);
+  });
+
+  test.each([
+    "resetMarketplaceCooldownsBatch",
+    "resetMarketplaceWaitsBatch",
+  ] as const)(
+    "%s refuses when unarmed, even called directly, and deletes nothing",
+    async (fn) => {
+      const t = convexTest(schema, modules);
+      await seedBscLaneState(t);
+
+      await expect(
+        t.mutation(internal.selectorOptions[fn], {}),
+      ).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
+
+      expect(await laneTableCounts(t)).toEqual({
+        marketplaceCooldowns: 1,
+        marketplaceWaits: 2,
+      });
+    },
+  );
 });

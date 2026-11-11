@@ -14,6 +14,7 @@
 // every undecided row, pick steps included. Every decision is a skip, so no
 // player is minted. Re-seed before re-running.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { CHECKLISTS, checklistFacts, expectTeamsFromChecklist } from "../../support/published-checklist";
 import { setBuilderReady } from "../../support/set-builder";
 import {
   advanceToSave,
@@ -30,7 +31,7 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: "Tulsa Oilers CHL" });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: "Tulsa Oilers CHL", checklist: CHECKLISTS.tulsaOilers });
 
     const wizard = reviewWizard(page);
     // Nothing decided: "Step 1 of N" (on a name step x is the decided count plus one).
@@ -60,6 +61,8 @@ test(
 
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible({ timeout: 60_000 });
+    // The result line stays on screen after the save too.
+    await expectTeamsFromChecklist(page, checklistFacts(CHECKLISTS.tulsaOilers));
     await expect(wizard).toBeHidden();
 
     // The set now keeps its own Skipped names list.

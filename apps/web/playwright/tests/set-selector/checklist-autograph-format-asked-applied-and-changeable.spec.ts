@@ -59,6 +59,7 @@
 import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
 import {
   COLD_SYNC,
   columnHeading,
@@ -157,6 +158,10 @@ test(
     await columnOption(page, "Inserts", INSERT).click();
     // The empty-checklist assert makes the saved cards below THIS fetch's.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    // The publisher's checklist (NEO-478): the five cards' teams are BSC's own answers, uploaded, so the
+    // fetch asks BSC for the checklist and for no card. This spec is about the autograph format, which
+    // comes from BSC's checklist (the AU + SN99 tags), not from the file.
+    const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanDraftNightsAutographs2025);
     await syncChecklistButton(page).click();
 
     // A SportLots set paired with the insert opens "Match Cards"; one source
@@ -186,6 +191,7 @@ test(
     await expect(wizard, "the sync opens Tidy up this set for AU cards on a part with no autograph format").toBeVisible({
       timeout: WIZARD_OPENS,
     });
+    await expectTeamsFromChecklist(page, facts);
 
     // Names first, when the catalogue lacks any (it may hold all five draftees;
     // then the wizard opens straight onto the autograph step). Lookups settle

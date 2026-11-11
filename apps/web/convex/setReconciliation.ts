@@ -1,6 +1,6 @@
 import { action, internalQuery, mutation } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
@@ -9,6 +9,7 @@ import {
   inheritableFeatures,
 } from "./features/deriveCardFeatures";
 import { platformServesLevel } from "./platformLevels";
+import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
 import {
   slotIds,
   initialSlots,
@@ -630,6 +631,10 @@ export const fetchRawOptions = action({
     // row's slots (`baseSlIdsBesideVariantType`); the old exact-name drop
     // also hid every SportLots twin of the Base's name.
     baseSlPrefix: v.optional(v.string()),
+    // PR 451 (NEO-487) — the client's run key for "Waiting on
+    // BuySportsCards…" (`marketplaceWaits`), passed to the BSC selector
+    // fetch. Shape-checked after the admin gate; never sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -718,6 +723,9 @@ export const fetchRawOptions = action({
     twinIds: { bsc: string[]; sportlots: string[] };
   }> => {
     await requireAdmin(ctx);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("fetchRawOptions: waitKey must be 1-64 letters, digits, _ or -.");
+    }
     // NEO-287 — read once per call. `pausedList` is derived from the chain's
     // resolution below (a side is paused only where the pause changed what
     // happens to it), hoisted so the failure return can carry it too.
@@ -919,6 +927,7 @@ export const fetchRawOptions = action({
             level,
             parentFilters: parentFilters || {},
             ...(bscPlatformFilters ? { platformFilters: bscPlatformFilters } : {}),
+            ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}),
           },
         );
         if (result.success && result.options) {
@@ -1338,6 +1347,8 @@ export const fetchBscAttachOptions = action({
     view: v.union(v.literal("sets"), v.literal("variants")),
     // Only meaningful for view "variants". Omitted → the row's own set.
     setSlug: v.optional(v.string()),
+    // PR 451 (NEO-487) — see `fetchRawOptions.waitKey`.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -1360,6 +1371,9 @@ export const fetchBscAttachOptions = action({
     pausedSides: Array<"bsc" | "sportlots">;
   }> => {
     await requireAdmin(ctx);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("fetchBscAttachOptions: waitKey must be 1-64 letters, digits, _ or -.");
+    }
     const cxt = await resolveAttachContext(ctx, args.selectorOptionId);
 
     const platformFilters: Record<string, string[]> = {};
@@ -1440,6 +1454,7 @@ export const fetchBscAttachOptions = action({
             ...(cxt.year ? { year: cxt.year } : {}),
           },
           platformFilters,
+          ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}),
         },
       );
       if (!result.success) {

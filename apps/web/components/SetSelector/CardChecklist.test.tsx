@@ -131,6 +131,8 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelsForBuild: "getParallelsForBuild",
       buildParallelChecklist: "buildParallelChecklist",
     },
+    // NEO-487: the "Waiting on BuySportsCards…" lines read this per run key.
+    marketplaceWaits: { forRun: "marketplaceWaits.forRun" },
   },
 }));
 
@@ -386,6 +388,11 @@ const state: {
   }>;
   /** NEO-287: paused credential site keys, as `getPausedPlatforms` returns them. */
   paused: string[];
+  /**
+   * NEO-487: what `marketplaceWaits.forRun` answers for ANY run key.
+   * Undefined (no wait) unless a test sets it.
+   */
+  marketplaceWait?: unknown;
 } = {
   cards: [],
   variantRow: { value: "Test Set" },
@@ -419,6 +426,7 @@ vi.mock("convex/react", () => ({
       return state.players;
     }
     if (ref === "entityReviewSkips.listForSet") return state.skippedNames;
+    if (ref === "marketplaceWaits.forRun") return state.marketplaceWait;
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
   },
@@ -1620,6 +1628,203 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await syncAutos(rerender);
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
       expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+    });
+  });
+
+  /**
+   * NEO-478 — the publisher's checklist: the button and dialog beside Sync,
+   * the chip, the rows and waitKey the sync sends, the "Teams from your
+   * checklist" line, and a disagreement forcing the wizard open.
+   */
+  describe("NEO-478: the publisher's checklist", () => {
+    const PASTE = "1 Solo One - Solo Team\n2 Solo Two - Solo Team";
+    const ROWS = [
+      { number: "1", players: ["Solo One"], teams: ["Solo Team"] },
+      { number: "2", players: ["Solo Two"], teams: ["Solo Team"] },
+    ];
+
+    async function addChecklist(text = PASTE) {
+      fireEvent.click(screen.getByRole("button", { name: "Add the publisher's checklist" }));
+      const box = await screen.findByLabelText("Paste the checklist");
+      await act(async () => {
+        fireEvent.change(box, { target: { value: text } });
+      });
+      await waitFor(() => expect(screen.getByText("2 rows")).toBeTruthy());
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+      });
+    }
+
+    async function syncWith(
+      rerender: Parameters<typeof streamCandidates>[0],
+      batch: unknown,
+      result: Record<string, unknown> = {},
+    ) {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, batch);
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 0 BSC-only, 2 SL-only",
+          candidateCount: 2,
+          attachedSides: ["sportlots"],
+          ...result,
+        });
+      });
+    }
+
+    it("the button opens the dialog, and Cancel closes it with no chip", async () => {
+      renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: "Add the publisher's checklist" }));
+      expect(await screen.findByRole("dialog", { name: "Publisher's checklist" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
+    });
+
+    it("accepting shows the chip with the row count, and Remove clears it", async () => {
+      renderChecklist();
+      await addChecklist();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByText("Publisher's checklist: 2 rows")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
+      expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
+    });
+
+    it("while a checklist is attached the chip is its handle: no add button, focus on Remove, and Remove brings the button back focused (NEO-482)", async () => {
+      renderChecklist();
+      await addChecklist();
+      expect(screen.queryByRole("button", { name: "Add the publisher's checklist" })).toBeNull();
+      const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
+      await waitFor(() => expect(document.activeElement).toBe(remove));
+      fireEvent.click(remove);
+      const add = await screen.findByRole("button", { name: "Add the publisher's checklist" });
+      await waitFor(() => expect(document.activeElement).toBe(add));
+    });
+
+    it("the chip reopens the dialog on what was pasted; Use replaces the rows and focus comes back to the chip", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      const chip = screen.getByRole("button", { name: "Publisher's checklist: 2 rows" });
+      fireEvent.click(chip);
+      const box = (await screen.findByLabelText("Paste the checklist")) as HTMLTextAreaElement;
+      expect(box.value).toBe(PASTE);
+      expect(screen.getByText("2 rows")).toBeTruthy();
+      await act(async () => {
+        fireEvent.change(box, { target: { value: "1 Solo One - Solo Team" } });
+      });
+      await waitFor(() => expect(screen.getByText("1 row")).toBeTruthy());
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+      });
+      const reopened = screen.getByRole("button", { name: "Publisher's checklist: 1 row" });
+      await waitFor(() => expect(document.activeElement).toBe(reopened));
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist.mock.calls[0][0].publishedChecklist).toEqual({ rows: [ROWS[0]] });
+    });
+
+    it("the chip says how many lines were skipped", async () => {
+      renderChecklist();
+      await addChecklist(`${PASTE}\nBase Set`);
+      expect(
+        screen.getByRole("button", { name: "Publisher's checklist: 2 rows · 1 skipped" }),
+      ).toBeTruthy();
+    });
+
+    it("the next sync passes the rows and a valid waitKey to fetchCardChecklist", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist).toHaveBeenCalledTimes(1);
+      expect(mockFetchChecklist).toHaveBeenCalledWith({
+        selectorOptionId: VARIANT_ID,
+        waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
+        publishedChecklist: { rows: ROWS },
+      });
+    });
+
+    it("a sync with no checklist (or after Remove) sends no publishedChecklist", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist.mock.calls[0][0]).not.toHaveProperty("publishedChecklist");
+      expect(mockFetchChecklist.mock.calls[0][0].waitKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    });
+
+    it("renders 'Teams from your checklist: N of M cards' from checklistTeams while the wizard is open", async () => {
+      // The line rides on the sync banner, read here where the run stops: on
+      // a card the wizard has to settle. (The auto-commit case is below.)
+      const conflictBatch = {
+        ...arrivedBatch,
+        cards: slCandidates.map((card, i) =>
+          i === 0
+            ? { ...card, checklistConflict: { teams: { marketplace: [], checklist: ["Reds"] } } }
+            : card,
+        ),
+      };
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, conflictBatch, { checklistTeams: { matched: 1, total: 2 } });
+      await screen.findByText("Wizard opened teams-only");
+      expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards");
+    });
+
+    it("keeps 'Teams from your checklist: N of M cards' on the saved line when the run commits with no question", async () => {
+      // No disagreement, no unknown names: the run commits straight away and
+      // "Saved N cards." replaces the sync line — the checklist line rides on.
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, arrivedBatch, { checklistTeams: { matched: 2, total: 2 } });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
+      expect(liveRegionText()).toContain("Teams from your checklist: 2 of 2 cards");
+      expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+    });
+
+    it("says nothing about checklist teams when the fetch reports none", async () => {
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, arrivedBatch);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
+      expect(liveRegionText()).not.toContain("Teams from your checklist");
+    });
+
+    it("an open checklistConflict forces the wizard open instead of committing", async () => {
+      const conflictBatch = {
+        ...arrivedBatch,
+        cards: slCandidates.map((card, i) =>
+          i === 0
+            ? {
+                ...card,
+                checklistConflict: {
+                  players: { marketplace: ["Solo One"], checklist: ["Solo Won"] },
+                },
+              }
+            : card,
+        ),
+      };
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, conflictBatch);
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+    });
+
+    it("a conflict on the card reaches the wizard's preview cards", async () => {
+      const checklistConflict = {
+        teams: { marketplace: ["Reds"], checklist: ["Cincinnati Reds"] },
+      };
+      const conflictBatch = {
+        ...arrivedBatch,
+        cards: slCandidates.map((card, i) => (i === 0 ? { ...card, checklistConflict } : card)),
+      };
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, conflictBatch);
+      await screen.findByText("Wizard opened teams-only");
+      expect(mockResolveEntities.mock.calls[0][0].cards[0].checklistConflict).toEqual(
+        checklistConflict,
+      );
     });
   });
 
@@ -5514,7 +5719,7 @@ describe("CardChecklist — NEO-312 a parallel row's Sync slot builds instead of
     fireEvent.click(button);
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(screen.queryByText(/Match Cards/)).toBeNull();
@@ -5603,7 +5808,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     const addCard = screen.getByLabelText("Open add card form");
     await waitFor(() => expect(addCard.getAttribute("aria-disabled")).toBe("true"));
@@ -5627,6 +5832,61 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       buildOne: vi.fn(),
     };
   }
+
+  it("NEO-487: a single build's wait line stands down while a run of parallels shows its own — one line, never two", async () => {
+    state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
+    // An empty parallel: its button builds at once, no rebuild confirm.
+    state.cards = [];
+    try {
+      const pending = new Promise<never>(() => {});
+      const idle: ParallelBuildRunner = {
+        run: null,
+        active: false,
+        inFlight: new Set(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        buildOne: vi.fn(() => pending),
+      };
+      const props = {
+        variantId: VARIANT_ID,
+        sourceChips: {},
+        sourceLabelMaps: { bsc: {}, sportlots: {} },
+        parallelBuild: { role: "parallel" as const, sourceId: INSERT_ROW_ID, sourceValue: "Anime" },
+      };
+      const { rerender } = render(<CardChecklist {...props} parallelRun={idle} />);
+      // This row's own build, held up on the marketplace: its line shows.
+      fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
+      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
+        timeout: 3000,
+      });
+      // A run of another insert's parallels starts while that build is still
+      // in flight (the operator saved the insert, then came back here). Its
+      // panel carries the run's own wait line; the build's line stands down.
+      const running = hostedRunner({
+        startedFrom: "some-other-insert" as unknown as Id<"selectorOptions">,
+        sourceId: "some-other-insert" as unknown as Id<"selectorOptions">,
+        sourceValue: "Other Insert",
+        sourceKind: "insert",
+        entries: [
+          { id: "other-parallel" as unknown as Id<"selectorOptions">, value: "X", line: { kind: "building" } },
+        ],
+        truncated: false,
+        phase: "running",
+        atIndex: 0,
+        announcement: "",
+        waitKey: "run-key",
+      });
+      rerender(<CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />);
+      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
+        timeout: 3000,
+      });
+      // And it is the panel's line, not the build's.
+      const line = screen.getByText("Waiting on BuySportsCards…");
+      expect(line.closest("section")?.textContent ?? "").toContain("Other Insert");
+    } finally {
+      state.marketplaceWait = undefined;
+    }
+  });
 
   it("a run active on a DIFFERENT insert entirely never holds this checklist", () => {
     const foreign = hostedRunner({
@@ -5787,7 +6047,7 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     fireEvent.click(screen.getByRole("button", { name: "Build from Base" }));
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(mockCommitChecklist).not.toHaveBeenCalled();

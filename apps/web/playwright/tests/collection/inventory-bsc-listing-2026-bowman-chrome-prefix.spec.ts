@@ -63,13 +63,17 @@ import {
   createBox,
   deleteOpenBox,
   followRunToEnd,
+  followRunToRest,
   inventoryTabs,
   putOtherBoxesInPerson,
   quantityField,
+  queueSettled,
   syncRun,
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { bscReadCeiling, expectAfterMarketplace } from "../../support/marketplace-wait";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnOption,
   columnSearch,
@@ -80,7 +84,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { addAsNewStep, advanceToSave, answerStepAsNew, confirmSaveButton, reviewWizard } from "../../support/wizard";
+import { addAsNewStep, advanceToSave, answerStepAsNew, awaitLookupsSettled, confirmSaveButton, reviewWizard } from "../../support/wizard";
 
 const SPORT = "Football";
 const YEAR = "2026";
@@ -108,14 +112,14 @@ const CARD_B = "#54 Patrick Mahomes II";
 const SEND = "Send changes to BuySportsCards";
 const BSC = "BuySportsCards";
 /**
- * GUIDE hard rule 3, first exception, and only on a step that waits on BSC
- * itself: the Base fetch landing (and, with SportLots live, its pairing
- * dialog) and the Chrome build's BSC read, on data nothing synced yet. The
- * wizard's steps and our own save are NeonBinder answering a user and get the
- * 7 s default. Measured 13 s for the fetch and 4 s for the build
- * (SET-REGISTRY.md), so the ceiling is room, not a need.
+ * The steps that wait on BSC itself (the Base fetch landing, the Chrome build's
+ * BSC read) use `expectAfterMarketplace` (support/marketplace-wait.ts, NEO-487):
+ * 7 s of our own time plus the seconds the screen says it is "Waiting on
+ * BuySportsCards...", capped at 180 s, the measured wait in the report. It
+ * replaces the flat 60 s this spec used to give them (Jason: if BSC took n
+ * seconds the step gets n + 7 s, never a flat bump). The wizard's steps and our
+ * own save are NeonBinder answering a user and keep the 7 s default.
  */
-const LIVE_BSC = 60_000;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** What the failing run needs undone, filled as the flow goes. */
@@ -235,15 +239,19 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
   // --- Base: BSC's checklist, fetched and saved (the parallel is built from it) ---
   await expect(noCards.or(someCard)).toBeVisible();
   if (await noCards.isVisible()) {
-    // Base is empty: fetch it. A live fetch of data nothing synced yet (the seed's ceilings).
+    // Base is empty: fetch it. NEO-478/482: the publisher's checklist (BSC's own
+    // per-card answers, captured) is uploaded first, so the fetch asks BSC for no
+    // card one by one; the bulk checklist itself is still a live BSC round trip.
+    const facts = await usePublishersChecklist(page, CHECKLISTS.bowman2026Base);
     await syncChecklistButton(page).click();
-    await expect(pairing.or(wizard).or(page.getByText(/Kept all [0-9]+ cards? from BSC/)).first()).toBeVisible({
-      timeout: LIVE_BSC,
+    await expectAfterMarketplace(page, pairing.or(wizard).or(page.getByText(/Kept all [0-9]+ cards? from BSC/)).first(), {
+      platform: BSC,
+      what: "the Base fetch landing",
     });
     if (await pairing.isVisible()) {
       // SportLots live: two sides to pair. Keep every card only one side has, then confirm.
       const confirm = pairing.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: LIVE_BSC });
+      await expectAfterMarketplace(page, confirm, { platform: BSC, what: "the pairing dialog's Confirm" });
       for (const side of ["BSC", "SportLots"]) {
         const unmatched = pairing.getByRole("heading", { name: new RegExp(`^${side} only \\([1-9][0-9]*\\)$`) });
         if (await unmatched.isVisible()) await pairing.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
@@ -252,9 +260,14 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
       await expect(pairing).toBeHidden();
     }
     await expect(wizard).toBeVisible();
+    await expectTeamsFromChecklist(page, facts);
     // The names the catalogue does not know: added as new, in bulk, then any
     // team, league or pick step one at a time (the seed's walk).
     await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
+    // A row whose lookup is still in flight is not presented, so the walk below
+    // would read a step that is about to move: settle the batch's lookups first
+    // (the footer's "N still looking up" goes), as the other wizard walks do.
+    await awaitLookupsSettled(page);
     const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
     const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
     const firstCandidate = wizard
@@ -318,7 +331,10 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     await expect(noCards).toBeVisible();
     await page.getByRole("button", { name: "Build from Base", exact: true }).click();
     // One BSC read; the checklist fills when the build lands.
-    await expect(page.getByRole("status").filter({ hasText: /^Chrome — Built [0-9]+ cards/ })).toBeVisible({ timeout: LIVE_BSC });
+    await expectAfterMarketplace(page, page.getByRole("status").filter({ hasText: /^Chrome — Built [0-9]+ cards/ }), {
+      platform: BSC,
+      what: "the Chrome build's BSC read",
+    });
   }
   await expect(someCard).toBeVisible();
   await expectAccessible(page, { label: "Set Builder, Chrome built from Base with its Card prefix" });
@@ -340,7 +356,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         await clean.goto("/inventory?tab=sync");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
         const before = syncStatus(clean);
-        await followRunToEnd(before.platform, syncRun(before.platform, SET_LABEL, BSC));
+        await followRunToEnd(before.platform, syncRun(before.platform, SET_LABEL, BSC), undefined, bscReadCeiling, BSC);
         await clean.goto("/inventory?tab=checklists");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
         const checklist = await drillToChrome(clean);
@@ -356,7 +372,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         const zeroingRun = syncRun(zeroing.platform, SET_LABEL, BSC);
         const zeroed = zeroing.row.getByText(/^0 listed/);
         await expect(zeroingRun.underWay(zeroed)).toBeVisible();
-        await followRunToEnd(zeroing.platform, zeroingRun);
+        await followRunToEnd(zeroing.platform, zeroingRun, undefined, bscReadCeiling, BSC);
         await expect(zeroed).toBeVisible();
       }
     } finally {
@@ -512,17 +528,19 @@ test(
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
-    // The live BSC round trip, one step per wait: the new run is in view (its
-    // ledger under Running now, or its own result line if it already finished);
-    // the walk then waits 7 s for the step the run is on to land until the send
-    // is done; the confirm is one more step; then the result line.
+    // The live BSC round trip, one step per wait (`followRunToRest`, NEO-433): the
+    // new run is in view (its ledger under Running now, or its own result line if
+    // it already finished); the walk then waits for the step the run is on to
+    // land, again and again, until the press's queued cards are gone and the
+    // platform is idle, which proves a run that started after the press has
+    // finished. A BSC read keeps its signed-off ceiling; every other step gets 7 s
+    // plus the seconds BSC is visibly holding it (support/marketplace-wait.ts).
     const run = syncRun(platform, SET_LABEL, BSC);
     const resultLine = row.getByText(/^\d+ listed/);
     await expect(run.underWay(resultLine)).toBeVisible();
-    await followRunToEnd(platform, run, run.step(SEND));
-    await expect(run.readLanded()).toBeVisible();
-    await expect(run.step(SEND)).toBeVisible();
-    await expect(run.confirmLanded()).toBeVisible();
+    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL), bscReadCeiling, BSC);
+    await expect(run.last).toBeVisible();
+    await expect(run.gathered()).toBeVisible();
     await expect(resultLine).toBeVisible();
     // THE FEATURE. The old planner refused both cards for a number BSC spells
     // with a prefix and NB without ("0 listed, 2 skipped", "2 held back"). Said
@@ -535,6 +553,15 @@ test(
     await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
     await expect(row.getByText(/skipped/)).toHaveCount(0);
+    // Two orders are real (NEO-433): the press sent the cards (the ledger holds
+    // the send and its double-check), or the 15-minute poll listed them first and
+    // the press was a full read that sent nothing ("Nothing new to send"). Each is
+    // a hard assert.
+    if (await run.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible()) {
+      await expect(run.confirmLanded()).toBeVisible();
+    } else {
+      await expect(run.nothingNew()).toBeVisible();
+    }
     await expectAccessible(page, { label: "Inventory Sync status, 2 Chrome cards listed, none held back" });
 
     // --- 8. Take both back to 0 and Sync: BSC loses them (the rows are NB's zero again) ---
@@ -548,17 +575,26 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const takeDown = syncRun(platform, SET_LABEL, BSC);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
-    await expect(takeDown.underWay(takenLine)).toBeVisible();
-    await followRunToEnd(platform, takeDown, takeDown.step(SEND));
-    // A run that sent nothing means BSC already showed both at 0: not this
-    // spec's takedown (the seller account is shared), so a red that says so.
-    await expect(
-      takeDown.step(SEND),
-      "the takedown run found no stock of the two cards to take to 0, so it sent nothing (something else zeroed them first?)",
-    ).toBeVisible();
-    await expect(takeDown.confirmLanded()).toBeVisible();
-    await expect(takenLine).toBeVisible();
+    await expect(takeDown.underWay(takenLine.or(row.getByText(/^0 listed/)).first())).toBeVisible();
+    // The walk ends only when the press's queued cards are gone and the platform
+    // is idle, so the row read next is a run that started after the press, finished.
+    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), bscReadCeiling, BSC);
+    await expect(takeDown.last).toBeVisible();
+    await expect(takeDown.gathered()).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
+    // Press first: the run sent the two zeros (the send is in the finished
+    // ledger, with its double-check, and the line says "2 taken to 0"). Poll
+    // first (NEO-433): the poll already took the cards off and the press, a full
+    // read, sent nothing. Accepted limit (Jason, NEO-433): a takedown that sent
+    // nothing cannot tell the poll from anything else having zeroed them on the
+    // shared seller account; CI runs the seller specs one at a time.
+    if (await takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible()) {
+      await expect(takenLine).toBeVisible();
+      await expect(takeDown.confirmLanded()).toBeVisible();
+    } else {
+      await expect(row.getByText(/^0 listed$/)).toBeVisible();
+      await expect(takeDown.nothingNew()).toBeVisible();
+    }
 
     // --- Tidy up through the product: the common price, then the box ----------------
     await page.goBack();

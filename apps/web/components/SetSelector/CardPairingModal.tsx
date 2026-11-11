@@ -51,6 +51,7 @@ import { isEditableTarget } from "../../lib/dom/is-editable-target";
 // rest of this screen's shared card rules do.
 import { MAX_CARD_PLAYERS } from "./card-attention";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
+import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
 
 /**
  * NEO-344 — the SPELLING of a typed card name, with only the invisible
@@ -177,7 +178,15 @@ export type PairingCard = {
    * (`pairing-cards.ts`'s `TeamLookup`). Rides through the dialog untouched;
    * the commit stamps an answered teamless card as checked.
    */
-  teamLookup?: "answered" | "failed";
+  teamLookup?: TeamLookupOutcome;
+  /**
+   * NEO-478 — the operator's published checklist and the marketplace
+   * disagree about this card's players or teams. Rides through the dialog
+   * untouched (it is not a cross-marketplace question): the wizard's
+   * "Checklist says otherwise" step settles it before the commit, which
+   * refuses a card that still carries one.
+   */
+  checklistConflict?: ChecklistConflict;
   /**
    * NEO-335 — BSC's team value for this card exactly as its fetch-time lookup
    * returned it, unsplit (`checklistCandidates.rawTeamName`). Present only
@@ -965,6 +974,13 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
     // NEO-335: and BSC's raw team value with it, from the BSC side only — it
     // is what BSC listed, and SportLots never runs that lookup.
     ...(bsc.rawTeamName ? { rawTeamName: bsc.rawTeamName } : {}),
+    // NEO-478: a checklist disagreement is about the CARD, not about either
+    // marketplace's half, so a hand-linked pair keeps whichever side carried
+    // one. Dropping it would commit a card the operator was never asked
+    // about (the commit refuses it, but only after the wizard has closed).
+    ...((bsc.checklistConflict ?? sl.checklistConflict)
+      ? { checklistConflict: bsc.checklistConflict ?? sl.checklistConflict }
+      : {}),
     platformData: {
       ...(bsc.platformData.bsc ? { bsc: bsc.platformData.bsc } : {}),
       ...(sl.platformData.sportlots
@@ -1828,7 +1844,14 @@ export default function CardPairingModal({
   streamProgress,
   teamsLateNotice,
   restoreFocusRef,
+  waitingSlot,
 }: {
+  /**
+   * NEO-487 — the host's "Waiting on BuySportsCards…" line for this fetch,
+   * shown under the streaming sentence. The dialog covers the page's own
+   * copy while it is open, so it carries the host's here.
+   */
+  waitingSlot?: React.ReactNode;
   isOpen: boolean;
   onClose: () => void;
   onConfirm: (result: PairingResult) => Promise<void>;
@@ -2570,6 +2593,7 @@ export default function CardPairingModal({
                 {pairingStreamingSentence(streamProgress)}
               </p>
             )}
+            {waitingSlot}
             <div
               ref={liveRegionRef}
               id="pairing-streaming-announcer"

@@ -188,7 +188,7 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
     });
     // NEO-247: both cards need the per-card BSC team lookup. With more than
     // one card queued, processBscTeamEnrichmentQueue reschedules its own
-    // tail with a real 300ms delay (BSC_TEAM_ENRICH_DELAY_MS) rather than
+    // tail with a real BSC_TEAM_ENRICH_DELAY_MS (1.7 s) delay rather than
     // runAfter(0) — drainScheduled can only settle the FIRST hop, so cancel
     // whatever's left pending rather than let it fire after this test ends.
     await drainScheduled(t);
