@@ -2,7 +2,9 @@
 // cards wait for the next sync or a set's latest sync failed (NEO-464 review
 // round 4, Jason: "only show errors that have not had a successful sync of
 // that card/set later. Also show pending syncs there"), and an order waiting
-// to ship puts Out the Door up. Clear them and both are gone.
+// to ship puts Out the Door up. A held-back card opens its card panel over
+// the dashboard, where its price is fixed (and undone). Clear the seeds and
+// both are gone.
 //
 // Neither can be made on demand from a marketplace (a sale arrives from an
 // order poll, a sync problem from a real sync), so the spec seeds NB's own
@@ -89,15 +91,33 @@ test(
     const [cardBox, failureBox] = [await heldBack.boundingBox(), await ebaySet.getByText(TEST_FAILURE).boundingBox()];
     expect(cardBox!.y).toBeLessThan(failureBox!.y);
 
-    // A real move: the held-back card opens its own card panel on Inventory, where its price is fixed;
-    // Back returns to the dashboard.
+    // The held-back card opens its own card panel OVER the dashboard (a Back step), where its price is
+    // fixed. The price saved there shows at once on New Listings under it; Back closes the panel with the
+    // keyboard on the card, and the status line's Undo still takes the price back.
     await heldBack.click();
-    await expect(page).toHaveURL(/\/inventory\?tab=cards&detail=[^&]+$/);
+    await expect(page).toHaveURL(/\/dashboard\?detail=[^&]+&side=inventory$/);
     await expect(drawer).toBeVisible();
     await yourCopies.getByRole("button", { name: `Edit ${card.short}, Raw, Excellent`, exact: true }).click();
-    await expect(drawer.getByRole("spinbutton", { name: "Price", exact: true })).toBeVisible();
+    const editForm = drawer.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
+    const price = editForm.getByRole("spinbutton", { name: "Price", exact: true });
+    await expect(price).toBeVisible();
+    await expectAccessible(page, { label: "Dashboard, a held-back card's panel open over it" });
+    await price.fill("4");
+    await editForm.getByRole("button", { name: "Save copy" }).click();
+    await expect(drawer.getByRole("status").filter({ hasText: `Saved ${card.short}` })).toBeVisible();
     await page.goBack();
-    await expect(greeting).toBeVisible();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(drawer).toBeHidden();
+    await expect(heldBack).toBeFocused();
+    const listing = page
+      .getByRole("region", { name: "New Listings" })
+      .getByRole("link")
+      .filter({ hasText: card.player })
+      .filter({ hasText: `#${card.number}` });
+    await expect(listing).toContainText("$4.00");
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
+    await expect(listing).toContainText("$2.00");
     await sync.getByRole("link", { name: "Open Sync status", exact: true }).click();
     await expect(page).toHaveURL(/\/inventory\?tab=sync$/);
 

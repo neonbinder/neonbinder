@@ -112,16 +112,27 @@ test(
     await expect(spine).toBeVisible();
 
     // Fresh Pulls is the card added straight in, never the one moved in. Each tile is a
-    // figure named by the card's full listing title (the player, then the number).
+    // link named by the card's full listing title (the player, then the number).
     const pulls = page.getByRole("region", { name: "Fresh Pulls" });
     await expect(pulls).toBeVisible();
     const tile = (c: typeof card) =>
-      pulls.getByRole("figure", {
+      pulls.getByRole("link", {
         name: new RegExp(`^2024 Topps Chrome (?=.*${escapeRegExp(c.player)})(?=.*#${escapeRegExp(c.number)}\\b)`),
       });
     await expect(tile(added).first()).toBeVisible();
     await expect(tile(card)).toHaveCount(0);
     await expectAccessible(page, { label: "Dashboard, cards filed since the last visit" });
+
+    // A pull opens its card panel over the dashboard (a Back step), its copy in the binder listed there;
+    // Back closes it with the keyboard on the pull.
+    await tile(added).first().click();
+    await expect(page).toHaveURL(/\/dashboard\?detail=[^&]+$/);
+    await expect(addedDrawer).toBeVisible();
+    await expect(addedCopies.getByRole("button", { name: `Edit ${added.short}, Raw, Excellent`, exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(addedDrawer).toBeHidden();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(tile(added).first()).toBeFocused();
 
     // --- Cleanup through the UI: remove the copy, delete the empty binder ---
     await page.goto("/collection?tab=checklists");

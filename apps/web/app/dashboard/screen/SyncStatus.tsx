@@ -2,6 +2,7 @@ import { ArrowPathIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroic
 import { Link, useLocation } from "react-router";
 import { MARKETPLACES, type SyncProblemSet, type SyncStatusData } from "../fake-data";
 import { CardTitle, count, MarketBadge, sideHref, Thumb } from "./bits";
+import { PanelLink } from "./panelLink";
 import { useOpen } from "./useOpen";
 
 /**
@@ -18,8 +19,8 @@ import { useOpen } from "./useOpen";
  * important than other things within sync... each one should open the card
  * panel where they could fix it"): the sets holding cards back come first,
  * and within a set its cards come before the failure sentence. Each card,
- * with its reason, opens its card panel on Inventory, where its price,
- * photo or copy is fixed. The first `HELD_PREVIEW` show; "Show all N" opens
+ * with its reason, opens its card panel over the dashboard (`./panelLink`),
+ * as stock for sale, where its price, photo or copy is fixed. The first `HELD_PREVIEW` show; "Show all N" opens
  * every card the read named (an in-view tweak, `useOpen`); cards past what
  * the read names open on Sync status. The link at the top opens Inventory's
  * Sync status tab. Nothing waiting and nothing wrong: no section (the caller
@@ -100,8 +101,9 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
             <ul className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {shown.map(({ card, reason }) => (
                 <li key={card.id} className="min-w-0">
-                  <Link
-                    to={sideHref(pathname, "inventory", { tab: "cards", detail: card.id })}
+                  <PanelLink
+                    cardId={card.id}
+                    side="inventory"
                     className="flex h-full min-w-0 items-start gap-2.5 rounded-md border border-notice-warn-rule bg-notice-warn-bg p-2 hover:bg-hover-raised focus-outline"
                   >
                     <Thumb card={card} className="w-10" />
@@ -109,7 +111,7 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
                       <CardTitle card={card} className="font-semibold text-ink" />
                       <span className="mt-1 block text-notice-warn-ink">{reason}</span>
                     </span>
-                  </Link>
+                  </PanelLink>
                 </li>
               ))}
             </ul>

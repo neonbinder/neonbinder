@@ -1,8 +1,8 @@
 import { ChevronDownIcon } from "@heroicons/react/24/outline";
-import { Link, useLocation } from "react-router";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
 import type { NewListing } from "../fake-data";
-import { BlockHeading, CardTitle, sideHref } from "./bits";
+import { BlockHeading, CardTitle } from "./bits";
+import { PanelLink } from "./panelLink";
 import { useOpen } from "./useOpen";
 
 /**
@@ -10,8 +10,9 @@ import { useOpen } from "./useOpen";
  * landed in a box (Inventory) in the last two weeks, newest first, each with
  * how many and NB's price. Listings come from NB's own inventory (Jason,
  * 2026-11-10: "don't worry about if it has sync'd yet or not"), so nothing
- * here reads a marketplace. Each tile opens the card in its box on
- * Inventory. Nothing new in a box: no section.
+ * here reads a marketplace. Each tile opens the card's panel over the
+ * dashboard (`./panelLink`), as stock for sale, where its price is set.
+ * Nothing new in a box: no section.
  */
 
 /** How many tiles show before "Show all". */
@@ -27,7 +28,6 @@ export function priceWords(priceCents: number | null, quantity: number): string 
 }
 
 export default function NewListings({ listings }: { listings: NewListing[] }) {
-  const { pathname } = useLocation();
   const [all, toggle] = useOpen("listings");
   if (listings.length === 0) return null;
   const shown = all ? listings : listings.slice(0, PREVIEW);
@@ -40,10 +40,7 @@ export default function NewListings({ listings }: { listings: NewListing[] }) {
       <ul className="grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-6">
         {shown.map((l) => (
           <li key={l.lineId} className="min-w-0">
-            <Link
-              to={sideHref(pathname, "inventory", { tab: "boxes", b: l.boxId, detail: l.id })}
-              className="group block rounded-md focus-outline"
-            >
+            <PanelLink cardId={l.id} side="inventory" className="group block rounded-md focus-outline">
               <span
                 aria-hidden="true"
                 className="block transition-transform group-hover:-translate-y-1 motion-reduce:transition-none"
@@ -59,7 +56,7 @@ export default function NewListings({ listings }: { listings: NewListing[] }) {
                   {l.quantity} in {l.boxName}
                 </span>
               </span>
-            </Link>
+            </PanelLink>
           </li>
         ))}
       </ul>

@@ -1,4 +1,5 @@
 import { ConvexCollectionProvider } from "@/app/collection/final/data/convexStore";
+import { useState } from "react";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import DashboardScreen from "./screen/DashboardScreen";
 import { useRealDashboard } from "./real/useRealDashboard";
@@ -19,8 +20,15 @@ export default function DashboardPage() {
 
 function RealDashboardPage() {
   const data = useRealDashboard();
-  if (!data) return <DashboardLoading />;
-  return <DashboardScreen data={data} />;
+  // Loading shows once, on the way in. After that a read that starts over (a
+  // want starred in the card panel re-reads the chase's cards) keeps the last
+  // screen up until it answers: the screen, and the card panel open over it,
+  // never drop out from under the collector.
+  const [shown, setShown] = useState(data);
+  if (data && data !== shown) setShown(data);
+  const screen = data ?? shown;
+  if (!screen) return <DashboardLoading />;
+  return <DashboardScreen data={screen} />;
 }
 
 /** While the shelf loads: the greeting's place and a row of blank spines, quiet and still. */

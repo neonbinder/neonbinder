@@ -192,3 +192,4 @@
 - [t.run turns undefined into null](reference_convex_test_run_turns_undefined_into_null.md) — absent optional field read via t.run is null; use `?? null` + toBeNull
 - [axe catches hover where the pointer rests](reference_axe_catches_hover_where_the_pointer_rests.md) — click+goBack leaves a link in :hover; batch-only contrast red on an inner span; fix with group-hover ink step
 - [Patch a Vite module for demo screenshot variants](reference_patch_a_vite_module_for_demo_screenshot_variants.md) — page.route + route.fetch rewrites fake-data.ts in a temp spec; no product code
+- [macOS FS is case-insensitive](reference_macos_fs_is_case_insensitive.md) — a new file differing only by case overwrites the old one; Write says "updated" — grep -i first

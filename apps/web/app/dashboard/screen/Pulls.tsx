@@ -4,6 +4,7 @@ import { Link, useLocation } from "react-router";
 import CardFace from "@/app/collection/prototypes/_shared/CardFace";
 import type { AdditionBatch, DashCard, WantCard } from "../fake-data";
 import { CardTitle, sideHref, WANT_RING, WantFlag } from "./bits";
+import { PanelLink } from "./panelLink";
 import { useOpen } from "./useOpen";
 
 /**
@@ -12,7 +13,8 @@ import { useOpen } from "./useOpen";
  * batches they came in, newest first (any card filed into a binder in the
  * last 14 days, however it got there; none and the section is not drawn). Every card is captioned with its full
  * listing title; a pull that is on the Want List wears a dashed yellow
- * border and says so (Jason, review item 5).
+ * border and says so (Jason, review item 5). A pull opens its card panel
+ * over the dashboard (`./panelLink`), as a card in the collection.
  */
 
 /** How many cards a batch shows before "Show all". */
@@ -32,6 +34,32 @@ function Tile({ card, extra, wanted = false }: { card: DashCard; extra?: string;
         {wanted && <WantFlag />}
       </figcaption>
     </figure>
+  );
+}
+
+/**
+ * A pull: the Tile's picture and words, as one link that opens the card's
+ * panel. Named by its words, the full listing title first.
+ */
+function PullTile({ card, wanted }: { card: DashCard; wanted: boolean }) {
+  return (
+    <PanelLink cardId={card.id} side="collection" className="group block rounded-md focus-outline">
+      <span
+        aria-hidden="true"
+        className={`block transition-transform group-hover:-translate-y-1 motion-reduce:transition-none ${wanted ? WANT_RING : ""}`}
+      >
+        <CardFace model={card.card} size="fill" />
+      </span>
+      <span className="mt-1.5 block space-y-0.5 text-xs leading-snug">
+        <CardTitle card={card} lines={3} className="text-ink" />
+        {wanted && (
+          <>
+            {" "}
+            <WantFlag />
+          </>
+        )}
+      </span>
+    </PanelLink>
   );
 }
 
@@ -151,8 +179,8 @@ function Batch({ batch, wanted }: { batch: AdditionBatch; wanted: Set<string> })
       </div>
       <ul className="grid grid-cols-3 gap-x-3 gap-y-4 sm:grid-cols-6">
         {shown.map((c) => (
-          <li key={`${c.id}@${c.binderName}`}>
-            <Tile card={c} wanted={wanted.has(c.id)} />
+          <li key={`${c.id}@${c.binderName}`} className="min-w-0">
+            <PullTile card={c} wanted={wanted.has(c.id)} />
           </li>
         ))}
       </ul>

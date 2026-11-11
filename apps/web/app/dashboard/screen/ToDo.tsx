@@ -11,6 +11,7 @@ import {
   type UnshippedSale,
 } from "../fake-data";
 import { CardTitle, count, MarketBadge, orderAnchor, Thumb } from "./bits";
+import { PanelLink } from "./panelLink";
 
 /**
  * NEO-464 combined dashboard — the to-do: Out the Door (every order still to
@@ -19,7 +20,14 @@ import { CardTitle, count, MarketBadge, orderAnchor, Thumb } from "./bits";
  * the account's data has something for it: Out the Door when the account
  * sells (`data.sales`), Needs a Look when there is a problem order or a box
  * with cards not listed (`needsALook`). No persona, no layout of its own.
+ *
+ * Every card an order names opens its card panel over the dashboard
+ * (`./panelLink`), as stock for sale: its title on the order, each line when
+ * the order is opened, and the card an oversold line names.
  */
+
+/** An order's card, by its full listing title: opens the card's panel. */
+const CARD_LINK = "block rounded-sm hover:underline underline-offset-2 focus-outline";
 
 /** Whether Needs a Look has anything in it. */
 export function needsALook(data: DashboardData): boolean {
@@ -119,7 +127,13 @@ function OrderRow({ order }: { order: UnshippedSale }) {
             </span>
           </div>
           <div className="mt-1 text-sm font-semibold leading-snug text-ink">
-            {order.firstCard ? <CardTitle card={order.firstCard} /> : <span className="block">Not matched to a card yet</span>}
+            {order.firstCard ? (
+              <PanelLink cardId={order.firstCard.id} side="inventory" className={CARD_LINK}>
+                <CardTitle card={order.firstCard} />
+              </PanelLink>
+            ) : (
+              <span className="block">Not matched to a card yet</span>
+            )}
             {more > 0 && <span className="block font-normal text-ink-2">and {count(more, "more card")}</span>}
           </div>
           <p className="text-xs text-ink-3">
@@ -134,7 +148,9 @@ function OrderRow({ order }: { order: UnshippedSale }) {
                   className="flex items-start gap-2 rounded-md border border-notice-danger-rule bg-notice-danger-bg px-2 py-1.5 text-sm text-notice-danger-ink"
                 >
                   <ExclamationTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-                  <span>{problemText(line)}</span>
+                  <span>
+                    <ProblemText line={line} />
+                  </span>
                 </li>
               ))}
             </ul>
@@ -204,12 +220,36 @@ function LineRow({ line }: { line: SaleLine }) {
     <>
       <Thumb card={c} className="w-8" />
       <span className="min-w-0 text-sm">
-        <CardTitle card={c} className="text-ink" />
+        <PanelLink cardId={c.id} side="inventory" className={CARD_LINK}>
+          <CardTitle card={c} className="text-ink" />
+        </PanelLink>
         {line.quantity > 1 && <span className="tabular-nums text-ink-3"> ×{line.quantity}</span>}
         {line.problem && (
           <span className="ml-1 font-semibold text-notice-danger-ink">{line.problem.kind === "oversold" ? "Oversold" : "Unmatched"}</span>
         )}
       </span>
+    </>
+  );
+}
+
+/**
+ * One sentence per problem line, as `problemText` words it. An oversold
+ * line's card is a link to its panel, where its boxes are put right.
+ */
+function ProblemText({ line }: { line: SaleLine & { problem: SaleProblem } }) {
+  const p = line.problem;
+  if (p.kind !== "oversold" || !line.card) return <>{problemText(line)}</>;
+  return (
+    <>
+      Oversold:{" "}
+      <PanelLink
+        cardId={line.card.id}
+        side="inventory"
+        className="rounded-sm font-semibold underline underline-offset-2 focus-outline"
+      >
+        {line.card.title}
+      </PanelLink>{" "}
+      sold {p.sold}, your boxes hold {p.inBoxes}.
     </>
   );
 }
@@ -246,7 +286,7 @@ export function NeedsALook({ data }: { data: DashboardData }) {
               .filter((l): l is SaleLine & { problem: SaleProblem } => Boolean(l.problem))
               .map((line, i) => (
                 <p key={i} className="text-sm text-ink-2">
-                  {problemText(line)}
+                  <ProblemText line={line} />
                 </p>
               ))}
             <a

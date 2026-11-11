@@ -279,12 +279,13 @@ describe("the sync status (review round 4)", () => {
     expect(before(sync, heading("Out the Door")!)).toBe(true);
     expect(within(sync).getByText("4 cards waiting for the next sync.")).toBeTruthy();
     expect(within(sync).getByRole("link", { name: "Open Sync status" }).getAttribute("href")).toBe("/demo/inventory?tab=sync");
-    // Each set names its marketplace for a reader, and each held-back card opens on Inventory, where the fix is.
+    // Each set names its marketplace for a reader, and each held-back card opens its panel over the
+    // dashboard as stock for sale, where the fix is.
     const set = data.syncStatus!.problems[0];
     expect(within(sync).getByRole("heading", { level: 3, name: `${set.setLabel} on eBay` })).toBeTruthy();
     const first = set.cards[0];
     const link = within(sync).getByRole("link", { name: new RegExp(`^${first.card.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) });
-    expect(link.getAttribute("href")).toBe(`/demo/inventory?tab=cards&detail=${encodeURIComponent(first.card.id)}`);
+    expect(link.getAttribute("href")).toBe(`/demo?detail=${encodeURIComponent(first.card.id)}&side=inventory`);
     expect(link.textContent).toContain(first.reason);
   });
 
@@ -322,7 +323,9 @@ describe("the sync status (review round 4)", () => {
     fireEvent.click(showAll);
     expect(held()).toHaveLength(cards.length);
     const last = held()[cards.length - 1];
-    expect(last.getAttribute("href")).toBe(`/demo/inventory?tab=cards&detail=${encodeURIComponent(cards[cards.length - 1].card.id)}`);
+    expect(last.getAttribute("href")).toBe(
+      `/demo?open=${encodeURIComponent(set.id)}&detail=${encodeURIComponent(cards[cards.length - 1].card.id)}&side=inventory`,
+    );
     expect(last.textContent).toContain("No price yet.");
     expect(within(sync).getByRole("button", { name: /^Show fewer/ }).getAttribute("aria-expanded")).toBe("true");
     // Every card the read named is on the page: nothing points elsewhere.
@@ -350,7 +353,7 @@ describe("the sync status (review round 4)", () => {
 });
 
 describe("New Listings (review round 4)", () => {
-  it("follows Fresh Pulls, each tile with its price and box, opening the card in its box on Inventory", () => {
+  it("follows Fresh Pulls, each tile with its price and box, opening the card's panel over the dashboard", () => {
     const data = getDashboard();
     draw(data);
     const listings = screen.getByRole("region", { name: "New Listings" });
@@ -358,9 +361,7 @@ describe("New Listings (review round 4)", () => {
     const links = within(listings).getAllByRole("link");
     expect(links).toHaveLength(data.newListings.length);
     const first = data.newListings[0];
-    expect(links[0].getAttribute("href")).toBe(
-      `/demo/inventory?tab=boxes&b=${first.boxId}&detail=${encodeURIComponent(first.id)}`,
-    );
+    expect(links[0].getAttribute("href")).toBe(`/demo?detail=${encodeURIComponent(first.id)}&side=inventory`);
     expect(links[0].textContent).toContain("$45.00");
     expect(links[0].textContent).toContain("1 in Show box");
     expect(within(listings).getAllByText("$0.75 each")).toHaveLength(2);

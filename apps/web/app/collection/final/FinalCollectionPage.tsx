@@ -1,6 +1,5 @@
 import {
   lazy,
-  startTransition,
   Suspense,
   useCallback,
   useContext,
@@ -10,10 +9,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useLocation, useNavigate, useNavigationType } from "react-router";
+import { useLocation, useNavigationType } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
-import NoticeLine, { type Notice } from "../prototypes/p1/notice";
-import CardDrawer from "./CardDrawer";
+import NoticeLine from "../prototypes/p1/notice";
+import { isOpen, OpenCardDrawer, useCardDrawer } from "./drawerControl";
 import type { RowActions } from "./CardRows";
 import { drillToCard, EMPTY_DRILL, type Drill } from "./catalog/drill";
 import { useDrillState } from "./catalog/useDrillState";
@@ -52,7 +51,6 @@ import {
   useSetPath,
   useWants,
   wantToggle,
-  writeErrorMessage,
 } from "./data/store";
 import type {
   Capabilities,
@@ -60,15 +58,13 @@ import type {
   CardId,
   CollectionTab,
   Container,
-  CopyId,
   Scope,
   Side,
   Suggestion,
-  Undo,
   Want,
 } from "./data/types";
 import { useHomeName, useScopedName } from "./catalog/home";
-import { DRAWER_MODE_PARAM, DRAWER_PARAM, viewOf } from "./drawerParams";
+import { viewOf } from "./drawerParams";
 import InventoryListTab from "./inventory/InventoryListTab";
 // The Sales and Sync status tabs (NEO-370) load only when opened.
 const SalesTab = lazy(() => import("./inventory/listing/SalesTab"));
@@ -92,7 +88,6 @@ import {
   useCollectionParams,
   useCollectionSide,
   useGoToSide,
-  usePushParams,
   useReplaceParams,
   useSetScope,
   ViewScopeProvider,
@@ -101,9 +96,9 @@ import {
 import {
   PageApiContext,
   type ChecklistsTarget,
-  type OpenCardOptions,
   type PageApi,
 } from "./pageApi";
+import { useFloatingClearance, useStatusLine } from "./statusLine";
 import type { GoToTabParams } from "./store";
 
 /**
@@ -202,64 +197,11 @@ function redirectFor(side: Side, params: URLSearchParams): { side: Side; tab: Co
   return null;
 }
 
-/**
- * Runs a notice's undo. A store's undo is a write of its own: the demo's
- * lands in this same click, a server's when it answers. `onDone` runs once it
- * has landed (never before: a line the undo puts back is only the server's
- * once it answers), `onError` when it was refused.
- */
-function runUndo(undo: () => unknown, onDone: () => void, onError: (error: unknown) => void) {
-  let pending: unknown;
-  try {
-    pending = undo();
-  } catch (error) {
-    onError(error);
-    return;
-  }
-  if (pending instanceof Promise) pending.then(onDone, onError);
-  else onDone();
-}
-
-/** Room kept under a field the keyboard reaches while the floating status line is up. */
-const NOTICE_CLEARANCE = "6rem";
-
-/** What Ctrl/⌘+Z says when the status line has no Undo to give. */
-const NOTHING_TO_UNDO = "Nothing to undo.";
-
-/** What an undo that the server refused says on the status line. */
-function undoFailed(error: unknown): string {
-  return `That undo didn't go through. ${writeErrorMessage(error)}`;
-}
-
-const NOTICE_MS = 10_000;
 /** How long the search box waits for a pause in typing before it writes `q`. */
 const QUERY_SETTLE_MS = 300;
 
 /** The params that say a picked search suggestion. */
 const ENTITY_PARAMS = [PLAYER_PARAM, TEAM_PARAM, FRANCHISE_PARAM, WHOLE_PARAM];
-
-/**
- * What the opener knew that the URL does not carry: the list the drawer's
- * ↑ ↓ step through, the card as drawn, the copy to ring. Kept for the card
- * it was set for; a drawer reopened from the URL alone steps through just
- * its own card.
- */
-interface DrawerExtras {
-  cardId: CardId;
-  listIds: CardId[];
-  seed?: Card;
-  copyId?: CopyId;
-  /** The home the add form picks instead of the page's scope. */
-  binderId?: string;
-  /** Open `copyId`'s Edit form when it is the card's one line (a row click). */
-  edit?: boolean;
-  key: number;
-}
-
-/** The history state on an entry the drawer pushed: Close steps Back off it. */
-interface DrawerHistoryState {
-  drawer?: boolean;
-}
 
 export interface FinalCollectionPageProps {
   /** `"app"` (default): `/collection` or `/inventory`. `"public"`: the no-login demo. */
@@ -328,7 +270,6 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
   const [params, setParams] = useCollectionParams();
   const replaceParams = useReplaceParams();
   const goToSide = useGoToSide();
-  const navigate = useNavigate();
   const tabParam = params.get("tab");
   const onInventory = side === "inventory";
   // A tab this side does not have (`?tab=binders` where binders are not
@@ -511,67 +452,9 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
   }, [capabilities.scope, onInventory, containers, opening, scope, params, setScope]);
 
   // --- Status line -----------------------------------------------------------
-  const [notice, setNotice] = useState<Notice | null>(null);
-  // The line waits while the pointer rests on it or the keyboard is in it, so
-  // Undo can always be reached in time (WCAG 2.2.1); it counts again after.
-  const held = useNoticeHold();
-  // No manual memo here: the React Compiler memoizes these handlers itself.
-  const notify = (message: string, undo?: () => void) => {
-    setNotice((prev) => ({ id: (prev?.id ?? 0) + 1, message, undo }));
-  };
-  useEffect(() => {
-    // A running undo keeps its line up: "Undone." (or why not) replaces it.
-    if (!notice || held || notice.undoing) return;
-    const t = setTimeout(() => setNotice(null), NOTICE_MS);
-    return () => clearTimeout(t);
-  }, [notice, held]);
-  // One undo at a time: a second press while the first is running does nothing.
-  const undoing = useRef(false);
-  const undo = () => {
-    if (!notice?.undo || undoing.current) return;
-    const run = notice.undo;
-    undoing.current = true;
-    const ran = notice.id;
-    // Undo stays on the line, inert, until the write lands; "Undone." waits
-    // for it, so whatever it put back is already the server's when the
-    // collector reaches for it.
-    setNotice((prev) => (prev && prev.id === ran ? { ...prev, undoing: true } : prev));
-    runUndo(
-      run,
-      () => {
-        undoing.current = false;
-        notify("Undone.");
-      },
-      (error) => {
-        undoing.current = false;
-        notify(undoFailed(error));
-      },
-    );
-  };
-  /** Ctrl/⌘+Z from quick entry: the line's Undo, or a word that there is none. */
-  // An aside keeps a live Undo on the line: it is skipped rather than replace
-  // it (an undo running counts too: its "Undone." is on the way).
-  const inform = (message: string) => {
-    setNotice((prev) => (prev?.undo ? prev : { id: (prev?.id ?? 0) + 1, message }));
-  };
-  const undoLast = () => {
-    if (undoing.current) return;
-    if (notice?.undo) undo();
-    else notify(NOTHING_TO_UNDO);
-  };
-  const run = async <T extends { undo: Undo }>(
-    write: () => Promise<T>,
-    message: (result: T) => string,
-  ): Promise<T | null> => {
-    try {
-      const result = await write();
-      notify(message(result), result.undo);
-      return result;
-    } catch (error) {
-      notify(writeErrorMessage(error));
-      return null;
-    }
-  };
+  // One line with its Undo for every tab and the card drawer (`./statusLine`).
+  const line = useStatusLine();
+  const { notice, notify, inform, undoLast, run, undo, dismiss } = line;
 
   // --- Checklists: writing the URL ------------------------------------------
   const writeQuery = useCallback(
@@ -594,85 +477,9 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
   };
 
   // --- Card drawer -----------------------------------------------------------
-  // Opening a card pushes `detail=<id>` (Back closes it); ↑ ↓ replace it (Back
-  // never walks the cards one by one); Close steps Back off an entry the
-  // drawer pushed, and otherwise (a shared link, a refresh in a new tab)
-  // takes the params off in place.
-  const pushParams = usePushParams();
-  const [extras, setExtras] = useState<DrawerExtras | null>(null);
-  const drawerId = params.get(DRAWER_PARAM);
-  const ours = extras && extras.cardId === drawerId ? extras : null;
-  const drawer = drawerId
-    ? {
-        cardId: drawerId,
-        listIds:
-          extras && extras.listIds.includes(drawerId)
-            ? extras.listIds
-            : [drawerId],
-        seed: ours?.seed,
-        mode:
-          params.get(DRAWER_MODE_PARAM) === "add"
-            ? ("add" as const)
-            : ("view" as const),
-        copyId: ours?.copyId,
-        binderId: ours?.binderId,
-        edit: ours?.edit,
-        key: extras?.key ?? 0,
-      }
-    : null;
-  const pushedDrawer =
-    (location.state as DrawerHistoryState | null)?.drawer === true;
-  const openCard = (cardId: CardId, opts: OpenCardOptions = {}) => {
-    settleQuery();
-    // The URL commits in a transition: let the opener's extras land with it.
-    startTransition(() =>
-      setExtras((prev) => ({
-        cardId,
-        listIds: opts.list && opts.list.includes(cardId) ? opts.list : [cardId],
-        seed: opts.seed,
-        copyId: opts.copyId,
-        binderId: opts.binderId,
-        edit: opts.edit,
-        key: (prev?.key ?? 0) + 1,
-      })),
-    );
-    const write = (p: URLSearchParams) => {
-      p.set(DRAWER_PARAM, cardId);
-      if (opts.mode === "add") p.set(DRAWER_MODE_PARAM, "add");
-      else p.delete(DRAWER_MODE_PARAM);
-    };
-    // Already open (a card picked from inside it): swap the card in place.
-    if (drawerId) replaceParams(write);
-    else pushParams(write, { drawer: true } satisfies DrawerHistoryState);
-  };
-  const closeDrawer = () => {
-    if (pushedDrawer) void navigate(-1);
-    else
-      replaceParams((p) => {
-        p.delete(DRAWER_PARAM);
-        p.delete(DRAWER_MODE_PARAM);
-      });
-  };
-  const drawerIndex = drawer ? drawer.listIds.indexOf(drawer.cardId) : -1;
-  const step = (delta: 1 | -1) =>
-    drawer &&
-    drawerIndex + delta >= 0 &&
-    drawerIndex + delta < drawer.listIds.length
-      ? () => {
-          const next = drawer.listIds[drawerIndex + delta];
-          startTransition(() =>
-            setExtras((prev) => ({
-              cardId: next,
-              listIds: drawer.listIds,
-              key: (prev?.key ?? 0) + 1,
-            })),
-          );
-          replaceParams((p) => {
-            p.set(DRAWER_PARAM, next);
-            p.delete(DRAWER_MODE_PARAM);
-          });
-        }
-      : null;
+  // On the URL (`./drawerControl`): opening pushes `detail=<id>`, Back closes it.
+  const drawerControl = useCardDrawer(params, { beforeOpen: settleQuery });
+  const { drawer, openCard } = drawerControl;
 
   const checklistsSearch = (q?: string) => {
     const p = new URLSearchParams({ tab: "checklists" });
@@ -779,16 +586,7 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
 
   // The floating status line sits over the bottom of the page: while it is
   // up, keep a field the keyboard lands on clear of it (WCAG 2.4.11).
-  const floatingNotice = notice !== null && !drawer && !desk;
-  useEffect(() => {
-    if (!floatingNotice) return;
-    const root = document.documentElement;
-    const before = root.style.scrollPaddingBottom;
-    root.style.scrollPaddingBottom = NOTICE_CLEARANCE;
-    return () => {
-      root.style.scrollPaddingBottom = before;
-    };
-  }, [floatingNotice]);
+  useFloatingClearance(notice !== null && !drawer && !desk);
 
   // Arriving from the other side (a side link, the demo's switch): the
   // keyboard starts on this side's heading, not wherever the link was.
@@ -878,7 +676,7 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
                     // line; the desk's copy would say it a second time.
                     notice={drawer ? null : notice}
                     onUndo={undo}
-                    onDismissNotice={() => setNotice(null)}
+                    onDismissNotice={dismiss}
                   />
                 )}
                 {!redirect && tab === "add" && capabilities.intake && (
@@ -925,31 +723,12 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
                 <NoticeLine
                   notice={notice}
                   onUndo={undo}
-                  onDismiss={() => setNotice(null)}
+                  onDismiss={dismiss}
                   floating
                 />
               )}
-              {drawer && (
-                <CardDrawer
-                  cardId={drawer.cardId}
-                  seed={drawer.seed}
-                  mode={drawer.mode}
-                  focusCopyId={drawer.copyId}
-                  editCopyId={drawer.edit ? drawer.copyId : undefined}
-                  addBinderId={drawer.binderId}
-                  openKey={drawer.key}
-                  notice={notice}
-                  onUndo={undo}
-                  onDismissNotice={() => setNotice(null)}
-                  onClose={closeDrawer}
-                  onPrev={step(-1)}
-                  onNext={step(1)}
-                  position={
-                    drawer.listIds.length > 1
-                      ? { index: drawerIndex, total: drawer.listIds.length }
-                      : null
-                  }
-                />
+              {isOpen(drawerControl) && (
+                <OpenCardDrawer control={drawerControl} line={line} />
               )}
             </div>
           )}
@@ -1029,51 +808,3 @@ function ScopedRows({
 }
 
 const NO_WANTS: readonly Want[] = [];
-
-/** Marks a status line whose timer waits while it is pointed at or focused (`../prototypes/p1/notice`, the pack tray). */
-const NOTICE_HOLD_ATTR = "data-notice-hold";
-
-/**
- * True while the pointer rests on, or the keyboard focus is inside, an
- * element marked `data-notice-hold` (the status line with its Undo, wherever
- * it is drawn: the page toast, the card drawer, the pack tray).
- */
-function useNoticeHold(): boolean {
-  const [held, setHeld] = useState(false);
-  useEffect(() => {
-    let hover = false;
-    let focus = false;
-    const inLine = (t: EventTarget | null) =>
-      t instanceof Element && t.closest(`[${NOTICE_HOLD_ATTR}]`) !== null;
-    const sync = () => setHeld(hover || focus);
-    const onOver = (e: MouseEvent) => {
-      hover = inLine(e.target);
-      sync();
-    };
-    const onOut = (e: MouseEvent) => {
-      if (e.relatedTarget === null) {
-        hover = false;
-        sync();
-      }
-    };
-    const onFocusIn = (e: FocusEvent) => {
-      focus = inLine(e.target);
-      sync();
-    };
-    const onFocusOut = (e: FocusEvent) => {
-      focus = inLine(e.relatedTarget);
-      sync();
-    };
-    document.addEventListener("mouseover", onOver);
-    document.addEventListener("mouseout", onOut);
-    document.addEventListener("focusin", onFocusIn);
-    document.addEventListener("focusout", onFocusOut);
-    return () => {
-      document.removeEventListener("mouseover", onOver);
-      document.removeEventListener("mouseout", onOut);
-      document.removeEventListener("focusin", onFocusIn);
-      document.removeEventListener("focusout", onFocusOut);
-    };
-  }, []);
-  return held;
-}

@@ -1,6 +1,6 @@
 // R1: a card that lands in a box shows on the signed-in dashboard under New
-// Listings, with how many and NB's price, and opens the card in its box on
-// Inventory (NEO-464 review round 4). Listings are NB's own inventory (Jason,
+// Listings, with how many and NB's price, and opens the card's panel over the
+// dashboard (NEO-464 review round 4; the panel, 2026-11-11). Listings are NB's own inventory (Jason,
 // 2026-11-10: "don't worry about if it has sync'd yet or not"): nothing here
 // waits on a marketplace. With a box in use, the boxes stand on the third
 // shelf, each one link to the box on Inventory.
@@ -17,7 +17,7 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test(
-  "Dashboard: a card put in a box is a New Listing with its price, opening in its box on Inventory",
+  "Dashboard: a card put in a box is a New Listing with its price, opening its card panel over the dashboard",
   { tag: ["@dashboard"] },
   async ({ page, signIn, env }) => {
     const box = `Listed${env.ATTEMPT_TOKEN}`;
@@ -65,21 +65,27 @@ test(
     await expect(page.getByRole("list", { name: /^Shelf \d+, boxes$/ })).toBeVisible();
     await expectAccessible(page, { label: "Dashboard, New Listings and the boxes' shelf" });
 
-    // A real move: the tile opens the card in its box on Inventory, and Back returns to the dashboard.
+    // The tile opens the card's panel over the dashboard (a Back step), and Back closes it with the
+    // keyboard on the tile.
     await tile.click();
-    await expect(page).toHaveURL(/\/inventory\?tab=boxes&b=[^&]+&detail=[^&]+$/);
-    await expect(page.getByRole("heading", { level: 2, name: box, exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/\/dashboard\?detail=[^&]+&side=inventory$/);
     await expect(drawer).toBeVisible();
+    await expect(yourCopies.getByRole("button", { name: `Edit ${card.short}, Raw, Excellent`, exact: true })).toBeVisible();
     await page.goBack();
+    await expect(drawer).toBeHidden();
     await expect(greeting).toBeVisible();
+    await expect(tile).toBeFocused();
 
-    // --- Cleanup through the UI: remove the copy, delete the empty box -------
+    // --- Cleanup through the UI: remove the copy (from the panel, Forward reopens it), delete the empty box ---
     await page.goForward();
     await expect(drawer).toBeVisible();
     await yourCopies.getByRole("button", { name: `Remove ${card.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
+    await expect(tile).toHaveCount(0);
+    await page.goto("/inventory?tab=boxes");
+    await page.getByRole("list", { name: "Your boxes" }).getByLabel(new RegExp(`^${escapeRegExp(box)}, box, `)).click();
     await deleteOpenBox(page, box);
     await expect(page.getByRole("list", { name: "Your boxes" }).getByLabel(new RegExp(`^${escapeRegExp(box)}, box, `))).toHaveCount(0);
   },

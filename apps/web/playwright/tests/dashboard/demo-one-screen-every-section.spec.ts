@@ -7,8 +7,9 @@
 // With no binder open, the first stands shut where the pocket page opens; its
 // cover opens it. The panels the screen opens (a binder's pocket page, an order's cards) are
 // checked for accessibility OPEN, as well as the closed page: the open state is
-// what a keyboard or screen-reader user spends their time in. Needs a Look has
-// nothing to open (a plain list), so there is no open state of it to check.
+// what a keyboard or screen-reader user spends their time in, and so is a
+// card's panel, which opens over the dashboard. Needs a Look has nothing to
+// open (a plain list), so there is no open state of it to check.
 import { test, expect, expectAccessible } from "../../support/fixtures";
 
 test(
@@ -82,5 +83,18 @@ test(
     const pocketPage = page.getByRole("list", { name: /, page 1 of \d+$/ });
     await expect(pocketPage).toBeVisible();
     await expectAccessible(page, { within: pocketPage, label: "Dashboard demo, a binder's pocket page open" });
+
+    // A card opens its card panel over the dashboard (a Back step), on the demo's own collection: a
+    // Fresh Pull here. Checked open, then Back closes it with the keyboard on the pull.
+    const pull = page.getByRole("region", { name: "Fresh Pulls" }).getByRole("link").first();
+    await pull.click();
+    await expect(page).toHaveURL(/\/demo\?(.*&)?detail=[^&]+$/);
+    const panel = page.getByRole("dialog");
+    await expect(panel.getByRole("button", { name: "Close card detail" })).toBeVisible();
+    await expectAccessible(page, { label: "Dashboard demo, a Fresh Pull's card panel open" });
+    await page.goBack();
+    await expect(panel).toBeHidden();
+    await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible();
+    await expect(pull).toBeFocused();
   },
 );

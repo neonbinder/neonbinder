@@ -8,6 +8,7 @@ import CouldFit from "./CouldFit";
 import { ClosedCover, EmptyCover } from "./Cover";
 import NewListings from "./NewListings";
 import NewOnNeonBinder from "./NewOnNeonBinder";
+import { DashboardCardPanel } from "./panelLink";
 import PocketPage, { PocketTitle, WaitingTitle } from "./PocketPage";
 import { Chase, FreshPulls } from "./Pulls";
 import { FillingUp, OddsAndEnds } from "./Rail";
@@ -54,6 +55,8 @@ import "./combined.css";
  *   somewhere, so it PUSHES: Back closes it again.
  * - `pg=<n>`: its page (1-based). A page turn REPLACES.
  * - `open=…`: disclosures (see `useOpen`). They REPLACE.
+ * - `detail=<card>` (and `side=inventory`): a card's panel, open over the
+ *   screen (`./panelLink`). Opening one PUSHES: Back closes it.
  */
 
 const BINDER_PARAM = "binder";
@@ -295,6 +298,8 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
       </div>
 
       {!newsLeads && news}
+
+      <DashboardCardPanel />
     </div>
   );
 }
