@@ -16,7 +16,7 @@
  * be controlled independently.
  */
 
-import { act, render } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { EntityColumnProps } from "./EntityColumn";
@@ -29,15 +29,24 @@ vi.mock("../../convex/_generated/api", () => ({
       addCustomSelectorOption: "addCustomSelectorOption",
       ensureSelectorOptions: "ensureSelectorOptions",
     },
+    // PR 451 (NEO-487): the syncing panel's "Waiting on BuySportsCards…".
+    marketplaceWaits: { forRun: "marketplaceWaits.forRun" },
   },
 }));
 
 const mockEnsure = vi.fn();
 const mockAddCustom = vi.fn();
 // Mutable holders read lazily by the mocked hooks at call time.
-const state: { items: unknown; status: unknown } = {
+const state: {
+  items: unknown;
+  status: unknown;
+  wait: unknown;
+  asked: string[];
+} = {
   items: undefined,
   status: null,
+  wait: undefined,
+  asked: [],
 };
 
 vi.mock("convex/react", () => ({
@@ -48,11 +57,18 @@ vi.mock("convex/react", () => ({
   useConvex: () => ({ query: vi.fn() }),
   useAction: (ref: string) =>
     ref === "ensureSelectorOptions" ? mockEnsure : vi.fn(),
-  useQuery: (ref: string) =>
-    ref === "getSelectorSyncStatus" ? state.status : state.items,
+  useQuery: (ref: string, args: unknown) => {
+    if (ref === "marketplaceWaits.forRun") {
+      if (args === "skip") return undefined;
+      state.asked.push((args as { runKey: string }).runKey);
+      return state.wait;
+    }
+    return ref === "getSelectorSyncStatus" ? state.status : state.items;
+  },
 }));
 
 import EntityColumn from "./EntityColumn";
+import { columnSyncFailedMessage } from "./column-sync-failed";
 
 const vtProps: EntityColumnProps = {
   selector: <div>selector</div>,
@@ -73,7 +89,64 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
     vi.clearAllMocks();
     state.items = undefined;
     state.status = null;
+    state.wait = undefined;
+    state.asked = [];
     mockEnsure.mockResolvedValue({ scheduled: true, reason: "scheduled" });
+  });
+
+  describe("PR 451 (NEO-487) — waiting on BuySportsCards", () => {
+    const WAIT = "Waiting on BuySportsCards…";
+
+    it("the syncing panel shows one wait line while THIS column's ensure call is pending, keyed by the key it sent", async () => {
+      state.items = [];
+      state.status = { status: "syncing" };
+      state.wait = { waitingSince: 1, accumulatedMs: 0 };
+      let release!: () => void;
+      mockEnsure.mockImplementation(
+        () => new Promise((resolve) => (release = () => resolve({ ran: true, reason: "synced" }))),
+      );
+      const { findByText, getAllByText, queryByText } = renderVT();
+
+      await act(async () => {});
+      expect(mockEnsure).toHaveBeenCalledTimes(1);
+      const sent = mockEnsure.mock.calls[0][0].waitKey as string;
+      expect(sent).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+
+      const line = await findByText(WAIT, {}, { timeout: 3000 });
+      expect(line.closest('[role="status"]')).not.toBeNull();
+      expect(getAllByText(WAIT)).toHaveLength(1);
+      expect(new Set(state.asked)).toEqual(new Set([sent]));
+
+      await act(async () => release());
+      expect(queryByText(WAIT)).toBeNull();
+    });
+
+    it("a sync somebody else is running (no call of ours pending) shows no wait line", async () => {
+      state.items = [{ _id: "vt1", value: "Base", level: "variantType" }];
+      state.status = { status: "syncing" };
+      state.wait = { waitingSince: 1, accumulatedMs: 0 };
+      const { getByText } = renderVT();
+      await act(async () => {});
+      expect(getByText("Syncing Variant Types")).toBeTruthy();
+      expect(mockEnsure).not.toHaveBeenCalled();
+      expect(state.asked).toEqual([]);
+    });
+
+    it("the column's Sync button sends a fresh key with its forced sync", async () => {
+      state.items = [{ _id: "vt1", value: "Base", level: "variantType" }];
+      state.status = null;
+      const { getByRole } = renderVT();
+      await act(async () => {});
+      await act(async () => {
+        getByRole("button", { name: "Sync Variant Types" }).click();
+      });
+      expect(mockEnsure).toHaveBeenCalledTimes(1);
+      expect(mockEnsure.mock.calls[0][0]).toMatchObject({
+        level: "variantType",
+        force: true,
+        waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
+      });
+    });
   });
 
   it("empty column triggers ensureSelectorOptions once + shows + Custom (no sync mode, no legacy form)", async () => {
@@ -97,12 +170,21 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
     expect(queryByText("legacy-form")).toBeNull();
   });
 
-  it("status=error surfaces the message but keeps + Custom available (not stranded)", async () => {
+  it("status=error shows the column-named failure box but keeps + Custom available (not stranded)", async () => {
     state.items = [];
     state.status = { status: "error", message: "Couldn't sync options." };
     const { getByText } = renderVT();
     await act(async () => {});
-    expect(getByText("Couldn't sync options.")).toBeTruthy();
+    // NEO-450: the box names the column (the server's message is not echoed)
+    // and describes its retry. A stored error with no failed attempt from this
+    // session is a polite status, not an alert.
+    const id = screen
+      .getByRole("button", { name: "Sync Variant Types" })
+      .getAttribute("aria-describedby");
+    const box = document.getElementById(id ?? "");
+    expect(box?.textContent).toBe(columnSyncFailedMessage("Variant Types"));
+    expect(box?.getAttribute("role")).toBe("status");
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(getByText("+ Custom")).toBeTruthy();
   });
 

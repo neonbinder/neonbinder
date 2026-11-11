@@ -45,7 +45,11 @@ vi.mock("convex/react", () => ({
 // Deliberately NOT a kind any current registry entry claims — see the note
 // above. If a future ticket ever registers a fixer for `somethingFromTheFuture`
 // (it should not), change this string, not the assertions.
-vi.mock("./card-attention", () => ({
+// The rest of the seam is the real module (PR 451 routed the walker's
+// "Still looking up teams" sentence and `isAwaitingTeamLookup` through it);
+// only the attention rule itself is replaced.
+vi.mock("./card-attention", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./card-attention")>()),
   deriveCardAttention: () => [{ kind: "somethingFromTheFuture" }],
   needsAttention: () => true,
   attentionItemLabel: () => "needs something this app version cannot do",

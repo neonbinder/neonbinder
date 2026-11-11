@@ -59,7 +59,15 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorOptionById: "getSelectorOptionById",
       getSlotCardCounts: "getSlotCardCounts",
     },
+    // PR 451 (NEO-487): the picker's "Waiting on BuySportsCards…" line.
+    marketplaceWaits: { forRun: "marketplaceWaits.forRun" },
   },
+}));
+
+/** PR 451 — `marketplaceWaits.forRun`'s answer for any key, and the keys asked. */
+const waitState = vi.hoisted(() => ({
+  answer: undefined as unknown,
+  asked: [] as string[],
 }));
 
 const mockFetchRawOptions = vi.fn();
@@ -75,7 +83,12 @@ vi.mock("convex/react", () => ({
     ref === "fetchRawOptions" ? mockFetchRawOptions : vi.fn(),
   useMutation: (ref: string) =>
     ref === "setVariantTypePlatformData" ? mockSetPlatformData : vi.fn(),
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
+    if (ref === "marketplaceWaits.forRun") {
+      if (args === "skip") return undefined;
+      waitState.asked.push((args as { runKey: string }).runKey);
+      return waitState.answer;
+    }
     if (ref === "getAncestorChain") return currentChain;
     if (ref === "getSelectorOptionById") return currentRow;
     if (ref === "getSlotCardCounts") return currentCounts;
@@ -659,5 +672,44 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(panel.textContent).not.toContain("sportlots.com");
     expect(panel.textContent).not.toContain("SECRET");
     expect(panel.textContent).not.toContain("Request ID");
+  });
+});
+
+describe("BaseMappingForm — waiting on BuySportsCards (PR 451)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain();
+    currentRow = undefined;
+    currentCounts = undefined;
+    waitState.answer = { waitingSince: 1, accumulatedMs: 0 };
+    waitState.asked = [];
+  });
+  afterEach(() => {
+    waitState.answer = undefined;
+  });
+
+  it("the open picker carries one wait line while the fetch is pending, keyed by the key the fetch was given", async () => {
+    let release!: (v: unknown) => void;
+    mockFetchRawOptions.mockImplementation(() => new Promise((r) => (release = r)));
+    renderForm();
+
+    await waitFor(() => expect(mockFetchRawOptions).toHaveBeenCalledTimes(1));
+    const sent = mockFetchRawOptions.mock.calls[0][0].waitKey as string;
+    expect(sent).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+
+    const line = await screen.findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    expect(line.closest('[role="dialog"]')).not.toBeNull();
+    expect(line.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
+    expect(new Set(waitState.asked)).toEqual(new Set([sent]));
+
+    await act(async () => {
+      release({
+        success: true,
+        bscOptions: [{ value: "Topps", platformValue: "topps" }],
+        slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+      });
+    });
+    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
   });
 });

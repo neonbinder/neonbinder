@@ -3,6 +3,8 @@ import { useAction, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 
 export default function SetForm({
   manufacturerId,
@@ -19,6 +21,8 @@ export default function SetForm({
   });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // PR 451 (NEO-487) — this attempt's run key for the wait line.
+  const [waitKey, setWaitKey] = useState<string | null>(null);
   const triggered = useRef(false);
 
   const sportValue = ancestorChain?.find((a: { level: string }) => a.level === "sport")?.value;
@@ -29,8 +33,10 @@ export default function SetForm({
     if (!yearId) return;
     setLoading(true);
     setMessage(null);
+    const key = mintWaitKey();
+    setWaitKey(key);
     try {
-      const result = await syncSets({ yearId });
+      const result = await syncSets({ yearId, waitKey: key });
       setMessage(result.message);
       // NEO-47: go idle on an empty result (totalSets === 0) too, not only on
       // success, so a no-marketplace-data case doesn't hard-block "+ Custom".
@@ -69,6 +75,15 @@ export default function SetForm({
           from BSC and distributing across manufacturers...
         </p>
       )}
+
+      {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while this
+          sync is held up by a BSC call. Always mounted; idle it is empty. */}
+      <WaitingOnMarketplaceRun
+        runKey={waitKey}
+        active={loading}
+        marketplace="BuySportsCards"
+        className="mb-4"
+      />
 
       {message && (
         <div className="p-3 mb-4 bg-notice-info-bg border border-notice-info-rule rounded-md text-notice-info-ink text-sm">

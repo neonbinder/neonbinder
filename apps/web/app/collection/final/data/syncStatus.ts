@@ -40,6 +40,10 @@ function toSteps(steps: ReadonlyArray<RawStep>): SyncStep[] {
     ...(step.condition !== undefined ? { condition: step.condition } : {}),
     ...(step.conditions !== undefined ? { conditions: [...step.conditions] } : {}),
     status: step.status,
+    // NEO-487 — only while a marketplace call of this step is outstanding.
+    ...(step.marketplaceWaitingSince !== undefined
+      ? { marketplaceWaitingSince: step.marketplaceWaitingSince }
+      : {}),
   }));
 }
 

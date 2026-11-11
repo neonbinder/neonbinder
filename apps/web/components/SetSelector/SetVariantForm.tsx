@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { useSelectorSync } from "./useSelectorSync";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 
 export default function SetVariantForm({
   setId,
@@ -26,7 +27,7 @@ export default function SetVariantForm({
     (a: { level: string }) => a.level === "setName",
   )?.value;
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (waitKey: string) => {
     if (!sportValue || !yearValue || !setNameValue) return undefined;
     return fetchAggregatedOptions({
       level: "variantType",
@@ -36,10 +37,11 @@ export default function SetVariantForm({
         year: yearValue,
         setName: setNameValue,
       },
+      waitKey,
     });
   }, [fetchAggregatedOptions, sportValue, yearValue, setNameValue, setId]);
 
-  const { loading, hasError, message, retry, start } = useSelectorSync({
+  const { loading, hasError, message, retry, start, waitKey } = useSelectorSync({
     level: "variantType",
     onDone,
     run,
@@ -68,6 +70,15 @@ export default function SetVariantForm({
           <strong>{setNameValue || "..."}</strong> from BSC...
         </p>
       )}
+
+      {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while this
+          sync is held up by a BSC call. Always mounted; idle it is empty. */}
+      <WaitingOnMarketplaceRun
+        runKey={waitKey}
+        active={loading}
+        marketplace="BuySportsCards"
+        className="mb-4"
+      />
 
       {message &&
         (hasError ? (

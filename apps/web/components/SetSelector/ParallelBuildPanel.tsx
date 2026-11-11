@@ -1,4 +1,5 @@
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useRef,
@@ -13,6 +14,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 import {
@@ -232,6 +234,12 @@ export type ParallelRun = {
   atIndex: number | null;
   /** What the live region says; see `ParallelBuildPanel`. */
   announcement: string;
+  /**
+   * NEO-487 — this run's key for `marketplaceWaits`, minted when the run
+   * starts and sent with every build in it, so the host can show "Waiting on
+   * BuySportsCards…" while a build is held up. Absent on a left-behind run.
+   */
+  waitKey?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -854,6 +862,9 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
       // caller's own name wins when it has one, so an insert's run reads
       // exactly as it always has.
       const sourceValue = from.value || plan.source?.value || "";
+      // NEO-487 — one key for the whole run: the wait line reads whichever
+      // build is in flight.
+      const waitKey = mintWaitKey();
       const opening: ParallelRun = {
         startedFrom: from.id,
         sourceId: plan.source?.id ?? from.id,
@@ -864,6 +875,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
         phase: "running",
         atIndex: null,
         announcement: "",
+        waitKey,
       };
       // Worded apart from the heading on purpose, so the page never carries
       // the heading's text twice (a text find would match both).
@@ -887,6 +899,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
           const result: ParallelBuildResult = await track(parallelId, () =>
             convex.action(api.parallelChecklistBuild.buildParallelChecklist, {
               parallelId,
+              waitKey,
             }),
           );
           line =
@@ -981,9 +994,17 @@ export default function ParallelBuildPanel({
   run,
   onStop,
   headingLevel = 3,
+  waitingSlot,
 }: {
   run: ParallelRun;
   onStop: () => void;
+  /**
+   * NEO-487 — the host's "Waiting on BuySportsCards…" line for this run
+   * (`WaitingOnMarketplaceRun` keyed on `run.waitKey`), shown under the
+   * ledger. A slot rather than a subscription here, so the panel stays free
+   * of `useQuery` and every host decides how it reads the wait.
+   */
+  waitingSlot?: ReactNode;
   /**
    * NEO-321 (a11y) — 4 when the panel sits inside a section that has its own
    * h3 (the Base-parallels section), so the outline nests. Text and id are
@@ -1217,6 +1238,8 @@ export default function ParallelBuildPanel({
         <p className="mt-2 text-xs">{truncatedText(run.entries.length)}</p>
       )}
 
+      {waitingSlot}
+
       {/*
         a11y — the one live line, and deliberately POLITE for everything it
         says, failures included. The house split (routine → role="status",
@@ -1280,7 +1303,14 @@ export function ParallelBuildButton({
   runner,
   buttonRef,
   onResult,
+  onWaitKey,
 }: {
+  /**
+   * NEO-487 — told this build's `marketplaceWaits` key when it starts, and
+   * `null` when it ends, so the host can show "Waiting on BuySportsCards…"
+   * while the build is held up by a BSC call.
+   */
+  onWaitKey?: (waitKey: string | null) => void;
   parallelId: Id<"selectorOptions">;
   parallelValue: string;
   sourceValue: string;
@@ -1322,8 +1352,10 @@ export function ParallelBuildButton({
   const build = async () => {
     if (busy) return;
     setBuilding(true);
+    const waitKey = mintWaitKey();
+    onWaitKey?.(waitKey);
     try {
-      const call = () => buildParallel({ parallelId });
+      const call = () => buildParallel({ parallelId, waitKey });
       const result: ParallelBuildResult | undefined = runner
         ? await runner.buildOne(parallelId, call)
         : await call();
@@ -1348,6 +1380,7 @@ export function ParallelBuildButton({
         committed: false,
       });
     } finally {
+      onWaitKey?.(null);
       setBuilding(false);
       if (confirming) restoreRef.current = true;
       setConfirming(false);

@@ -34,6 +34,7 @@
 // NEO-335: the header's one counter is "Step x of y" (it was "N of M reviewed").
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, emptyListAndPickSport, PLAYERS_MATCHES, playersCounter } from "../../support/players";
+import { CHECKLISTS } from "../../support/published-checklist";
 import { fetchChecklistToWizard, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
 
 const SET = "BBM Rookie Edition Premium";
@@ -75,7 +76,7 @@ test(
     await expect(page.getByText(/b\. 1851/).first()).toBeVisible();
 
     // ── SETUP: this set's live fetch, the wizard open at "Step 1" (nothing decided) ──
-    await fetchChecklistToWizard(page, env, TARGET);
+    await fetchChecklistToWizard(page, env, TARGET, { checklist: CHECKLISTS.bbmRookieEditionPremium });
     const wizard = reviewWizard(page);
     await expect(stepCounter(page)).toBeVisible();
     if (!/^Step 1 of /.test((await stepCounter(page).textContent()) ?? "")) {
@@ -85,7 +86,7 @@ test(
       await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
       await page.getByRole("button", { name: "Discard", exact: true }).click();
       await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible({ timeout: 30_000 });
-      await fetchChecklistToWizard(page, env, TARGET);
+      await fetchChecklistToWizard(page, env, TARGET, { checklist: CHECKLISTS.bbmRookieEditionPremium });
     }
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 

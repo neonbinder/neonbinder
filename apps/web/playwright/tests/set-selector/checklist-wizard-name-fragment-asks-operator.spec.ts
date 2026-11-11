@@ -27,6 +27,7 @@
 // and read back. The server refuses a plain create of a fragment, so "Added as
 // new" after "Add as a one-name player" proves the one-name flag arrived.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { CHECKLISTS } from "../../support/published-checklist";
 import { addPlayerByHand, expectPlayersLoaded, playersCounter, PLAYERS_MATCHES } from "../../support/players";
 import { customSport, drillToCustom, setBuilderReady } from "../../support/set-builder";
 import {
@@ -63,7 +64,7 @@ test(
     await addPlayerByHand(page, fuller, sport);
 
     // ── SETUP: the set's live fetch, the wizard open with nothing decided ──
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET, checklist: CHECKLISTS.fortWorthFire });
     const wizard = reviewWizard(page);
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 

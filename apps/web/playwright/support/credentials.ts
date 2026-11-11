@@ -104,7 +104,14 @@ export async function saveBscSignIn(page: Page, opts: { listing?: boolean } = {}
   const listing = opts.listing ? "&listing=on" : "";
   await page.goto(`/testing/seed-credentials?sites=buysportscards${listing}&redirect=/profile/credentials`);
   // The hop signs in to BuySportsCards live (SEED_SIGN_IN, GUIDE hard rule 3).
-  await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: SEED_SIGN_IN });
+  // A hop that FAILS prints "Seed failed (...)" and goes nowhere: throw its
+  // reason now instead of idling to the budget on a heading that never comes.
+  const landed = page.getByRole("heading", { name: "Profile Settings" });
+  const seedFailed = page.getByText(/^\[testing-seed\] Seed failed/);
+  await expect(landed.or(seedFailed)).toBeVisible({ timeout: SEED_SIGN_IN });
+  if (await seedFailed.isVisible()) {
+    throw new Error(`The BuySportsCards seed hop failed: ${(await seedFailed.innerText()).replace(/\s+/g, " ")}`);
+  }
   await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
 }
 

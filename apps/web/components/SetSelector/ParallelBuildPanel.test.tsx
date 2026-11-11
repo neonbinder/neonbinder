@@ -261,7 +261,7 @@ describe("ParallelBuildButton — Build/Rebuild labels and the rebuild confirm",
 
     await waitFor(() => expect(onResult).toHaveBeenCalled());
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(mockActionFn).toHaveBeenCalledWith({ parallelId: A });
+    expect(mockActionFn).toHaveBeenCalledWith({ parallelId: A, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) });
   });
 
   test("a parallel WITH cards shows Rebuild and confirms before calling the action", async () => {
@@ -286,7 +286,7 @@ describe("ParallelBuildButton — Build/Rebuild labels and the rebuild confirm",
     expect(screen.getByText(copy.title)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Replace the cards" }));
-    await waitFor(() => expect(mockActionFn).toHaveBeenCalledWith({ parallelId: A }));
+    await waitFor(() => expect(mockActionFn).toHaveBeenCalledWith({ parallelId: A, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }));
     await waitFor(() => expect(onResult).toHaveBeenCalled());
   });
 

@@ -107,3 +107,8 @@
 - [Responsive duplicates and text locators](patterns_responsive_duplicates_and_text_locators.md) — getByText matches the CSS-hidden twin; filter({ visible: true }); branch on isMobile only for layout facts
 - [Failure hook that finishes every step](patterns_failure_hook_that_finishes_every_step.md) — afterEach with a fresh context page, attempt() collecting errors, idempotent steps, deleteBoxNamed
 - [Dashboard shelf boxes and demo limits](reference_dashboard_shelf_boxes_and_demo_limits.md) — demo has one box; 7 real boxes = 5 ends desktop / 3 phone; Sell vs Fresh Pulls; Hunt tray; stale panel run
+- [Column sync failed hides the empty line](patterns_column_sync_failed_hides_the_empty_line.md) — NEO-450: wake on columnSyncError, empty line hidden is no proof; marker-split regex from the builder
+- [Fake a Convex query value over the WebSocket](patterns_fake_a_convex_query_value_over_the_websocket.md) — NEO-450: routeWebSocket, key udfPath+args, no-op-version Transition inject, end on the retry's ActionResponse
+- [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic, measured-wait credit, blocked Next via Enter, radiogroup per card
+- [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
+- [Checklist upload team claim blocks career prefill](patterns_checklist_upload_team_claim_blocks_career_prefill.md) — NEO-478: an uploaded row's team is a permanent claim; Roanoke spec cannot take the upload; aria-disabled Use via Enter; burst 429s

@@ -241,12 +241,21 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `expectEbayHookedUp`, which FAILS a spec loudly, naming the missing setup,
   when the deployment has no eBay wiring; NEO-415).
 - `support/set-builder.ts`: the cascade. `setBuilderReady`, `columnHeading`,
-  `columnSearch`, `columnOption`, `columnSelection`, `pick`,
+  `columnSearch`, `columnOption`, `columnSelection`, `columnSyncError`, `pick`,
   `addCustomEntry`, `addCustomManufacturer`, `selectOrCreate`,
   `syncChecklistButton`, and the drills `drillToSet` (2024 Topps Chrome),
   `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
   `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
   options object: `drillToSet(page, env, { set: "Topps Stars of MLB Network" })`.
+- `support/column-sync-fault.ts`: `faultColumnSyncStatus(page)` (NEO-450), the one
+  WebSocket fault: installed before `signIn`, it sits on the Convex sync socket
+  and makes ONE set-builder column's status query read as a failed sync
+  (`failStatus({ level, parentId })`, the parent id from the set builder's
+  address), until that column's own forced sync is answered by the server.
+  Every other frame passes untouched. It depends on Convex's internal sync
+  protocol (the version is in its header) and throws, naming it, when it
+  finds nothing to fake. No product or Convex hook exists for this, by
+  decision; do not add one.
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
@@ -266,6 +275,13 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `discardResumedReviewBatch`, `personSkip`, `walkToPlayerRow`,
   `advanceToSave`, `readBackDecision`, `confirmSaveButton`). Each helper's
   contract is in its doc comment; see "The entity-review wizard" under Gotchas.
+- `support/published-checklist.ts`: the publisher's-checklist upload
+  (`usePublishersChecklist`, `expectTeamsFromChecklist`, `checklistFacts`,
+  `CHECKLISTS`) and the captured CSVs in `fixtures/checklists/`. A spec that
+  fetches a checklist uploads its set's file first so BSC is asked for no card
+  one by one; N in `Teams from your checklist: N of M cards` is read off the
+  file, never typed. Captured with `tools/capture-bsc-checklist-teams.mjs`
+  (SET-REGISTRY.md, "Published-checklist fixtures").
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
   deployment-protection header; started by the config's `webServer` when
   `PREVIEW_URL` is set. Never logs the secret.
@@ -570,6 +586,40 @@ Nothing schedules around the seed: run it first (`npm run test:e2e:seed`),
 then run whatever specs you want. To seed another worker's account locally,
 set `WORKER_INDEX` and run the `bootstrap` project for it.
 
+**The seed's Base fetch uploads a publisher's checklist (NEO-478/482).** Before
+its Base Sync, `setup.spec.ts` uploads `fixtures/checklists/2024-topps-chrome-base.csv`
+(BSC's own per-card answers for 2024 Topps Chrome Base, with card #300's row
+left out) through "Add the publisher's checklist", asserts the result line
+`Teams from your checklist: N of M cards` (N read off the file by
+`checklistFacts`), and fails by name if the wizard opens on "Checklist says
+otherwise". So the seed asks BSC for the bulk checklist and for ONE card, and
+**setup is no longer the live proof for per-card team lookups.** The live proofs
+are `checklist-bsc-team-enrichment` (card #300), the stall spec
+(`checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`) and the upload spec
+(`checklist-published-upload-skips-bsc-and-asks-on-disagreement`). Do not read a
+green seed as evidence that a per-card BSC lookup works. The Future Stars insert
+uploads its own file too (20 cards, `fixtures/checklists/2024-topps-chrome-insert-future-stars.csv`);
+the Gold Wave build is a copy of Base's cards and asks BSC for nothing per card.
+A spec whose point IS a live per-card read keeps that read small: it uploads the
+set's file with the few cards it needs left OUT (`--omit-number`), as the stall
+spec does with five.
+
+The bootstrap's optional BSC warm-up (a live sign-in through the browser service)
+runs on worker 0 only, so shards do not all sign in to BSC at the same moment.
+
+**BSC's 429 cooldown (NEO-487), as a spec meets it.** A `card-listing` 429 opens a
+deployment-wide cooldown: 15 s the first time, doubling on each further 429 to a
+120 s cap, and the streak resets on the next success (tuned to the lockouts a
+paced laptop capture measured, 15 to 45 s; SET-REGISTRY.md, "Publisher's
+checklist fixtures"). While it is open the product shows "Waiting on
+BuySportsCards" and a spec waits the measured time plus 7 s, never a flat bump.
+
+**The reset clears BSC's backoff state.** `e2e-baseline.sh reset` also empties
+the card-listing cooldown, the "Waiting on BuySportsCards" wait rows and the
+background team lane, and a lane item queued before the reset ends without
+asking BSC. A re-seed therefore starts with BSC open and the lane empty; a run
+that meets a cooldown it did not cause is not looking at the previous seed's.
+
 ### Seeding a fixture that no UI can create (`/testing/seed-credentials`)
 
 Some states cannot be reached by driving the product in test time, because
@@ -666,7 +716,17 @@ The idle text is NOT a readiness signal: the first year-wide Sets sync (any
 spec that drills the year through All Brands) mints the year's `Unknown` row
 and the text disappears, so a drill that waits for "idle text OR my brand"
 hangs on any year another spec has touched (CI run 39587731096, 1996 and 2025
-Baseball). Search for the brand instead and make it on "No matches found"
+Baseball). Nor is it proof a sync ran (NEO-450): while a column's sync has
+failed the idle text is hidden and the column shows only its error,
+`Couldn't sync <column> — please try again.` (role `alert` when this
+session's own sync attempt failed, role `status` for an error the server
+already held; the column's `Sync <column>` button is the retry). Locate it
+with `columnSyncError(page, column)`, which matches either role and reads
+the sentence from the product's own builder; a wait that settles on the idle
+text or the rows also wakes on that error, then
+asserts it hidden, so a failure reds at once and by name instead of as a
+timeout (`selectOrCreate` does this and never hand-makes a row over a failed
+sync). Search for the brand instead and make it on "No matches found"
 (`selectOrCreate`); a brand's Sets column ends "done" with "SportLots
 skipped: no SportLots ids on this path."; the base picker's SportLots pane
 shows "SportLots returned no base set for <set>"; checklist fetches take the

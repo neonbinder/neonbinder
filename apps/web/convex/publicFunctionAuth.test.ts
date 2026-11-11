@@ -946,6 +946,9 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetCollectionContainersBatch",
     "resetCollectionBuildingSetsBatch",
     "resetVariantCommonPricesBatch",
+    // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows.
+    "resetMarketplaceCooldownsBatch",
+    "resetMarketplaceWaitsBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
     // These do the actual deleting, and they carry no identity check —
     // a CLI run has no identity, so one would refuse every legitimate call
@@ -3120,5 +3123,87 @@ describe("NEO-464 testing dashboard seeds — testing deployments only, signed i
       if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
       else process.env.TESTING_RESET_SECRET = saved;
     }
+  });
+});
+
+describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () => {
+  /**
+   * Everything that writes is internal: the wait rows are opened and patched
+   * by the BSC adapters (the owner is the identity the action runs as, never
+   * an argument), the cooldown is written only on a BSC 429, and the team
+   * lane is fed by the commit and backfill. A public twin of any of them is
+   * an unauthenticated write (a forged cooldown would stop every BSC team
+   * lookup on the deployment). Reading-the-source, as the NEO-475 block.
+   */
+  test.each([
+    ["marketplaceWaits.ts", "open", "internalMutation"],
+    ["marketplaceWaits.ts", "edge", "internalMutation"],
+    ["marketplaceWaits.ts", "expire", "internalMutation"],
+    ["marketplaceCooldowns.ts", "get", "internalQuery"],
+    ["marketplaceCooldowns.ts", "record429", "internalMutation"],
+    ["marketplaceCooldowns.ts", "recordSuccess", "internalMutation"],
+    ["bscTeamPool.ts", "enqueueBscTeamChecks", "internalMutation"],
+    ["bscTeamPool.ts", "cancelAllBscTeamChecks", "internalMutation"],
+    ["checklistCandidates.ts", "resolveChecklistTeamTexts", "internalQuery"],
+    ["adapters/buysportscards.ts", "runBscTeamCheckItem", "internalAction"],
+    ["adapters/buysportscards.ts", "processBscTeamEnrichmentQueue", "internalAction"],
+    ["adapters/buysportscards.ts", "probeBscChecklistBatch", "internalAction"],
+    ["adapters/buysportscards.ts", "fetchBscCardTeamNames", "internalAction"],
+  ])("%s :: %s is declared %s", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    expect(src).not.toContain(`export const ${fn} = action(`);
+    expect(src).not.toContain(`export const ${fn} = query(`);
+    expect(src).not.toContain(`export const ${fn} = mutation(`);
+  });
+
+  test("the team lane's completion handler is the pool's own onComplete", () => {
+    const src = readFileSync(join(__dirname, "bscTeamPool.ts"), "utf8");
+    expect(src).toContain("export const onBscTeamCheckComplete = bscTeamPool.defineOnComplete({");
+    const serverImport = src.match(/import \{([^}]*)\} from "\.\/_generated\/server";/);
+    expect(serverImport).not.toBeNull();
+    const names = serverImport![1].split(",").map((s) => s.trim()).filter(Boolean);
+    expect(names).not.toContain("query");
+    expect(names).not.toContain("mutation");
+    expect(names).not.toContain("action");
+  });
+
+  test("marketplaceWaits.forRun is the one public function and reads only the caller's own rows", () => {
+    const src = readFileSync(join(__dirname, "marketplaceWaits.ts"), "utf8");
+    const start = src.indexOf("export const forRun = query({");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    expect(body).toContain("await getCurrentUserIdentity(ctx)");
+    expect(body).toContain('q.eq("ownerId", identity.userId)');
+    // The owner is never an argument.
+    expect(body).toContain("args: { runKey: v.string() }");
+    const publics = src.match(/export const \w+ = (query|mutation|action)\(/g) ?? [];
+    expect(publics).toEqual(["export const forRun = query("]);
+  });
+
+  test("the wait row's owner comes from the identity, never an argument", () => {
+    const src = readFileSync(join(__dirname, "marketplaceWaits.ts"), "utf8");
+    const start = src.indexOf("export const open = internalMutation({");
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    expect(body).toContain("ownerId: identity.userId");
+    expect(body).not.toMatch(/ownerId:\s*v\./);
+  });
+
+  test("forRun answers nothing to a caller with no identity", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceWaits", {
+        ownerId: "someone-else",
+        runKey: "run_1",
+        platform: "bsc",
+        waitingSince: 1_000,
+        accumulatedMs: 500,
+        updatedAt: 1_000,
+      });
+    });
+    expect(await t.query(api.marketplaceWaits.forRun, { runKey: "run_1" })).toEqual({ accumulatedMs: 0 });
+    expect(
+      await t.withIdentity(SIGNED_IN).query(api.marketplaceWaits.forRun, { runKey: "run_1" }),
+    ).toEqual({ accumulatedMs: 0 });
   });
 });

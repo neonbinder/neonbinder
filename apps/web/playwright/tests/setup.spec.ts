@@ -20,6 +20,17 @@
 // columns at once double a round-trip and never a row (SET-REGISTRY.md, "The
 // 1995 minor-league hockey wizard fixtures"), so those are not pre-synced.
 //
+// The Base fetch is given the publisher's checklist (NEO-478/482, D8 amended):
+// BSC's own per-card answers for 2024 Topps Chrome Base, captured to
+// fixtures/checklists/2024-topps-chrome-base.csv with card #300's row left OUT.
+// So the fetch asks BSC for the bulk checklist and for ONE card, #300, and the seed
+// no longer makes a card-listing call per card (it was about 300 calls, and the
+// reason a seed met BSC's 429). The seed is therefore NOT the live proof for
+// per-card lookups: those are `checklist-bsc-team-enrichment` (card #300),
+// `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards` and
+// `checklist-published-upload-skips-bsc-and-asks-on-disagreement`. The Insert and
+// the Gold Wave build stay live syncs.
+//
 // R5 exempts the seed as a class: every wait below is the flow's own measured
 // cold-path value (live marketplace round trips on unwarmed data).
 // "A SYNC THAT HALF-WORKED IS A FAILED SEED": after every sync the partial-
@@ -28,9 +39,11 @@ import { test, expect } from "../support/fixtures";
 import { loginToSportLots, openBscCredentials } from "../support/credentials";
 import {
   addCustomManufacturer,
+  ANY_COLUMN_SYNC_FAILED,
   columnHeading,
   columnOption,
   columnSearch,
+  columnSyncError,
   drillToBaseVariant,
   drillToColdManufacturer,
   drillToSet,
@@ -38,14 +51,28 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
-import { addAsNewStep, advanceToSave, answerStepAsNew, confirmSaveButton, reviewWizard } from "../support/wizard";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../support/published-checklist";
+import {
+  addAsNewStep,
+  advanceToSave,
+  answerStepAsNew,
+  checklistDisagreementHeading,
+  confirmSaveButton,
+  reviewWizard,
+  stepCounter,
+} from "../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SL_PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
 
+// NEO-450: ANY_COLUMN_SYNC_FAILED (support/set-builder.ts) matches any
+// column's failed-sync sentence; column-sync-failed-shows-only-the-error
+// proves it matches the rendered one.
 async function expectNoSyncFailure(page: Page) {
   await expect(page.getByText(/could not be reached, so nothing from .* was changed/)).toBeHidden();
-  await expect(page.getByText(/Couldn.t sync options/)).toBeHidden();
+  // Count, not visibility: two failed columns would make `toBeHidden` a
+  // strict-mode error rather than a failure that names the sentence.
+  await expect(page.getByText(ANY_COLUMN_SYNC_FAILED), "a set-builder column's sync failed").toHaveCount(0);
 }
 
 /**
@@ -208,7 +235,11 @@ test(
 
     // ── Years → 2024 ───────────────────────────────────────────────────────
     await expect(columnHeading(page, "Years")).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("listbox", { name: "Years" })).toBeVisible({ timeout: 90_000 });
+    // A failed sync shows the column's alert and no listbox: wake on it too
+    // and fail at once, by name (NEO-450).
+    await expect(
+      page.getByRole("listbox", { name: "Years" }).or(columnSyncError(page, "Years")).first(),
+    ).toBeVisible({ timeout: 90_000 });
     await expectNoSyncFailure(page);
     if (env.SL_PAUSED) {
       // Baseball carries SportLots' id from the seeded catalogue, so SportLots
@@ -234,17 +265,21 @@ test(
       await topps.click();
     } else {
       await expect(page.getByText("Syncing Manufacturer Options")).toBeHidden({ timeout: 45_000 });
-      await expect(
-        page.getByText("No manufacturers available. Sync from marketplaces to populate."),
-      ).toBeVisible({ timeout: 45_000 });
+      // NEO-450: a failed sync hides the idle line and shows the column's
+      // alert instead; wake on either so a failure reds here, by name.
+      const noManufacturers = page.getByText("No manufacturers available. Sync from marketplaces to populate.");
+      await expect(noManufacturers.or(columnSyncError(page, "Manufacturers"))).toBeVisible({ timeout: 45_000 });
       await expectNoSyncFailure(page);
+      await expect(noManufacturers).toBeVisible();
       await addCustomManufacturer(page, "Topps");
       await columnOption(page, "Manufacturers", "Topps").click();
     }
 
     // ── Sets → Topps Chrome ────────────────────────────────────────────────
     await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: 45_000 });
+    await expect(
+      page.getByRole("listbox", { name: "Sets" }).or(columnSyncError(page, "Sets")).first(),
+    ).toBeVisible({ timeout: 45_000 });
     await expectNoSyncFailure(page);
     await pick(page, "Sets", "Topps Chrome");
 
@@ -252,8 +287,13 @@ test(
     await expect(columnHeading(page, "Variant Types")).toBeVisible({ timeout: 20_000 });
     const base = columnOption(page, "Variant Types", "Base");
     const noTypes = page.getByText("No variant types available. Sync from marketplaces to populate.");
-    await expect(base.or(noTypes)).toBeVisible({ timeout: 45_000 });
-    if (await noTypes.isVisible()) {
+    // NEO-450: a failed sync hides the idle line and shows the column's alert
+    // instead. Either one earns the seed's single retry (the `Sync Variant
+    // Types` press below), exactly as forgiving as before; a second failure
+    // leaves no Base and fails the hard asserts after it.
+    const typesError = columnSyncError(page, "Variant Types");
+    await expect(base.or(noTypes).or(typesError).first()).toBeVisible({ timeout: 45_000 });
+    if ((await noTypes.isVisible()) || (await typesError.isVisible())) {
       await page.getByRole("button", { name: "Sync Variant Types" }).click();
       await expect(page.getByText("Syncing Variant Types")).toBeHidden({ timeout: 45_000 });
       const close = page.getByRole("button", { name: "Close", exact: true });
@@ -302,7 +342,12 @@ test(
       timeout: 30_000,
     });
     await expect(syncChecklistButton(page)).toBeVisible();
+    // The captured checklist goes in before the Sync: the fetch then asks BSC for no card
+    // the file answers (a seed with a card-listing call per card met BSC's 429).
+    const facts = await usePublishersChecklist(page, CHECKLISTS.toppsChrome2024Base);
     await fetchChecklist(page, env.SL_PAUSED, { open: 60_000, settle: 60_000 });
+    // The result line is the proof the file, not BSC, supplied the teams. N is read off the file.
+    await expectTeamsFromChecklist(page, facts);
 
     if (!env.SL_PAUSED) {
       // Pairing confirmed: no partial-pairing notice.
@@ -315,6 +360,14 @@ test(
     // Players & Teams" is gone.
     const wizard = reviewWizard(page);
     if (await wizard.isVisible()) {
+      // The file is BSC's own answers, so it cannot disagree with BSC: a "Checklist says
+      // otherwise" step here means the capture is stale (re-capture it, SET-REGISTRY.md),
+      // and the walk below would sit on a step it has no answer for until its 240 s ran out.
+      await expect(stepCounter(page)).toBeVisible();
+      await expect(
+        checklistDisagreementHeading(page),
+        "the seed's 2024-topps-chrome-base.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
+      ).toBeHidden();
       await walkWizardToSave(page, 250);
     }
     await expect(page.getByText(/Saved 335 cards/)).toBeVisible({ timeout: 120_000 });
@@ -329,7 +382,11 @@ test(
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible({
       timeout: 30_000,
     });
+    // The seed's Future Stars checklist is BSC's own answers (the 20 cards), so the fetch asks BSC
+    // for no card (D4): the BSC listing specs that read this set no longer depend on 20 live reads.
+    const futureStars = await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
     await fetchChecklist(page, env.SL_PAUSED, { open: 90_000, settle: 90_000 });
+    await expectTeamsFromChecklist(page, futureStars);
     // Every Future Stars player is already known from Base: no NAMES review.
     // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
     // steps only: a card that would save with no team (a SportLots-only card
@@ -338,6 +395,12 @@ test(
     // fetchChecklist waited for the wizard or the "Saved" banner, so which one
     // is up is settled and read once. The seed answers nothing on those steps.
     if (await wizard.isVisible()) {
+      // The file is BSC's own answers, so a "Checklist says otherwise" step means the capture is stale.
+      await expect(stepCounter(page)).toBeVisible();
+      await expect(
+        checklistDisagreementHeading(page),
+        "the seed's 2024-topps-chrome-insert-future-stars.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
+      ).toBeHidden();
       // A names review fails here, by name: nothing is undecided.
       await expect(wizard.getByRole("button", { name: /Skip remaining names|Add remaining players as new/ })).toHaveCount(0);
       await expect(wizard.getByText(/^(Cards with no team|Card titles)$/)).toBeVisible();

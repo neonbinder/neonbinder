@@ -223,7 +223,7 @@ describe("commitCardChecklist — re-sync applies each row's OWN correction", ()
     expect(bobAfter.cardName).not.toBe("Alice Corrected");
     // NEO-247: 2 bsc-linked cards in one commit means
     // processBscTeamEnrichmentQueue reschedules its tail with a real
-    // BSC_TEAM_ENRICH_DELAY_MS (300ms) delay rather than runAfter(0) —
+    // BSC_TEAM_ENRICH_DELAY_MS (1.7 s) delay rather than runAfter(0) —
     // drainScheduled can only settle the first hop, so cancel the rest.
     await drainScheduled(t);
     await cancelScheduled(t);
@@ -281,7 +281,7 @@ describe("commitCardChecklist — tier 2 (slot + number) survives an upstream re
     expect(after[0].platformData?.sportlots?.ref).toBe("#5 New Corrected Description");
     expect(after[0].platformData?.sportlots?.src).toBe("s0");
     await drainScheduled(t);
-    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // NEO-475: the BSC team queue reschedules its tail behind a real 1.7 s
     // delay, which drain cannot reach; cancel it so it cannot outlive the test.
     await cancelScheduled(t);
   });
@@ -346,7 +346,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
 
     spy.mockRestore();
     await drainScheduled(t);
-    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // NEO-475: the BSC team queue reschedules its tail behind a real 1.7 s
     // delay, which drain cannot reach; cancel it so it cannot outlive the test.
     await cancelScheduled(t);
   });
@@ -393,7 +393,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     expect(rows.find((r) => r._id === rowXId)!.cardName).toBe("Row X");
     expect(rows.find((r) => r._id === rowYId)!.cardName).toBe("Row Y");
     await drainScheduled(t);
-    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // NEO-475: the BSC team queue reschedules its tail behind a real 1.7 s
     // delay, which drain cannot reach; cancel it so it cannot outlive the test.
     await cancelScheduled(t);
   });
@@ -429,7 +429,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     expect(existing.cardName).toBe("Existing Card");
     expect(existing.platformData?.bsc?.ref).toBe("old-ref");
     await drainScheduled(t);
-    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // NEO-475: the BSC team queue reschedules its tail behind a real 1.7 s
     // delay, which drain cannot reach; cancel it so it cannot outlive the test.
     await cancelScheduled(t);
   });
@@ -517,7 +517,7 @@ describe("commitCardChecklist — re-sync with no applyFields", () => {
     expect(after.platformData?.bsc?.ref).toBe("stable-ref");
     expect(after.platformData?.bsc?.src).toBe("b1");
     await drainScheduled(t);
-    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // NEO-475: the BSC team queue reschedules its tail behind a real 1.7 s
     // delay, which drain cannot reach; cancel it so it cannot outlive the test.
     await cancelScheduled(t);
   });
@@ -556,7 +556,7 @@ describe("commitCardChecklist — upstream removal", () => {
     expect(after).toHaveLength(2);
     expect(after.some((r) => r._id === droppedId)).toBe(true);
     await drainScheduled(t);
-    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // NEO-475: the BSC team queue reschedules its tail behind a real 1.7 s
     // delay, which drain cannot reach; cancel it so it cannot outlive the test.
     await cancelScheduled(t);
   });
@@ -595,7 +595,7 @@ describe("commitCardChecklist — tier 3 (bare number, no-ref rows)", () => {
     expect(rows[0]._id).toBe(legacyId);
     expect(rows[0].isCustom).toBe(true); // untouched by the match itself
     await drainScheduled(t);
-    // NEO-475: the BSC team queue reschedules its tail behind a real 300 ms
+    // NEO-475: the BSC team queue reschedules its tail behind a real 1.7 s
     // delay, which drain cannot reach; cancel it so it cannot outlive the test.
     await cancelScheduled(t);
   });
