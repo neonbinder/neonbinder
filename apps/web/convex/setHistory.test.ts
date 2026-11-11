@@ -259,14 +259,17 @@ describe("narrowSameNamePlayersByCardYear — Hall of Fame (NEO-424 rule D)", ()
 
   test("a card naming the rival's team holds the guess back (rule 8)", async () => {
     const t = convexTest(schema, modules);
-    const { sport } = await seedThomases(t, { hofs: 1 });
+    const { sport, legend, other } = await seedThomases(t, { hofs: 1 });
     const resolved = await t.query(internal.players.resolveNameForReview, {
       name: "Frank Thomas",
       sportId: sport,
       cardYear: 2024,
       cardTeamNames: ["Pittsburgh Pirates"],
     });
-    expect(resolved.playerId).toBeUndefined();
+    // Never the Hall of Famer. NEO-490 rule 6b then names the one Frank
+    // Thomas who ever played for the Pirates, as a visible careerTeam link.
+    expect(resolved.playerId).not.toBe(legend);
+    expect(resolved).toMatchObject({ playerId: other, narrowedBy: "careerTeam" });
   });
 
   test("two Hall of Famers is review", async () => {

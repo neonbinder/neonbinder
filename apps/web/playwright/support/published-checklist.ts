@@ -48,6 +48,12 @@ export const CHECKLISTS = {
   topps2014FootballBase: "2014-football-topps-base",
   /** Baseball 2024 Topps Chrome Insert Future Stars: 20 cards (`FS-1`..`FS-20`), the setup's insert fetch. */
   futureStars2024: "2024-topps-chrome-insert-future-stars",
+  /**
+   * Future Stars as a publisher would number it: `101`..`119`, the same 19 players (FS-20 Brayan Rocchio left
+   * out). No number is a BSC `FS-n` or a SportLots number, and 19 rows against 20 cards means the counts
+   * differ, so every row pairs by player name and none is applied until the operator confirms.
+   */
+  futureStars2024PublisherNumbering: "2024-topps-chrome-insert-future-stars-publisher-numbering",
   /** Hockey 1995 Roanoke Express ECHL Base: 25 cards, every one `NNO`, so each pairs by player. */
   roanokeExpress1995: "1995-hockey-roanoke-express-echl-base",
   /** Baseball 2025 Bowman Draft Insert Bowman Draft Nights Autographs: 5 cards (`BDNA-EW`..), the autograph-format spec's set. */
@@ -72,6 +78,21 @@ export const CHECKLISTS = {
    * it, so exactly five cards are asked of BSC live: #1-#3 are the stalled ids, #24 and #25 answer.
    */
   halifaxMooseheads1995FiveLive: "1995-hockey-halifax-mooseheads-qmjhl-base-five-live",
+  /**
+   * Baseball 2026 Donruss Insert Retro 1997 Donruss Signature Series Autographs (NEO-490): Panini's OWN
+   * published checklist, 14 rows. Its numbers are the publisher's (1-8, 10, 11, 13, 14, 16, 17) and
+   * BuySportsCards numbers the same 14 cards `SIG-AM`..`SIG-RL`, so no number meets another and every
+   * row pairs by player. It is no capture of BSC's answers: BSC names a team on none of these cards.
+   */
+  signatureSeries2026: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs",
+  /** The same file with row 17 (Mike Lowell) left out: 13 rows against BSC's 14 cards, so the counts differ. */
+  signatureSeries2026WithoutLowell: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-without-lowell",
+  /**
+   * The whole file with row 11 misspelled ("Rhett Lowdr"): 14 rows against 14 cards, so the counts match and
+   * the server pairs the 13 unique names itself, but Rhett Lowder's card and the misspelled row are left for
+   * the operator, so Match Cards opens for that one pair.
+   */
+  signatureSeries2026MisspelledLowder: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-misspelled-lowder",
 } as const;
 
 export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];
@@ -169,6 +190,52 @@ export function checklistFacts(name: ChecklistName): ChecklistFacts {
     path: `${DIRECTORY}${name}.csv`,
     rows: rows.length,
     matched: matchedNumbered + matchedUnnumbered,
+  };
+}
+
+/**
+ * NEO-490: what a checklist whose numbers meet NO card's number answers, when each row is paired
+ * to a card by player name instead. `cardsOf` is the file listing the set's cards (their players);
+ * BSC's own list for the set is that file's rows, so the card side is read off a file, never typed.
+ *
+ * A name is paired when exactly one row and exactly one card carry it (the exactly-one guard; a
+ * name two rows share pairs nothing). With EQUAL counts the unique pairs are applied by the fetch
+ * (`matched` = those whose row names a team: N in "Teams from your checklist: N of M cards"); with
+ * DIFFERENT counts nothing is applied by the fetch (`matched` = 0) and the unique pairs are only
+ * SUGGESTED (`suggested`) to the operator in the Match Cards dialog.
+ */
+export interface NameFallbackFacts extends ChecklistFacts {
+  /** The cards the pairing is made against. */
+  cards: number;
+  /** Rows and cards of equal number: the fetch applies the unique pairs itself. */
+  equalCounts: boolean;
+  /** Unique name pairs: applied by an equal-count fetch, offered as suggestions otherwise. */
+  suggested: number;
+}
+
+export function nameFallbackFacts(name: ChecklistName, cardsOf: ChecklistName): NameFallbackFacts {
+  const readable = (r: ChecklistRow) => /\d/.test(r.number) || /^[A-Z]{1,6}(?:-[A-Z]{1,6})+$/.test(r.number.trim());
+  const rows = checklistRows(name).filter(readable);
+  const cards = checklistRows(cardsOf).filter(readable);
+  const tally = (list: ChecklistRow[]) => {
+    const counts = new Map<string, number>();
+    for (const r of list) counts.set(namesKey(r.player), (counts.get(namesKey(r.player)) ?? 0) + 1);
+    return counts;
+  };
+  const rowCounts = tally(rows);
+  const cardCounts = tally(cards);
+  const paired = rows.filter((r) => {
+    const key = namesKey(r.player);
+    return key !== "" && rowCounts.get(key) === 1 && cardCounts.get(key) === 1;
+  });
+  const equalCounts = rows.length === cards.length;
+  return {
+    path: `${DIRECTORY}${name}.csv`,
+    rows: rows.length,
+    cards: cards.length,
+    equalCounts,
+    suggested: paired.length,
+    matched: equalCounts ? paired.filter((r) => r.team.trim() !== "").length : 0,
   };
 }
 
