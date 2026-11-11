@@ -402,11 +402,6 @@ def predict_alpha(rgb: np.ndarray) -> np.ndarray:
     tensor = preprocess(img)
     t1 = time.perf_counter()
     ort_outs = session.run(None, {session.get_inputs()[0].name: tensor})
-    if (
-        __import__("os").environ.get("PARITY_STAGE")
-        or "PYTEST_CURRENT_TEST" not in __import__("os").environ
-    ):
-        raise RuntimeError("NEO484-THROW-B")  # T1, revert before merge
     t2 = time.perf_counter()
     mask = postprocess(ort_outs[0], img.size)
     alpha = np.array(mask)
