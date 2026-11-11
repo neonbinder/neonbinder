@@ -177,6 +177,7 @@
 - [Tap target inside a scrolling list](reference_tap_target_inside_a_scrolling_list.md) — 44px target past the tile makes an overflow-auto lane scroll; extend upward, add `relative`
 - [Playwright click checks first mouse event only](reference_playwright_click_checks_first_mouse_event_only.md) — mid-press reflow: click() succeeds, onClick never runs; line up convex-logs with the click
 - [Click before the passive flush](reference_click_before_passive_flush_via_layout_effect.md) — click from a child useLayoutEffect to test a press beating a pending effect; functional updater fixes only stale closures
+- [Failure PNG is viewport-only](reference_failure_png_is_viewport_only.md) — under-card content is off a 629px frame; read error-context in the blob zip; grep templated locators too
 - [Clipboard write with a promise](reference_clipboard_write_with_a_promise.md) — copy text that lands after awaits: start clipboard.write in the click with a promise; headless shell denies writes, so specs stub it
 - [useEffectEvent does not evade set-state-in-effect](reference_effect_event_does_not_evade_set_state_rule.md) — compiler traces through it; justified disable for a one-edge effect; rAF is FIFO after close()
 - [Always-mounted live region in space-y](reference_always_mounted_live_region_in_space_y.md) — empty region still takes the gap; nest beside a min-h line; no sr-only copy of a getByText line
@@ -190,6 +191,7 @@
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
 - [canvas.toBlob waits ~1 s in the app page](reference_canvas_toblob_waits_a_second_in_the_app_page.md) — each encode ~1000 ms under Playwright Chromium (idle deadline) after a write; encode at pick time, concurrently
 - [vitest spies handle returned promises](reference_vitest_spies_handle_returned_promises.md) — a vi.fn rejection is never unhandled; an unhandled-rejection test through a mock can't go red
+- [Ref guard in a handler passed to a render builder](reference_ref_guard_in_a_handler_passed_to_a_render_builder.md) — react-hooks/refs flags it via idleButtons(fn); go refless: scope in state, render-time reset, updater bail-out
 - [axe radiogroup may wrap content](reference_axe_radiogroup_may_wrap_content.md) — no requiredOwned in axe 4.13; wrap the card in the radiogroup, keep the li plain
 - [Leak assertion matches the epoch](reference_leak_assertion_matches_the_epoch.md) — bscSeller.telemetry "555" check trips on the epoch-ms `at`; rerun before blaming
 - [Real-app screenshots via suite helpers](reference_real_app_screenshots_reuse_the_suite_helpers.md) — scratch config + {"type":"module"}; emulateMedia per mode; force-click an aria-disabled NeonButton
