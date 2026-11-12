@@ -15227,7 +15227,9 @@ export const fetchCardChecklist = action({
      * PR 451 (NEO-478) — with a publisher checklist: how many of this run's
      * candidates took their team answer from it (`matched`), of all the
      * candidates (`total`). "Teams from your checklist: N of M cards".
-     * Absent without a checklist.
+     * NEO-496 (D2): both count the marketplace cards only; a checklist-only
+     * row is counted only when no marketplace card came back (a
+     * checklist-only fetch). Absent without a checklist.
      */
     checklistTeams: v.optional(v.object({ matched: v.number(), total: v.number() })),
     /**
@@ -16363,9 +16365,15 @@ export const fetchCardChecklist = action({
           }
           checklistOnlyCards.push(card);
         }
+        // "Teams from your checklist: N of M cards" counts the cards the
+        // marketplaces listed (D2): a checklist-only row is not a card until
+        // the operator keeps it in Match Cards (NQ1), which recounts what was
+        // confirmed. With no marketplace card at all (a checklist-only
+        // fetch, every row kept), the rows are the cards.
+        const countedCards = out.length > 0 ? out : checklistOnlyCards;
         checklistTeams = {
-          matched: checklistAnswered.size,
-          total: out.length + checklistOnlyCards.length,
+          matched: countedCards.filter((c) => checklistAnswered.has(c)).length,
+          total: countedCards.length,
         };
         checklistMatch = {
           needsOperator: match.needsOperator,

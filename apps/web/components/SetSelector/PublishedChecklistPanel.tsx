@@ -829,7 +829,10 @@ export function SetChecklistPreviewDialog({
                       {grouped.map(({ reason, lines }) => (
                         <li key={reason}>
                           <details className="text-xs">
-                            <summary className="cursor-pointer rounded text-ink-2 focus-outline">
+                            {/* min-h-6 + py-1: a 24px target (WCAG 2.5.8; stacked summaries
+                                each own their row). Display stays list-item so the
+                                disclosure marker stays. */}
+                            <summary className="min-h-6 cursor-pointer rounded py-1 text-ink-2 focus-outline">
                               {reason}{" "}
                               <span className="tabular-nums text-ink-3">({n(lines.length)})</span>
                             </summary>
