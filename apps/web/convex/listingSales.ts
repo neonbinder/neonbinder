@@ -511,8 +511,9 @@ interface ApplyScope {
  * Lowers the chosen copies through the app's write path and reports, for the
  * Pick List (NEO-500): where they came from (`from`, at most `MAX_PICK_FROM`,
  * none when the sale's budget would be passed) and whether no box copy of the
- * card is left (`lastOnes`; unset when `lines`, the card's copies read before
- * lowering, was truncated, so it never claims what it did not see).
+ * card is left (`lastOnes`; only when this line took a copy, and unset when
+ * `lines`, the card's copies read before lowering, was truncated, so it never
+ * claims what it did not see).
  */
 async function lowerCopies(
   scope: ApplyScope,
@@ -556,8 +557,10 @@ async function lowerCopies(
   const keepFrom = recorded.length > 0 && recorded.length <= scope.fromLeft.n;
   if (keepFrom) scope.fromLeft.n -= recorded.length;
 
+  // Only a line that took at least one copy can have taken the last ones: a
+  // line NB held nothing for has nothing to pull ("Short N" alone).
   let lastOnes: true | undefined;
-  if (lines.length <= MAX_LINES_PER_CARD) {
+  if (lowered > 0 && lines.length <= MAX_LINES_PER_CARD) {
     let left = false;
     for (const row of lines) {
       if (row.quantity - (taken.get(row._id) ?? 0) <= 0) continue;

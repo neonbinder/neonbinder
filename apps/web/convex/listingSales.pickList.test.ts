@@ -257,11 +257,12 @@ describe("the apply records where a line came from", () => {
     expect((await sale(s)).pullOpen).toBe(true);
   });
 
-  test("a line NB held nothing for: no from, shortBy the whole quantity, and (current behaviour) lastOnes", async () => {
+  test("a line NB held nothing for: no from, shortBy the whole quantity, and no lastOnes (nothing to pull)", async () => {
     const s = await setup();
     await record(s, order(s, { lines: [{ quantity: 2 }] }));
     const item = (await sale(s)).items[0];
-    expect(item).toMatchObject({ applied: true, problem: "oversold", shortBy: 2, lastOnes: true });
+    expect(item).toMatchObject({ applied: true, problem: "oversold", shortBy: 2 });
+    expect(item.lastOnes).toBeUndefined();
     expect(item.from).toBeUndefined();
   });
 
