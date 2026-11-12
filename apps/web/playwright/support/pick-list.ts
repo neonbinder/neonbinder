@@ -142,12 +142,13 @@ export function bscOrder(orderNo: string): string {
 }
 
 /**
- * The listing title a line NB could not tie to a card reads as: "Card NB
- * couldn't match, BSC <order>", with " (n of m)" when the order holds more
- * than one.
+ * How the toggle of a line NB could not tie to a card begins: "Unmatched sale,
+ * BSC <order>" (the row's own title says nothing of its order, so the name
+ * adds it). An order holding more than one such line reads "Unmatched sale
+ * (n of m), BSC <order>"; the specs seed one per order.
  */
 export function unmatchedLine(orderNo: string): string {
-  return `Card NB couldn't match, ${bscOrder(orderNo)}`;
+  return `Unmatched sale, ${bscOrder(orderNo)}`;
 }
 
 /**

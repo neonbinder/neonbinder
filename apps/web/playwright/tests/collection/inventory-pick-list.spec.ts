@@ -7,7 +7,10 @@
 //     (it sold two), and its bigger picture is the photo of the very copy sold;
 //   - B is a plain row; the stray line waits under "Can't find it";
 //   - By the Box names the box (Back returns to the list);
-//   - a pull survives a refresh (the line is gone), an Undo puts a pull back;
+//   - the stray line's order links to that order on the Sales tab, focused (Back returns);
+//   - a pull survives a refresh taken the moment "Pulled …" shows (the line is
+//     gone; the notice reads "Saving…" until the server has it), an Undo puts
+//     a pull back;
 //   - an order that lands while the page is open shows at the bottom, New,
 //     and "Pull these 2" (with its confirm) pulls it under an Order filter;
 //   - shipping the first order takes its lines off the list.
@@ -153,7 +156,7 @@ test(
       await expect(
         seen(
           pickRow(cantFind, unmatchedLine(first)).getByText(
-            `NB couldn't match this line. Open order ${bscOrder(first)} to see the card.`,
+            "NB couldn't match this line. Check the order's photo.",
             { exact: true },
           ),
         ),
@@ -185,26 +188,46 @@ test(
       await expect(page).toHaveURL(/[?&]porder=/);
       await expect(pick.matches).toHaveText("3 cards match.");
 
-      // --- Pull A; pull B and Undo it -------------------------------------------------------
-      await pulledToggle(table, CARD_A.short).click();
-      await expect(pulledToggle(table, CARD_A.short)).toHaveAttribute("aria-pressed", "true");
-      await expect(pick.notice(`Pulled ${CARD_A.short}.`)).toBeVisible();
+      // --- The stray line's order opens on the Sales tab, that order focused; Back returns -----
+      const toSales = pickRow(cantFind, unmatchedLine(first)).getByRole("link", {
+        name: `${bscOrder(first)} on your Sales tab`,
+        exact: true,
+      });
+      await toSales.click();
+      await expect(page).toHaveURL(/[?&]tab=sales(&|$)/);
+      await expect(page).toHaveURL(/[?&]sorder=/);
+      // The tab names the marketplace in full; the order is marked and its heading has the keyboard.
+      const saleHeading = page.getByRole("heading", { level: 3, name: `BuySportsCards order ${first}`, exact: true });
+      await expect(saleHeading).toBeVisible();
+      await expect(saleHeading).toBeFocused();
+      await expect(page.getByRole("article", { name: `BuySportsCards order ${first}`, exact: true })).toHaveAttribute(
+        "aria-current",
+        "true",
+      );
+      await expectAccessible(page, { label: "Sales, one order opened from the Pick List" });
+      await page.goBack();
+      await expect(pick.heading).toBeVisible();
+      await expect(page).toHaveURL(/[?&]porder=/);
+      await expect(pick.matches).toHaveText("3 cards match.");
+      await expect(pulledToggle(cantFind, unmatchedLine(first))).toHaveAttribute("aria-pressed", "false");
+
+      // --- Pull B and Undo it; pull A ------------------------------------------------------
+      // A tick reads "Saving…" on the status line and turns into "Pulled …" only
+      // once the server has the pull (the unit tests hold the Saving… state; a
+      // fast save would pass it before an assertion could look). Undo's own save
+      // posts no notice, so A's pull comes after it: a client's writes land in the
+      // order sent, so A's "Pulled …" proves the put-back is saved too.
       await pulledToggle(table, CARD_B.short).click();
       await expect(pulledToggle(table, CARD_B.short)).toHaveAttribute("aria-pressed", "true");
       await expect(pick.notice(`Pulled ${CARD_B.short}.`)).toBeVisible();
       await pick.undo.click();
       await expect(pulledToggle(table, CARD_B.short)).toHaveAttribute("aria-pressed", "false");
+      await pulledToggle(table, CARD_A.short).click();
       await expect(pulledToggle(table, CARD_A.short)).toHaveAttribute("aria-pressed", "true");
+      await expect(pick.notice(`Pulled ${CARD_A.short}.`)).toBeVisible();
 
-      // Both marks are saved, not just ticked: a second tab, which starts from the
-      // server's list, has B (put back) and not A. The ticks are optimistic and the
-      // page has no "saved" state to wait for, so this is what makes the refresh
-      // below read the saved list rather than race the writes.
-      await fromServer(async (list) => {
-        await expect(pulledToggle(list.table, CARD_B.short)).toBeVisible();
-        await expect(pulledToggle(list.table, CARD_A.short)).toHaveCount(0);
-      });
-      // A refresh starts the pull over with what is left: A is gone, B (put back) stays.
+      // A refresh straight after that confirmation starts the pull over with what is
+      // left (no second tab, no wait on the server): A is gone, B (put back) stays.
       await page.reload();
       await expect(pick.heading).toBeVisible();
       await expect(pick.matches).toHaveText("2 cards match.");
@@ -239,8 +262,8 @@ test(
       await confirm.click();
       await expect(pick.notice("Pulled all 2 that match.")).toBeVisible();
       await expect(pulledToggle(table, unmatchedLine(second))).toHaveAttribute("aria-pressed", "true");
-      // Saved: the server's list has the first order's B and stray line and
-      // nothing of the second's.
+      // Saved ("Pulled …" waits for the server): a second tab's list has the first
+      // order's B and stray line and nothing of the second's.
       await fromServer(async (list) => {
         await expect(pulledToggle(list.table, unmatchedLine(first))).toBeVisible();
         await expect(pulledToggle(list.table, CARD_B.short)).toHaveCount(1);
@@ -258,7 +281,17 @@ test(
       await expect(region.getByText("Nothing to pull. Go sell something rad.", { exact: true })).toBeVisible();
       await expect(pulledToggle(region, unmatchedLine(first))).toHaveCount(0);
       await expect(pulledToggle(region, CARD_B.short)).toHaveCount(0);
+      // The empty state points on: to what sold, and to the inventory.
+      const sawSold = region.getByRole("link", { name: "See what sold", exact: true });
+      await expect(sawSold).toBeVisible();
+      await expect(region.getByRole("link", { name: "open your inventory", exact: true })).toBeVisible();
       await expectAccessible(page, { label: "Pick List, nothing to pull" });
+      await sawSold.click();
+      await expect(page).toHaveURL(/[?&]tab=sales(&|$)/);
+      await expect(page.getByRole("heading", { level: 2, name: "What sold", exact: true })).toBeVisible();
+      await page.goBack();
+      await expect(pick.heading).toBeVisible();
+      await expect(region.getByText("Nothing to pull. Go sell something rad.", { exact: true })).toBeVisible();
       await shipPickOrder(page, second);
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
       open.delete(second);

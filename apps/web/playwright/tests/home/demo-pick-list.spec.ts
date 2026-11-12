@@ -11,10 +11,14 @@
 //   - marking a row pulled with a click and with Space, Undo, and "Pull these
 //     N" (with its confirm) under a filter;
 //   - a thumbnail's bigger picture, closed with Escape;
+//   - the printed sheet (print media emulated): a condensed list of every row
+//     with a tick for the pulled ones, the screen's table and controls gone;
 //   - By the Box: Next box steps (a Back step each), a refresh keeps the box,
 //     Box done pulls the box and moves on, and the walk ends on Can't find it.
 // The demo is hard-coded data in the browser (demoPickStore.tsx), never
 // Convex, so nothing here writes anywhere (R7). Public: signed out (R4).
+// A card-less row's name carries its order (", eBay 12-3502"): its title says
+// nothing of it, and two orders' strays must not read alike.
 // Phone differences (column sort, More filters, row tap) branch on
 // `isMobile` and end in hard asserts (GUIDE "Desktop and mobile").
 import { test, expect, expectAccessible } from "../../support/fixtures";
@@ -109,6 +113,10 @@ test(
 
     // Can't find it: the listing's own title and why NB could not tie it to a card.
     await expect(pulledToggle(table, WITT)).toBeVisible();
+    await expect(pulledToggle(table, WITT)).toHaveAccessibleName(`Pulled ${WITT}, eBay 12-3502`);
+    await expect(pulledToggle(table, BCP)).toHaveAccessibleName(`Pulled ${BCP}, BSC 88257`);
+    // No Sales tab in the demo: a stray's order is plain text, not a link.
+    await expect(pickRow(table, BCP).getByRole("link")).toHaveCount(0);
     await expect(seen(pickRow(table, WITT).getByText("NB has no 2026 Topps Heritage checklist yet.", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(table, BCP).getByText("#BCP-77 fits two cards in that set. Check the photo.", { exact: true }))).toBeVisible();
 
@@ -129,6 +137,8 @@ test(
     }
     await openMoreFilters(page, isMobile);
     await expect(order).toBeVisible();
+    // The phone's opened disclosure is a state of its own.
+    if (isMobile) await expectAccessible(page, { label: "Pick List demo, More filters open (phone)" });
 
     // --- Sort a column -------------------------------------------------------
     // Sorted by player, the list is one run (no set dividers) A-Z, then Z-A.
@@ -233,6 +243,50 @@ test(
     await expect(bigger).toBeHidden();
     await expect(skenesPicture).toBeFocused();
 
+    // --- The printed sheet ---------------------------------------------------
+    // Print media emulated (what the Print button and Ctrl/Cmd+P switch on): the
+    // screen's table gives way to a condensed sheet, one line per card, and
+    // every control leaves the page. Trout and the two slabs are pulled: ticked.
+    await page.emulateMedia({ media: "print" });
+    const sheet = region.getByRole("table", { name: "Pick sheet", exact: true });
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByRole("columnheader")).toHaveText(["Pulled", "Qty", "No.", "Player", "Card", "Cond.", "Order"]);
+    // One divider per set group (the sheet carries the same 16 as the screen), one line per sale line.
+    await expect(sheet.getByRole("rowheader")).toHaveCount(16);
+    await expect(sheet.getByRole("row")).toHaveCount(1 + 16 + 27);
+    const sheetRow = (text: string) => sheet.getByRole("row").filter({ hasText: text });
+    const troutLine = sheetRow("Mike Trout");
+    await expect(troutLine.getByRole("cell", { name: "✓", exact: true })).toBeVisible();
+    await expect(troutLine.getByRole("cell", { name: "#27", exact: true })).toBeVisible();
+    await expect(sheetRow("Paul Skenes").getByRole("cell", { name: "×2", exact: true })).toBeVisible();
+    await expect(sheetRow("Paul Skenes").getByRole("cell", { name: "BSC 88213, eBay 12-3456", exact: true })).toBeVisible();
+    await expect(sheetRow("Paul Skenes").getByRole("cell", { name: "✓", exact: true })).toHaveCount(0);
+    await expect(sheetRow("Shohei Ohtani").filter({ hasText: "PSA 10" }).getByRole("cell", { name: "✓", exact: true })).toBeVisible();
+    // A line NB could not match prints its title and why, under Can't find it.
+    const witt = sheetRow("Bobby Witt Jr.");
+    await expect(witt.getByRole("cell", { name: /^2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./ })).toBeVisible();
+    const why = witt.getByRole("cell", { name: "NB has no 2026 Topps Heritage checklist yet.", exact: true });
+    if (isMobile) {
+      // Print emulation keeps the phone's 390px viewport (paper is wider), where the
+      // sheet's flexible Card column has no room left: the words are in the sheet, clipped.
+      await expect(why).toHaveCount(1);
+    } else {
+      await expect(why).toBeVisible();
+    }
+    // The screen's own table, tabs, filters and buttons are off the paper.
+    await expect(pick.progress(3, TOTAL)).toBeVisible();
+    await expect(pick.table).toBeHidden();
+    await expect(pick.views).toBeHidden();
+    await expect(pick.find).toBeHidden();
+    await expect(pick.quickFilters).toBeHidden();
+    await expect(region.getByRole("button", { name: "Print list", exact: true })).toBeHidden();
+    await expect(page.getByRole("navigation", { name: "Inventory sections" })).toBeHidden();
+    // Back on screen, the sheet is gone and the table is back.
+    await page.emulateMedia({ media: null });
+    await expect(pick.table).toBeVisible();
+    await expect(sheet).toBeHidden();
+    await expect(region.getByRole("button", { name: "Print list", exact: true })).toBeVisible();
+
     // --- By the Box ----------------------------------------------------------
     // Boxes in name order (2026 Baseball, Box 2, Box 10, Slabs, Unsorted; the
     // empty Box 3 is skipped), then Can't find it as the last stop. Trout and
@@ -289,5 +343,6 @@ test(
     await expect(pulledToggle(region, BCP)).toBeVisible();
     await expect(next).toBeDisabled();
     await expect(region.getByRole("button", { name: "All found", exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "Pick List demo, By the Box, the Can't find it stop" });
   },
 );

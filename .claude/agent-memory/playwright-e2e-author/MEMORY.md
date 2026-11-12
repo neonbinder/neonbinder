@@ -112,3 +112,4 @@
 - [Name-fallback Match Cards solo + cancel confirm](patterns_name_fallback_match_cards_solo_and_modal_cancel_confirm.md) — NEO-490: nameFallbackFacts, Cancel opens a discard confirm, virtualized list, two-phase fresh-only spec
 - [Dual-layout rows and CardFace text](patterns_dual_layout_rows_and_card_face_text.md) — row text drawn twice + thumbnails print names: filter({visible:true}) or a cell by name; empty:hidden status is absent
 - [Optimistic tick, then navigate](patterns_optimistic_tick_then_navigate_reads_from_a_second_tab.md) — NEO-500: a goto right after an optimistic tick loses it; check from a second tab first; disjoint minted suffixes; clean up on a new page
+- [Print emulation + rare-state axe](patterns_print_emulation_and_rare_state_axe.md) — NEO-500: print media keeps the phone viewport; vitest axe-core has no contrast; setup needs the reference bundle

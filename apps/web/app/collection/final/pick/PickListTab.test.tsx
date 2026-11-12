@@ -418,3 +418,51 @@ describe("the signed-in Pick List's ways out", () => {
     expect(within(region).queryByRole("link", { name: /^eBay 12-3456/ })).toBeNull();
   });
 });
+
+// NEO-500: two states the live data cannot put on screen in the E2E specs (the
+// list is cut at 1000 lines; a "Box not recorded" line needs a sale applied
+// before boxes were tracked, and the test order hop never makes one). axe-core
+// runs here on the real component. jsdom paints nothing, so contrast (and so
+// light vs dark) is the one thing this cannot check: those two notices reuse
+// the info and plain-ink roles that the E2E specs' axe passes already cover.
+describe("the Pick List's rare states pass axe", () => {
+  async function violationsFor(data: Partial<import("./types").PickListData>, url: string) {
+    const axe = (await import("axe-core")).default;
+    const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
+    const { default: PickListTab } = await import("./PickListTab");
+    const { CollectionModeProvider } = await import("../mode");
+    const { container } = render(
+      <Theme>
+        <MemoryRouter initialEntries={[url]}>
+          <CollectionModeProvider mode="app" surface="inventory">
+            <DemoPickListProvider data={{ ...DEMO_PICK_DATA, ...data }}>
+              <PickListTab />
+            </DemoPickListProvider>
+          </CollectionModeProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    const region = screen.getByRole("region", { name: "Pick List" });
+    const results = await axe.run(container, {
+      runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] },
+      rules: { "color-contrast": { enabled: false } },
+    });
+    return { region, violations: results.violations.map((v) => `${v.id}: ${v.nodes.length}`) };
+  }
+
+  it("the notice that the list is cut short", async () => {
+    const { region, violations } = await violationsFor({ truncated: true }, "/inventory?tab=pick");
+    expect(within(region).getByText(/^Your Pick List is too long to show at once/)).toBeTruthy();
+    expect(violations).toEqual([]);
+  });
+
+  it("the Box not recorded stop in By the Box", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    // Every matched card sold before NB kept track of boxes.
+    const lines = DEMO_PICK_DATA.lines.map((l) => (l.card ? { ...l, boxUnrecorded: true as const, spot: undefined } : l));
+    const { region, violations } = await violationsFor({ lines }, "/inventory?tab=pick&pv=box");
+    expect(within(region).getByRole("heading", { level: 3, name: /^Box not recorded · \d+ to pull$/ })).toBeTruthy();
+    expect(within(region).getByText("These sold before NB kept track of boxes. Look wherever you keep the set.")).toBeTruthy();
+    expect(violations).toEqual([]);
+  });
+});
