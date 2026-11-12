@@ -218,3 +218,31 @@ describe("the Pick List demo", () => {
     expect(screen.getByRole("button", { name: "More filters (1 on)" })).toBeTruthy();
   });
 });
+
+describe("a Pick List cut short", () => {
+  it("says so above the list when the store holds more than it handed over, and not otherwise", async () => {
+    const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
+    const { default: PickListTab } = await import("./PickListTab");
+    const { CollectionModeProvider } = await import("../mode");
+    const NOTE = "Your Pick List is too long to show all at once. Pull these and the rest will show up.";
+    const show = (truncated: boolean) =>
+      render(
+        <Theme>
+          <MemoryRouter initialEntries={["/inventory?tab=pick"]}>
+            <CollectionModeProvider mode="app" surface="inventory">
+              <DemoPickListProvider data={{ ...DEMO_PICK_DATA, truncated }}>
+                <PickListTab />
+              </DemoPickListProvider>
+            </CollectionModeProvider>
+          </MemoryRouter>
+        </Theme>,
+      );
+    show(true);
+    const region = screen.getByRole("region", { name: "Pick List" });
+    expect(within(region).getByText(NOTE)).toBeTruthy();
+    cleanup();
+    show(false);
+    expect(screen.queryByText(NOTE)).toBeNull();
+    expect(screen.getByRole("region", { name: "Pick List" })).toBeTruthy();
+  });
+});

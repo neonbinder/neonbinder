@@ -103,6 +103,8 @@ export interface SaleLine {
 export interface PickListData {
   lines: readonly SaleLine[];
   boxes: readonly PickBox[];
+  /** The store holds more to pull than it handed over (the list is cut short). */
+  truncated?: boolean;
 }
 
 /**

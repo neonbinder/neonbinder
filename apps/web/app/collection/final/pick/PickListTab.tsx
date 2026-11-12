@@ -101,6 +101,7 @@ const COPY = {
   matches: (n: number) => (n === 1 ? "1 card matches." : `${n} cards match.`),
   cantFind: "Can't find it",
   cantFindNote: "NB couldn't tie these sales to one card. Check each listing's photo to find it.",
+  truncated: "Your Pick List is too long to show all at once. Pull these and the rest will show up.",
   noBox: "Box not recorded",
   noBoxNote: "These sold before NB kept track of boxes. Look wherever you keep the set.",
   fresh: "Sold since you started",
@@ -274,6 +275,11 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
         </p>
       ) : (
         <>
+          {data.truncated && (
+            <p className="nb-pick-noprint rounded-xl border border-notice-info-rule bg-notice-info-bg px-4 py-3 text-sm font-semibold text-notice-info-ink">
+              {COPY.truncated}
+            </p>
+          )}
           {done && (
             <div className="nb-pick-noprint rounded-xl border border-notice-success-rule bg-notice-success-bg px-4 py-3">
               <p className="text-lg font-bold text-notice-success-ink">{COPY.done}</p>

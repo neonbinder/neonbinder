@@ -285,7 +285,7 @@ function useConvexPickListStore(): PickListStore {
       lines.push(...toSaleLines(raw, hydrated, photos, { isNew: !baseline.has(raw.id), lostIndex }));
     }
     const boxes: PickBox[] = open.boxes.map((b) => ({ id: b.id, name: b.name, ...(b.unsorted ? { unsorted: true } : {}) }));
-    return { lines, boxes };
+    return { lines, boxes, ...(open.truncated ? { truncated: true } : {}) };
   }, [open, baseline, loadedOnce, allLoaded, rawLines, cards, photos]);
 
   // The page's ids are rows; a row is pulled when its line is.
