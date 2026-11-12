@@ -112,10 +112,14 @@ export SMOKE_ID_TOKEN=$(gcloud auth print-identity-token \
 pytest tests/functional -v
 ```
 
-Leave the area band roughly ±50% around the measured fraction. BiRefNet is not
-bit-deterministic, and a band tight enough to flake is worse than no band —
+Leave the area band roughly ±50% around the measured fraction. BiRefNet is
+deterministic on a given host, but its masks are not identical across CPUs:
+AVX2 hosts (AMD Milan, measured in NEO-484) and AVX-512 hosts differ by up to
+2 alpha levels and a few mask pixels, and the crop matrix runs on whichever
+host Cloud Run picks. A band tight enough to flake is worse than no band —
 but keep it far enough from a border shave (which lands near 0.87 of source on
-an already-tight scan) that a regression still falls outside.
+an already-tight scan) that a regression still falls outside. Bit-level
+parity is the mask-parity job's business (`tests/parity/`), not this matrix's.
 
 ### Known gap: no landscape / EXIF-rotated fixture
 

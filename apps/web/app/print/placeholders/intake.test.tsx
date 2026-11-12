@@ -501,7 +501,7 @@ describe("CardIntake", () => {
       return renderPage("/print/placeholders?jobId=job-1234abcd");
     }
 
-    const WARMING = /A few of these need a closer look/;
+    const WARMING = "A few of these need a closer look, which can take a minute or so. The rest keep coming in below.";
 
     it("shows while an escalation is waiting on the cold heavy service", () => {
       openWithJob({ heavyWarming: true });

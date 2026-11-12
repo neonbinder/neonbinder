@@ -17,31 +17,44 @@ NEO-427:  `/process-entry` also stores the listing and thumbnail sizes of the
 NEO-481:  `/render-edit` renders a collector's hand edit (quarter turns and a
           turnable crop, `app.edit`) from a scan's original or from a stored
           photo's bytes, and `/process-entry` reports the auto crop's box.
+NEO-484:  `/process-entry` answers a terminal 422 `ENTRY_UNDECODABLE` for bytes
+          that are not an image, binds the dev cache policy for its request
+          (`app.devcache`), and the heavy startup hook loads the BiRefNet ORT
+          session directly (`app.cropper.birefnet`) with no warm-up inference.
 """
 
+# The import time of this module is part of the `cold_start` line, so the clock
+# starts before any other import; every import below therefore sits after a
+# statement, which is what E402 would otherwise refuse.
+# ruff: noqa: E402
 from __future__ import annotations
 
+import time
+
+_MODULE_IMPORT_STARTED = time.perf_counter()
+
 import base64
-import glob
 import hmac
 import json
 import logging
 import os
+import platform
+import re
 import sys
-import time
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile as FormFile
 
-from app import cropper
+from app import cropper, prewarm
 from app import edit as photo_edit
 from app.classify import ClassifyError
 from app.copy_photos import (
@@ -61,9 +74,11 @@ from app.cropper import (
     CropDeclined,
     CropRejected,
     UnknownStrategyError,
+    birefnet,
 )
 from app.cropper._utils import rotate_image_bytes
 from app.cropper.boxes import CropBox
+from app.devcache import policy as devcache_policy
 from app.dhash import compute_dhash
 from app.exif import apply_exif_orientation
 from app.imaging import RasterTooLargeError, check_raster_size, read_raster_size
@@ -71,7 +86,7 @@ from app.jobs import layout, zipsafe
 from app.jobs.gcs import ObjectAlreadyExistsError, ObjectRef, ObjectStore
 from app.jobs.layout import InvalidJobIdentifierError
 from app.orient import OrientationResult
-from app.timing import Timings
+from app.timing import Timings, timing_logger
 
 # ── Logging (NEO-191) ───────────────────────────────────────────────────────
 # Nothing in this service used to configure logging, and uvicorn only ever
@@ -200,50 +215,191 @@ _EXTRACTED_EXTENSIONS = ("jpg", "png", "webp")
 _object_store = ObjectStore()
 
 
+# ── Cold start (NEO-484) ────────────────────────────────────────────────────
+# One `cold_start` JSON line per process, from the startup hook, through the
+# same bare-JSON `timing` logger as `process_entry_timing`, so a cold start can
+# be split into its phases from the logs alone (`scripts/cold-start-report.py`
+# joins it with Cloud Run's start and probe events). Host facts use the same
+# definitions as `scripts/golden_masks.py`'s fingerprint, so a slow start and a
+# mask difference can be put down to the same machine.
+COLD_START_MSG = "cold_start"
+
+# CPU features that pick different onnxruntime (MLAS) kernels, in a fixed order
+# so the ISA string is stable. Mirrors `scripts/golden_masks.RELEVANT_CPU_FLAGS`.
+_ISA_FLAGS = (
+    "sse4_1",
+    "avx",
+    "f16c",
+    "fma",
+    "avx2",
+    "avx_vnni",
+    "avx512f",
+    "avx512bw",
+    "avx512dq",
+    "avx512vl",
+    "avx512_vnni",
+    "avx512_bf16",
+    "avx512_fp16",
+    "amx_tile",
+    "amx_bf16",
+)
+
+# gVisor (Cloud Run gen1) reports an old fixed kernel; some builds also name it.
+_GVISOR_KERNEL = re.compile(r"Linux version 4\.4\.0\b|gvisor", re.IGNORECASE)
+
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _exec_env(proc_version: str, environ: Mapping[str, str]) -> str:
+    """`gen1` (gVisor), `gen2` (any other Cloud Run), or `local`."""
+    if _GVISOR_KERNEL.search(proc_version or ""):
+        return "gen1"
+    if environ.get("K_SERVICE") or environ.get("CLOUD_RUN_JOB"):
+        return "gen2"
+    return "local"
+
+
+def _cpu_facts(cpuinfo: str, machine: str) -> tuple[str, str]:
+    """`(isa, cpu_model)` from /proc/cpuinfo text: the first processor's values."""
+    cpu_model = "unknown"
+    flags: set[str] = set()
+    for line in cpuinfo.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key = key.strip()
+        if key == "model name" and cpu_model == "unknown":
+            cpu_model = " ".join(value.split())
+        elif key in ("flags", "Features") and not flags:
+            flags = set(value.split())
+    isa = "+".join([machine, *[flag for flag in _ISA_FLAGS if flag in flags]])
+    return isa, cpu_model
+
+
+def _nproc() -> int:
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return os.cpu_count() or 0
+
+
+def _process_age_s() -> float | None:
+    """Seconds since this process started, from /proc; None where there is no /proc.
+
+    Covers what `main_module_import_s` cannot: the interpreter's own start and
+    uvicorn's import, before this module's clock began.
+    """
+    try:
+        stat = _read_text("/proc/self/stat")
+        uptime = _read_text("/proc/uptime")
+        if not stat or not uptime:
+            return None
+        # Field 22 (starttime, clock ticks since boot). Fields counted after the
+        # command name, which is parenthesised and may contain spaces.
+        after_comm = stat.rsplit(")", 1)[1].split()
+        start_ticks = int(after_comm[19])
+        age = float(uptime.split()[0]) - start_ticks / os.sysconf("SC_CLK_TCK")
+        return round(age, 3) if age >= 0 else None
+    except (IndexError, ValueError, OSError):
+        return None
+
+
+def _host_facts() -> dict[str, Any]:
+    machine = platform.machine() or "unknown"
+    isa, cpu_model = _cpu_facts(_read_text("/proc/cpuinfo"), machine)
+    if cpu_model == "unknown":
+        cpu_model = platform.processor() or "unknown"
+    return {
+        "exec_env": _exec_env(_read_text("/proc/version"), os.environ),
+        "isa": isa,
+        "cpu_model": cpu_model,
+        "nproc": _nproc(),
+    }
+
+
+def _emit_cold_start(*, role: str, session_load_s: float | None, hook_started: float) -> None:
+    """Write the one `cold_start` line. Never raises: it must not fail a boot."""
+    try:
+        body: dict[str, Any] = {"msg": COLD_START_MSG, "role": role}
+        body.update(_host_facts())
+        body["main_module_import_s"] = round(_MAIN_MODULE_IMPORT_S, 3)
+        body["session_load_s"] = session_load_s
+        body["startup_hook_s"] = round(time.perf_counter() - hook_started, 3)
+        body["process_age_at_ready_s"] = _process_age_s()
+        # C6: how far the background SDK import (`app.prewarm`) had got when
+        # the hook returned; the thread writes its own `prewarm` line when done.
+        body["prewarm"] = prewarm.snapshot()
+        timing_logger.info(json.dumps(body, separators=(",", ":")))
+    except Exception:  # noqa: BLE001 - a log line must never take the container down
+        logger.exception("startup: could not write the cold_start line")
+
+
 @app.on_event("startup")
 def _verify_baked_weights() -> None:
-    """Fail loudly at boot if the baked model weights are missing.
+    """Load the BiRefNet session at boot (heavy role), then log one `cold_start` line.
 
-    Only enforced when REQUIRE_BAKED_WEIGHTS=1 (set in the Dockerfile). A
-    missing cache would otherwise trigger rembg's silent runtime re-download:
-    a ~930MB write into Cloud Run's in-memory filesystem plus an
-    unauthenticated outbound fetch — a slow success where we want a loud
-    failure. Unit tests don't set the var and are unaffected.
+    Only the HEAVY role loads a model, and only when REQUIRE_BAKED_WEIGHTS=1
+    (set in the Dockerfile; unit tests don't set it). It first checks that the
+    baked model exists at `$BIREFNET_HOME/$BIREFNET_MODEL.onnx` and raises if
+    not: a missing model is a broken image, and failing the boot is louder and
+    cheaper than failing every request.
 
-    NEO-175: only the HEAVY role loads a local model. The FAST role
-    (`PREPROCESS_ROLE=fast`) runs classical-only and must cold-start in
-    seconds, so it skips BOTH the baked-weight check and the ~191s warm-up —
-    even if REQUIRE_BAKED_WEIGHTS is still set on the shared image. This is the
-    clean seam: the model is loaded at startup only when role == HEAVY.
+    It then creates the onnxruntime session (`birefnet.load_session`) while
+    Cloud Run still allocates full startup CPU and no request is waiting. No
+    warm-up inference runs (NEO-484): the model's input is fixed at 1024x1024,
+    so a dummy pass costs a full inference, and the first real run is only a
+    few seconds slower than later ones. The session load is what is kept, so
+    the instance is ready the moment the startup probe passes (NEO-194).
+
+    The FAST role (`PREPROCESS_ROLE=fast`, NEO-175) runs classical-only and
+    never constructs a model session, so it skips both the check and the load,
+    even with REQUIRE_BAKED_WEIGHTS still set on the shared image.
+
+    SAM is deliberately NOT loaded here (NEO-315). Measured on a HEAVY
+    revision, loading it at startup took 46-94s (p50 56s) even at 8 vCPU and
+    sat on every cold start's critical path, while SAM wins under 1% of cards.
+    It lazy-loads on first use instead (`sam._load_model`, behind a lock).
+
+    Every role and path writes the `cold_start` line, except a boot that fails
+    the weights check.
     """
-    if _preprocess_role() != ROLE_HEAVY:
+    hook_started = time.perf_counter()
+    role = _preprocess_role()
+    session_load_s: float | None = None
+    # C6 (NEO-484): import the cloud SDKs on a daemon thread while the hook
+    # carries on, so they overlap the session load and the probe instead of
+    # sitting inside `main_module_import_s`. Started first, on every role and
+    # path: the fast role needs the SDKs as much as the heavy one does.
+    prewarm.start()
+    if role != ROLE_HEAVY:
         logger.info(
-            "startup: %s=%s — skipping baked-weight check and model warm-up",
+            "startup: %s=%s — skipping baked-weight check and model load",
             PREPROCESS_ROLE_ENV,
-            _preprocess_role(),
+            role,
         )
-        return
-    if os.environ.get("REQUIRE_BAKED_WEIGHTS") != "1":
-        return
-    u2net_home = os.environ.get("U2NET_HOME", "")
-    if not u2net_home or not glob.glob(os.path.join(u2net_home, "*.onnx")):
-        raise RuntimeError(
-            f"REQUIRE_BAKED_WEIGHTS=1 but no .onnx weights under U2NET_HOME={u2net_home!r}"
+    elif os.environ.get("REQUIRE_BAKED_WEIGHTS") == "1":
+        model_path = birefnet.model_path()
+        if not os.path.isfile(model_path):
+            raise RuntimeError(
+                f"REQUIRE_BAKED_WEIGHTS=1 but no baked model at {model_path!r} "
+                f"({birefnet.HOME_ENV}={os.environ.get(birefnet.HOME_ENV)!r}, "
+                f"{birefnet.MODEL_ENV}={os.environ.get(birefnet.MODEL_ENV)!r})"
+            )
+        loaded = birefnet.load_session()
+        session_load_s = loaded["session_load_s"]
+        logger.info(
+            "BiRefNet session %s loaded in %.1fs (onnxruntime %s)",
+            loaded["model"],
+            session_load_s,
+            loaded["ort"],
         )
-    # Warm the BiRefNet session now, while Cloud Run still allocates full
-    # startup CPU and no request is waiting on it. Cold, the load + first
-    # inference exceeded the smoke test's timeout.
-    from app.cropper import tiered
-
-    started = time.monotonic()
-    tiered.warm_up()
-    logger.info("BiRefNet session warmed in %.1fs", time.monotonic() - started)
-
-    # SAM is deliberately NOT warmed here (NEO-315). Measured on a HEAVY
-    # revision, loading it at startup took 46-94s (p50 56s) even at 8 vCPU and
-    # sat on every cold start's critical path, while SAM wins under 1% of
-    # cards. It lazy-loads on first use instead (`sam._load_model`, behind a
-    # lock), so only the rare image that falls through to it pays the load.
+    _emit_cold_start(role=role, session_load_s=session_load_s, hook_started=hook_started)
 
 
 class CropStrategyOutput(BaseModel):
@@ -364,9 +520,30 @@ async def _read_upload(upload: FormFile, *, field: str) -> bytes:
     return data
 
 
+def _resolve_cache_policy(host: str | None) -> devcache_policy.CachePolicy:
+    """The dev cache policy for a request's Host. Never raises: a failure is off.
+
+    `devcache_policy.resolve` already turns its own errors into `off:error`;
+    this guard keeps a bug there from failing the request that asked.
+    """
+    try:
+        return devcache_policy.resolve(host)
+    except Exception:  # noqa: BLE001 - a cache decision must never fail a request
+        logger.warning("devcache: policy resolution raised, cache off", exc_info=True)
+        return devcache_policy.CachePolicy(enabled=False, mode="off:error", bucket=None)
+
+
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(http_request: Request) -> dict[str, str]:
+    """Liveness, plus the dev cache mode this Host would get (NEO-484).
+
+    `dev_cache` is `on` only on the dev base URL with the cache bucket
+    configured; previews, the `sha-*` blue/green URLs and prod all read
+    `off:<reason>`. CI checks it after every deploy. It names a mode only,
+    never the bucket.
+    """
+    policy = _resolve_cache_policy(http_request.headers.get("host"))
+    return {"status": "ok", "dev_cache": policy.mode}
 
 
 class WarmupResponse(BaseModel):
@@ -388,32 +565,31 @@ class WarmupResponse(BaseModel):
 def warmup(
     x_internal_key: Annotated[str | None, Header()] = None,
 ) -> WarmupResponse:
-    """Force the BiRefNet crop model resident on this instance, then report warm.
+    """Make the BiRefNet session resident on this instance, then report warm.
 
-    A scale-to-zero container pays the ~930MB BiRefNet load plus ORT's first-run
-    allocations on its first inference; cold, that latency lands on the first real
-    /process-entry call (minutes of effective wait). Convex calls this at
-    session-start to pre-spin the model so the real calls hit a warm instance.
+    A heavy instance loads the session in its startup hook, so by the time it
+    serves a request this is normally the idempotent fast path. Convex still
+    calls it at session start: Cloud Run holds the request while a cold
+    instance starts, so a 200 tells the caller an instance is up and ready.
 
-    Synchronous "load then return": the load runs the SAME path a real crop uses
-    (`tiered.warm_up` → `_get_session` + one tiny in-memory 64x64 inference), needs
-    no GCS object or real image, does NO GCS / Vision / Anthropic I/O, and writes
-    nothing — pure model residency. Cloud Run holds the request while a cold
-    instance loads, so a 200 tells the caller the instance is actually ready.
+    Synchronous "load then return": the load is `birefnet.load_session`, the
+    same session a real crop uses. It runs NO inference (NEO-484: the model's
+    input is fixed at 1024x1024, so a warm-up pass would cost a full one), needs
+    no GCS object or real image, does no GCS / Vision / Anthropic I/O, and
+    writes nothing.
 
-    Idempotent and cheap when already warm: `is_session_loaded()` short-circuits so
-    a repeat call returns immediately with no reload and no inference, and reports
-    `was_cold=False` so the caller knows the instance was already ready.
+    Idempotent and cheap when already warm: `birefnet.is_session_loaded()`
+    short-circuits, and the response reports `was_cold=False`. `was_cold=True`
+    means THIS call created the session.
 
-    Concurrency: the service runs container_concurrency=1, so one /warmup warms the
-    ONE instance that happens to handle it. Warming all N instances of a scaled-out
-    revision needs N concurrent /warmup calls (Convex fans out N = capacity); this
-    endpoint only ever warms its own instance.
+    Concurrency: the service runs container_concurrency=1, so one /warmup warms
+    the ONE instance that happens to handle it. Warming all N instances of a
+    scaled-out revision needs N concurrent /warmup calls (Convex fans out N =
+    capacity); this endpoint only ever warms its own instance.
 
     NEO-175: the FAST role has no local model to make resident, so it must not
     reach the loader at all (the whole point of the role is that it never
-    constructs a model session). It short-circuits to `was_cold=False` without
-    importing or touching the tiered session helpers.
+    constructs a model session). It short-circuits to `was_cold=False`.
     """
     _verify_internal_key(x_internal_key)
 
@@ -423,13 +599,9 @@ def warmup(
         )
         return WarmupResponse(status="warm", was_cold=False)
 
-    # Same inline import as the startup warm hook: reach the tiered module's
-    # session helpers by name without widening main.py's top-level imports.
-    from app.cropper import tiered
-
-    was_cold = not tiered.is_session_loaded()
+    was_cold = not birefnet.is_session_loaded()
     if was_cold:
-        tiered.warm_up()
+        birefnet.load_session()
     return WarmupResponse(status="warm", was_cold=was_cold)
 
 
@@ -1217,9 +1389,44 @@ def extract(
     )
 
 
+# Pillow's answers for bytes it cannot decode: an unrecognised header
+# (`UnidentifiedImageError`, an OSError), truncated or corrupt data (OSError),
+# and malformed headers or segments (SyntaxError, ValueError). In the EXIF and
+# dHash steps these mean the stored entry is not an image we can open: the same
+# bytes fail the same way every time, so they are a terminal 422, never a
+# retryable 502.
+_DECODE_ERRORS: tuple[type[BaseException], ...] = (
+    UnidentifiedImageError,
+    OSError,
+    SyntaxError,
+    ValueError,
+)
+
+ENTRY_UNDECODABLE = "ENTRY_UNDECODABLE"
+
+
+def _entry_undecodable(timings: Timings, detail: str) -> JSONResponse:
+    timings.error_code = ENTRY_UNDECODABLE
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"error_code": ENTRY_UNDECODABLE, "detail": detail},
+    )
+
+
+def _upstream_failure(timings: Timings, error_code: str, detail: str) -> HTTPException:
+    """A 502 for the caller to retry; `error_code` labels the timing line only.
+
+    The body stays `{"detail": ...}` as it has always been: callers branch on
+    the status alone for these.
+    """
+    timings.error_code = error_code
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+
+
 @app.post("/process-entry", response_model=ProcessEntryResponse)
 def process_entry(
     request: ProcessEntryRequest,
+    http_request: Request,
     x_internal_key: Annotated[str | None, Header()] = None,
 ) -> ProcessEntryResponse | JSONResponse:
     """Run the full crop cascade on one extracted entry and store the result.
@@ -1234,20 +1441,46 @@ def process_entry(
     whichever bytes won. Failing to make or store them never fails the entry:
     a save without them asks `/derive-copy-photos` instead.
 
-    Failure codes: `INVALID_IDENTIFIER` (400), `ENTRY_NOT_FOUND` (404,
-    terminal — /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`
-    (503, retryable); Vision/Anthropic and unexpected storage failures surface
-    as 502, exactly like /process.
+    Failure codes:
+      - `INVALID_IDENTIFIER` (400).
+      - `ENTRY_NOT_FOUND` (404, terminal): /extract never wrote this ordinal.
+      - `ENTRY_TOO_MANY_PIXELS` (413, terminal): the header names more pixels
+        than the service decodes.
+      - `ENTRY_UNDECODABLE` (422, terminal, NEO-484): the stored bytes are not
+        an image this service can open: no readable image header, or the EXIF
+        upright or dHash decode fails. Checked on both roles before any Vision
+        call, and a supplied `dhash` does not skip it. The same bytes fail the
+        same way every time, so Convex must not retry it.
+      - `EXTRACT_NOT_CONFIGURED` (503, retryable).
+      - Vision/Anthropic and unexpected storage failures surface as 502, exactly
+        like /process, and are retryable.
 
     Every authenticated request emits exactly one `process_entry_timing` JSON
-    line (NEO-315, `app.timing`), whatever its outcome.
+    line (NEO-315, `app.timing`), whatever its outcome. A failed request's line
+    carries its `error_code` (502s get a label of their own there), and every
+    line carries the dev cache mode the request ran under.
+
+    NEO-484: the dev cache policy is resolved from the request's Host and bound
+    for this request only (`app.devcache.policy.bound`). It is on only on the
+    dev base URL with the cache bucket configured; /process, /crop and every
+    other route run live. The Host is read from the raw request rather than a
+    declared header parameter, so the route's OpenAPI parameters do not change.
     """
     _verify_internal_key(x_internal_key)
 
     timings = Timings(role=_preprocess_role(), index=request.entry_index)
     timings.baseline_supplied = request.baseline is not None
+    policy = _resolve_cache_policy(http_request.headers.get("host"))
+    timings.cache_mode = policy.mode
     try:
-        return _process_entry(request, timings)
+        with devcache_policy.bound(policy):
+            return _process_entry(request, timings)
+    except Exception:
+        # HTTPExceptions set their own label before raising; anything else
+        # escaping is an unhandled 500.
+        if timings.error_code is None:
+            timings.error_code = "INTERNAL_ERROR"
+        raise
     finally:
         timings.emit()
 
@@ -1313,10 +1546,12 @@ def _process_entry(
     try:
         layout.validate_identifiers(request.user_id, request.job_id)
     except InvalidJobIdentifierError as exc:
+        timings.error_code = "INVALID_IDENTIFIER"
         return _invalid_identifier_response(exc)
 
     bucket = os.environ.get(layout.BUCKET_ENV)
     if not bucket:
+        timings.error_code = "EXTRACT_NOT_CONFIGURED"
         return _not_configured_response()
 
     try:
@@ -1335,6 +1570,7 @@ def _process_entry(
                     entry_ref = candidate
                     break
             if entry_ref is None:
+                timings.error_code = "ENTRY_NOT_FOUND"
                 return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
                     content={
@@ -1348,9 +1584,8 @@ def _process_entry(
             )
     except Exception:
         logger.exception("process_entry: extracted image read failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="placeholder storage unavailable",
+        raise _upstream_failure(
+            timings, "ENTRY_READ_FAILED", "placeholder storage unavailable"
         ) from None
 
     # Pixels, not bytes — the same guard /extract runs before ITS first
@@ -1363,12 +1598,23 @@ def _process_entry(
     # purpose: re-sending the same bytes can never succeed, so it must not
     # land in the retryable-502 bucket and be paid five times.
     try:
-        check_raster_size(entry_bytes)
+        raster_size = check_raster_size(entry_bytes)
     except RasterTooLargeError as exc:
+        timings.error_code = "ENTRY_TOO_MANY_PIXELS"
         return JSONResponse(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             content={"error_code": "ENTRY_TOO_MANY_PIXELS", "detail": str(exc)},
         )
+
+    # No readable image header: these bytes are not an image (NEO-484 — the
+    # fake scanner's 6-byte `side-1` page labelled image/jpeg, an empty object,
+    # any upload that only claimed to be a photo). Terminal 422 before EXIF,
+    # dHash or Vision, on both roles, and a supplied dhash does not skip it:
+    # the 502 this used to fall into was retried five times by the workpool and
+    # paid a Vision call on each attempt.
+    if raster_size is None:
+        logger.warning("process_entry: index=%d has no readable image header", request.entry_index)
+        return _entry_undecodable(timings, "extracted entry is not a readable image")
 
     # EXIF-upright the entry unconditionally, BEFORE the dhash. Zip-extracted
     # objects are already upright (/extract transposed and re-encoded them,
@@ -1379,12 +1625,16 @@ def _process_entry(
     try:
         with timings.measure("exif_ms"):
             entry_bytes, _orientation = apply_exif_orientation(entry_bytes)
+    except _DECODE_ERRORS as exc:
+        logger.warning(
+            "process_entry: index=%d EXIF upright could not decode the entry (%s)",
+            request.entry_index,
+            type(exc).__name__,
+        )
+        return _entry_undecodable(timings, "extracted entry could not be decoded")
     except Exception:
         logger.exception("process_entry: EXIF upright failed on the extracted image")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="extracted image undecodable",
-        ) from None
+        raise _upstream_failure(timings, "EXIF_FAILED", "extracted image undecodable") from None
 
     # dHash the EXIF-uprighted ORIGINAL before any cropping — the hash must
     # describe the scan, never the crop, so re-scans of the same card match
@@ -1397,11 +1647,17 @@ def _process_entry(
             with timings.measure("dhash_ms"):
                 # 16 lowercase hex chars: a 64-bit int does not survive JSON float64.
                 dhash_hex = f"{compute_dhash(entry_bytes):016x}"
+        except _DECODE_ERRORS as exc:
+            logger.warning(
+                "process_entry: index=%d dhash could not decode the entry (%s)",
+                request.entry_index,
+                type(exc).__name__,
+            )
+            return _entry_undecodable(timings, "extracted entry could not be decoded")
         except Exception:
             logger.exception("process_entry: dhash failed on the extracted image")
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="extracted image undecodable",
+            raise _upstream_failure(
+                timings, "DHASH_FAILED", "extracted image undecodable"
             ) from None
 
     # Same cascade, same upstream-failure translation as POST /process. In the
@@ -1429,15 +1685,13 @@ def _process_entry(
         )
     except ClassifyError:
         logger.exception("process_entry: classify failed to parse after retry")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="classify response unparseable",
+        raise _upstream_failure(
+            timings, "CLASSIFY_UNPARSEABLE", "classify response unparseable"
         ) from None
     except Exception:
         logger.exception("process_entry: cascade failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="preprocess pipeline upstream failure",
+        raise _upstream_failure(
+            timings, "PIPELINE_UPSTREAM_FAILURE", "preprocess pipeline upstream failure"
         ) from None
 
     if isinstance(result, CropDeclined):
@@ -1463,10 +1717,7 @@ def _process_entry(
         )
 
     if isinstance(result, CropRejected):  # pragma: no cover - image_bytes was provided
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="cascade returned no result",
-        )
+        raise _upstream_failure(timings, "NO_CROP_RESULT", "cascade returned no result")
 
     timings.source = result.source
     # Write the winning crop already rotated (the /process contract leaves
@@ -1480,9 +1731,8 @@ def _process_entry(
             rotated = rotate_image_bytes(result.image_bytes, result.orientation.rotation_degrees)
     output_content_type = zipsafe.sniff_image_type(rotated)
     if output_content_type is None:  # pragma: no cover - rotation preserves format
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="processed image has no recognisable type",
+        raise _upstream_failure(
+            timings, "OUTPUT_TYPE_UNKNOWN", "processed image has no recognisable type"
         )
 
     output_ref = ObjectRef(
@@ -1505,9 +1755,8 @@ def _process_entry(
         output_written = False
     except Exception:
         logger.exception("process_entry: output write failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="placeholder storage unavailable",
+        raise _upstream_failure(
+            timings, "OUTPUT_WRITE_FAILED", "placeholder storage unavailable"
         ) from None
 
     _store_copy_photo_sizes(
@@ -2141,3 +2390,7 @@ def _openapi_with_render_edit_scan_form() -> dict[str, object]:
 
 
 app.openapi = _openapi_with_render_edit_scan_form  # type: ignore[method-assign]
+
+
+# Last statement of the module: the `cold_start` line's import share.
+_MAIN_MODULE_IMPORT_S = time.perf_counter() - _MODULE_IMPORT_STARTED

@@ -1,0 +1,62 @@
+# The rembg 2.0.78 ORACLE for the NEO-484 mask-parity job: rembg and every
+# package the deployed image carried only because of it, at exactly the
+# versions that image ran (its Linux `pip freeze`). Everything else rembg
+# needs (numpy, Pillow, opencv-python-headless, onnxruntime, tqdm, requests,
+# packaging) comes from the PR image this layer is built on.
+#
+# Never a runtime dependency: only tests/parity/Dockerfile's `oracle` target
+# installs it, with
+#   pip install --no-deps --require-hashes --only-binary=:all: -r <this file>
+#   pip check
+# Every hash is the cp312 manylinux x86_64 (or py3-none-any) wheel on PyPI.
+# Dependabot's block for this directory has version updates off
+# (.github/dependabot.yml): a bump changes the oracle, so it is made by hand,
+# and only with the goldens regenerated.
+rembg==2.0.78 \
+    --hash=sha256:57dde57215d0cd407947753bd9928c927c363c7381139ae87dcd6160cc13c89a
+    # rembg-2.0.78-py3-none-any.whl
+PyMatting==1.1.16 \
+    --hash=sha256:6ad3f787f90d7720b60e9734c33588cb30f98a66abf7bd772fa499d3a32b466a
+    # pymatting-1.1.16-py3-none-any.whl
+numba==0.68.1 \
+    --hash=sha256:8b33fee239194b9b6cb9b176f3c2563b94e5882fd846748ad0cf960daeee5406
+    # numba-0.68.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+llvmlite==0.50.0 \
+    --hash=sha256:d501e5103076b9a14be885d2574dc2f6793171aa54a853d1244e011d476f1399
+    # llvmlite-0.50.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+scipy==1.18.1 \
+    --hash=sha256:f55fa87b6c612ecd6b058f167c53231b1d14e412efe361d3d6e38b3631c73218
+    # scipy-1.18.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+scikit-image==0.26.0 \
+    --hash=sha256:7df650e79031634ac90b11e64a9eedaf5a5e06fcd09bcd03a34be01745744466
+    # scikit_image-0.26.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+ImageIO==2.38.1 \
+    --hash=sha256:36d23eb7423d2fb63f637098758edb3d2df3687f7125e0a5ce8596572022dcf9
+    # imageio-2.38.1-py3-none-any.whl
+tifffile==2026.11.8 \
+    --hash=sha256:bb41732b357a7fa3077db439961ea1ec3a88d2fda4b45fd3ea9f7786690f6049
+    # tifffile-2026.11.8-py3-none-any.whl
+lazy-loader==0.6 \
+    --hash=sha256:77253be3391b06124a0e16105bd663b6c54470af1a9ca8e1cf026f38d58ed056
+    # lazy_loader-0.6-py3-none-any.whl
+pooch==1.9.0 \
+    --hash=sha256:f265597baa9f760d25ceb29d0beb8186c243d6607b0f60b83ecf14078dbc703b
+    # pooch-1.9.0-py3-none-any.whl
+platformdirs==4.14.5 \
+    --hash=sha256:8e778c6fa421516f4d3369449f8df3b0e1b72c0e0005fe88e3ec772d0a14e750
+    # platformdirs-4.14.5-py3-none-any.whl
+jsonschema==4.26.0 \
+    --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
+    # jsonschema-4.26.0-py3-none-any.whl
+jsonschema-specifications==2025.9.1 \
+    --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe
+    # jsonschema_specifications-2025.9.1-py3-none-any.whl
+referencing==0.37.0 \
+    --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231
+    # referencing-0.37.0-py3-none-any.whl
+rpds-py==2026.9.1 \
+    --hash=sha256:addeda51556dac7c1a2f14cda62db8b621cd12afba3091d03a96c72932387eab
+    # rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+attrs==26.1.0 \
+    --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
+    # attrs-26.1.0-py3-none-any.whl

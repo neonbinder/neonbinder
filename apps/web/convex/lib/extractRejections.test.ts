@@ -1,12 +1,14 @@
 import { describe, expect, test } from "vitest";
 import {
   ENTRY_TOO_MANY_PIXELS,
+  ENTRY_UNDECODABLE,
   isRasterTooLargeError,
   MAX_REJECTION_EXAMPLE_CHARS,
   MAX_REJECTION_EXAMPLES,
   rejectionExampleName,
   rejectionKind,
   summarizeRejections,
+  terminalEntryErrorCode,
   unknownRejectionReasons,
 } from "./extractRejections";
 
@@ -233,5 +235,51 @@ describe("isRasterTooLargeError", () => {
     expect(isRasterTooLargeError("preprocess ENTRY_TOO_MANY_PIXELS_EXTRA (HTTP 413)")).toBe(false);
     expect(isRasterTooLargeError("ENTRY_TOO_MANY_PIXELS")).toBe(false);
     expect(isRasterTooLargeError("")).toBe(false);
+  });
+});
+
+describe("NEO-484: terminalEntryErrorCode", () => {
+  const tooBig = `preprocess ${ENTRY_TOO_MANY_PIXELS} (HTTP 413): image has 70000000 pixels`;
+  const undecodable = `preprocess ${ENTRY_UNDECODABLE} (HTTP 422): cannot identify image file`;
+
+  test("the not-an-image code is the one the service sends", () => {
+    expect(ENTRY_UNDECODABLE).toBe("ENTRY_UNDECODABLE");
+  });
+
+  test.each([
+    ["the pixel ceiling", tooBig, ENTRY_TOO_MANY_PIXELS],
+    ["not an image", undecodable, ENTRY_UNDECODABLE],
+  ])("reads %s bare", (_label, message, code) => {
+    expect(terminalEntryErrorCode(message)).toBe(code);
+  });
+
+  test.each([
+    ["the pixel ceiling", tooBig, ENTRY_TOO_MANY_PIXELS],
+    ["not an image", undecodable, ENTRY_UNDECODABLE],
+  ])("reads %s behind the runtime's Uncaught Error: prefix", (_label, message, code) => {
+    expect(terminalEntryErrorCode(`Uncaught Error: ${message}\n  at handler`)).toBe(code);
+  });
+
+  test.each([
+    ["the pixel ceiling", tooBig, ENTRY_TOO_MANY_PIXELS],
+    ["not an image", undecodable, ENTRY_UNDECODABLE],
+  ])("reads %s inside the workpool's JSON envelope", (_label, message, code) => {
+    expect(terminalEntryErrorCode(JSON.stringify({ __convexWorkpoolNonRetryable: true, message }))).toBe(code);
+  });
+
+  test("an unknown or non-terminal code is undefined", () => {
+    expect(terminalEntryErrorCode("preprocess ZIP_REJECTED (HTTP 422): bad zip")).toBeUndefined();
+    expect(terminalEntryErrorCode("preprocess INPUT_TOO_LARGE (HTTP 413)")).toBeUndefined();
+    expect(terminalEntryErrorCode("preprocess HTTP 502: x")).toBeUndefined();
+    expect(terminalEntryErrorCode("preprocess ENTRY_UNDECODABLE_EXTRA (HTTP 422)")).toBeUndefined();
+    expect(terminalEntryErrorCode("ENTRY_UNDECODABLE")).toBeUndefined();
+    expect(terminalEntryErrorCode("")).toBeUndefined();
+  });
+
+  test("isRasterTooLargeError still answers only for the pixel ceiling", () => {
+    expect(isRasterTooLargeError(tooBig)).toBe(true);
+    expect(isRasterTooLargeError(`Uncaught Error: ${tooBig}`)).toBe(true);
+    expect(isRasterTooLargeError(undecodable)).toBe(false);
+    expect(isRasterTooLargeError(`Uncaught Error: ${undecodable}`)).toBe(false);
   });
 });

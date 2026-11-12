@@ -3,8 +3,8 @@
 When SAM fails to find a plausible card mask — usually unusual card shapes,
 heavy occlusion, or backgrounds where SAM's center-biased probes miss the
 card — this stage asks Claude Haiku to locate the card and crops via PIL.
-Cheap (~$0.0005 per call), no additional runtime deps (anthropic SDK is
-already loaded for classify).
+Cheap (~$0.0005 per call), no additional runtime deps (it shares classify's
+Anthropic client, and with it the SDK's first-use import).
 
 Public API: `haiku_bbox_crop(image_bytes) -> bytes | None`. Returns JPEG
 bytes of the cropped region, or None if Haiku couldn't identify a card.
@@ -23,12 +23,17 @@ import base64
 import json
 import logging
 from io import BytesIO
+from typing import TYPE_CHECKING
 
-import anthropic
 from PIL import Image
 
 from app.classify import EFFORT, _prepare_for_anthropic, get_anthropic_client, response_text
 from app.cropper import boxes
+
+if TYPE_CHECKING:
+    # Annotations only: the SDK is imported on first use (NEO-484 C6), through
+    # `get_anthropic_client`.
+    import anthropic
 
 logger = logging.getLogger(__name__)
 

@@ -10,6 +10,9 @@ import {
   failedText,
   inNaturalOrder,
   MAX_PHOTO_RETRIES,
+  mostFailedWontOpen,
+  noticeReadsPhotos,
+  PHOTO_WONT_OPEN_LINE,
   photoLabels,
   photoLine,
   photoNews,
@@ -22,6 +25,7 @@ import {
   runNotice,
   zipOverLimitLine,
   type NoticeJob,
+  type NoticePhoto,
   tileLabel,
   whyNotSave,
   type IntakeImage,
@@ -536,13 +540,57 @@ describe("NEO-446: runNotice", () => {
   });
 
   describe("TOO_MANY_IMAGE_FAILURES with photos in", () => {
-    const most = "Most of these photos wouldn't read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run, with their other sides.";
-    const failed = (extra: Partial<NoticeJob>) =>
-      runNotice(job({ status: "failed", errorCode: "TOO_MANY_IMAGE_FAILURES", totalImages: 10, failedImages: 6, ...extra }))!;
+    const most = "Most of these photos couldn't be read. Anything below is still yours to save. Re-shoot the rest, sharp and well lit, in a new run, with their other sides.";
+    const unopened = "Most of these files wouldn't open. Anything below is still yours to save. Save the rest again as JPEG or PNG and send them, with their other sides, in a new run.";
+    const failed = (extra: Partial<NoticeJob>, photos?: NoticePhoto[]) =>
+      runNotice(job({ status: "failed", errorCode: "TOO_MANY_IMAGE_FAILURES", totalImages: 10, failedImages: 6, ...extra }), photos)!;
+    const photo = (errorCode: string, status: IntakeImage["status"] = "failed"): NoticePhoto => ({ status, errorCode });
+    const wontOpen = (n: number) => Array.from({ length: n }, () => photo("ENTRY_UNDECODABLE"));
+    const timedOut = (n: number) => Array.from({ length: n }, () => photo("PHOTO_TIMED_OUT"));
 
-    test("keeps the lanes and says most would not read", () => {
+    test("keeps the lanes and says most could not be read", () => {
       const n = failed({});
       expect(n).toMatchObject({ line: most, problem: true, hideWorkspace: false });
+    });
+
+    describe("NEO-484: most of the failed photos were files we couldn't open", () => {
+      test("all of them: says the files wouldn't open, and to save them again", () => {
+        expect(failed({}, wontOpen(6))).toMatchObject({ line: unopened, problem: true, hideWorkspace: false });
+      });
+      test("a strict majority of the failures is enough", () => {
+        expect(failed({}, [...wontOpen(4), ...timedOut(2)]).line).toBe(unopened);
+        // 2 of 3 on an odd count: most.
+        expect(failed({ totalImages: 5, failedImages: 3 }, [...wontOpen(2), ...timedOut(1)]).line).toBe(unopened);
+      });
+      test("half, or fewer, keeps the plain line", () => {
+        expect(failed({}, [...wontOpen(3), ...timedOut(3)]).line).toBe(most);
+        expect(failed({}, [...wontOpen(1), ...timedOut(5)]).line).toBe(most);
+      });
+      test("other failures alone keep the plain line, too-big ones included", () => {
+        expect(failed({}, timedOut(6)).line).toBe(most);
+        expect(failed({}, Array.from({ length: 6 }, () => photo("ENTRY_TOO_MANY_PIXELS"))).line).toBe(most);
+      });
+      test("only failed photos count: a read photo carrying the code is not one that wouldn't open", () => {
+        expect(failed({}, [...wontOpen(3), ...Array.from({ length: 4 }, () => photo("ENTRY_UNDECODABLE", "done"))]).line).toBe(most);
+      });
+      test("tails the rejections the same way", () => {
+        const n = failed({ rejectedEntries: 1, rejected: summary(1, 0, 0) }, wontOpen(6));
+        expect(n.line).toBe(`${unopened} 1 more didn't make it in: 1 is too big (over 64 megapixels or 32 MB).`);
+      });
+      test("only that line waits on the photos", () => {
+        const failedJob = job({ status: "failed", errorCode: "TOO_MANY_IMAGE_FAILURES", totalImages: 10, failedImages: 6 });
+        expect(noticeReadsPhotos(failedJob)).toBe(true);
+        expect(noticeReadsPhotos({ ...failedJob, totalImages: 0 })).toBe(false);
+        expect(noticeReadsPhotos({ ...failedJob, errorCode: "CANCELED" })).toBe(false);
+        expect(noticeReadsPhotos(job())).toBe(false);
+        expect(noticeReadsPhotos(null)).toBe(false);
+        expect(noticeReadsPhotos(undefined)).toBe(false);
+      });
+      test("the rule is undecodable * 2 > the job's failed count", () => {
+        expect(mostFailedWontOpen({ failedImages: 6 }, wontOpen(4))).toBe(true);
+        expect(mostFailedWontOpen({ failedImages: 6 }, wontOpen(3))).toBe(false);
+        expect(mostFailedWontOpen({ failedImages: 0 }, [])).toBe(false);
+      });
     });
     test("tails the rejections, with names", () => {
       const n = failed({ rejectedEntries: 3, rejected: summary(0, 3, 0, [{ name: "a.heic", kind: "wrongFormat" }, { name: "b.heic", kind: "wrongFormat" }]) });
@@ -826,5 +874,22 @@ describe("NEO-481 — a box card waits for a price", () => {
   test("Save all says how many wait, one or many", () => {
     expect(waitingForPriceLine(1)).toBe("1 card waits for a price. Type one on the card, or set a common price.");
     expect(waitingForPriceLine(3)).toBe("3 cards wait for a price. Type one on the card, or set a common price.");
+  });
+});
+
+describe("NEO-484: a photo that is not an image", () => {
+  const line = "Can't open this file. Save it again as a JPEG or PNG and send that.";
+
+  test("is never offered Try again, whatever its try count", () => {
+    expect(canRetryPhoto({ status: "failed", errorCode: "ENTRY_UNDECODABLE" })).toBe(false);
+    expect(canRetryPhoto({ status: "failed", errorCode: "ENTRY_UNDECODABLE", retries: 0 })).toBe(false);
+    // A plain failure at the same try count is still offered one.
+    expect(canRetryPhoto({ status: "failed", errorCode: "PROCESS_ENTRY_FAILED", retries: 0 })).toBe(true);
+  });
+
+  test("says the file won't open and how to fix it, retry offered or not", () => {
+    expect(PHOTO_WONT_OPEN_LINE).toBe(line);
+    expect(failedText({ errorCode: "ENTRY_UNDECODABLE" }, false)).toBe(line);
+    expect(failedText({ errorCode: "ENTRY_UNDECODABLE" }, true)).toBe(line);
   });
 });
