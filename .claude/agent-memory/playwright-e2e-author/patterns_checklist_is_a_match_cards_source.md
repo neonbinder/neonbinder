@@ -33,10 +33,12 @@ What that means for specs:
   checklist: N of N cards." replacing the kept line: gate on `kept.or(saved)`
   then assert the saved line.
 
-- "Teams from your checklist: N of M": since D10 a row no card pairs becomes a
-  checklist-only CANDIDATE, so N counts every row naming a team (paired or
-  not) and M is marketplace cards + unpaired rows. `checklistFacts` reads N as
-  rows answering a team; a file with a repeated number no longer lowers N.
+- "Teams from your checklist: N of M" is ONE definition
+  (`lib/checklists/checklist-teams-tally.ts`): at fetch N counts marketplace
+  cards whose team came from the checklist (a number on two rows pairs
+  nothing, D2), M the marketplace cards; at save, kept checklist-only rows
+  join both. A short-lived D10 build counted every row naming a team; it was
+  reverted, so read the tally file before trusting a remembered count.
 - Server pairs live in the COLLAPSED "Matched (n)" list: click "Expand matched
   cards" before asserting a chip or its "Unlink card ... from checklist row"
   button. Unlinking a one-marketplace server pair puts the card on the keep

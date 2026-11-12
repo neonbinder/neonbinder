@@ -87,7 +87,7 @@ BuySportsCards alone for the whole run:
 
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
-| Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `tests/setup.spec.ts`; **sole writer** of the cards of the base parallel its run builds before Stop (the first buildable row under `Parallel`, in the type's child order — measured: `Sepia Refractors`): `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04 |
+| Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `tests/setup.spec.ts`; **sole writer** of the cards of the base parallels its two runs build before Stop (the first two buildable rows under `Parallel`, in the type's child order — measured first: `Sepia Refractors`; NEO-496's second run skips the first, blocked by the spec's own collection copy): `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321, NEO-496) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04 |
 | Baseball → 2024 → Topps → Topps Stars of MLB Network | `Base` (10 cards on BSC) — variant types synced and Base MAPPED (BSC-only under a SportLots pause, so it reads unmapped), checklist deliberately EMPTY (the read-only wizard fixture) | `tests/setup.spec.ts`; read by `checklist-wizard-back-to-matching-resumes-decisions`, `checklist-wizard-career-team-entry` and `checklist-wizard-link-to-existing-player` through `fetchChecklistToWizard`'s default, each exiting Cancel → Discard. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Big League) — see "Topps Stars of MLB Network" |
 | Baseball → 2024 → Topps → Topps Big League | none since NEO-475 — RETIRED as a fixture (310 cards; every wizard fetch read them all from BSC) | was `tests/setup.spec.ts` and the read-only wizard flows; no flow touches it now |
 | Baseball → 2024 → BBM → BBM Rookie Edition Premium | `Base` — 36 cards (RP01-RP36), variant types synced and fetched in-flow, never committed (NOT pre-synced). The `BBM` brand row is a known brand (`convex/knownBrands.ts`) the seed's year-wide 2024 Sets sync mints, and the set is filed under it by name | `tests/set-selector/checklist-wizard-same-name-pick-step.spec.ts` — **sole reader** (Cancel → Discard); writes one global `players` row, `Shuya Yamada` b. 1851. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Chrome NPB) — see "BBM Rookie Edition Premium" |
@@ -2972,7 +2972,7 @@ approved by Jason, 2026-09-09 — and neither touches the checklist itself:
 |---|---|---|
 | `tests/set-selector/signed-by-autofills-from-players.spec.ts` | `autographed` / `signedBy` on card **#300** | sole writer of those two fields; no other flow reads or writes them |
 | `tests/set-selector/topps-chrome-add-feature.spec.ts` | toggles one feature on the anchor, twice per run | sole writer of that feature; returns it to its starting state |
-| `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) | the CARDS of the first buildable base parallel under `Parallel` (measured: `Sepia Refractors`), rebuilt from Base by the section's run and stopped after the one in flight | sole writer of those rows' cards; no queue flow reads any base parallel's cards; never writes Base, a player, a team or a row. Approved: Jason, 2026-10-04 — see the section below |
+| `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321) | the CARDS of the first two buildable base parallels under `Parallel` (measured first: `Sepia Refractors`), rebuilt from Base by the section's two runs, each stopped after the one in flight (NEO-496: the second run skips the first parallel, blocked by the spec's own collection copy of one of its cards, removed before the spec ends) | sole writer of those rows' cards; no queue flow reads any base parallel's cards; never writes Base, a player, a team or a row. Approved: Jason, 2026-10-04 — see the section below |
 
 **`tests/set-selector/signed-by-autofills-from-players.spec.ts` no longer self-heals an empty Base
 checklist (NEO-260).** It used to carry a `when:`-guarded fallback that fetched
@@ -3076,6 +3076,20 @@ ${output.BUILT}` in the flow's `maestro.log`. If it is ever `Gold Wave
 Refractors`, nothing breaks (see the table), but the seed's pagination guard
 then reads a set this flow rebuilt mid-queue — harmless, since the seed has
 already passed, but worth knowing when reading a Gold Wave screenshot.
+
+**NEO-496 — the blocked parallel.** After the first run the flow marks ONE
+card of the parallel it just built (the first ordinary row of its collector
+checklist, `#N First Last`) Have in the worker's own Main binder through the
+real `/collection`. A rebuild deletes a parallel's cards and a collector's card
+is never deleted, so the section lists that parallel `— blocked: a collector
+owns copies of its cards, …` and a second `Build N parallels from Base` run
+shows it `— Blocked — …` from the start and never sends it. That second run is
+stopped after one, so it writes the cards of the NEXT buildable parallel in
+the same child order (the first run's parallel is skipped). The copy is per
+user (`collectionCopies`, cleared by the bootstrap reset) and is removed
+through the card drawer in a `finally`; while it exists the parallel cannot be
+rebuilt by anyone, and nobody else in the queue rebuilds it. Writes: the first
+two buildable parallels' cards, one collection copy for the run.
 
 Concurrent Base writers: `signed-by-autofills-from-players` edits card #300's
 `autographed` / `signedBy`. A copy taken while that edit lands is either

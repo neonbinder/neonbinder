@@ -112,11 +112,11 @@ export interface ChecklistFacts {
   /** Data rows the dialog reads (a one-word number, or NNO; a row mixing "No Team" with a team is skipped): what its preview and the chip call "N rows". */
   rows: number;
   /**
-   * The cards whose team the file answers: every row naming a team or saying
-   * "No Team". A paired row answers its card; since NEO-496 (D10) a row no
-   * card pairs is a checklist-only card of its own and is counted as well.
-   * This is N in "Teams from your checklist: N of M cards"; M is the
-   * marketplace's cards plus those checklist-only rows.
+   * The cards whose team the file answers: a card paired to exactly one row
+   * that names a team or says "No Team". A number on two rows pairs nothing
+   * (NEO-496 D2), so neither row counts. This is N in "Teams from your
+   * checklist: N of M cards"; M is the marketplace's cards
+   * (lib/checklists/checklist-teams-tally.ts).
    */
   matched: number;
 }
@@ -208,6 +208,7 @@ export function checklistFacts(name: ChecklistName): ChecklistFacts {
   // prove, so a file holding two such rows is refused here rather than guessed at.
   const rows = readRows(name);
   const numbered = rows.filter((r) => !isNnoRow(r));
+  const unnumbered = rows.filter(isNnoRow);
   const countOf = new Map<string, number>();
   for (const r of numbered) countOf.set(numberOf(r), (countOf.get(numberOf(r)) ?? 0) + 1);
   const byCase = new Map<string, string>();
@@ -218,20 +219,29 @@ export function checklistFacts(name: ChecklistName): ChecklistFacts {
     }
     byCase.set(key.toUpperCase(), key);
   }
+  const playerCountOf = new Map<string, number>();
+  for (const r of unnumbered) playerCountOf.set(namesKey(r.player), (playerCountOf.get(namesKey(r.player)) ?? 0) + 1);
+  // NEO-496 (D2, restored; lib/checklists/checklist-teams-tally.ts): N counts the CARDS whose team
+  // came from the checklist. A number printed on two rows pairs with neither, and its card is asked
+  // of the marketplace, so neither row counts; a checklist-only row is not a card until it is kept.
+  // A numbered card is matched when its number is on exactly one row (rule 7). An unnumbered card
+  // is matched by player, only when exactly one such card and exactly one NNO row name that player
+  // (the captured set has one card per row, so the rows count for both sides). A matched card counts
+  // here only when its row answers the team (`answersTeam`).
   // NEO-490: when no number pairs at all, the product pairs by player name instead; that is
   // `nameFallbackFacts`' reading, not this one, so a file that would reach it is refused here.
   if (numbered.length > 0 && !numbered.some((r) => countOf.get(numberOf(r)) === 1)) {
     throw new Error(`${name}.csv pairs no card by number, so the product pairs it by player name: read it with nameFallbackFacts (NEO-490).`);
   }
-  // NEO-496 (D10): every row counts once it answers a team (`answersTeam`). A row that pairs gives
-  // its card the team; a row no card pairs (a number on two rows that its player cannot split, two
-  // identical rows, a card the marketplace leaves out) becomes a checklist-only card of its own,
-  // its team the checklist's, and the fetch counts it too. So N is read off the file without
-  // restating the pairing: a captured file holds BSC's own answers, so no pair disagrees.
+  const matchedNumbered = numbered.filter((r) => countOf.get(numberOf(r)) === 1 && answersTeam(r)).length;
+  const matchedUnnumbered = unnumbered.filter((r) => {
+    const key = namesKey(r.player);
+    return key !== "" && playerCountOf.get(key) === 1 && answersTeam(r);
+  }).length;
   return {
     path: `${DIRECTORY}${name}.csv`,
     rows: rows.length,
-    matched: rows.filter(answersTeam).length,
+    matched: matchedNumbered + matchedUnnumbered,
   };
 }
 
