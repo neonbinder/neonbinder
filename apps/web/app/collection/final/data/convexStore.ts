@@ -72,7 +72,8 @@ import type {
 } from "@/convex/lib/catalogView";
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
-import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+import { resizeCopyPhoto, type ResizedPhoto } from "@/lib/collection/copy-photo-resize";
+import { startCopyPhotoTimer } from "@/lib/collection/copy-photo-timing";
 import { uploadWithRetry, type PhotoFileKind } from "@/lib/collection/upload-with-retry";
 import { CardImagesProvider } from "./cardImages";
 
@@ -2757,6 +2758,30 @@ function useCardImages(cardIds: readonly string[]): ReadonlyMap<string, CopyPhot
 }
 
 /**
+ * NEO-466 — resizes started ahead of their save (`preparePhoto`), by the
+ * original file. `addPhoto` takes its file's entry out, so each is used once
+ * and a later save of the same file resizes afresh. Each promise carries a
+ * no-op handler, so one that rejects before (or without) its save is never an
+ * unhandled rejection; the save still sees the rejection when it awaits it.
+ */
+const preparedPhotos = new WeakMap<File, Promise<ResizedPhoto>>();
+
+function prepareCopyPhoto(file: File): void {
+  if (preparedPhotos.has(file)) return;
+  const resizing = resizeCopyPhoto(file);
+  resizing.catch(() => undefined);
+  preparedPhotos.set(file, resizing);
+}
+
+/** The resize `preparePhoto` started for `file`, taken out of the cache, or a new one. */
+function takeResizedPhoto(file: File): Promise<ResizedPhoto> {
+  const prepared = preparedPhotos.get(file);
+  if (!prepared) return resizeCopyPhoto(file);
+  preparedPhotos.delete(file);
+  return prepared;
+}
+
+/**
  * NEO-377 — copy photos: resize in the browser, upload both files straight
  * to R2 through signed URLs, then let Convex check and attach them.
  */
@@ -2769,33 +2794,76 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
     () => ({
       usePhotos: useLinePhotos,
       useCardImages,
-      async addPhoto(copy, side, file) {
-        if (isOptimisticId(copy.id)) throw new Error("That copy is still saving. Try again in a moment.");
-        const resized = await resizeCopyPhoto(file);
-        const started = await startUpload({
-          copyId: copy.id as RawCopy["_id"],
-          side,
-          contentType: resized.contentType,
-          imageBytes: resized.image.size,
-          thumbBytes: resized.thumb.size,
-        });
-        const put = (url: string, body: Blob, file: PhotoFileKind) =>
-          uploadWithRetry({
-            url,
-            method: "PUT",
-            headers: { "content-type": resized.contentType },
-            body,
-            file,
-            failureMessage: "That photo didn't upload. Check your connection and try again.",
-          });
-        await put(started.imageUploadUrl, resized.image, "image");
-        await put(started.thumbUploadUrl, resized.thumb, "thumb");
-        await finishUpload({ photoId: started.photoId });
+      preparePhoto: prepareCopyPhoto,
+      async addPhoto(copy, side, file, context) {
+        // NEO-466: every phase is timed; a slow, retried or failed save logs one line.
+        const timer = startCopyPhotoTimer(undefined, undefined, context?.addLineItemMs);
+        // The resize starts now, beside any wait for the line below. A resize
+        // `preparePhoto` started at the Add press is reused, so this waits only
+        // for what is left of it.
+        const resizing = takeResizedPhoto(file);
+        resizing.catch(() => undefined);
+        try {
+          // A photo picked on a line whose add is still in flight waits for
+          // that write's answer, then goes to the real id (as every other
+          // write on the line does).
+          const line = isOptimisticId(copy.id) ? await timer.phase("line", () => landedCopy(copy)) : copy;
+          const resized = await timer.phase("resize", () => resizing);
+          const started = await timer.phase("startUpload", () =>
+            startUpload({
+              copyId: line.id as RawCopy["_id"],
+              side,
+              contentType: resized.contentType,
+              imageBytes: resized.image.size,
+              thumbBytes: resized.thumb.size,
+            }),
+          );
+          // Both files go up side by side. The first to give up stops the
+          // other, and its error is the one the collector reads. Both are let
+          // settle first, so the timing line holds the stopped file's tries too.
+          const shared = new AbortController();
+          const gaveUp: { failed: boolean; error?: unknown } = { failed: false };
+          const put = (url: string, retryUrl: string | undefined, body: Blob, file: PhotoFileKind) =>
+            timer.put(file, body.size, (onAttempt) =>
+              uploadWithRetry(
+                {
+                  url,
+                  ...(retryUrl ? { retryUrl } : {}),
+                  method: "PUT",
+                  headers: { "content-type": resized.contentType },
+                  body,
+                  file,
+                  failureMessage: "That photo didn't upload. Check your connection and try again.",
+                  signal: shared.signal,
+                },
+                { onAttempt },
+              ).catch((error: unknown) => {
+                if (!gaveUp.failed) {
+                  gaveUp.failed = true;
+                  gaveUp.error = error;
+                  shared.abort();
+                }
+                throw error;
+              }),
+            );
+          await Promise.allSettled([
+            put(started.imageUploadUrl, started.imageRetryUploadUrl, resized.image, "image"),
+            put(started.thumbUploadUrl, started.thumbRetryUploadUrl, resized.thumb, "thumb"),
+          ]);
+          if (gaveUp.failed) throw gaveUp.error;
+          await timer.phase("finishUpload", () => finishUpload({ photoId: started.photoId }));
+          timer.finish("saved");
+        } catch (error) {
+          timer.finish("failed", error);
+          throw error;
+        }
       },
-      async removePhoto(copy, side) {
+      async removePhoto(drawn, side) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         await remove({ copyId: copy.id as RawCopy["_id"], side });
       },
-      async swapPhotos(copy) {
+      async swapPhotos(drawn) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         await swap({ copyId: copy.id as RawCopy["_id"] });
       },
     }),

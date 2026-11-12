@@ -284,6 +284,18 @@ export default function CardDetail({
   /** NEO-431 — the add form's photos, waiting for Add. */
   const photosExt = useCopyPhotos();
   const [heldPhotos, setHeldPhotos] = useState<HeldPhotos>({});
+  /**
+   * NEO-466: a photo starts resizing the moment it is held, so the Add press
+   * finds it ready. A photo replaced or dropped first is never used: `addPhoto`
+   * reads the resize by the file it is given (`preparePhoto`).
+   */
+  const holdPhotos = (files: HeldPhotos) => {
+    for (const side of PHOTO_SIDES) {
+      const file = files[side];
+      if (file) photosExt?.preparePhoto?.(file);
+    }
+    setHeldPhotos(files);
+  };
   /** Bumped when the draft resets, to clear the photo box's status line with its photos. */
   const [draftRound, setDraftRound] = useState(0);
   /** An add's photos are uploading: Add says so and takes no second press. */
@@ -408,6 +420,7 @@ export default function CardDetail({
 
   const add = (value: FormValue) => {
     if (addingPhotos) return;
+    const pressedAt = performance.now();
     const home = homeById(addHome);
     const details: CopyDetails = {
       ...fromForm(value, home?.kind === "box"),
@@ -424,8 +437,12 @@ export default function CardDetail({
       void api
         .run(
           async () => {
+            // NEO-466: started when each photo was held; this only catches one
+            // that wasn't (already started, it is the same resize).
+            for (const { file } of held) photosExt.preparePhoto?.(file);
             // Refused here (a full card, a box that needs a price), the photos stay in the form.
             const added = await writes.addLineItem(card, details, { keepsOwnLine: true });
+            const addLineItemMs = Math.round(performance.now() - pressedAt);
             // The write has answered, so this is the server's id, which `addPhoto` needs.
             const copy: Copy = {
               ...details,
@@ -435,15 +452,16 @@ export default function CardDetail({
               homeKind: home?.kind ?? "binder",
               upForTrade: details.upForTrade ?? false,
             };
-            const failed: { side: PhotoSide; message: string }[] = [];
-            for (const { side, file } of held) {
-              try {
-                await photosExt.addPhoto(copy, side, file);
-              } catch (e) {
-                // The copy stays, and so does a photo that made it.
-                failed.push({ side, message: writeErrorMessage(e) });
-              }
-            }
+            // Front and back save side by side (NEO-466). `held` is in
+            // PHOTO_SIDES order, so `failed` is too: front first.
+            const saved = await Promise.allSettled(
+              held.map(({ side, file }) => photosExt.addPhoto(copy, side, file, { addLineItemMs })),
+            );
+            // The copy stays, and so does a photo that made it.
+            const failed: { side: PhotoSide; message: string }[] = held.flatMap(({ side }, i) => {
+              const result = saved[i];
+              return result.status === "rejected" ? [{ side, message: writeErrorMessage(result.reason) }] : [];
+            });
             return { ...added, failed };
           },
           (r) => {
@@ -749,7 +767,7 @@ export default function CardDetail({
                 <HeldPhotosField
                   key={draftRound}
                   files={heldPhotos}
-                  onChange={setHeldPhotos}
+                  onChange={holdPhotos}
                   line="your new copy"
                   accept={COPY_PHOTO_ACCEPT}
                   help="Stashed here until you add the copy."

@@ -33,6 +33,8 @@ export const E2E_DIAGNOSTIC_EVENTS: ReadonlySet<string> = new Set([
   "convex_client_reconnect",
   "selector_options_stall_backstop",
   "selector_sync_fe_timeout",
+  // NEO-466: a copy photo save that was slow, retried or failed (copy-photo-timing.ts).
+  "copy_photo_save_timing",
   "$exception",
 ]);
 
