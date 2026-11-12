@@ -60,9 +60,16 @@ import {
   applyChecklistAnswers,
   buildChecklistPairRequests,
   committable,
+  pairedRowCard,
+  pairedRowOf,
+  revertServerChecklistPair,
+  unlinkableServerPair,
+  UNLINKED_ROW_ID_PREFIX,
   type ChecklistLinkRow,
   type ChecklistPairAnswer,
   type ChecklistPairRequest,
+  type ServerPairedRow,
+  type ServerPairRevert,
 } from "./checklist-match-apply";
 import { checklistRowLine } from "./PublishedChecklistDialog";
 
@@ -220,6 +227,14 @@ export type PairingCard = {
     via: "number" | "caseFolded" | "prefixStripped" | "player" | "playerName" | "playerFuzzy";
     confidence?: number;
     checklistNumber?: string;
+    /**
+     * The row the server paired (`checklistPairedRowValidator`) and the card
+     * as it was before the row touched it (`checklistPairRevertValidator`).
+     * Both present → the pair can be undone here (Unlink); a pair from before
+     * they existed carries neither and offers no Unlink.
+     */
+    row?: ServerPairedRow;
+    revert?: ServerPairRevert;
   };
   /**
    * NEO-496 — WIRE-ONLY: the streamed candidate's id on a checklist-only row
@@ -501,6 +516,14 @@ type State = {
    * keeps it, and Remove drops the link.
    */
   checklistLinks: Map<string, number>;
+  /**
+   * NEO-496 — how many server pairings the operator undid on a card that
+   * stayed where it was (a BSC + SportLots pair, a card on a keep shelf or
+   * in a column). Those leave no other trace for the discard count; a
+   * one-marketplace card that leaves Matched for the keep shelf is already
+   * counted by `countPairingEdits`.
+   */
+  checklistServerUnlinks: number;
 };
 
 type Action =
@@ -596,7 +619,12 @@ type Action =
   /** NEO-490 — link a checklist row to a card; an unmatched card is kept. */
   | { type: "LINK_CHECKLIST"; rowIndex: number; cardKey: string }
   /** NEO-490 — drop a card's checklist link; the row is listed again. */
-  | { type: "UNLINK_CHECKLIST"; cardKey: string };
+  | { type: "UNLINK_CHECKLIST"; cardKey: string }
+  /**
+   * NEO-496 — undo the SERVER's pairing of a card with a checklist row: the
+   * card gets back what it had before the row, and the row is listed again.
+   */
+  | { type: "UNLINK_SERVER_CHECKLIST"; cardKey: string };
 
 /**
  * NEO-195 — stable identity for a candidate across streamed updates.
@@ -1109,6 +1137,7 @@ function seedState({
     checklistUnused: checklistCards.map((_, i) => i),
     checklistKept: [],
     checklistLinks: new Map(),
+    checklistServerUnlinks: 0,
   });
 }
 
@@ -1262,7 +1291,90 @@ function linkChecklist(state: State, rowIndex: number, cardKey: string): State {
  * away: every link and every kept row is the operator's own.
  */
 function checklistEdits(state: State): number {
-  return state.checklistLinks.size + state.checklistKept.length;
+  return (
+    state.checklistLinks.size + state.checklistKept.length + state.checklistServerUnlinks
+  );
+}
+
+/**
+ * NEO-496 — undo the server's pairing of one card with a checklist row.
+ * Returns `state` when there is nothing to undo (unknown card, no pairing,
+ * or a pairing stored before it carried its row and revert).
+ *
+ * The card gets back what it had before the row (`revertServerChecklistPair`)
+ * and the row joins the checklist column as the card it would have been on
+ * its own, so it can be kept, or linked to this card or another. Where the
+ * card goes:
+ *
+ *  - a BSC + SportLots pair stays matched: the two marketplaces still pair.
+ *    The players are left alone when the marketplaces disagree about them:
+ *    the row never touched a roster that existed, and the operator may have
+ *    picked one already.
+ *  - a one-marketplace card was matched only because of the row. It moves to
+ *    its side's keep shelf, still saved: an Unlink says the row is wrong, not
+ *    that the card is (the shelf's Remove drops it).
+ *  - a card already on a shelf or in a column stays there.
+ */
+function unlinkServerChecklist(state: State, cardKey: string): State {
+  if (!state.checklistRows) return state;
+  const rowIndex = state.checklistCards.length;
+  const listRow = (card: PairingCard) => {
+    if (!unlinkableServerPair(card)) return null;
+    const row = card.checklistLink.row;
+    return {
+      checklistCards: [
+        ...state.checklistCards,
+        pairedRowCard(row, `${UNLINKED_ROW_ID_PREFIX}${cardKey}`),
+      ],
+      checklistRows: [...(state.checklistRows ?? []), pairedRowOf(row)],
+      checklistUnused: [...state.checklistUnused, rowIndex],
+    };
+  };
+
+  const mi = state.matched.findIndex((m) => candidateKey(m.card) === cardKey);
+  if (mi !== -1) {
+    const pair = state.matched[mi];
+    const reverted = revertServerChecklistPair(pair.card);
+    const rows = listRow(pair.card);
+    if (!reverted || !rows) return state;
+    if (isMarketplacePair(pair.card)) {
+      const card: PairingCard = pair.playersConflict
+        ? { ...reverted, ...(pair.card.players ? { players: pair.card.players } : {}) }
+        : reverted;
+      return {
+        ...state,
+        ...rows,
+        matched: state.matched.map((m, i) => (i === mi ? { ...m, card } : m)),
+        checklistServerUnlinks: state.checklistServerUnlinks + 1,
+      };
+    }
+    const toBsc = !!pair.card.platformData.bsc;
+    return {
+      ...state,
+      ...rows,
+      matched: state.matched.filter((_, i) => i !== mi),
+      ...(toBsc
+        ? { keptBsc: [...state.keptBsc, reverted] }
+        : { keptSl: [...state.keptSl, reverted] }),
+    };
+  }
+
+  const lists = ["keptBsc", "keptSl", "unmatchedBsc", "unmatchedSl"] as const;
+  for (const name of lists) {
+    const list = state[name];
+    const i = list.findIndex((c) => candidateKey(c) === cardKey);
+    if (i === -1) continue;
+    const reverted = revertServerChecklistPair(list[i]);
+    const rows = listRow(list[i]);
+    if (!reverted || !rows) return state;
+    return {
+      ...state,
+      ...rows,
+      [name]: list.map((c, j) => (j === i ? reverted : c)),
+      checklistServerUnlinks: state.checklistServerUnlinks + 1,
+    };
+  }
+  return state;
 }
 
 /** Merge a BSC-side and SL-side candidate into the single NB card they describe. */
@@ -1445,6 +1557,10 @@ function baseReducer(state: State, action: Action): State {
           (bscRef ? incomingByRef.get(bscRef) : undefined) ??
           (slRef ? incomingByRef.get(slRef) : undefined);
         if (!fresh?.teams?.length) return c;
+        // NEO-496: the stream still carries the server's checklist pairing,
+        // so a card the operator unlinked would take the row's team straight
+        // back. That team is the row's, not a lookup's: never adopted.
+        if (fresh.teamLookup === "checklist" && !c.checklistLink) return c;
         enriched = true;
         return { ...c, teams: fresh.teams };
       };
@@ -1544,8 +1660,9 @@ function baseReducer(state: State, action: Action): State {
       const pair = state.matched[action.index];
       if (!pair) return state;
       // NEO-496: a card on one marketplace and the checklist has no second
-      // marketplace half to split off, and the server's row is not on screen
-      // to put back, so there is nothing to unlink (the dialog offers none).
+      // marketplace half to split off (the dialog offers no marketplace
+      // Unlink); its checklist chip's own Unlink undoes the row instead
+      // (`UNLINK_SERVER_CHECKLIST`).
       if (!isMarketplacePair(pair.card)) return state;
       // Split the merged card back into its two sides so either can be
       // re-paired or kept independently.
@@ -1576,15 +1693,24 @@ function baseReducer(state: State, action: Action): State {
           : {},
         unmatched: "sl",
       };
+      // NEO-496: the server's checklist pairing stays on the BSC half (below),
+      // so the SportLots half must not keep what the row put on the card: it
+      // gets the card as it was before the row, when the link says what that
+      // was (a pair stored before it did keeps the old behaviour).
+      const slBase =
+        pair.card.checklistLink && revertServerChecklistPair(pair.card);
+      const slPlayers =
+        pair.playersConflict?.sportlots ?? (slBase ? slBase.players : pair.card.players);
       const slSide: PairingCard = {
-        ...pair.card,
+        ...(slBase || pair.card),
         cardName: pair.nameConflict?.sportlots ?? pair.card.cardName,
-        players: pair.playersConflict?.sportlots ?? pair.card.players,
+        players: slPlayers,
         platformData: pair.card.platformData.sportlots
           ? { sportlots: pair.card.platformData.sportlots }
           : {},
         unmatched: "bsc",
       };
+      if (slBase && slSide.players === undefined) delete slSide.players;
       // NEO-490: a checklist link on the pair stays on the half it is keyed
       // by — the pair's `candidateKey`, which is its BSC ref — and that half
       // is KEPT, because a linked card is always saved. The SportLots half
@@ -1970,6 +2096,8 @@ function baseReducer(state: State, action: Action): State {
         ),
       };
     }
+    case "UNLINK_SERVER_CHECKLIST":
+      return unlinkServerChecklist(state, action.cardKey);
     default:
       return state;
   }
@@ -2316,7 +2444,14 @@ export function serverChecklistChipText(link: NonNullable<PairingCard["checklist
   };
 }
 
-function serverChecklistChip(link: NonNullable<PairingCard["checklistLink"]>) {
+/**
+ * The chip, with (NEO-496) the same Unlink inside it a hand link's chip has
+ * when the server's pair can be undone (`unlink`).
+ */
+function serverChecklistChip(
+  link: NonNullable<PairingCard["checklistLink"]>,
+  unlinkButton?: React.ReactNode,
+) {
   const { label: text, percent } = serverChecklistChipText(link);
   return (
     <span className="inline-flex shrink-0 items-stretch rounded border border-pick-teal-rule bg-pick-teal text-xs text-pick-teal-ink">
@@ -2334,6 +2469,7 @@ function serverChecklistChip(link: NonNullable<PairingCard["checklistLink"]>) {
           {percent}
         </span>
       )}
+      {unlinkButton}
     </span>
   );
 }
@@ -3316,10 +3452,41 @@ export default function CardPairingModal({
    * a marketplace "Unlink <card label>" or the row's "Unlink checklist row
    * … from <card label>"; specs match those by prefix and by substring.
    */
+  /**
+   * NEO-496 — the server's pairing as a chip. When the pair carries its row
+   * and what the card was before it, the chip holds an Unlink named like a
+   * hand link's ("Unlink card … from checklist row …"): the card gets its
+   * own values back and the row is listed again, picked up by focus. A pair
+   * stored before that data existed shows the chip alone.
+   */
+  const serverChip = (card: PairingCard) => {
+    const link = card.checklistLink;
+    if (!link) return null;
+    if (!unlinkableServerPair(card)) return serverChecklistChip(link);
+    const cardKey = candidateKey(card);
+    // The row joins the end of the list (see `unlinkServerChecklist`).
+    const rowIndex = state.checklistCards.length;
+    return serverChecklistChip(
+      link,
+      <button
+        type="button"
+        className="min-h-6 rounded-r border-l border-pick-teal-rule px-1.5 font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
+        onClick={() => {
+          dispatch({ type: "UNLINK_SERVER_CHECKLIST", cardKey });
+          announceChecklist(CHECKLIST_UNLINKED);
+          focusChecklistRow(rowIndex);
+        }}
+        aria-label={`Unlink card ${label(card)} from checklist row ${checklistRowLine(
+          pairedRowOf(card.checklistLink.row),
+        )}`}
+      >
+        Unlink
+      </button>,
+    );
+  };
   const checklistChip = (card: PairingCard) => {
-    // NEO-496: the server's own pairing reads the same way, with no Unlink
-    // (its row is not on screen to put back).
-    if (card.checklistLink) return serverChecklistChip(card.checklistLink);
+    // NEO-496: the server's own pairing reads the same way.
+    if (card.checklistLink) return serverChip(card);
     const cardKey = candidateKey(card);
     const rowIndex = state.checklistLinks.get(cardKey);
     const row = rowIndex === undefined ? undefined : checklistRows?.[rowIndex];
@@ -4258,7 +4425,7 @@ export default function CardPairingModal({
                       >
                         {label(c)}
                       </button>
-                      {c.checklistLink && serverChecklistChip(c.checklistLink)}
+                      {serverChip(c)}
                       {checklistLinkButton(c)}
                       <button
                         type="button"
@@ -4341,7 +4508,7 @@ export default function CardPairingModal({
                       >
                         {label(c)}
                       </button>
-                      {c.checklistLink && serverChecklistChip(c.checklistLink)}
+                      {serverChip(c)}
                       {checklistLinkButton(c)}
                       <button
                         type="button"

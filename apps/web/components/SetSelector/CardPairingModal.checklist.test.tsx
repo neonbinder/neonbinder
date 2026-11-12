@@ -1529,3 +1529,296 @@ describe("CardPairingModal — the card's own Unlink on the checklist chip (NEO-
     expect(screen.getByLabelText("Unlink card #A2 Card Two from checklist row #2 Jacob Wilson")).toBeTruthy();
   });
 });
+
+describe("CardPairingModal — Unlink on the server's checklist pairs (NEO-496)", () => {
+  const ROW_LINE = "#FS-1 Jackson Holliday · Baltimore Orioles";
+  const UNLINK = `Unlink card #FS-1 Jackson Holliday from checklist row ${ROW_LINE}`;
+  const pairedRow = {
+    number: "FS-1",
+    players: ["Jackson Holliday"],
+    teams: ["Baltimore Orioles"],
+    cardName: "Jackson Holliday",
+  };
+  type Revert = NonNullable<NonNullable<PairingCard["checklistLink"]>["revert"]>;
+  /**
+   * A BSC card as the fetch hands it on once the server applied row FS-1:
+   * the row's players and team, `teamLookup: "checklist"`, and the link with
+   * the row and what the card was before it.
+   */
+  const serverPaired = (
+    revert: Revert | undefined,
+    extra: Partial<PairingCard> = {},
+  ): PairingCard => ({
+    cardNumber: "FS-1",
+    cardName: "Jackson Holliday",
+    players: ["Jackson Holliday"],
+    teams: ["Baltimore Orioles"],
+    teamLookup: "checklist",
+    platformData: { bsc: { ref: "bsc-FS-1", setId: "sig-1" } },
+    unmatched: "sl",
+    checklistLink: { via: "number", row: pairedRow, ...(revert ? { revert } : {}) },
+    ...extra,
+  });
+  /** The row settled the team; BSC was never asked; the row filled the players. */
+  const ROW_SETTLED: Revert = { teamsFromRow: true, teamLookup: "failed" };
+
+  test("one marketplace + checklist: Unlink puts the card back as it was, on the keep shelf, and lists the row again", async () => {
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [serverPaired(ROW_SETTLED)],
+    });
+    expandMatched();
+    expect(screen.getByText("On checklist")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText(UNLINK));
+
+    expect(screen.queryByText("On checklist")).toBeNull();
+    expect(screen.queryByLabelText(UNLINK)).toBeNull();
+    expect(screen.getByText("BSC: #FS-1 Jackson Holliday")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Checklist only (1)" })).toBeTruthy();
+    expect(screen.getByLabelText(`Select ${ROW_LINE}`)).toBeTruthy();
+    expect(announcer().textContent).toBe("Unlinked.");
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe(`Select ${ROW_LINE}`),
+    );
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    // No players, no team, and a lookup that reads failed: the operator
+    // picks the team (rule 8). The row, unkept, is dropped.
+    expect(confirmedCards(onConfirm)).toEqual([
+      {
+        cardNumber: "FS-1",
+        cardName: "Jackson Holliday",
+        teamLookup: "failed",
+        platformData: { bsc: { ref: "bsc-FS-1", setId: "sig-1" } },
+        unmatched: "sl",
+      },
+    ]);
+  });
+
+  test("the row did not settle the team: Unlink gives back the players and leaves the card's own team alone", async () => {
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [
+        serverPaired(
+          { players: ["J. Holliday"], teamsFromRow: false },
+          {
+            players: ["J. Holliday"],
+            teams: ["Norfolk Tides"],
+            teamLookup: "answered",
+            checklistConflict: {
+              teams: { marketplace: ["Norfolk Tides"], checklist: ["Baltimore Orioles"] },
+            },
+          },
+        ),
+      ],
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(UNLINK));
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const [card] = confirmedCards(onConfirm);
+    expect(card.players).toEqual(["J. Holliday"]);
+    expect(card.teams).toEqual(["Norfolk Tides"]);
+    expect(card.teamLookup).toBe("answered");
+    expect(card).not.toHaveProperty("checklistConflict");
+  });
+
+  test("Keep after an Unlink saves the row as a card of its own, beside the card", async () => {
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [serverPaired(ROW_SETTLED)],
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(UNLINK));
+    fireEvent.click(screen.getByLabelText(`Keep ${ROW_LINE} as checklist-only`));
+    expect(screen.getByText(`Checklist: ${ROW_LINE}`)).toBeTruthy();
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = confirmedCards(onConfirm);
+    expect(cards).toHaveLength(2);
+    expect(cards[1]).toEqual({
+      cardNumber: "FS-1",
+      cardName: "Jackson Holliday",
+      players: ["Jackson Holliday"],
+      teams: ["Baltimore Orioles"],
+      teamLookup: "checklist",
+      platformData: {},
+    });
+  });
+
+  test("the unlinked row can be linked again, to its card or another, and Confirm asks the server about the card as it is now", async () => {
+    const resolve = vi.fn().mockResolvedValue([]);
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [serverPaired(ROW_SETTLED), bscCard("FS-2", "Jackson Merrill")],
+      resolve,
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(UNLINK));
+    fireEvent.click(screen.getByLabelText(`Select ${ROW_LINE}`));
+    // Both cards take the row now: the unlinked one is a target again.
+    expect(
+      screen.getByLabelText("Link selected checklist row to #FS-1 Jackson Holliday"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Link selected checklist row to #FS-2 Jackson Merrill"));
+    expect(screen.getByRole("heading", { name: "Checklist only (0)" })).toBeTruthy();
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0][0]).toEqual([
+      {
+        cardKey: "bsc-FS-2",
+        card: { cardNumber: "FS-2", players: [], teams: [] },
+        row: { number: "FS-1", players: ["Jackson Holliday"], teams: ["Baltimore Orioles"] },
+      },
+    ]);
+    // Both marketplace cards are saved; the linked row is not saved twice.
+    expect(confirmedCards(onConfirm).map((c) => c.cardNumber).sort()).toEqual([
+      "FS-1",
+      "FS-2",
+    ]);
+  });
+
+  test("re-pairing the row with the card it came off asks about the card's own values", async () => {
+    const resolve = vi.fn().mockResolvedValue([
+      { cardKey: "bsc-FS-1", fillPlayers: ["Jackson Holliday"], teams: ["Baltimore Orioles"], teamLookup: "checklist" },
+    ]);
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [serverPaired(ROW_SETTLED)],
+      resolve,
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(UNLINK));
+    fireEvent.click(screen.getByLabelText(`Select ${ROW_LINE}`));
+    fireEvent.click(screen.getByLabelText("Link selected checklist row to #FS-1 Jackson Holliday"));
+    expect(screen.getByText("Checklist #FS-1")).toBeTruthy();
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    expect(resolve.mock.calls[0][0][0].card).toEqual({
+      cardNumber: "FS-1",
+      players: [],
+      teams: [],
+    });
+    const cards = confirmedCards(onConfirm);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].players).toEqual(["Jackson Holliday"]);
+    expect(cards[0].teams).toEqual(["Baltimore Orioles"]);
+    expect(cards[0].teamLookup).toBe("checklist");
+  });
+
+  test("a pair stored without its row and revert offers no Unlink", () => {
+    mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [serverPaired(undefined)],
+    });
+    expandMatched();
+    expect(screen.getByText("On checklist")).toBeTruthy();
+    expect(screen.queryByLabelText(/^Unlink card /)).toBeNull();
+  });
+
+  test("three sources: a BSC + SportLots pair stays matched and the row is listed", async () => {
+    const pair: PairingCard = {
+      ...serverPaired(ROW_SETTLED),
+      platformData: {
+        bsc: { ref: "bsc-FS-1", setId: "sig-1" },
+        sportlots: { ref: "#FS-1 Jackson Holliday", setId: "884412" },
+      },
+      unmatched: undefined,
+    };
+    const { onConfirm } = mountWire({
+      sources: ["bsc", "sportlots", "checklist"],
+      autoMatched: [{ card: pair, confidence: 1 }],
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(UNLINK));
+
+    expect(screen.getByText(/Matched \(1\)/)).toBeTruthy();
+    expect(screen.getByLabelText("Unlink #FS-1 Jackson Holliday")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Checklist only (1)" })).toBeTruthy();
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = confirmedCards(onConfirm);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].platformData.sportlots?.ref).toBe("#FS-1 Jackson Holliday");
+    expect(cards[0]).not.toHaveProperty("players");
+    expect(cards[0]).not.toHaveProperty("teams");
+    expect(cards[0].teamLookup).toBe("failed");
+  });
+
+  test("an Unlink on a pair that stays matched counts as the operator's work in the discard confirm", () => {
+    const pair: PairingCard = {
+      ...serverPaired(ROW_SETTLED),
+      platformData: {
+        bsc: { ref: "bsc-FS-1", setId: "sig-1" },
+        sportlots: { ref: "#FS-1 Jackson Holliday", setId: "884412" },
+      },
+      unmatched: undefined,
+    };
+    const { onClose } = mountWire({
+      sources: ["bsc", "sportlots", "checklist"],
+      autoMatched: [{ card: pair, confidence: 1 }],
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(UNLINK));
+    fireEvent.click(screen.getByLabelText("Cancel card matching"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("Discard 1 pairing?")).toBeTruthy();
+  });
+
+  test("a stream re-delivery does not hand the unlinked card the row's team back", async () => {
+    const card = serverPaired(ROW_SETTLED);
+    const { onConfirm, update } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [card],
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(UNLINK));
+    update({ unmatchedBsc: [{ ...card }] });
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = confirmedCards(onConfirm);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).not.toHaveProperty("teams");
+    expect(cards[0].teamLookup).toBe("failed");
+  });
+
+  test("a marketplace Unlink of a checklist-paired pair leaves the row's values off the SportLots half", async () => {
+    const pair: PairingCard = {
+      ...serverPaired(ROW_SETTLED),
+      cardNumber: "7",
+      cardName: "Seven",
+      platformData: {
+        bsc: { ref: "bsc-7", setId: "sig-1" },
+        sportlots: { ref: "#7 Seven", setId: "884412" },
+      },
+      unmatched: undefined,
+    };
+    const { onConfirm } = mountWire({
+      sources: ["bsc", "sportlots", "checklist"],
+      autoMatched: [{ card: pair, confidence: 1 }],
+    });
+    fireEvent.click(screen.getByLabelText("Unlink #7 Seven"));
+    fireEvent.click(screen.getByLabelText("Keep #7 Seven as SportLots-only"));
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = confirmedCards(onConfirm);
+    const sl = cards.find((c) => c.platformData.sportlots);
+    const bsc = cards.find((c) => c.platformData.bsc);
+    // The BSC half keeps the pairing, and the row's values with it.
+    expect(bsc?.players).toEqual(["Jackson Holliday"]);
+    expect(bsc?.teams).toEqual(["Baltimore Orioles"]);
+    // The SportLots half is the card as it was before the row.
+    expect(sl).not.toHaveProperty("players");
+    expect(sl).not.toHaveProperty("teams");
+    expect(sl).not.toHaveProperty("checklistLink");
+  });
+});

@@ -7,10 +7,18 @@ import { describe, expect, test } from "vitest";
 import {
   applyChecklistAnswers,
   buildChecklistPairRequests,
+  committable,
   countChecklistTeams,
+  pairedRowCard,
+  pairedRowOf,
+  revertServerChecklistPair,
+  unlinkableServerPair,
   type ChecklistLinkRow,
   type ChecklistPairAnswer,
+  type ServerPairedRow,
+  type ServerPairRevert,
 } from "./checklist-match-apply";
+import type { PairingCard } from "./CardPairingModal";
 import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
 
 type Card = {
@@ -342,5 +350,137 @@ describe("checklist links: a No Team row (NEO-489)", () => {
     );
     expect(out.checklistConflict).toEqual(conflict);
     expect(out.teams).toEqual(["Boston Red Sox"]);
+  });
+});
+
+describe("NEO-496 — undoing the server's checklist pair", () => {
+  const pairedRow: ServerPairedRow = {
+    number: "FS-1",
+    players: ["Jackson Holliday"],
+    teams: ["Baltimore Orioles"],
+    cardName: "Jackson Holliday",
+  };
+  /** A BSC card as the fetch hands it on after the row was applied. */
+  const serverPaired = (
+    revert: ServerPairRevert | undefined,
+    extra: Partial<PairingCard> = {},
+    row: ServerPairedRow | null = pairedRow,
+  ): PairingCard => ({
+    cardNumber: "FS-1",
+    cardName: "Jackson Holliday",
+    players: ["Jackson Holliday"],
+    teams: ["Baltimore Orioles"],
+    teamLookup: "checklist",
+    platformData: { bsc: { ref: "bsc-FS-1", setId: "s" } },
+    unmatched: "sl",
+    checklistLink: {
+      via: "number",
+      ...(row ? { row } : {}),
+      ...(revert ? { revert } : {}),
+    },
+    ...extra,
+  });
+
+  test("the row settled the team: the card's own players come back, it has no team, and its lookup reads failed", () => {
+    const out = revertServerChecklistPair(
+      serverPaired({ players: ["J. Holliday"], teamsFromRow: true, teamLookup: "failed" }),
+    );
+    expect(out).toEqual({
+      cardNumber: "FS-1",
+      cardName: "Jackson Holliday",
+      players: ["J. Holliday"],
+      teamLookup: "failed",
+      platformData: { bsc: { ref: "bsc-FS-1", setId: "s" } },
+      unmatched: "sl",
+    });
+    expect(out).not.toHaveProperty("teams");
+    expect(out).not.toHaveProperty("checklistLink");
+  });
+
+  test("the row settled the team of a card that had its own: those teams come back and no lookup outcome is invented", () => {
+    const out = revertServerChecklistPair(
+      serverPaired({ players: ["Jackson Holliday"], teamsFromRow: true, teams: ["Orioles"] }),
+    );
+    expect(out?.teams).toEqual(["Orioles"]);
+    expect(out).not.toHaveProperty("teamLookup");
+  });
+
+  test("the row did not settle the team: the card's teams and lookup are its own and stay", () => {
+    const out = revertServerChecklistPair(
+      serverPaired(
+        { players: ["Jackson Holliday"], teamsFromRow: false },
+        { teams: ["Baltimore Orioles"], teamLookup: "answered" },
+      ),
+    );
+    expect(out?.teams).toEqual(["Baltimore Orioles"]);
+    expect(out?.teamLookup).toBe("answered");
+  });
+
+  test("the row filled the players of a card that had none: it has none again", () => {
+    const out = revertServerChecklistPair(serverPaired({ teamsFromRow: false }));
+    expect(out).not.toHaveProperty("players");
+  });
+
+  test("the disagreement with the row goes with the row", () => {
+    const out = revertServerChecklistPair(
+      serverPaired(
+        { players: ["Jackson Holliday"], teamsFromRow: false },
+        {
+          teams: ["Norfolk Tides"],
+          teamLookup: "answered",
+          checklistConflict: {
+            teams: { marketplace: ["Norfolk Tides"], checklist: ["Baltimore Orioles"] },
+          },
+        },
+      ),
+    );
+    expect(out).not.toHaveProperty("checklistConflict");
+    expect(out?.teams).toEqual(["Norfolk Tides"]);
+  });
+
+  test("a pair stored before it carried its row and revert cannot be undone", () => {
+    const noRevert = serverPaired(undefined);
+    const noRow = serverPaired({ teamsFromRow: false }, {}, null);
+    expect(unlinkableServerPair(noRevert)).toBe(false);
+    expect(unlinkableServerPair(noRow)).toBe(false);
+    expect(revertServerChecklistPair(noRevert)).toBeNull();
+    expect(revertServerChecklistPair(noRow)).toBeNull();
+    expect(unlinkableServerPair(serverPaired({ teamsFromRow: false }))).toBe(true);
+  });
+
+  test("the row is listed again as the row the dialog shows, flags included", () => {
+    expect(
+      pairedRowOf({ number: "NNO", players: [], teams: [], noNumber: true, noTeam: true, cardName: "Card #NNO" }),
+    ).toEqual({ number: "NNO", players: [], teams: [], noNumber: true, noTeam: true });
+    expect(pairedRowOf(pairedRow)).toEqual({
+      number: "FS-1",
+      players: ["Jackson Holliday"],
+      teams: ["Baltimore Orioles"],
+    });
+  });
+
+  test("the row as a card of its own is the checklist-only card the fetch publishes, and saves with no wire field", () => {
+    const card = pairedRowCard(pairedRow, "unlinked:bsc-FS-1");
+    expect(card).toEqual({
+      cardNumber: "FS-1",
+      cardName: "Jackson Holliday",
+      players: ["Jackson Holliday"],
+      teams: ["Baltimore Orioles"],
+      teamLookup: "checklist",
+      platformData: {},
+      checklistRowId: "unlinked:bsc-FS-1",
+    });
+    expect(committable(card)).not.toHaveProperty("checklistRowId");
+  });
+
+  test("a No Team row claims no team; a row naming no team claims nothing", () => {
+    const noTeam = pairedRowCard({ ...pairedRow, teams: [], noTeam: true }, "x");
+    expect(noTeam.teams).toEqual([]);
+    expect(noTeam.teamLookup).toBe("checklist");
+    const silent = pairedRowCard({ ...pairedRow, teams: [], players: [], cardName: "Card #FS-1" }, "x");
+    expect(silent).not.toHaveProperty("teams");
+    expect(silent).not.toHaveProperty("teamLookup");
+    expect(silent).not.toHaveProperty("players");
+    expect(silent.cardName).toBe("Card #FS-1");
   });
 });
