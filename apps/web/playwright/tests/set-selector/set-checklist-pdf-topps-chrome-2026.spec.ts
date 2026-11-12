@@ -17,8 +17,9 @@
 //     the operator makes its own set from.
 //
 // The walk, in the order an operator meets it:
-//   1. Upload on the SET (the attributes panel opens collapsed): the preview
-//      shows the three sections and the skipped lines; Save.
+//   1. Upload on the SET (the attributes panel opens itself there, the
+//      official checklist first, NEO-496): the preview shows the three
+//      sections and the skipped lines; Save.
 //   2. Base: the picker preselects BASE CARDS beside BSC's base listing.
 //   3. Insert, FIRST visit: BSC and the stored checklist are two sources, so
 //      the column's own first sync opens Reconcile Inserts (plan decision 1):
@@ -142,8 +143,10 @@ test(
     // ══ 1. UPLOAD ON THE SET ══
     const editAttributes = page.getByRole("button", { name: "Edit attributes" });
     const hideAttributes = page.getByRole("button", { name: "Hide attributes" });
-    await expect(editAttributes.or(hideAttributes)).toBeVisible();
-    if (await editAttributes.isVisible()) await editAttributes.click();
+    // A fresh drill to a set opens the attributes panel by itself, the
+    // official checklist first (NEO-496): no tap.
+    await expect(hideAttributes).toBeVisible();
+    await expect(editAttributes).toBeHidden();
     const panel = page.getByRole("region", { name: "Official checklist" });
     await expect(panel).toBeVisible();
     // R2 precondition: no checklist on the set yet (a re-run fails here, by name: re-seed first).

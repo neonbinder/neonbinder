@@ -939,6 +939,8 @@ export default function SetSelector() {
   // so extending to shallower levels does not reintroduce that failure
   // mode. Verified against the exact regression scenario (util-drill-to-
   // custom.yaml / custom-entry-survives-resync.yaml) before shipping this.
+  // NEO-496: the set level is the exception and opens by default (its
+  // official checklist first); see the comment at the panel below.
   //
   // NEO-237: the All Brands VIEW is not a row, so with the view open and
   // nothing picked beneath it the deepest ROW is the year.
@@ -1769,7 +1771,11 @@ export default function SetSelector() {
           Football → 2026 pre-warm). Expansion only ever happens via an
           explicit "Edit attributes" tap, never automatically during a
           drill, so the collapsed bar rendering at every level does not
-          reintroduce that failure mode. */}
+          reintroduce that failure mode. NEO-496 (Jason, 2026-11-12): the
+          one exception is the SET level, which opens by default with its
+          official checklist first. The panel sits below the column row, so
+          it pushes the cards down, never the next column; an operator's
+          close on a set holds for the tab session. */}
       {deepestSelectedId && (
         <SetAttributesPanel
           selectorOptionId={deepestSelectedId as Id<"selectorOptions">}

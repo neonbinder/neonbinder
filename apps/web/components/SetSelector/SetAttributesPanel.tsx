@@ -75,7 +75,9 @@ import {
  * Collapsible so it never pushes the card list off-screen. Collapsed shows
  * a single summary bar (breadcrumb + an "Edit attributes" toggle). Default
  * collapsed only when `defaultCollapsed` (cards present); expanded otherwise
- * so the setName-with-no-cards flow needs no extra tap.
+ * so the setName-with-no-cards flow needs no extra tap. NEO-496: the set
+ * level itself always opens by default, its official checklist first,
+ * unless the operator closed it on that set this tab session.
  *
  * None of these fields are actually required — blank is a perfectly
  * acceptable, complete answer for most of them (not every card is
@@ -181,6 +183,52 @@ const TEAM_LEVELS: ReadonlySet<string> = new Set([
   "parallel",
 ]);
 
+/**
+ * NEO-496 — the set level opens this panel by default (Jason, 2026-11-12):
+ * the set's official checklist upload sits at its top, and a set is where an
+ * operator goes to give it one. Every other level keeps the caller's default
+ * (collapsed in the set builder, NEO-38). An operator who closes the panel
+ * on a set keeps it closed on that set for the rest of the tab session, so
+ * Back to the set or a re-pick never reopens what they put away.
+ * `sessionStorage` can throw (private windows, blocked site data), so every
+ * touch is guarded and the set simply opens by default if it does.
+ */
+const CLOSED_SETS_KEY = "nb.setAttributesClosedSets";
+
+function readClosedSets(): string[] {
+  try {
+    const raw = window.sessionStorage.getItem(CLOSED_SETS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberSetClosed(id: string, closed: boolean) {
+  try {
+    const rest = readClosedSets().filter((other) => other !== id);
+    window.sessionStorage.setItem(
+      CLOSED_SETS_KEY,
+      JSON.stringify(closed ? [...rest, id] : rest),
+    );
+  } catch {
+    // Storage unavailable: the set opens by default next time.
+  }
+}
+
+/** Whether the panel starts open on this row (see `CLOSED_SETS_KEY`). */
+function opensByDefault(
+  level: string | undefined,
+  id: string,
+  defaultCollapsed: boolean | undefined,
+): boolean {
+  if (level === "setName") return !readClosedSets().includes(id);
+  return !defaultCollapsed;
+}
+
 type Level =
   | "sport"
   | "year"
@@ -262,7 +310,13 @@ export default function SetAttributesPanel({
     api.brandView.setManufacturerSlViaAllBrands,
   );
 
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
+  // The row's level decides the default (NEO-496: open at the set level). The
+  // row may still be loading on the first render; the effect below settles
+  // it once the level is known, before the panel draws anything.
+  const rowLevel = row?.level;
+  const [expanded, setExpanded] = useState(() =>
+    opensByDefault(rowLevel, selectorOptionId, defaultCollapsed),
+  );
   // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
   // progress line (`toast`, the polite status region) and a failure
   // (`failure`, the alert region). Raising either clears the other.
@@ -282,11 +336,12 @@ export default function SetAttributesPanel({
   // Re-evaluate the default whenever the source intent flips (cards
   // appear/disappear or the selected node changes). Without this, drilling
   // from a card-less set into a node with cards would keep the panel
-  // expanded (pushing the list down) because state initializes once.
+  // expanded (pushing the list down) because state initializes once. The
+  // level is in the key too: it is unknown until the row loads (NEO-496).
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- re-evaluates the collapse default when the source intent flips; useState only initialises once
-    setExpanded(!defaultCollapsed);
-  }, [defaultCollapsed, selectorOptionId]);
+    setExpanded(opensByDefault(rowLevel, selectorOptionId, defaultCollapsed));
+  }, [defaultCollapsed, selectorOptionId, rowLevel]);
 
   // Derive the sport from the ancestor chain so we can drop features that
   // don't apply (e.g. "League" hidden for Pokemon).
@@ -316,6 +371,12 @@ export default function SetAttributesPanel({
   if (!row || !chain) return null;
 
   const leafLevel = row.level as Level;
+  // The operator's own open or close. On a set it is remembered for the tab
+  // session (`CLOSED_SETS_KEY`); elsewhere the default is collapsed anyway.
+  const setOpen = (open: boolean) => {
+    setExpanded(open);
+    if (leafLevel === "setName") rememberSetClosed(selectorOptionId, !open);
+  };
   // NEO-334 — a variant type's title IS its kind (Jason, 2026-10-10): the
   // type titled "Base" is the set's Base. Read once for the header's tag and
   // the delete confirm.
@@ -726,8 +787,8 @@ export default function SetAttributesPanel({
         {expanded ? (
           <button
             type="button"
-            onClick={() => setExpanded(false)}
-            onKeyDown={(e) => activateOnEnter(e, () => setExpanded(false))}
+            onClick={() => setOpen(false)}
+            onKeyDown={(e) => activateOnEnter(e, () => setOpen(false))}
             aria-label="Hide attributes"
             className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
           >
@@ -737,8 +798,8 @@ export default function SetAttributesPanel({
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => setExpanded(true)}
-              onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
+              onClick={() => setOpen(true)}
+              onKeyDown={(e) => activateOnEnter(e, () => setOpen(true))}
               aria-label="Edit attributes"
               className={ATTRIBUTES_TOGGLE_CLASS}
             >
@@ -862,6 +923,21 @@ export default function SetAttributesPanel({
 
       {expanded && (
         <>
+          {/* NEO-496: the set's publisher checklist, one file for the whole
+              set, at the set level only. First and full width (Jason,
+              2026-11-12): the upload is what an operator opens a set to do,
+              and the panel opens itself at the set level to offer it. It is
+              a source the set's syncs read, not a fact about this row, so
+              it sits above the "Set attributes" label, not among them. */}
+          {leafLevel === "setName" && (
+            <PublishedChecklistPanel
+              setId={selectorOptionId}
+              setName={row.value}
+              setYear={ancestorYear ?? null}
+              onStatus={showToast}
+            />
+          )}
+
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
               Set attributes
@@ -966,18 +1042,6 @@ export default function SetAttributesPanel({
               />
             ))}
           </div>
-
-          {/* NEO-496: the set's publisher checklist, one file for the whole
-              set, at the set level only. Last and full width: it is a
-              source the set's syncs read, not a fact about this row. */}
-          {leafLevel === "setName" && (
-            <PublishedChecklistPanel
-              setId={selectorOptionId}
-              setName={row.value}
-              setYear={ancestorYear ?? null}
-              onStatus={showToast}
-            />
-          )}
         </>
       )}
     </div>

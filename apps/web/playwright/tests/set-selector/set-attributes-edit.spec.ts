@@ -26,8 +26,8 @@ test(
     const edit = panel.getByRole("button", { name: "Edit attributes" });
     const hide = panel.getByRole("button", { name: "Hide attributes" });
 
-    // The panel defaults expanded at the set level; a prior run may have left
-    // it collapsed, so settle into one state and open it if needed.
+    // The panel opens itself at the set level (NEO-496); a close earlier in
+    // the session keeps it shut, so settle into one state and open it if needed.
     async function ensureExpanded() {
       await expect(edit.or(hide)).toBeVisible();
       if (await edit.isVisible()) await edit.click();
