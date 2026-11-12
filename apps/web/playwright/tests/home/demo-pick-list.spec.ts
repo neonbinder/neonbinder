@@ -143,14 +143,18 @@ test(
 
     // NEO-522: where the variant changes inside a set, a heavier rule (3px) runs under the
     // run's last row; rows of one variant keep the thin divider. 2026 Topps Series 1 walks
-    // Base (#27, #150), then Gold Foil, 8 Bit Ballers and 8 Bit Ballers Red.
-    const ruleUnder = (row: string) => pickRow(table, row).getByRole("cell").first();
+    // Base (#27, #150), then Gold Foil, 8 Bit Ballers and 8 Bit Ballers Red. The rule is a
+    // sub-divider: it starts at the Variant column, so it is read off the row's last cell
+    // on screen (Order on a desktop, the one cell on a phone), and the tick's cell keeps
+    // the thin line.
+    const ruleUnder = (row: string) => seen(pickRow(table, row).getByRole("cell")).last();
     await expect(ruleUnder(TROUT)).toHaveCSS("border-bottom-width", "1px");
     await expect(ruleUnder(SKENES)).toHaveCSS("border-bottom-width", "3px");
     await expect(ruleUnder(SCHLITTLER)).toHaveCSS("border-bottom-width", "3px");
     await expect(ruleUnder(OHTANI_INSERT)).toHaveCSS("border-bottom-width", "3px");
     // The set's last row: the next divider's own rule takes over.
     await expect(ruleUnder(JUDGE)).toHaveCSS("border-bottom-width", "1px");
+    await expect(pickRow(table, SKENES).getByRole("cell").first()).toHaveCSS("border-bottom-width", "1px");
     // In the variant's own colour: Gold Foil's rule is not Base's thin grey line.
     const colourOf = (row: string) => ruleUnder(row).evaluate((td) => getComputedStyle(td).borderBottomColor);
     expect(await colourOf(SKENES)).not.toBe(await colourOf(TROUT));
@@ -160,7 +164,7 @@ test(
     expect(new Set(changes).size).toBe(3);
 
     // NEO-522: the tick box is the size of the row's text; the button around it is the
-    // target, 44px on a phone and 32px with a mouse.
+    // target, 44px for a finger (the phone project) and 32px with a mouse.
     const troutToggle = pulledToggle(table, TROUT);
     const target = await troutToggle.boundingBox();
     const floor = isMobile ? 44 : 32;
@@ -191,12 +195,24 @@ test(
     };
     await fits();
     if (!isMobile) {
-      // A wide desktop gives it the room: the big type.
+      // A wide desktop gives it the room (the Pick List opens to a wide page): the big type,
+      // each name on one line with its markers beside it, never dropped under it.
       const viewport = page.viewportSize()!;
-      await page.setViewportSize({ width: 1440, height: viewport.height });
-      await expect.poll(() => fontPx(troutNumber)).toBeGreaterThanOrEqual(28);
-      expect(await fontPx(troutWho)).toBeGreaterThanOrEqual(28);
-      await fits();
+      const judgeName = nameCell(pickRow(table, JUDGE), "Aaron Judge", "Insert parallel: 8 Bit Ballers Red #8B-12");
+      const judgeWho = judgeName.getByText("Aaron Judge", { exact: true });
+      const lastOnes = judgeName.getByText("Last ones", { exact: true });
+      for (const width of [1440, 1920]) {
+        await page.setViewportSize({ width, height: viewport.height });
+        await expect.poll(() => fontPx(troutNumber)).toBeGreaterThanOrEqual(28);
+        expect(await fontPx(troutWho)).toBeGreaterThanOrEqual(28);
+        await fits();
+        const [who, chip] = await Promise.all([judgeWho.boundingBox(), lastOnes.boundingBox()]);
+        const lineHeight = await judgeWho.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight));
+        expect(who!.height).toBeLessThan(lineHeight * 1.5);
+        expect(chip!.y + chip!.height / 2).toBeGreaterThan(who!.y);
+        expect(chip!.y + chip!.height / 2).toBeLessThan(who!.y + who!.height);
+        expect(chip!.x).toBeGreaterThan(who!.x + who!.width);
+      }
       await page.setViewportSize(viewport);
       await expect.poll(() => fontPx(troutNumber)).toBeLessThan(28);
     }

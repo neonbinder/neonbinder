@@ -239,12 +239,15 @@ test(
       await expect(variantTag(rowI, "Future Stars", "Insert")).toHaveText("Insert: Future Stars");
       // NEO-522: the set's run walks Base (#205, the described #208, #211), then Future Stars.
       // A 3px rule in the insert's colour runs under #211, Base's last row; the Base rows
-      // between keep the thin divider, and so does the set's last row.
-      const ruleUnder = (row: Locator) => row.getByRole("cell").first();
+      // between keep the thin divider, and so does the set's last row. It starts at the
+      // Variant column, so it is read off the row's last cell on screen, and #211's tick
+      // cell keeps the thin line.
+      const ruleUnder = (row: Locator) => seen(row.getByRole("cell")).last();
       await expect(ruleUnder(rowA)).toHaveCSS("border-bottom-width", "1px");
       await expect(ruleUnder(pickRow(table, listedTitle))).toHaveCSS("border-bottom-width", "1px");
       await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "3px");
       await expect(ruleUnder(rowI)).toHaveCSS("border-bottom-width", "1px");
+      await expect(rowB.getByRole("cell").first()).toHaveCSS("border-bottom-width", "1px");
       const ruleColour = (row: Locator) => ruleUnder(row).evaluate((td) => getComputedStyle(td).borderBottomColor);
       expect(await ruleColour(rowB)).not.toBe(await ruleColour(rowA));
       // Can't find it holds two lines: the stray (it says nothing) and the one with players but

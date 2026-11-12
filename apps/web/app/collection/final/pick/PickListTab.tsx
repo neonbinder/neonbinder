@@ -1085,7 +1085,8 @@ function PickTable({
           // In a compact table the two sorts may stack, so the header never holds the table wider than the screen.
           <span className="inline-flex flex-wrap items-center gap-x-2 @min-[62rem]:flex-nowrap">
             {sortButton(key)}
-            <span aria-hidden="true" className="text-ink-3">
+            {/* Stacked, a lone dot would hang between the two: it shows only side by side. */}
+            <span aria-hidden="true" className="hidden text-ink-3 @min-[62rem]:inline">
               ·
             </span>
             {sortButton(also)}
@@ -1134,7 +1135,7 @@ function PickTable({
               Variant
             </th>
             {sortHead("number", "w-16")}
-            {sortHead("player")}
+            {sortHead("player", "@min-[62rem]:w-[30%]")}
             {sortHead("set", setInCells ? "@min-[62rem]:min-w-36" : "", "detail")}
             {sortHead("condition")}
             {sortHead("order", "w-28")}
@@ -1221,7 +1222,7 @@ function SectionHead({ section, columns }: { section: PickSection; columns: numb
   let body: ReactNode;
   let line = "border-rule-strong";
   // NEO-522: read from across the room, so the group's name outranks the rows' 28px names.
-  const title = "text-xl font-bold leading-7 text-balance @min-[62rem]:text-3xl @min-[62rem]:leading-9";
+  const title = "text-xl font-bold leading-7 text-balance @min-[62rem]:text-3xl @min-[62rem]:leading-9 @min-[84rem]:text-4xl @min-[84rem]:leading-10";
   if (section.kind === "set") {
     const hue = sportHue(section.sportCode);
     line = SPORT_LINE[hue];
@@ -1254,7 +1255,8 @@ function SectionHead({ section, columns }: { section: PickSection; columns: numb
   }
   return (
     <tr>
-      <th scope="rowgroup" colSpan={columns} className={`border-b-[3px] px-0 pt-6 text-left font-normal ${line}`}>
+      {/* 5px: heavier than a variant's 3px sub-divider, so a set break never reads as one. */}
+      <th scope="rowgroup" colSpan={columns} className={`border-b-[5px] px-0 pt-6 text-left font-normal ${line}`}>
         {body}
       </th>
     </tr>
@@ -1265,8 +1267,8 @@ function SectionHead({ section, columns }: { section: PickSection; columns: numb
  * NEO-522 — the variant's own name ("Wicked Power", "N43"; "Base" on a base
  * row) in its divider's colour, sized to sit beside the big name. Its kind
  * ("Insert") is read out first when the name does not say it, so the colour
- * never carries it alone. A long name wraps to two lines, then trims with
- * the whole name on hover. A listing's word NB does not file by gets a plain
+ * never carries it alone. A long name wraps onto more lines, never cut (the
+ * title repeats it). A listing's word NB does not file by gets a plain
  * tag: NB never guesses its colour.
  */
 function VariantTag({ tag }: { tag: VariantTagModel }) {
@@ -1301,8 +1303,8 @@ function Markers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
   const notInNb = !row.card && rowFacts(row) !== null;
   if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
   const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
-  // NEO-522: they ride the name's line, after it, a step up from the old 12px so they read beside it.
-  const chip = "nb-pick-chip rounded px-1.5 text-sm font-semibold leading-6";
+  // NEO-522: they ride the name's line, after it, big enough to read beside it.
+  const chip = "nb-pick-chip rounded px-2 text-base font-bold leading-7 @min-[62rem]:text-lg";
   return (
     <span className="flex flex-wrap gap-1 whitespace-nowrap">
       {notInNb && (
@@ -1367,13 +1369,17 @@ function Row({
   const tag = facts ? variantTag(facts) : null;
   const tab = tabbable ? 0 : -1;
   // The divider card between two variants: a heavier rule in the next one's colour. Same variant: the thin neutral line.
+  // It starts at the Variant column: the tick and picture cells (and slot, qty) keep the thin
+  // line, so it reads as a sub-divider inside the set, never as the set's own break.
+  const thin = "border-b border-rule";
   const rule =
-    ruleBelow === undefined ? "border-b border-rule" : `border-b-[3px] ${ruleBelow ? VARIANT_RULE[ruleBelow] : "border-b-rule-strong"}`;
+    ruleBelow === undefined ? thin : `border-b-[3px] ${ruleBelow ? VARIANT_RULE[ruleBelow] : "border-b-rule-strong"}`;
+  const lead = `${thin} py-1 align-middle`;
   const cell = `${rule} py-1 align-middle`;
   // In a compact table (a tablet, or a desktop beside the side nav) a touch less air between columns.
   const pad = "px-2 md:px-1.5 @min-[62rem]:px-2";
   // NEO-522: the number and the name are what a picker reads from a few feet away.
-  const big = "text-lg leading-8 @min-[62rem]:text-[1.75rem]";
+  const big = "text-lg leading-8 @min-[62rem]:text-[1.75rem] @min-[84rem]:text-[2rem] @min-[84rem]:leading-10";
 
   const onRowClick = (e: MouseEvent<HTMLTableRowElement>) => {
     if ((e.target as Element).closest("button, a, input, select")) return;
@@ -1394,7 +1400,10 @@ function Row({
 
   // The set (where no divider names it) and a numbered copy's serial. A sale NB
   // has no card for wears the Not in NB chip, which says where to look: no note here.
-  const serial = row.serial ? <span className="font-semibold tabular-nums text-ink">{row.serial}</span> : null;
+  // Which numbered copy to pull ("4/5"): read at the row's scale.
+  const serial = row.serial ? (
+    <span className="text-base font-bold leading-6 tabular-nums text-ink @min-[62rem]:text-xl @min-[62rem]:leading-7">{row.serial}</span>
+  ) : null;
   const setText = facts ? (
     showSet || serial ? (
       <span className="flex min-w-0 max-w-60 flex-col gap-1">
@@ -1407,14 +1416,12 @@ function Row({
         {serial}
       </span>
     ) : null
-  ) : (
-    <span className="flex min-w-0 max-w-60 flex-col items-start gap-1">
-      {/* The listing's sport, when it names one: the box it might sit in. */}
-      {row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />}
-      {/* Can't find it: why NB could not file it, the one clue the row has. */}
-      {row.problem && <span className="text-notice-warn-ink">{row.problem}</span>}
-    </span>
-  );
+  ) : null;
+  // Nothing to file by: the listing's sport, when it names one (the box it might sit in),
+  // and why NB could not file it, the one clue the row has. Wide, the sport keeps the Set
+  // column and the reason rides under the listing's words, where it has room to read.
+  const listedSport = !facts && row.listed?.sportName ? <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} /> : null;
+  const problem = !facts && row.problem ? <span className="block text-base leading-6 text-notice-warn-ink">{row.problem}</span> : null;
 
   // Condition, or a slab's grade and cert.
   // NEO-522: big enough to check against the copy in hand (NM or EX), so it reads at the row's scale.
@@ -1475,7 +1482,7 @@ function Row({
       data-pulled={pulled || undefined}
       className={`nb-pick-row transition-colors md:cursor-pointer md:hover:bg-list-hover ${pulled ? "nb-pick-pulled" : ""}`}
     >
-      <td className={`${cell} relative w-10 pl-3 pr-1`}>
+      <td className={`${lead} relative w-10 pl-3 pr-1`}>
         {role ? (
           <span aria-hidden="true" className={`nb-pick-band absolute inset-y-1 left-0 w-2 rounded-sm border md:w-1.5 ${VARIANT_STRIPE[role]}`} />
         ) : (
@@ -1483,7 +1490,7 @@ function Row({
         )}
         {/*
           The box is the size of the row's text; the button around it is the
-          target (44px on a phone, 32px with a mouse), never the box.
+          target (44px for a finger at any width, 32px for a mouse), never the box.
         */}
         <button
           type="button"
@@ -1492,7 +1499,7 @@ function Row({
           aria-label={`Pulled ${name}`}
           tabIndex={tab}
           onClick={onToggle}
-          className="group grid size-11 place-items-center rounded-md focus-outline md:size-8"
+          className="group grid size-11 place-items-center rounded-md focus-outline md:pointer-fine:size-8"
         >
           <span
             aria-hidden="true"
@@ -1504,7 +1511,7 @@ function Row({
           </span>
         </button>
       </td>
-      <td className={`${cell} nb-pick-pic w-14 px-1`}>
+      <td className={`${lead} nb-pick-pic w-14 px-1`}>
         {c ? (
           <button
             type="button"
@@ -1532,8 +1539,8 @@ function Row({
           </span>
         )}
       </td>
-      {showSlot && <td className={`${cell} ${pad} font-semibold tabular-nums text-ink`}>{row.spot?.slot ?? "–"}</td>}
-      {showQty && <td className={`${cell} ${pad} max-md:hidden`}>{qty}</td>}
+      {showSlot && <td className={`${lead} ${pad} font-semibold tabular-nums text-ink`}>{row.spot?.slot ?? "–"}</td>}
+      {showQty && <td className={`${lead} ${pad} max-md:hidden`}>{qty}</td>}
       {facts && <td className={`${cell} ${pad} max-md:hidden`}>{variant}</td>}
       {facts && <td className={`${cell} ${pad} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden ${big}`}>#{facts.cardNumber}</td>}
       {/* Nothing to file by: the listing's own words take the variant's and the number's columns too. */}
@@ -1542,8 +1549,9 @@ function Row({
           <span className={facts ? `font-semibold text-ink ${big}` : "text-lg font-semibold leading-7 text-ink"}>{who}</span>
           <Markers row={row} salesLink={salesLink} />
         </span>
+        {problem}
       </td>
-      <td className={`${cell} ${pad} max-md:hidden`}>{setText}</td>
+      <td className={`${cell} ${pad} max-md:hidden`}>{facts ? setText : listedSport}</td>
       <td className={`${cell} ${pad} max-md:hidden`}>{condition}</td>
       <td className={`${cell} ${pad} max-md:hidden`}>{orders}</td>
       {/* A phone has no room for columns: one cell says it all. */}
@@ -1557,6 +1565,8 @@ function Row({
             <Markers row={row} salesLink={salesLink} />
           </span>
           {setText}
+          {listedSport && <span className="flex">{listedSport}</span>}
+          {problem}
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {condition}
             {orders}

@@ -345,20 +345,69 @@ describe("NEO-522: a row read from across the room", () => {
 
   it("rules a heavier line in the next variant's colour where the variant changes inside a set, a thin one elsewhere", async () => {
     renderPick();
-    const firstCell = async (name: RegExp) => [...(await rowOf(name)).querySelectorAll("td")][0];
+    const cellsOf = async (name: RegExp) => [...(await rowOf(name)).querySelectorAll("td")];
+    // The phone's one cell carries the rule as the columns do (it is the row's last cell).
+    const ruleOf = async (name: RegExp) => (await cellsOf(name)).at(-1)!.className;
     // 2026 Topps Series 1 walks Base (#27, #150), Gold Foil, 8 Bit Ballers, 8 Bit Ballers Red.
-    expect((await firstCell(/^Pulled #27 Mike Trout/)).className).toContain("border-rule");
-    expect((await firstCell(/^Pulled #27 Mike Trout/)).className).not.toContain("border-b-[3px]");
-    const skenes = (await firstCell(/^Pulled #150 Paul Skenes/)).className;
+    expect(await ruleOf(/^Pulled #27 Mike Trout/)).toContain("border-rule");
+    expect(await ruleOf(/^Pulled #27 Mike Trout/)).not.toContain("border-b-[3px]");
+    const skenes = await ruleOf(/^Pulled #150 Paul Skenes/);
     expect(skenes).toContain("border-b-[3px]");
     expect(skenes).toContain("border-b-variant-parallel-rule");
-    expect((await firstCell(/^Pulled #111 Cam Schlittler/)).className).toContain("border-b-variant-insert-rule");
-    expect((await firstCell(/^Pulled #8B-7 Shohei Ohtani/)).className).toContain("border-b-variant-insert-parallel-rule");
+    expect(await ruleOf(/^Pulled #111 Cam Schlittler/)).toContain("border-b-variant-insert-rule");
+    expect(await ruleOf(/^Pulled #8B-7 Shohei Ohtani/)).toContain("border-b-variant-insert-parallel-rule");
     // The set's last row: the next divider's own rule takes over.
-    expect((await firstCell(/^Pulled #8B-12 Aaron Judge/)).className).not.toContain("border-b-[3px]");
-    // Every cell of the row carries it, so the rule runs the row's full width.
-    const cells = [...(await rowOf(/^Pulled #150 Paul Skenes/)).querySelectorAll("td")];
-    expect(cells.every((td) => td.className.includes("border-b-variant-parallel-rule"))).toBe(true);
+    expect(await ruleOf(/^Pulled #8B-12 Aaron Judge/)).not.toContain("border-b-[3px]");
+    // A sub-divider: it starts at the Variant column; the tick and the picture keep the thin line.
+    const cells = await cellsOf(/^Pulled #150 Paul Skenes/);
+    const from = cells.findIndex((td) => td.querySelector("[title]"));
+    expect(from).toBeGreaterThan(1);
+    for (const td of cells.slice(0, from)) {
+      expect(td.className).toContain("border-rule");
+      expect(td.className).not.toContain("border-b-[3px]");
+    }
+    expect(cells.slice(from).every((td) => td.className.includes("border-b-variant-parallel-rule"))).toBe(true);
+  });
+
+  it("rules a set's break heavier than a variant's", async () => {
+    renderPick();
+    const head = (await screen.findByRole("rowheader", { name: /^Baseball 2026 Topps Series 1/ })) as HTMLElement;
+    expect(head.className).toContain("border-b-[5px]");
+  });
+
+  it("reads a numbered copy's serial and the markers at the row's scale", async () => {
+    renderPick();
+    const schlittler = await rowOf(/^Pulled #111 Cam Schlittler/);
+    // The row's own serial, not the one the card picture prints.
+    const serial = within(schlittler)
+      .getAllByText("1187/2026")
+      .find((el) => !el.closest(".nb-pick-thumb"))!;
+    expect(serial.className).toContain("text-base");
+    expect(serial.className).toContain("font-bold");
+    expect(serial.className).toContain("@min-[62rem]:text-xl");
+    const judge = await rowOf(/^Pulled #8B-12 Aaron Judge/);
+    const lastOnes = within(judge).getAllByText("Last ones", { exact: true })[0];
+    expect(lastOnes.className).toContain("text-base");
+    expect(lastOnes.className).toContain("font-bold");
+  });
+
+  it("files Can't find it's reason under the listing's words, leaving the Set column to the sport", async () => {
+    renderPick();
+    const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
+    const why = "NB has no 2026 Topps Heritage checklist yet.";
+    const wide = [...witt.querySelectorAll("td")].find((td) => td.getAttribute("colspan") === "3")!;
+    expect(within(wide).getByText(why)).toBeTruthy();
+    expect(wide.textContent).toContain("Bobby Witt Jr.");
+    expect(wide.nextElementSibling!.textContent).not.toContain(why);
+  });
+
+  it("hides the Set and Serial sorts' dot until they sit side by side", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    const dot = within(table).getByRole("button", { name: "Serial" }).previousElementSibling!;
+    expect(dot.textContent?.trim()).toBe("·");
+    expect(dot.className).toContain("hidden");
+    expect(dot.className).toContain("@min-[62rem]:inline");
   });
 
   it("draws no variant rule under Can't find it, nor at a box's stop", async () => {
@@ -397,9 +446,10 @@ describe("NEO-522: a row read from across the room", () => {
   it("keeps the box the size of the text, the button around it the target", async () => {
     renderPick();
     const toggle = await screen.findByRole("button", { name: /^Pulled #27 Mike Trout/ });
-    // A phone's 44px target, 32px with a mouse; the box inside stays 20px.
+    // A finger's 44px target at any width, 32px only for a mouse; the box inside stays 20px.
     expect(toggle.className).toContain("size-11");
-    expect(toggle.className).toContain("md:size-8");
+    expect(toggle.className).toContain("md:pointer-fine:size-8");
+    expect(toggle.className).not.toMatch(/(^|\s)md:size-8/);
     const box = toggle.querySelector("span[aria-hidden='true']")!;
     expect(box.className).toContain("size-5");
   });

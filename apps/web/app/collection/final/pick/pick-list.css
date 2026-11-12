@@ -11,7 +11,20 @@
 .nb-pick-pulled td:not(:first-child) {
   color: var(--ink-3);
   text-decoration: line-through;
-  text-decoration-thickness: 1px;
+  /* Scales with the type, so the strike still reads on a 28px name. */
+  text-decoration-thickness: 0.08em;
+}
+
+/*
+ * NEO-522: the row the keyboard is on reads from across the room, in both
+ * modes: the hover band, framed above and below in the focus colour.
+ * Keyboard focus only (a click already shows the row under the pointer).
+ */
+.nb-pick-row:has(:focus-visible) > td {
+  background-color: var(--list-hover);
+  box-shadow:
+    inset 0 3px 0 var(--focus),
+    inset 0 -3px 0 var(--focus);
 }
 .nb-pick-pulled td:not(:first-child) :not(.nb-pick-chip, .nb-pick-chip *, .nb-pick-thumb, .nb-pick-thumb *) {
   color: var(--ink-3);

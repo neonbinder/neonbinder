@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { Outlet } from "react-router";
+import { Outlet, useLocation } from "react-router";
 import BinderHeader from "@/components/modules/binder-header";
 import BinderTabs from "@/components/modules/binder-tabs";
 import MobileNav from "@/components/modules/mobile-nav";
@@ -48,6 +48,10 @@ export default function BinderLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const closeMobileMenu = useCallback(() => setMobileMenuOpen(false), []);
+  // The Pick List is read from across the room: its table takes the wide page,
+  // as the demo's does. Every other page keeps the 6xl column.
+  const { pathname, search } = useLocation();
+  const wide = pathname === "/inventory" && new URLSearchParams(search).get("tab") === "pick";
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -63,7 +67,7 @@ export default function BinderLayout() {
             min-width:auto pins main to its widest child, the document scrolls
             horizontally, and a deep column slides under the fixed nav (NEO-63). */}
         <main className="flex-1 min-w-0 lg:pr-[170px]">
-          <div className="max-w-6xl mx-auto p-6">
+          <div className={`${wide ? "max-w-[1600px]" : "max-w-6xl"} mx-auto p-6`}>
             <Outlet />
           </div>
           {/* Scroll headroom — read the SCROLL HEADROOM note on this component
