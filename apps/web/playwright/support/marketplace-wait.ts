@@ -146,3 +146,22 @@ function note(platform: string, what: string, waited: number, elapsed: number): 
     // Not inside a test (a helper run on its own): the thrown message still carries the numbers.
   }
 }
+
+/**
+ * NEO-489 (Jason, 2026-11-11): a BSC 429, or a cooldown already open, on a spec's live
+ * per-card lookup is a PASS, not a red. The product then asks the operator instead of
+ * guessing (invariant 8), so a spec whose live card can land either way accepts both
+ * outcomes and says which one it met: `answered` (BSC answered, so its pre-fill or chip
+ * shows) or `cooldown` (the lookup was skipped or refused, so the operator picks). Both
+ * branches keep every other assert unconditional. The outcome goes into the report as a
+ * `bsc-lookup` annotation, so the run shows which branch ran.
+ */
+export type BscLookupOutcome = "answered" | "cooldown";
+
+export function bscLookupOutcome(outcome: BscLookupOutcome, who: string): void {
+  try {
+    test.info().annotations.push({ type: "bsc-lookup", description: `${who}: ${outcome}` });
+  } catch {
+    // Not inside a test (a helper run on its own): nothing to annotate.
+  }
+}

@@ -82,6 +82,8 @@ function card(opts: {
   cardNumber: string;
   bscRef?: string;
   teamLookup?: "answered" | "failed" | "checklist";
+  /** NEO-489: a "checklist" card with no team string IS the checklist's No Team, so these fixtures name one. */
+  teams?: string[];
   checklistConflict?: {
     players?: { marketplace: string[]; checklist: string[] };
     teams?: { marketplace: string[]; checklist: string[] };
@@ -90,7 +92,7 @@ function card(opts: {
   return {
     cardNumber: opts.cardNumber,
     cardName: `Card ${opts.cardNumber}`,
-    teams: [],
+    teams: opts.teams ?? (opts.teamLookup === "checklist" ? ["Cincinnati Reds"] : []),
     players: [],
     platformData: opts.bscRef !== undefined ? { bsc: { ref: opts.bscRef } } : {},
     ...(opts.teamLookup ? { teamLookup: opts.teamLookup } : {}),

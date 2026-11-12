@@ -503,3 +503,44 @@ describe("settled and skipped positions", () => {
     expect(groups[0].suggestion).not.toBeNull();
   });
 });
+
+describe("NEO-489 adversarial — a No Team claim holds back every guess (invariant 8)", () => {
+  const noTeam = (cardNumber: string, players: string[]): PreviewCardForTeams =>
+    card(cardNumber, players, [], { teamLookup: "checklist" });
+
+  test("a sibling that prints a team does not reach back and fill the No Team card", () => {
+    const cards = [noTeam("1", ["Johnny Bench"]), card("2", ["Johnny Bench"], ["Reds"])];
+    expect(teamlessCardIndexes(cards, [])).toEqual([]);
+    expect(buildTeamsGroups({
+      cards,
+      rows: [],
+      serverEvidence: new Map(),
+      linkedTeamNameById: new Map(),
+      currentYear: 2026,
+    })).toEqual([]);
+  });
+
+  test("a No Team card never appears in teamAnswersByCard, so no answer is written to it", () => {
+    const cards = [noTeam("1", ["Johnny Bench"]), card("2", ["Pete Rose"])];
+    const groups = buildTeamsGroups({
+      cards,
+      rows: [],
+      serverEvidence: new Map(),
+      linkedTeamNameById: new Map(),
+      currentYear: 2026,
+    });
+    const answers = teamAnswersByCard(groups, {}, cards.length);
+    expect(answers[0]).toBeUndefined();
+  });
+
+  test("a checklist card with a blank legacy team is still a No Team claim", () => {
+    const legacy: PreviewCardForTeams = {
+      cardNumber: "1",
+      cardName: "x",
+      players: ["A"],
+      team: "  ",
+      teamLookup: "checklist",
+    };
+    expect(teamlessCardIndexes([legacy], [])).toEqual([]);
+  });
+});

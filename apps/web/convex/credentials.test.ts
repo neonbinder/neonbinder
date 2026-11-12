@@ -32,7 +32,9 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import type { MutationCtx } from "./_generated/server";
 import { __resetContractCache, actingUserId } from "./credentials";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -271,6 +273,107 @@ describe("saveCredentials — store branch (connect-and-store, NEO-141)", () => 
 
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/both username and password|neither/i);
+  });
+});
+
+describe("saveCredentials — the BSC seller id is saved before listing turns on (NEO-489)", () => {
+  /**
+   * A convex-test instance whose `updateSiteCredentialStatus` (the write that
+   * starts listing) records, per call, the `listing` it was asked for and the
+   * seller id already saved at that moment. The real handler runs.
+   */
+  async function recordingStatusWrites() {
+    const calls: Array<{ listing: string | undefined; sellerIdAtCall: string | null }> = [];
+    const realModule = (await modules["./userProfile.ts"]()) as Record<string, unknown>;
+    const real = realModule.updateSiteCredentialStatus as {
+      _handler: (ctx: MutationCtx, args: { userId: string; listing?: string }) => Promise<null>;
+    };
+    const t = convexTest(schema, {
+      ...modules,
+      "./userProfile.ts": async () => ({
+        ...realModule,
+        updateSiteCredentialStatus: Object.assign(() => undefined, real as object, {
+          _handler: async (ctx: MutationCtx, args: { userId: string; listing?: string }) => {
+            const profile = await ctx.db
+              .query("userProfiles")
+              .withIndex("by_user", (q) => q.eq("userId", args.userId))
+              .unique();
+            calls.push({ listing: args.listing, sellerIdAtCall: profile?.marketplaceAccountIds?.bscSellerId ?? null });
+            return real._handler(ctx, args);
+          },
+        }),
+      }),
+    });
+    return { t, calls };
+  }
+
+  const bscListingRow = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).find(
+        (r) => r.ownerId === USER_A && r.platform === "bsc",
+      ),
+    );
+
+  const save = (t: ReturnType<typeof convexTest>) =>
+    t.withIdentity({ subject: USER_A }).action(api.credentials.saveCredentials, {
+      site: SITE,
+      username: "real-user",
+      password: "real-pass",
+    });
+
+  test("a login that returns the id: the id is saved first, then one save starts listing on it", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    stubFetch(async (url) =>
+      String(url).includes("/login/bsc")
+        ? jsonResponse({ success: true, message: "ok", sellerId: "seller-489" })
+        : (() => {
+            throw new Error(`unexpected fetch: ${url}`);
+          })(),
+    );
+
+    expect((await save(t)).success).toBe(true);
+
+    expect(calls).toEqual([{ listing: "save", sellerIdAtCall: "seller-489" }]);
+    const row = await bscListingRow(t);
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.platformAccountId).toBe("seller-489");
+    await drainScheduled(t);
+  });
+
+  test("a login that returns no id still starts listing (the drain reads the id live later)", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    stubFetch(async (url) =>
+      String(url).includes("/login/bsc")
+        ? jsonResponse({ success: true, message: "ok" })
+        : (() => {
+            throw new Error(`unexpected fetch: ${url}`);
+          })(),
+    );
+
+    expect((await save(t)).success).toBe(true);
+
+    expect(calls).toEqual([{ listing: "save", sellerIdAtCall: null }]);
+    const row = await bscListingRow(t);
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.platformAccountId).toBeUndefined();
+    await drainScheduled(t);
+  });
+
+  test("a login that fails writes no listing save and starts no listing", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    stubFetch(async (url) =>
+      String(url).includes("/login/bsc")
+        ? jsonResponse({ success: false, message: "bad password", sellerId: "seller-489" })
+        : (() => {
+            throw new Error(`unexpected fetch: ${url}`);
+          })(),
+    );
+
+    expect((await save(t)).success).toBe(false);
+
+    expect(calls.filter((c) => c.listing === "save")).toEqual([]);
+    expect((await bscListingRow(t))?.listingStartedAt).toBeUndefined();
+    await drainScheduled(t);
   });
 });
 

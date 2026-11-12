@@ -365,7 +365,12 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      # NEO-491: no --with-deps. That flag runs apt, which made CI depend on
+      # Ubuntu mirror DNS (an outage failed every seed job before tests ran).
+      # Chromium's shared libraries already ship on the ubuntu-latest image;
+      # the only packages apt fetched were fonts nothing here uses (no spec
+      # compares screenshots; the app loads its own web fonts).
+      - run: npx playwright install chromium
 
       # NEO-301: capture this PR preview's Convex logs for the seed job's own
       # lifetime. Preview log HISTORY is only ~15 minutes, and every attempt to
@@ -903,7 +908,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
@@ -1119,7 +1124,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
       # A GitHub `concurrency` group cannot do this: with cancel-in-progress
@@ -1312,7 +1317,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       - name: Start Convex log capture (seed-mobile)
         working-directory: apps/web
@@ -1788,7 +1793,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
@@ -2003,7 +2008,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
       # A GitHub `concurrency` group cannot do this: with cancel-in-progress

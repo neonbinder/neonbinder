@@ -37,6 +37,12 @@ import {
  * spellings differ, the characters that differ are underlined and tinted on
  * both sides (Burgess / Bugress), so a one-letter misread is seen at a glance.
  *
+ * A checklist row that said "No Team" against a card the marketplace gave a
+ * team (NEO-489) is a teams disagreement whose checklist side is empty; that
+ * side reads "No team on the card" (`CHECKLIST_NO_TEAM`) at full ink, picked
+ * or not, because it is the checklist's answer rather than a gap. An empty
+ * marketplace side still reads "No team listed": the listing named none.
+ *
  * With two or more cards, "Keep the marketplace's on all" and "Use the
  * checklist's on all" answer every card in one press (the operator has just
  * pressed the button, so this is no default); each card can then be changed
@@ -199,6 +205,13 @@ function MarkedName({ segments }: { segments: readonly NameSegment[] }) {
 
 const NOBODY = "Nobody listed";
 const NO_TEAM = "No team listed";
+/**
+ * NEO-489 — the checklist's side of a teams disagreement is empty only when
+ * its row said "No Team": a claim that the card shows no team, not a gap, so
+ * it reads as the answer it is. ("Use the checklist's" then saves the card
+ * with no team; `applyChecklistChoice`.)
+ */
+export const CHECKLIST_NO_TEAM = "No team on the card";
 
 const OTHER: Record<ChecklistChoice, ChecklistChoice> = {
   marketplace: "checklist",
@@ -256,8 +269,19 @@ function Side({
         {conflict.teams && (
           <>
             <dt className="text-ink-3">{conflict.teams[side].length > 1 ? "Teams" : "Team"}</dt>
-            <dd className={picked ? "text-ink" : "text-ink-2"}>
-              <SideNames sides={conflict.teams} side={side} empty={NO_TEAM} />
+            <dd
+              className={
+                // The checklist's No Team is an answer, not a gap: full ink.
+                picked || (side === "checklist" && conflict.teams.checklist.length === 0)
+                  ? "text-ink"
+                  : "text-ink-2"
+              }
+            >
+              <SideNames
+                sides={conflict.teams}
+                side={side}
+                empty={side === "checklist" ? CHECKLIST_NO_TEAM : NO_TEAM}
+              />
             </dd>
           </>
         )}

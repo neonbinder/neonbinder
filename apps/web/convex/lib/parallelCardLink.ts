@@ -15,9 +15,18 @@
  *
  *   1. The card NUMBER — exact first; then with each side's `cardNumberPrefix`
  *      stripped (the insert's prefix from the NB number, the parallel's from
- *      the fetched one); and, for a VARIATION only, the number's stem
- *      (`11b` ↔ SportLots' `11`), because the two marketplaces number a
- *      variation differently and neither spelling survives the other.
+ *      the fetched one), case kept; then the same case-folded; and, for a
+ *      VARIATION only, the number's stem (`11b` ↔ SportLots' `11`), because
+ *      the two marketplaces number a variation differently and neither
+ *      spelling survives the other.
+ *
+ *      Numbers are read as printed (NEO-489): "1a" and "1A" can be two cards
+ *      in one set. The case-folded tiers (folded, stem) are used for a number
+ *      only when it has no case-only twin on EITHER side, i.e. no other
+ *      spelling of it that differs only by case among the insert's NB cards
+ *      or among the fetched cards. With a twin, only the case-kept tiers
+ *      apply, so "1A" still links to "1A" and "1a" is left for the operator,
+ *      never folded onto its twin's card.
  *   2. WHO is on the card — `playersKey` of the names printed on it
  *      (`playerLinks[].nameOnCard` plus any still-pending names), else
  *      `nameKey(cardName)`. A team card (no names, a team on it) is keyed on
@@ -148,7 +157,10 @@ export function cardKey(card: Omit<LinkableNbCard, "id">): string {
   const who = identityOf({ ...card, id: "" });
   const whoKey =
     who.kind === "number" ? "#team" : who.kind === "players" ? `p:${who.key}` : `n:${who.key}`;
-  return `${card.cardNumber.trim().toUpperCase()}\u0000${whoKey}\u0000${card.isVariation ? 1 : 0}`;
+  // Case kept (NEO-489): "1a" and "1A" are two checklist entries. Both ends
+  // of every comparison are NB rows copied from the same insert, so they
+  // share one spelling.
+  return `${card.cardNumber.trim()}\u0000${whoKey}\u0000${card.isVariation ? 1 : 0}`;
 }
 
 function sameWho(id: Identity, f: FetchedParallelCard): boolean {
@@ -211,11 +223,33 @@ export function fetchedIsVariation(
   return f.isVariation === true || !!f.cardVariation?.trim();
 }
 
-/** Upper-cased, trimmed; with `prefix` removed from the front when present. */
-function stripPrefix(cardNumber: string, prefix: string | undefined): string {
-  const n = cardNumber.trim().toUpperCase();
+/**
+ * Trimmed, case kept; with `prefix` removed from the front when present (the
+ * prefix itself is compared case-folded).
+ */
+function stripPrefixKeepCase(cardNumber: string, prefix: string | undefined): string {
+  const n = cardNumber.trim();
   const p = prefix?.trim().toUpperCase();
-  return p && n.startsWith(p) && n.length > p.length ? n.slice(p.length) : n;
+  return p && n.toUpperCase().startsWith(p) && n.length > p.length ? n.slice(p.length) : n;
+}
+
+/**
+ * The folded numbers that have more than one case-kept spelling in `numbers`
+ * ("1a" and "1A"): their case-folded tiers would merge two printed numbers.
+ */
+function caseTwins(numbers: Iterable<string>): Set<string> {
+  const spellings = new Map<string, Set<string>>();
+  for (const n of numbers) {
+    const folded = n.toUpperCase();
+    const seen = spellings.get(folded);
+    if (seen) seen.add(n);
+    else spellings.set(folded, new Set([n]));
+  }
+  const twins = new Set<string>();
+  for (const [folded, seen] of spellings) {
+    if (seen.size > 1) twins.add(folded);
+  }
+  return twins;
 }
 
 function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
@@ -240,19 +274,36 @@ export function linkCardsToSide(
   // POSITION so two fetched rows that happen to share a ref (SportLots'
   // indistinguishable descriptions) stay two candidates and fail the guard.
   const exact = new Map<string, number[]>();
+  const strippedKept = new Map<string, number[]>();
   const stripped = new Map<string, number[]>();
   const stem = new Map<string, number[]>();
+  const fetchedSpellings: string[] = [];
   fetched.forEach((f, i) => {
     push(exact, f.cardNumber.trim(), i);
-    const s = stripPrefix(f.cardNumber, prefixes.fetched);
+    const kept = stripPrefixKeepCase(f.cardNumber, prefixes.fetched);
+    fetchedSpellings.push(kept);
+    push(strippedKept, kept, i);
+    const s = kept.toUpperCase();
     push(stripped, s, i);
     push(stem, cardNumberStem(s).toUpperCase(), i);
   });
+  // NEO-489 — a folded number with a case-only twin on either side ("1a"
+  // and "1A") never uses the folded tiers: folding would merge two printed
+  // numbers. Its cards link by a case-kept tier or not at all.
+  const twinNumbers = new Set([
+    ...caseTwins(fetchedSpellings),
+    ...caseTwins(nbCards.map((c) => stripPrefixKeepCase(c.cardNumber, prefixes.nb))),
+  ]);
 
   const numberTiers = (card: LinkableNbCard): Array<number[] | undefined> => {
-    const s = stripPrefix(card.cardNumber, prefixes.nb);
+    const kept = stripPrefixKeepCase(card.cardNumber, prefixes.nb);
+    const s = kept.toUpperCase();
+    if (twinNumbers.has(s)) {
+      return [exact.get(card.cardNumber.trim()), strippedKept.get(kept)];
+    }
     return [
       exact.get(card.cardNumber.trim()),
+      strippedKept.get(kept),
       stripped.get(s),
       card.isVariation ? stem.get(cardNumberStem(s).toUpperCase()) : undefined,
     ];
