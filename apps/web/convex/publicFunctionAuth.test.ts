@@ -3306,13 +3306,14 @@ describe("NEO-496: the set's publisher checklist surface is admin-gated", () => 
  * NEO-500 — the Pick List (`pickList.ts`). Every function is the signed-in
  * caller's own; the owner is never an argument. `open`, `soldPhotos` and
  * `setPulled` read or write only the caller's sales and photos (pinned in
- * `pickList.test.ts`); `cards` is catalog data, signed in like
- * `collectionCatalog.cards`.
+ * `pickList.test.ts`); `cards` and `sports` (NEO-509) are catalog data,
+ * signed in like `collectionCatalog.cards`.
  */
 describe("NEO-500: the Pick List is the signed-in seller's own", () => {
   const CALLS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
     ["pickList.open", (t) => t.query(api.pickList.open, {})],
     ["pickList.cards", (t) => t.query(api.pickList.cards, { cardIds: [] })],
+    ["pickList.sports", (t) => t.query(api.pickList.sports, { sportIds: [] })],
     ["pickList.soldPhotos", (t) => t.query(api.pickList.soldPhotos, { copyIds: [] })],
     ["pickList.setPulled", (t) => t.mutation(api.pickList.setPulled, { ids: [], pulled: true })],
   ];

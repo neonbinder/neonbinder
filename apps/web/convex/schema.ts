@@ -688,6 +688,33 @@ export const saleItemFromValidator = v.object({
 });
 
 /**
+ * NEO-509 — the card a sale line describes, as the platform listed it
+ * (`marketplaceSales.items[].listed`): sport, year, set, players, card number
+ * and variant words, read by the order poll at the sync boundary
+ * (`lib/bscOrders.ts`, bounded there: an over-long value is dropped, never
+ * truncated). It lets the Pick List name a line NB could not match ("2021
+ * Score · Justin Fields · #TB2 · 1991 Throwback").
+ *
+ * Kept on the SALE only. It is never written to an NB card, set, player or
+ * team row, and nothing outside the Pick List's labels and walking order reads
+ * it. `sportId` is NB's own sport row, resolved once when the line is stored
+ * from the platform's item-level sport id against the sport rows'
+ * `platformData.bsc` slots (exactly one match, else absent); `sport` is the
+ * platform's own word, a fallback label only. Every field is optional: the
+ * line keeps whatever the platform sent that NB could read.
+ */
+export const saleItemListedValidator = v.object({
+  sport: v.optional(v.string()),
+  sportId: v.optional(v.id("selectorOptions")),
+  year: v.optional(v.string()),
+  setName: v.optional(v.string()),
+  players: v.optional(v.string()),
+  cardNo: v.optional(v.string()),
+  variant: v.optional(v.string()),
+  variantName: v.optional(v.string()),
+});
+
+/**
  * NEO-379 — the batch defaults an intake run applies to every card it files,
  * each overridable per card. The fields mirror `collectionCopies`;
  * `minPriceCents` is the box floor (NEO-378), meaningful for boxes only.
@@ -5321,6 +5348,15 @@ export default defineSchema({
          * List (`pickList.setPulled`). Absent = not pulled. A re-poll keeps it.
          */
         pulledAt: v.optional(v.number()),
+        /**
+         * NEO-509 — the card as the platform described it
+         * (`saleItemListedValidator`). Written when the line is stored; a
+         * re-poll that reads one replaces it, a re-poll that reads none keeps
+         * the old one. Not part of the line's key (`lib/pickLines.saleItemKey`),
+         * so line ids do not move. Absent on a line past the sale's
+         * `MAX_LISTED_BYTES_PER_SALE` budget (`listingSales.ts`).
+         */
+        listed: v.optional(saleItemListedValidator),
       }),
     ),
     /**
