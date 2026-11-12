@@ -4,6 +4,7 @@
 // the shared, pre-synced checklist: nothing is typed, toggled or picked, so
 // closing the drawer leaves it exactly as found.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { bscLookupOutcome } from "../../support/marketplace-wait";
 import { drillToBaseVariant, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -26,8 +27,22 @@ test(
 
     // The resolved team (a TeamPicker chip). The exact name: if BSC ever
     // returns a different team for this printed card it is a data regression.
+    // NEO-489 (Jason, 2026-11-11: a BSC 429 or an open cooldown on a live card is a pass):
+    // #300 is the ONE Base card the seed's checklist leaves out, so BSC was asked about it live.
+    // Answered: the chip names Seattle Mariners and NO other team. Skipped (a 429 or an open
+    // cooldown at the seed): the card waits in the background queue, so the checklist says
+    // "Still looking up teams for 1 card." and the card holds no team chip at all. A DIFFERENT
+    // team is never accepted in either branch. The status line belongs to the checklist behind the
+    // drawer, and it stays in the accessibility tree while the drawer is open: proved on a run
+    // with BSC's cooldown open at the seed (the `bsc-lookup` annotation read "cooldown" and this
+    // line was the element that resolved), so it is read here, not before the drawer opens.
     await expect(drawer.getByText("Teams", { exact: true })).toBeVisible();
-    await expect(drawer.getByRole("button", { name: "Remove team Seattle Mariners" })).toBeVisible();
+    const mariners = drawer.getByRole("button", { name: "Remove team Seattle Mariners" });
+    const lookingUp = page.getByRole("status").filter({ hasText: "Still looking up teams for 1 card." });
+    await expect(mariners.or(lookingUp).first()).toBeVisible();
+    const answered = await mariners.isVisible();
+    bscLookupOutcome(answered ? "answered" : "cooldown", "2024 Topps Chrome #300");
+    await expect(drawer.getByRole("button", { name: /^Remove team / })).toHaveCount(answered ? 1 : 0);
     await expectAccessible(page, { within: drawer, label: "Card detail drawer with resolved team" });
 
     await drawer.getByRole("button", { name: "Done editing card" }).click();

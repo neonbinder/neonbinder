@@ -49,3 +49,9 @@
 - [BSC profile stalls heal with time](bsc-profile-stalls-heal-with-time-not-new-sessions.md) — new session/token does not escape a stall, time does (~50% 30 s, ~70% 60 s); seller id always live; seed re-signs in
 - [Workpool lanes and throttle rows survive the E2E reset](workpool-lanes-and-throttle-rows-survive-the-e2e-reset.md) — reset drains allSteps only; add the table, cancelAll the pool, item reads its row before any cooldown wait
 - [Seller Send step past 7 s = seller-id read](seller-send-step-past-7s-is-the-seller-id-read.md) — spinning Send + sellerProfile timeout x2, or (NEO-482) seed hop "stalled on every sign-in (5 tries)" with 11-21 s logins; env, rerun
+- [Publisher checklist claim is per card](publisher-checklist-claim-is-per-card-omit-the-card-under-test.md) — omit the tested card's row (blank team keeps the lookup); Saved line carries the checklist tail
+- [Blank checklist team cell still asks BSC](checklist-fixture-blank-team-cell-still-asks-bsc.md) — blank/None/N/A/TBD = no claim, card looked up; a no-team card reads "No Team" (NEO-489); count from checklist_published_match
+- [Live-lookup 429 is a pass](live-lookup-429-is-a-pass-converge-by-operator-pick.md) — failed lookup withholds pre-fill; assert both via checked-role .or(), annotate, converge with check() (NEO-489)
+- [Commit prelude walks teams before players](commit-prelude-walks-teams-before-players.md) — team row picked from the card's player must be a decided review row, not a commit-time inference (NEO-490)
+- [Pairing modal absorbs only teams](checklist-pairing-modal-absorbs-only-teams.md) — post-stream answers apply to PairingResult cards client-side, not candidate rows (NEO-490)
+- [Publisher checklist is a Match Cards source](publisher-checklist-is-a-match-cards-source.md) — third column in CardPairingModal; rows discardable, marketplace cards never (NEO-490)

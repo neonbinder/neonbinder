@@ -31,6 +31,7 @@ import {
 import { narrowBscSheet, type NarrowedBscSheet } from "../lib/bscSheetPlan";
 import {
   createBscRecorder,
+  whileWaitingOnBsc,
   type BscCallToken,
   type BscFlushResult,
   type BscRecorder,
@@ -280,6 +281,13 @@ export async function closeBscSellerSession(ctx: unknown, session: BscSellerSess
  * grace (and at `closeBscSellerSession`). The drain turns them into the
  * running step's `marketplaceWaitingSince` / `marketplaceWaitMs`. It must not
  * throw (the recorder swallows it if it does) and must not await.
+ *
+ * NEO-489 — the token read is BSC wait time too: a stale session is a BSC
+ * sign-in through the browser service. The recorder is built first and the
+ * read runs inside its wait (`whileWaitingOnBsc`), so the read and the first
+ * call (inside the idle grace) are ONE wait, counted once. With no token the
+ * recorder is flushed at once: the wait closes, and a flush with no calls
+ * writes no summary row. A paused BSC opens no wait (nothing is contacted).
  */
 export async function openBscSellerSession(
   ctx: SessionCtx,
@@ -289,22 +297,26 @@ export async function openBscSellerSession(
   if (isPlatformPaused(SITE)) {
     return { ok: false, failure: failure("paused", "BuySportsCards is paused on NeonBinder right now.") };
   }
+  const rec = newSessionRecorder(opts.op ?? DEFAULT_SESSION_OP, opts.onWaitEdge);
   const startedAt = Date.now();
   let token: { token: string } | null = null;
   try {
-    token = await ctx.runAction(internal.credentials.getSiteTokenForUser, { site: SITE, userId: ownerId });
+    token = await whileWaitingOnBsc(rec, () =>
+      ctx.runAction(internal.credentials.getSiteTokenForUser, { site: SITE, userId: ownerId }),
+    );
   } catch {
     token = null;
   }
   logCall("token", startedAt, token ? "ok" : "no_token");
   if (!token) {
+    await flushBscRecorder(ctx, rec);
     return {
       ok: false,
       failure: failure("no_token", "NeonBinder couldn't sign in to BuySportsCards for you. Connect it again under Profile."),
     };
   }
   const session: BscSellerSession = { ownerId, token: token.token, reauthAttempted: false, dead: false };
-  sessionRecorders.set(session, newSessionRecorder(opts.op ?? DEFAULT_SESSION_OP, opts.onWaitEdge));
+  sessionRecorders.set(session, rec);
   return { ok: true, value: session };
 }
 
@@ -418,24 +430,27 @@ async function send(
     }
     session.reauthAttempted = true;
     const refreshStartedAt = Date.now();
-    let refreshed = false;
-    try {
-      const r = await ctx.runAction(internal.credentials.refreshSiteTokenForUser, {
-        site: SITE,
-        userId: session.ownerId,
-      });
-      refreshed = r.refreshed;
-    } catch {
-      refreshed = false;
-    }
-    let next: { token: string } | null = null;
-    if (refreshed) {
+    // NEO-489 — the re-auth (a BSC sign-in) and the token read after it are
+    // BSC wait time: one span, so with the 401 before it and the retry after
+    // it (each inside the idle grace) the whole recovery is one wait.
+    const next = await whileWaitingOnBsc(rec, async (): Promise<{ token: string } | null> => {
+      let refreshed = false;
       try {
-        next = await ctx.runAction(internal.credentials.getSiteTokenForUser, { site: SITE, userId: session.ownerId });
+        const r = await ctx.runAction(internal.credentials.refreshSiteTokenForUser, {
+          site: SITE,
+          userId: session.ownerId,
+        });
+        refreshed = r.refreshed;
       } catch {
-        next = null;
+        refreshed = false;
       }
-    }
+      if (!refreshed) return null;
+      try {
+        return await ctx.runAction(internal.credentials.getSiteTokenForUser, { site: SITE, userId: session.ownerId });
+      } catch {
+        return null;
+      }
+    });
     logCall("reauth", refreshStartedAt, next ? "ok" : "failed");
     if (!next) {
       session.dead = true;

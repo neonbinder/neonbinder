@@ -24,14 +24,31 @@
 // "New team name" (no location to split off), which the NEO-307 check reads.
 // The wizard counts and the time to settle are NOT yet measured on the UI.
 //
+// THE RAFFLE CARD SAYS "No Team" (NEO-489, Jason 2026-11-11). Its row in the uploaded
+// checklist reads `No Team`, the publisher's claim that the card has none, so the card is
+// ANSWERED: it is never asked of BSC, never a line on the wizard's "Cards with no team"
+// step, and it saves as a confirmed no-team card that no attention badge flags. The step
+// after the names is therefore not "Cards with no team" (the other eight cards name the
+// club the walk links), and the spec checks that and the saved card. The count line,
+// "Teams from your checklist: N of M", takes its N from the file (9: the claim counts).
+//
 // THE ROW UNDER TEST IS NAMED, not "whichever comes first": the walk reads
 // each team/league step's heading, acts on the checklist club "New Haven
 // Ravens" and skips every other step (a skip creates nothing, R7).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { editCardButton } from "../../support/cards";
 import { CHECKLISTS } from "../../support/published-checklist";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
 import { recordedNoMatchPlayer } from "../../support/recorded-names";
-import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readStep, reviewWizard, stepCounter } from "../../support/wizard";
+import {
+  advanceToSave,
+  confirmSaveButton,
+  fetchOneMarketplaceSetChecklistToWizard,
+  nextStepButton,
+  readStep,
+  reviewWizard,
+  stepCounter,
+} from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SET = "New Haven Ravens Rally Raffle";
@@ -201,13 +218,34 @@ test(
     expect(aliasDone, `the "${ROW}" team step must be presented`).toBe(true);
 
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
-    // The teams / titles steps (a skipped club leaves its cards teamless) stay on
-    // their defaults; this spec's feature is the alias.
+    // THE RAFFLE CARD IS NEVER ASKED (NEO-489). Skipping the rest of the names lands on the
+    // first screen after them, which is where "Cards with no team" would be: the eight cards
+    // name the club the walk linked and the raffle card's row says "No Team", so no card is
+    // teamless and the wizard is on a later step or already on Save. The footer's forward
+    // control is the positive the hidden title is read against.
+    await expect(nextStepButton(page).or(confirmSaveButton(page))).toBeVisible();
+    await expect(wizard.getByText(/^(Card titles|Autographed cards|Ready to save)$/)).toBeVisible();
+    await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
+    // The teams / titles steps stay on their defaults; this spec's feature is the alias.
     await advanceToSave(page);
     const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
     await expect(confirmSave).toBeVisible();
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
+
+    // ── PART 5b: the raffle card saved as a card with no team, and nothing flags it (NEO-489) ──
+    // The committed list is up (its edit control is the positive), and no card of the set is
+    // badged "no team on this card yet" nor counted under the header's "N need you".
+    await expect(editCardButton(page, "NNO")).toBeVisible();
+    await expect(page.getByRole("img", { name: /needs attention: no team on this card yet$/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^([0-9]+ need you|1 needs you)$/ })).toHaveCount(0);
+    // Its drawer shows the team picker (Add team) with no team chip: a stored no-team card.
+    await editCardButton(page, "NNO").click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer.getByRole("button", { name: "Add team", exact: true })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(drawer).toBeHidden();
 
     // ── PART 6: Team Management shows the alias ──
     await openTeams(page, `Ali${T}`);
