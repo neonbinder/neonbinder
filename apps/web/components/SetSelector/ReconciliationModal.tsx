@@ -890,9 +890,13 @@ function ReadySetRow({
         isOver ? "bg-neon-blue/10 ring-1 ring-selection" : "bg-raised/50"
       }`}
     >
-      {/* On a phone the name takes the whole first line, so a long set name
-          reads in full; the percent, toggle and remove wrap beneath it. */}
-      <div className="flex items-center gap-3 max-sm:flex-wrap max-sm:gap-y-1">
+      {/* One wrapping row. Side by side: name, percent, toggle and remove on
+          the first line, then the clash line and the chips, each a full line.
+          On a phone the name takes the whole first line, so a long set name
+          reads in full, and the chips share the next line with the percent,
+          toggle and remove (right-aligned): `order` moves them, not the DOM,
+          so the tab order is the same at every width. */}
+      <div className="flex flex-wrap items-center gap-x-3 max-sm:gap-y-2">
         {/* The title is OUR set name, so it is an input, not a label. */}
         <Input
           bare
@@ -934,7 +938,7 @@ function ReadySetRow({
           }`}
         />
         {set.confidence > 0 && (
-          <span className={`text-xs shrink-0 ${confidenceColor}`}>
+          <span className={`text-xs shrink-0 max-sm:order-3 ${confidenceColor}`}>
             {Math.round(set.confidence * 100)}%
           </span>
         )}
@@ -942,7 +946,7 @@ function ReadySetRow({
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
-            className="hit-area-24 text-xs text-ink-3 hover:text-ink-2 px-2"
+            className="hit-area-24 inline-flex items-center justify-center text-xs text-ink-3 hover:text-ink-2 px-2 max-sm:order-3 max-sm:min-h-11 max-sm:min-w-11"
             aria-label={`Toggle details for ${label}`}
             aria-expanded={expanded}
           >
@@ -951,22 +955,26 @@ function ReadySetRow({
         )}
         <button
           onClick={onDisband}
-          className="hit-area-24 text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0 max-sm:ml-auto"
+          className="hit-area-24 inline-flex items-center justify-center text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0 max-sm:order-3 max-sm:min-h-11 max-sm:min-w-11"
           title="Remove this set (its mappings return to Pending)"
           aria-label={`Remove set ${label}`}
         >
           ✕
         </button>
-      </div>
       {clashMessageId && (
-        <p id={clashLineId} className="mt-1 text-xs text-neon-pink-text">
+        <p
+          id={clashLineId}
+          className="mt-1 basis-full text-xs text-neon-pink-text max-sm:order-1 max-sm:mt-0"
+        >
           {TITLE_CLASH_ROW_LINE}{" "}
           {/* gray-400: a hint, quieter than the pink fact it follows. */}
           <span className="text-ink-3">{RENAME_TIP}</span>
         </p>
       )}
 
-      <div className="flex flex-wrap gap-1.5 mt-2">
+      <div
+        className="mt-2 flex min-w-0 basis-full flex-wrap gap-1.5 max-sm:order-2 max-sm:mt-0 max-sm:flex-1 max-sm:basis-0"
+      >
         {sources.map((source) =>
           set.links[source.key].map((i) => chip(source, i)),
         )}
@@ -986,6 +994,7 @@ function ReadySetRow({
               </span>
             ),
         )}
+      </div>
       </div>
 
       {onAttachClick && (

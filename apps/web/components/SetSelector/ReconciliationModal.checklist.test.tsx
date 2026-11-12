@@ -253,12 +253,36 @@ describe("ReconciliationModal — checklist column", () => {
     expect(within(readyRegion()).getByText("no SL mapping")).toBeTruthy();
   });
 
-  test("on a phone a Ready set's name takes its whole line, so a long name reads in full", () => {
-    renderModal(pending([BSC_BOMB]), { checklist: checklistOf([FUTURE]) });
+  test("on a phone a Ready set is two lines: its whole name, then chips with the percent, toggle and remove", () => {
+    renderModal(pending([BSC_BOMB]), { checklist: checklistOf([FUTURE]), showMetadata: true });
     fireEvent.click(screen.getByLabelText("Make its own set: Bomb Squad"));
     const name = screen.getByLabelText("NeonBinder set name for Bomb Squad");
+    const row = name.parentElement as HTMLElement;
+    // One wrapping row holds the name, the chips and the row's controls.
+    expect(row.className).toContain("flex-wrap");
     expect(name.className).toContain("max-sm:basis-full");
-    expect(name.parentElement?.className).toContain("max-sm:flex-wrap");
+    const chips = screen.getByRole("button", { name: /^Remove Bomb Squad from / }).parentElement
+      ?.parentElement as HTMLElement;
+    expect(chips.parentElement).toBe(row);
+    // Side by side the chips take their own line; on a phone they share one
+    // with the controls, which follow them there at a 44px target.
+    expect(chips.className).toContain("basis-full");
+    expect(chips.className).toContain("max-sm:order-2");
+    expect(chips.className).toContain("max-sm:flex-1");
+    for (const control of [
+      screen.getByRole("button", { name: "Toggle details for Bomb Squad" }),
+      screen.getByRole("button", { name: "Remove set Bomb Squad" }),
+    ]) {
+      expect(control.parentElement).toBe(row);
+      expect(control.className).toContain("max-sm:order-3");
+      expect(control.className).toContain("max-sm:min-h-11");
+      expect(control.className).toContain("max-sm:min-w-11");
+    }
+    // The DOM order (so the tab order) is name, toggle, remove, then chips.
+    const order = [name, screen.getByRole("button", { name: "Remove set Bomb Squad" }), chips];
+    expect(order.map((el) => Array.from(row.children).indexOf(el))).toEqual(
+      [...order.map((el) => Array.from(row.children).indexOf(el))].sort((a, b) => a - b),
+    );
   });
 
   test("a skipped BSC column says BSC wasn't asked", () => {
