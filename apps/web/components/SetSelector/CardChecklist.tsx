@@ -1220,7 +1220,7 @@ export default function CardChecklist({
   /** The button that opened the dialog, so focus goes back to it (or to the chip's Remove). */
   const publishedOpenerRef = useRef<HTMLButtonElement>(null);
   /**
-   * The chip's Remove. Using a checklist takes "Add the publisher's
+   * The chip's Remove. Using a checklist takes "Add the official
    * checklist" away (the chip is the handle while one is attached), so focus
    * lands here instead of on a button that is gone.
    */
@@ -3301,7 +3301,7 @@ export default function CardChecklist({
       />
     ) : null;
   /**
-   * NEO-478 — "Add the publisher's checklist", beside Sync wherever Sync is.
+   * NEO-478 — "Add the official checklist", beside Sync wherever Sync is.
    * Purple (tertiary): a supporting input to the sync, not the sync itself.
    * Not while a checklist is attached: the chip says so, and its Remove
    * brings this back.
@@ -3318,7 +3318,7 @@ export default function CardChecklist({
       disabled={busy}
       aria-haspopup="dialog"
     >
-      Add the publisher&apos;s checklist
+      Add the official checklist
     </NeonButton>
   );
   const fetchLabel = syncing
@@ -4195,7 +4195,7 @@ export default function CardChecklist({
           onUse={(checklist) => {
             setPublishedChecklist({ variantId, checklist });
             setPublishedDialogOpen(false);
-            // Opened from "Add the publisher's checklist": that button goes
+            // Opened from "Add the official checklist": that button goes
             // with the dialog (the chip replaces it), so the dialog's own
             // restore has nothing to land on and Remove takes it. Opened
             // from the chip, the chip stays and the restore lands on it.

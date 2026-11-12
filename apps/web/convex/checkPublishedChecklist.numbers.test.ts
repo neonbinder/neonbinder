@@ -26,7 +26,7 @@ describe("checkPublishedChecklist — card number characters", () => {
     (number) => {
       const call = () => checkPublishedChecklist({ rows: [row("1"), row(number)] });
       expect(call).toThrow(ConvexError);
-      expect(call).toThrow(/Row 2 of the publisher's checklist has a card number/);
+      expect(call).toThrow(/Row 2 of the official checklist has a card number/);
     },
   );
 

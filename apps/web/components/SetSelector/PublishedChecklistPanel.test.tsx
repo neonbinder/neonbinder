@@ -218,6 +218,29 @@ describe("PublishedChecklistPanel — the preview", () => {
     expect(within(title).getByText("(1)")).toBeTruthy();
   });
 
+  it("names a workbook's sheet on a skipped line; the same row in two sheets is two lines", async () => {
+    const tab = (sheet: string, rows: string[][]) =>
+      rows.map((cells, i) => ({ row: i + 1, cells, sheet }));
+    const readXlsx = vi.fn(() => ({
+      ok: true as const,
+      sheets: ["Base", "Bomb Squad"],
+      rows: [
+        ...tab("Base", [["2026 Donruss"], ["#", "Player", "Team"], ["1", "Ken Griffey Jr.", "Seattle Mariners"]]),
+        ...tab("Bomb Squad", [["Bomb Squad"], ["#", "Player", "Team"], ["BS-1", "Aaron Judge", "New York Yankees"]]),
+      ],
+    }));
+    const duplicateKey = vi.spyOn(console, "error").mockImplementation(() => {});
+    renderPanel({ readers: { readXlsx } });
+    await choose("Upload checklist", fileOf("donruss.xlsx", new Uint8Array([0x50, 0x4b, 0x03, 0x04])));
+    const dialog = await waitFor(preview);
+    expect(within(dialog).getByText("Line 1, sheet Base")).toBeTruthy();
+    expect(within(dialog).getByText("Line 1, sheet Bomb Squad")).toBeTruthy();
+    expect(
+      duplicateKey.mock.calls.some((c) => String(c[0]).includes("same key")),
+    ).toBe(false);
+    duplicateKey.mockRestore();
+  });
+
   it("says why a paste with no section heading has nothing to save, and saves nothing", async () => {
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "Paste one instead" }));

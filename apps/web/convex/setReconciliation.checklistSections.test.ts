@@ -405,6 +405,72 @@ describe("buildRawOptionsChecklist", () => {
     expect(offered[0]).toEqual({ target: bscItem("bsc-gold-a"), confidence: 1 });
   });
 
+  describe("number-aware classification (stored first/last numbers)", () => {
+    /** Donruss as stored: Base 1-100, Rated Prospects 101-150 after it, and a run of each. */
+    const NUMBERED = [
+      { sectionKey: "base", name: "Base", rowCount: 100, firstNumber: "1", lastNumber: "100" },
+      {
+        sectionKey: "base rated prospects",
+        name: "Base Rated Prospects",
+        rowCount: 50,
+        firstNumber: "101",
+        lastNumber: "150",
+      },
+      { sectionKey: "base red", name: "Base Red", rowCount: 100, firstNumber: "1", lastNumber: "100" },
+      {
+        sectionKey: "base rated prospects red",
+        name: "Base Rated Prospects Red",
+        rowCount: 50,
+        firstNumber: "101",
+        lastNumber: "150",
+      },
+    ];
+
+    test("with nothing linked at the Base, Rated Prospects is a base subset and Rated Prospects Red matches BSC's 'Red'", () => {
+      const result = buildRawOptionsChecklist(context({ sections: NUMBERED, links: [] }), {
+        ...NOTHING_FETCHED,
+        unmatchedBsc: [{ value: "Red", platformValue: "bsc-red" }],
+      });
+      expect(result.sections.find((s) => s.sectionKey === "base rated prospects")).toMatchObject({
+        kind: "base-subset",
+      });
+      // The base and every subset of it are stripped, longest first.
+      expect(result.baseSectionNames).toEqual(["Base Rated Prospects", "Base"]);
+      expect(result.matches).toEqual([
+        { sectionKey: "base red", target: bscItem("bsc-red"), confidence: 1 },
+        { sectionKey: "base rated prospects red", target: bscItem("bsc-red"), confidence: 1 },
+      ]);
+    });
+
+    test("a base subset is the Base's: never auto-matched, even under a kindless type", () => {
+      const result = buildRawOptionsChecklist(
+        context({ kind: null, sections: NUMBERED, links: [] }),
+        {
+          ...NOTHING_FETCHED,
+          unmatchedBsc: [{ value: "Base Rated Prospects", platformValue: "bsc-rp" }],
+        },
+      );
+      expect(result.matches.map((m) => m.sectionKey)).not.toContain("base rated prospects");
+      expect(result.unmatchedSectionKeys).not.toContain("base rated prospects");
+    });
+
+    test("the context carries the stored number summary through to the classifier", () => {
+      // Without the numbers the same names read as a run of the base: only
+      // "Base" is stripped and "Rated Prospects Red" finds no "Red".
+      const namesOnly = NUMBERED.map(({ sectionKey, name, rowCount }) => ({
+        sectionKey,
+        name,
+        rowCount,
+      }));
+      const result = buildRawOptionsChecklist(context({ sections: namesOnly, links: [] }), {
+        ...NOTHING_FETCHED,
+        unmatchedBsc: [{ value: "Red", platformValue: "bsc-red" }],
+      });
+      expect(result.baseSectionNames).toEqual(["Base"]);
+      expect(result.matches.map((m) => m.sectionKey)).not.toContain("base rated prospects red");
+    });
+  });
+
   test("no marketplace lines at all: every eligible section is unmatched (a checklist alone still opens Reconcile)", () => {
     const result = buildRawOptionsChecklist(context({ kind: "insert" }), NOTHING_FETCHED);
     expect(result.matches).toEqual([]);

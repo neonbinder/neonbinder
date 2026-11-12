@@ -94,7 +94,7 @@ export function checkPublishedChecklist(
   if (!published) return undefined;
   // NEO-496: a stored section names itself ("section “Future Stars”"); a
   // pasted checklist reads as it always has.
-  const label = options.label ?? "the publisher's checklist";
+  const label = options.label ?? "the official checklist";
   const whole = label.charAt(0).toUpperCase() + label.slice(1);
   if (published.rows.length > MAX_PUBLISHED_CHECKLIST_ROWS) {
     throw new ConvexError(

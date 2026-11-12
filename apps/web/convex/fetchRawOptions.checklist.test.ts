@@ -91,9 +91,12 @@ async function upload(t: T, setId: SO, names: string[]) {
   await who.mutation(api.publishedChecklists.addSections, {
     checklistId,
     firstOrdinal: 0,
+    // Every section's one card is #1, as a run prints its base's numbers: the
+    // classifier reads the stored numbers now, and distinct numbers after the
+    // base's ("2" after "1") would make a section a subset of the base.
     sections: names.map((name, i) => ({
       name,
-      rows: [{ number: `${i + 1}`, players: [`Player ${i + 1}`], teams: ["Team"] }],
+      rows: [{ number: "1", players: [`Player ${i + 1}`], teams: ["Team"] }],
     })),
   });
   await who.mutation(api.publishedChecklists.finish, {

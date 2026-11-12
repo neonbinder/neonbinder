@@ -133,7 +133,7 @@ export function outcomeHeading(
   hasHint: boolean,
 ): string | null {
   if (outcome === "checklist" && !hasHint) {
-    return "The publisher’s checklist skips the team on this one. Pick the one on the card, or say there isn’t one.";
+    return "The official checklist skips the team on this one. Pick the one on the card, or say there isn’t one.";
   }
   if (outcome === "gaveUp") {
     return "We couldn’t get a team from the listing for this card. Pick the one on the card.";

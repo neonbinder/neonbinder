@@ -1671,7 +1671,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     ];
 
     async function addChecklist(text = PASTE) {
-      fireEvent.click(screen.getByRole("button", { name: "Add the publisher's checklist" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add the official checklist" }));
       const box = await screen.findByLabelText("Paste the checklist");
       await act(async () => {
         fireEvent.change(box, { target: { value: text } });
@@ -1702,37 +1702,37 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
     it("the button opens the dialog, and Cancel closes it with no chip", async () => {
       renderChecklist();
-      fireEvent.click(screen.getByRole("button", { name: "Add the publisher's checklist" }));
-      expect(await screen.findByRole("dialog", { name: "Publisher's checklist" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Add the official checklist" }));
+      expect(await screen.findByRole("dialog", { name: "Official checklist" })).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-      expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
+      expect(screen.queryByText(/Official checklist: /)).toBeNull();
     });
 
     it("accepting shows the chip with the row count, and Remove clears it", async () => {
       renderChecklist();
       await addChecklist();
       expect(screen.queryByRole("dialog")).toBeNull();
-      expect(screen.getByText("Publisher's checklist: 2 rows")).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
-      expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
+      expect(screen.getByText("Official checklist: 2 rows")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Remove the official checklist" }));
+      expect(screen.queryByText(/Official checklist: /)).toBeNull();
     });
 
     it("while a checklist is attached the chip is its handle: no add button, focus on Remove, and Remove brings the button back focused (NEO-482)", async () => {
       renderChecklist();
       await addChecklist();
-      expect(screen.queryByRole("button", { name: "Add the publisher's checklist" })).toBeNull();
-      const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
+      expect(screen.queryByRole("button", { name: "Add the official checklist" })).toBeNull();
+      const remove = screen.getByRole("button", { name: "Remove the official checklist" });
       await waitFor(() => expect(document.activeElement).toBe(remove));
       fireEvent.click(remove);
-      const add = await screen.findByRole("button", { name: "Add the publisher's checklist" });
+      const add = await screen.findByRole("button", { name: "Add the official checklist" });
       await waitFor(() => expect(document.activeElement).toBe(add));
     });
 
     it("the chip reopens the dialog on what was pasted; Use replaces the rows and focus comes back to the chip", async () => {
       const { rerender } = renderChecklist();
       await addChecklist();
-      const chip = screen.getByRole("button", { name: "Publisher's checklist: 2 rows" });
+      const chip = screen.getByRole("button", { name: "Official checklist: 2 rows" });
       fireEvent.click(chip);
       const box = (await screen.findByLabelText("Paste the checklist")) as HTMLTextAreaElement;
       expect(box.value).toBe(PASTE);
@@ -1744,7 +1744,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
       });
-      const reopened = screen.getByRole("button", { name: "Publisher's checklist: 1 row" });
+      const reopened = screen.getByRole("button", { name: "Official checklist: 1 row" });
       await waitFor(() => expect(document.activeElement).toBe(reopened));
       await syncWith(rerender, arrivedBatch);
       expect(mockFetchChecklist.mock.calls[0][0].publishedChecklist).toEqual({ rows: [ROWS[0]] });
@@ -1754,7 +1754,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       renderChecklist();
       await addChecklist(`${PASTE}\nBase Set`);
       expect(
-        screen.getByRole("button", { name: "Publisher's checklist: 2 rows · 1 skipped" }),
+        screen.getByRole("button", { name: "Official checklist: 2 rows · 1 skipped" }),
       ).toBeTruthy();
     });
 
@@ -1773,7 +1773,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     it("a sync with no checklist (or after Remove) sends no publishedChecklist", async () => {
       const { rerender } = renderChecklist();
       await addChecklist();
-      fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
+      fireEvent.click(screen.getByRole("button", { name: "Remove the official checklist" }));
       await syncWith(rerender, arrivedBatch);
       expect(mockFetchChecklist.mock.calls[0][0]).not.toHaveProperty("publishedChecklist");
       expect(mockFetchChecklist.mock.calls[0][0].waitKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);

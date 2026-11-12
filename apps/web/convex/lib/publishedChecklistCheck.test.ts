@@ -33,7 +33,7 @@ describe("checkPublishedChecklist — names sent per row", () => {
     const call = () => checkPublishedChecklist({ rows: [row(["Shohei Ohtani"]), bad] });
     expect(call).toThrow(ConvexError);
     expect(call).toThrow(
-      `Row 2 of the publisher's checklist sends ${MAX_PUBLISHED_ROW_NAMES + 1} ${unit} names; the limit is ${MAX_PUBLISHED_ROW_NAMES}.`,
+      `Row 2 of the official checklist sends ${MAX_PUBLISHED_ROW_NAMES + 1} ${unit} names; the limit is ${MAX_PUBLISHED_ROW_NAMES}.`,
     );
   });
 

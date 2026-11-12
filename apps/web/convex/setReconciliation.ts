@@ -643,6 +643,7 @@ const checklistTargetValidator = v.union(
 
 const sectionKindValidator = v.union(
   v.literal("base"),
+  v.literal("base-subset"),
   v.literal("base-child"),
   v.literal("other"),
 );
@@ -711,8 +712,18 @@ const variantSyncChecklistContextValidator = v.object({
       variantTypeId: v.id("selectorOptions"),
       kind: v.union(v.literal("base"), v.literal("insert"), v.literal("parallel"), v.null()),
       setNames: v.array(v.string()),
+      /**
+       * The stored sections with their number summary, so the classification
+       * is number-aware (a subset of the base, a parallel of it).
+       */
       sections: v.array(
-        v.object({ sectionKey: v.string(), name: v.string(), rowCount: v.number() }),
+        v.object({
+          sectionKey: v.string(),
+          name: v.string(),
+          rowCount: v.number(),
+          firstNumber: v.optional(v.string()),
+          lastNumber: v.optional(v.string()),
+        }),
       ),
       /** sectionKey -> the rows in the set that link it. */
       links: v.array(
@@ -784,6 +795,8 @@ export const variantSyncChecklistContext = internalQuery({
         sectionKey: s.sectionKey,
         name: s.name,
         rowCount: s.rowCount,
+        ...(s.firstNumber !== undefined ? { firstNumber: s.firstNumber } : {}),
+        ...(s.lastNumber !== undefined ? { lastNumber: s.lastNumber } : {}),
       })),
       links: links.map((l) => ({ selectorOptionId: l.selectorOptionId, sectionKey: l.sectionKey })),
       baseRowIds: types.filter((t) => variantTypeKind(t) === "base").map((t) => t._id),
@@ -826,7 +839,11 @@ function stripFoldedPrefix(folded: string, prefixes: readonly string[]): string 
   return folded;
 }
 
-type SectionMatchInput = { sectionKey: string; name: string; kind: "base" | "base-child" | "other" };
+type SectionMatchInput = {
+  sectionKey: string;
+  name: string;
+  kind: "base" | "base-subset" | "base-child" | "other";
+};
 
 /**
  * A section's candidate is offered at confidence 0.3 or more: an edit ratio
@@ -1015,8 +1032,16 @@ export function buildRawOptionsChecklist(
     twinIds?: { bsc: readonly string[]; sportlots: readonly string[] };
   },
 ): RawOptionsChecklist {
+  // The stored number summaries go in, so a section is placed by its card
+  // numbers as well as its name ("Base Rated Prospects", 101-200 after a
+  // 1-100 Base, is a subset of the base; "Base Rated Prospects Red" its run).
   const classification = classifySections(
-    context.sections.map((s) => s.name),
+    context.sections.map((s) => ({
+      name: s.name,
+      rowCount: s.rowCount,
+      ...(s.firstNumber !== undefined ? { firstNumber: s.firstNumber } : {}),
+      ...(s.lastNumber !== undefined ? { lastNumber: s.lastNumber } : {}),
+    })),
     { setNames: context.setNames },
   );
   const nameByKey = new Map(context.sections.map((s) => [s.sectionKey, s.name]));
@@ -1026,12 +1051,21 @@ export function buildRawOptionsChecklist(
     .filter((l) => baseIds.has(l.selectorOptionId))
     .map((l) => nameByKey.get(l.sectionKey))
     .filter((n): n is string => n !== undefined);
+  // With nothing linked at the Base yet, the base and every subset of it:
+  // "Base Rated Prospects Red" strips to "Red", longest prefix first.
+  const baseSubsets = classification.sections
+    .filter((c) => c.kind === "base-subset")
+    .map((c) => c.name);
   const baseSectionNames = [
-    ...new Set(baseLinked.length > 0 ? baseLinked : classification.base ? [classification.base] : []),
+    ...new Set(
+      baseLinked.length > 0
+        ? baseLinked
+        : [...(classification.base ? [classification.base] : []), ...baseSubsets],
+    ),
   ].sort((a, b) => b.length - a.length);
 
   const sections = context.sections
-    .map((s, i) => ({ ...s, ...classification.sections[i] }))
+    .map((s, i) => ({ ...s, ...classification.sections[i], name: s.name }))
     .filter((s) => !linkedKeys.has(s.sectionKey))
     .map((s) => ({
       sectionKey: s.sectionKey,
@@ -1107,9 +1141,10 @@ export function buildRawOptionsChecklist(
   }
 
   // At the Base nothing is auto-matched: Map Base Set preselects the base
-  // section itself (`classifySections`) and the operator picks the rest.
+  // section and its subsets (`classifySections`) and the operator picks the
+  // rest. A base subset is the Base's, like the base: never auto-matched.
   const eligible = sections.filter((s) =>
-    s.kind === "base" || context.kind === "base"
+    s.kind === "base" || s.kind === "base-subset" || context.kind === "base"
       ? false
       : context.kind === "parallel"
         ? s.kind === "base-child"

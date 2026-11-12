@@ -85,9 +85,12 @@ async function upload(t: T, setId: SO, names: string[]) {
   await who.mutation(api.publishedChecklists.addSections, {
     checklistId,
     firstOrdinal: 0,
+    // Every section's one card is #1, as a run prints its base's numbers: the
+    // classifier reads the stored numbers now, and distinct numbers after the
+    // base's ("2" after "1") would make a section a subset of the base.
     sections: names.map((name, i) => ({
       name,
-      rows: [{ number: `${i + 1}`, players: [`Player ${i + 1}`], teams: ["Team"] }],
+      rows: [{ number: "1", players: [`Player ${i + 1}`], teams: ["Team"] }],
     })),
   });
   await who.mutation(api.publishedChecklists.finish, {
@@ -169,6 +172,34 @@ describe("Sync Variant Types from the set's checklist (NEO-496 D16)", () => {
     await syncVariantTypes(t, setId);
 
     expect(await typeTitles(t, setId)).toEqual(["Inserts"]);
+  });
+
+  test("the stored numbers place a section: a subset of the base asks for no Parallels", async () => {
+    const t = convexTest(schema, modules);
+    const { setId } = await seed(t);
+    const who = t.withIdentity(ADMIN);
+    const { checklistId } = await who.mutation(api.publishedChecklists.start, {
+      setId,
+      fileName: "donruss.csv",
+      format: "csv",
+    });
+    // "Base Rated Prospects" runs on from the base's numbers (3-4 after 1-2):
+    // a subset of the base, the Base's own, so no Parallels type is wanted.
+    // By its name alone it would read as a run of the base.
+    const card = (number: string) => ({ number, players: [`Player ${number}`], teams: ["Team"] });
+    await who.mutation(api.publishedChecklists.addSections, {
+      checklistId,
+      firstOrdinal: 0,
+      sections: [
+        { name: "Base", rows: [card("1"), card("2")] },
+        { name: "Base Rated Prospects", rows: [card("3"), card("4")] },
+      ],
+    });
+    await who.mutation(api.publishedChecklists.finish, { checklistId, sectionCount: 2, rowCount: 4 });
+
+    await syncVariantTypes(t, setId);
+
+    expect(await typeTitles(t, setId)).toEqual(["Base"]);
   });
 
   test("no checklist: the plain no-ids skip, nothing added", async () => {

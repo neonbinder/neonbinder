@@ -168,7 +168,7 @@ export type ReconcileChecklistSection = {
   sectionKey: string;
   name: string;
   rowCount?: number;
-  kind: "base" | "base-child" | "other";
+  kind: "base" | "base-subset" | "base-child" | "other";
   parent?: string;
 };
 

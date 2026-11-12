@@ -52,10 +52,18 @@ import BaseSetPicker, {
 import BaseMappingForm, { baseChecklistOf } from "./BaseMappingForm";
 
 const BASE: BaseChecklistSection = { sectionKey: "base", name: "Base", rowCount: 200, kind: "base" };
+/** A subset of the base: it extends the base's numbering. */
 const BASE_RP: BaseChecklistSection = {
   sectionKey: "base rated prospects",
   name: "Base Rated Prospects",
   rowCount: 50,
+  kind: "base-subset",
+};
+/** A parallel of the base: never offered up front. */
+const BASE_RED: BaseChecklistSection = {
+  sectionKey: "base red",
+  name: "Base Red",
+  rowCount: 200,
   kind: "base-child",
 };
 const BOMB: BaseChecklistSection = { sectionKey: "bomb squad", name: "Bomb Squad", rowCount: 10, kind: "other" };
@@ -89,8 +97,12 @@ describe("preselectedChecklistKeys", () => {
       "base rated prospects",
     ]);
   });
-  it("else the one section classified base", () => {
-    expect(preselectedChecklistKeys([BASE, BASE_RP, BOMB], [])).toEqual(["base"]);
+  it("else the one section classified base, with every subset of it (Jason Q4)", () => {
+    expect(preselectedChecklistKeys([BASE, BASE_RP, BASE_RED, BOMB], [])).toEqual([
+      "base",
+      "base rated prospects",
+    ]);
+    expect(preselectedChecklistKeys([BASE, BASE_RED, BOMB], [])).toEqual(["base"]);
   });
   it("two named base, or none: nothing", () => {
     expect(
@@ -109,20 +121,23 @@ describe("BaseSetPicker — checklist list", () => {
     ).toBeTruthy();
   });
 
-  it("pre-selects the base section and lists its runs; Show all reveals the rest", () => {
-    renderPicker({ checklist: { sections: [BASE, BASE_RP, BOMB], linkedKeys: [] } });
+  it("pre-selects the base and its subsets; its parallels and the rest wait behind Show all", () => {
+    renderPicker({ checklist: { sections: [BASE, BASE_RP, BASE_RED, BOMB], linkedKeys: [] } });
     expect(screen.getByRole("listbox", { name: "Checklist base" }).getAttribute("aria-multiselectable")).toBe("true");
     expect(option("Base").getAttribute("aria-selected")).toBe("true");
-    expect(option("Base Rated Prospects").getAttribute("aria-selected")).toBe("false");
+    expect(option("Base Rated Prospects").getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("option", { name: "Checklist base section: Base Red" })).toBeNull();
     expect(screen.queryByRole("option", { name: "Checklist base section: Bomb Squad" })).toBeNull();
-    fireEvent.click(screen.getByLabelText(/^Show all checklist sections \(\d+ more\)$/));
+    fireEvent.click(screen.getByLabelText("Show all checklist sections (2 more)"));
+    expect(option("Base Red").getAttribute("aria-selected")).toBe("false");
     expect(option("Bomb Squad")).toBeTruthy();
   });
 
   it("picks several sections and confirms them with no marketplace pick", async () => {
     const { onConfirm } = renderPicker({
-      checklist: { sections: [BASE, BASE_RP], linkedKeys: [] },
+      checklist: { sections: [BASE, BASE_RP], linkedKeys: ["base"] },
     });
+    expect(option("Base Rated Prospects").getAttribute("aria-selected")).toBe("false");
     fireEvent.click(option("Base Rated Prospects"));
     expect(option("Base Rated Prospects").getAttribute("aria-selected")).toBe("true");
     await act(async () => {
@@ -217,14 +232,17 @@ describe("BaseMappingForm — saving the checklist", () => {
     return { onClose };
   }
 
-  it("a checklist alone opens the picker and saves the preselected base section", async () => {
+  it("a checklist alone opens the picker and saves the preselected base and its subset", async () => {
     mockFetchRawOptions.mockResolvedValue(result([]));
     const { onClose } = await openForm();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Confirm Base Set" }));
     });
     expect(mockSetPlatformData).toHaveBeenCalledWith(
-      expect.objectContaining({ platformData: {}, checklistSectionKeys: ["base"] }),
+      expect.objectContaining({
+        platformData: {},
+        checklistSectionKeys: ["base", "base rated prospects"],
+      }),
     );
     expect(onClose).toHaveBeenCalledWith("mapped");
   });

@@ -835,10 +835,14 @@ export function SetChecklistPreviewDialog({
                             </summary>
                             <ul className="mt-1 space-y-0.5 pl-4">
                               {lines.slice(0, SKIPPED_PER_REASON).map((line) => (
-                                <li key={`${line.line}:${line.page ?? ""}`} className="break-words">
+                                <li
+                                  key={`${line.sheet ?? ""}:${line.line}:${line.page ?? ""}`}
+                                  className="break-words"
+                                >
                                   <span className="tabular-nums text-ink-3">
                                     Line {line.line}
                                     {line.page !== undefined ? `, page ${line.page}` : ""}
+                                    {line.sheet !== undefined ? `, sheet ${line.sheet}` : ""}
                                   </span>{" "}
                                   <span className="text-ink-2">“{line.text.trim()}”</span>
                                 </li>

@@ -513,7 +513,7 @@ describe("fetchCardChecklist with a publisher checklist: the server re-checks th
     const long = "P".repeat(121);
     await rejects(
       { rows: [{ number: "1", players: [], teams: [] }, { number: "2", players: [long], teams: [] }] },
-      /Row 2 of the publisher's checklist has a player name over 120/,
+      /Row 2 of the official checklist has a player name over 120/,
     );
   });
 
@@ -525,7 +525,7 @@ describe("fetchCardChecklist with a publisher checklist: the server re-checks th
           { number: "2", players: [], teams: [], subset: "S".repeat(121) },
         ],
       },
-      /Row 2 of the publisher's checklist has a set name over 120/,
+      /Row 2 of the official checklist has a set name over 120/,
     );
   });
 

@@ -43,21 +43,24 @@ export type BaseRemapNotice = {
 
 /**
  * NEO-496 — a checklist section offered for the Base. `kind` is how the
- * publisher's names classify it (`lib/checklists/classify-sections.ts`, run
- * server side): `base` is the one section named base / base cards / base set,
- * `base-child` its runs ("Base Rated Prospects", "Base Red").
+ * section's name and card numbers classify it
+ * (`lib/checklists/classify-sections.ts`, run server side): `base` is the
+ * one section named base / base cards / base set, `base-subset` a section
+ * that extends the base's numbering ("Base Rated Prospects", 101-200 after a
+ * 1-100 base), `base-child` a parallel of either ("Base Red").
  */
 export type BaseChecklistSection = {
   sectionKey: string;
   name: string;
   rowCount?: number;
-  kind?: "base" | "base-child" | "other";
+  kind?: "base" | "base-subset" | "base-child" | "other";
 };
 
 /**
- * NEO-496 — the section to pre-select for the Base: the sections the Base
- * already links when it links any, else the ONE section classified `base`,
- * else nothing (two named base, or none, and the operator picks). Exported so
+ * NEO-496 — the sections to pre-select for the Base: the sections the Base
+ * already links when it links any, else the ONE section classified `base`
+ * with every `base-subset` of it, else nothing (two named base, or none, and
+ * the operator picks). Exported so
  * the rule is tested without rendering the dialog.
  */
 export function preselectedChecklistKeys(
@@ -66,7 +69,12 @@ export function preselectedChecklistKeys(
 ): string[] {
   if (linkedKeys.length > 0) return [...linkedKeys];
   const bases = sections.filter((s) => s.kind === "base");
-  return bases.length === 1 ? [bases[0].sectionKey] : [];
+  if (bases.length !== 1) return [];
+  // Jason Q4: the Base links "Base" AND "Base Rated Prospects" — the base
+  // and every subset of it, in file order.
+  return sections
+    .filter((s) => s.kind === "base" || s.kind === "base-subset")
+    .map((s) => s.sectionKey);
 }
 
 type BaseSetPickerProps = {
@@ -454,15 +462,15 @@ export default function BaseSetPicker({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- pre-selects the Base's own or sole base section; latched by userPickedChecklist
     setChecklistKeys(preselectedChecklistKeys(checklistSections, checklistLinked));
   }, [checklistSections, checklistLinked, userPickedChecklist]);
-  // The list opens on what can be a Base: the section named base, its runs,
-  // and whatever the Base links now. Everything else waits behind Show all,
-  // unless nothing classified as base at all.
+  // The list opens on what can be a Base: the section named base, its
+  // subsets, and whatever the Base links now. Its parallels (base-child) and
+  // everything else wait behind Show all, unless nothing classified as base.
   const baseLikeSections = useMemo(
     () =>
       checklistSections.filter(
         (s) =>
           s.kind === "base" ||
-          s.kind === "base-child" ||
+          s.kind === "base-subset" ||
           checklistLinked.includes(s.sectionKey),
       ),
     [checklistSections, checklistLinked],

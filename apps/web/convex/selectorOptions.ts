@@ -11869,10 +11869,9 @@ async function checklistVariantTypeOptions(
 ): Promise<Array<{ value: string; platformData: Record<string, never> }>> {
   const stored = await ctx.runQuery(internal.publishedChecklists.sectionsForSet, { setId });
   if (!stored || stored.sections.length === 0) return [];
-  const { base, sections } = classifySections(
-    stored.sections.map((section) => section.name),
-    { setNames },
-  );
+  // The stored summaries carry each section's number range, so the kinds are
+  // number-aware. A base subset asks for no type of its own: it is the Base's.
+  const { base, sections } = classifySections(stored.sections, { setNames });
   const wanted = new Set<"base" | "insert" | "parallel">();
   if (base !== null) wanted.add("base");
   if (sections.some((s) => s.kind === "other" && s.parent === undefined)) wanted.add("insert");

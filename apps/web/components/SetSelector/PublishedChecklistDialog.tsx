@@ -35,7 +35,8 @@ import {
 } from "@/lib/checklists/read-checklist-file";
 
 /**
- * NEO-478 — "Add the publisher's checklist".
+ * NEO-478 — "Add the official checklist" (NEO-496 renamed it from
+ * "publisher's": collectors call it the official checklist).
  *
  * The publisher's own checklist (Topps, Panini, Upper Deck…) already says who
  * is on every card and for which team. Pasting it in before a sync means the
@@ -45,7 +46,7 @@ import {
  *
  * ## What the dialog does
  *
- *   ┌ Publisher's checklist ─────────────────────────────────────────────┐
+ *   ┌ Official checklist ──────────────────────────────────────────────┐
  *   │ Paste it, or pick a file. We line it up by card number…            │
  *   ├──────────────────────────────┬─────────────────────────────────────┤
  *   │ Paste the checklist          │ ┌ Which of these belong to this set?│
@@ -154,11 +155,11 @@ export function rowCountText(n: number): string {
 }
 
 /**
- * The chip's text: "Publisher's checklist: 248 rows", and " · 2 skipped" when
+ * The chip's text: "Official checklist: 248 rows", and " · 2 skipped" when
  * any line of the paste was.
  */
 export function chipText(n: number, skipped = 0): string {
-  const base = `Publisher's checklist: ${rowCountText(n)}`;
+  const base = `Official checklist: ${rowCountText(n)}`;
   return skipped > 0 ? `${base} · ${skipped.toLocaleString("en-US")} skipped` : base;
 }
 
@@ -470,7 +471,7 @@ export default function PublishedChecklistDialog({
         >
           <header className="border-b border-rule-strong px-5 py-4">
             <h2 id={titleId} className="text-lg font-semibold text-ink">
-              Publisher&apos;s checklist
+              Official checklist
             </h2>
             <p id={leadId} className="mt-0.5 text-sm text-ink-2">
               Paste it straight off the checklist page, or pick a file. We line it up by card
@@ -774,10 +775,14 @@ export default function PublishedChecklistDialog({
                     ) : (
                       <ul className="mt-1 space-y-1">
                         {shownSkipped.map((line) => (
-                          <li key={line.line} className="text-xs">
+                          <li
+                            key={`${line.sheet ?? ""}:${line.line}:${line.page ?? ""}`}
+                            className="text-xs"
+                          >
                             <span className="tabular-nums text-ink-3">
                               Line {line.line}
                               {line.page !== undefined ? `, page ${line.page}` : ""}
+                              {line.sheet !== undefined ? `, sheet ${line.sheet}` : ""}
                             </span>{" "}
                             <span className="break-words text-ink-2">“{line.text.trim()}”</span>{" "}
                             <span className="text-neon-pink-text">{line.reason}</span>
@@ -816,10 +821,10 @@ export default function PublishedChecklistDialog({
 }
 
 /**
- * The chip beside the checklist header once a publisher's checklist is in
- * use: "Publisher's checklist: 248 rows" (" · 2 skipped" when lines were) and
+ * The chip beside the checklist header once an official checklist is in
+ * use: "Official checklist: 248 rows" (" · 2 skipped" when lines were) and
  * its Remove. While it shows, the chip is the checklist's handle: "Add the
- * publisher's checklist" is gone, Remove brings it back, and the chip's text
+ * official checklist" is gone, Remove brings it back, and the chip's text
  * is itself a button that reopens the dialog on what was pasted, to edit it.
  *
  * One line at every width, so it stays a pill: the text truncates, and
@@ -882,7 +887,7 @@ export function PublishedChecklistChip({
           if (!disabled) onRemove();
         }}
         aria-disabled={disabled || undefined}
-        aria-label="Remove the publisher's checklist"
+        aria-label="Remove the official checklist"
         className={`relative min-h-6 shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold text-ink-2 transition-colors after:absolute after:inset-x-0 after:-inset-y-2.5 after:content-[''] focus-outline ${
           disabled
             ? "cursor-not-allowed opacity-60"
