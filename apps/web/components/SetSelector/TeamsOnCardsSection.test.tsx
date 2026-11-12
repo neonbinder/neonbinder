@@ -6,7 +6,9 @@
  * the wizard wiring in EntityReviewWizard.teamsOnCards.test.tsx.
  *
  * The Other-team search is the real `Autocomplete` over a stubbed
- * `teams.search`; the New Team dialog (which creates the team through
+ * `teams.pickerCandidates` (NEO-518: ranked by the set, in the server's
+ * order — the tiers themselves are pinned in convex/teams.pickerCandidates
+ * .test.ts); the New Team dialog (which creates the team through
  * `teams.findOrCreate`) is stubbed — it has its own suite. What matters here
  * is what the section does with the id it hands back.
  */
@@ -32,9 +34,18 @@ type Team = { teamId: Id<"teams">; name: string };
 let playerAnswer: (p: { playerId?: string; name?: string }) => unknown;
 let nameAnswer: (name: string) => Team[];
 const teamDocs: Record<string, { _id: string; name: string; sportId: string }> = {};
-/** What `teams.search` answers, filtered by the typed text. */
+/**
+ * What `teams.pickerCandidates` answers, filtered by the typed text and
+ * returned in THIS order — the server's final ranking, which the field must
+ * never re-sort.
+ */
 let searchable: Array<{ _id: string; name: string; sportId: string }> = [];
-let searchCalls: Array<{ query: string; sportId: string }> = [];
+let searchCalls: Array<{
+  query: string;
+  sportId: string;
+  contextOptionId?: string;
+  limit?: number;
+}> = [];
 
 vi.mock("convex/react", () => ({
   useQueries: (
@@ -57,11 +68,15 @@ vi.mock("convex/react", () => ({
   },
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
-    if (ref === "teams.search") {
-      const { query, sportId } = args as { query: string; sportId: string };
-      searchCalls.push({ query, sportId });
-      return searchable.filter((t) => t.name.toLowerCase().includes(query.toLowerCase()));
+    if (ref === "teams.pickerCandidates") {
+      const call = args as (typeof searchCalls)[number];
+      searchCalls.push(call);
+      return searchable
+        .filter((t) => t.name.toLowerCase().includes(call.query.toLowerCase()))
+        .map((team) => ({ team, tier: 4 }));
     }
+    // The context-free search is not this field's any more (NEO-518).
+    if (ref === "teams.search") throw new Error("Other team… must not use teams.search");
     if (ref === "teams.getManyByIds") {
       return (args as { ids: string[] }).ids.flatMap((id) => (teamDocs[id] ? [teamDocs[id]] : []));
     }
@@ -116,7 +131,7 @@ function Harness({
     {/* The wizard keeps the section mounted, hidden, on its later steps. */}
     <div hidden={hidden}>
     <TeamsOnCardsSection
-      selectorOptionId={"node_insert" as Id<"selectorOptions">}
+      selectorOptionId={NODE}
       cards={cards}
       rows={rows}
       linkedTeamNameById={new Map()}
@@ -130,6 +145,7 @@ function Harness({
   );
 }
 
+const NODE = "node_insert" as Id<"selectorOptions">;
 const SEARCH = "Team name to find";
 
 /** Type into the open Other-team field and press the option that appears. */
@@ -228,6 +244,46 @@ describe("C1 — Other team…", () => {
       fireEvent.keyDown(input, { key: "Enter" });
     });
     expect(last()).toEqual([{ teamIds: ["team_second"] }]);
+  });
+
+  it("ranks by the set: asks pickerCandidates with the section's node, keeps the server's order, and Enter takes the first", async () => {
+    // NEO-518 — "houston" on a 2026 baseball set. The server leads with the
+    // Astros (MLB, active that year), then a minor-league club active that
+    // year, then the rest. Alphabetical would put Buffaloes first: the field
+    // must show the server's order untouched.
+    const houston = [
+      { _id: "team_astros", name: "Houston Astros", sportId: SPORT },
+      { _id: "team_hot_sauce", name: "Houston Hot Sauce", sportId: SPORT },
+      { _id: "team_cougars", name: "Houston Cougars", sportId: SPORT },
+      { _id: "team_buffaloes", name: "Houston Buffaloes", sportId: SPORT },
+    ];
+    for (const team of houston) teamDocs[team._id] = team;
+    searchable = houston;
+    render(<Harness cards={[card("1", ["Jose Altuve"])]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Other team… — Jose Altuve" }));
+    const input = screen.getByRole("combobox", { name: SEARCH });
+    fireEvent.change(input, { target: { value: "houston" } });
+    await screen.findByRole("option", { name: "Houston Astros" });
+
+    const asks = searchCalls.filter((c) => c.query === "houston");
+    expect(asks.length).toBeGreaterThan(0);
+    for (const ask of asks) {
+      expect(ask).toEqual({ query: "houston", sportId: SPORT, contextOptionId: NODE, limit: 8 });
+    }
+    const options = within(screen.getByRole("listbox")).getAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual([
+      "Houston Astros",
+      "Houston Hot Sauce",
+      "Houston Cougars",
+      "Houston Buffaloes",
+      "+ New team “houston”…",
+    ]);
+    // The first row is the highlighted one, so Enter takes the Astros.
+    expect(options[0].getAttribute("aria-selected")).toBe("true");
+    act(() => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    expect(last()).toEqual([{ teamIds: ["team_astros"] }]);
   });
 
   it("a name nothing matches says No matches., and Enter opens New Team on it (the E2E path)", async () => {

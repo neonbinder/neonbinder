@@ -80,11 +80,13 @@ import {
  *    `MAX_CARD_TEAMS`, and "No team" / "Leave for later" are pressed toggles.
  *  - "Other team…" (C1) opens ONE search field under the line, focused and
  *    ready to type — no second button to press. It searches the set's sport
- *    only (`teams.search`, the index every team picker types against), and
- *    its last option is "+ New team “…”…", which opens the existing New Team
- *    dialog: the team is created there, at once, and joins the line
- *    selected. Escape closes the list first, then the field, back on the
- *    toggle. The list is the shared `Autocomplete` layer — fixed, portalled
+ *    only, ranked by the set (`teams.pickerCandidates` with the section's
+ *    node as context, NEO-518: the set's league active in its year first,
+ *    then minor leagues active that year, then the rest), and its last
+ *    option is "+ New team “…”…", which opens the existing New Team dialog:
+ *    the team is created there, at once, and joins the line selected.
+ *    Escape closes the list first, then the field, back on the toggle. The
+ *    list is the shared `Autocomplete` layer — fixed, portalled
  *    into the wizard dialog, flipping above the field when there is no room
  *    below — so the dialog body's scroll box never clips it. Only one field
  *    is open at a time, so its accessible name never collides.
@@ -498,6 +500,7 @@ export default function TeamsOnCardsSection({
     blocked,
     disabled,
     sportId,
+    contextOptionId: selectorOptionId,
     pickerOpen: pickerFor === choiceKey,
     onTogglePicker: () => setPickerFor((open) => (open === choiceKey ? null : choiceKey)),
     onChoose: (next: GroupChoice) => onChoose(choiceKey, next),
@@ -584,6 +587,8 @@ type ChoiceRowProps = {
   blocked: ReadonlySet<string>;
   disabled: boolean;
   sportId: Id<"selectorOptions"> | undefined;
+  /** The node the cards are saved under: what the Other-team search ranks by. */
+  contextOptionId: Id<"selectorOptions">;
   pickerOpen: boolean;
   onTogglePicker: () => void;
   onChoose: (choice: GroupChoice) => void;
@@ -753,6 +758,7 @@ function ChoiceRow({
   blocked,
   disabled,
   sportId,
+  contextOptionId,
   pickerOpen,
   onTogglePicker,
   onChoose,
@@ -967,6 +973,7 @@ function ChoiceRow({
         <OtherTeamPicker
           hostId={pickerHostId}
           sportId={sportId}
+          contextOptionId={contextOptionId}
           disabled={disabled}
           onPicked={onPicked}
           onDismiss={() => {
@@ -992,12 +999,19 @@ type OtherTeamOption =
 function OtherTeamPicker({
   hostId,
   sportId,
+  contextOptionId,
   disabled,
   onPicked,
   onDismiss,
 }: {
   hostId: string;
   sportId: Id<"selectorOptions">;
+  /**
+   * NEO-518 — the set being reviewed, so the search ranks as every other
+   * team search in the set builder does: the set's league active in its
+   * year first, then minor leagues active that year, then the rest.
+   */
+  contextOptionId: Id<"selectorOptions">;
   disabled: boolean;
   onPicked: (teamId: Id<"teams">) => void;
   onDismiss: () => void;
@@ -1021,13 +1035,22 @@ function OtherTeamPicker({
 
   const typed = query.trim();
   const term = debounced.trim();
+  // NEO-518 — `pickerCandidates`, not `teams.search`: "houston" on a 2026
+  // baseball set must lead with the Astros, not Houston Cougars. The rows
+  // arrive in their final order (tiers, then alias, prefix, A–Z) and are
+  // never re-sorted here, so the Autocomplete's highlighted first row, and
+  // therefore Enter, is the team this card most likely shows. Every key
+  // written out, never spread (see TeamPicker). Blank skips: the server
+  // would BROWSE on an empty term.
   const searched = useQuery(
-    api.teams.search,
-    typed && term ? { query: term, sportId, limit: OTHER_TEAM_SEARCH_LIMIT } : "skip",
+    api.teams.pickerCandidates,
+    typed && term
+      ? { query: term, sportId, contextOptionId, limit: OTHER_TEAM_SEARCH_LIMIT }
+      : "skip",
   );
   const items = useMemo<OtherTeamOption[]>(() => {
     if (!typed) return [];
-    const teams: OtherTeamOption[] = (searched ?? []).map((team) => ({
+    const teams: OtherTeamOption[] = (searched ?? []).map(({ team }) => ({
       kind: "team",
       teamId: team._id,
       label: teamFullName(team),
