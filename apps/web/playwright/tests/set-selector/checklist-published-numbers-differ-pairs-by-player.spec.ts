@@ -484,6 +484,23 @@ test(
     await expect(
       reconcileParallels.getByRole("button", { name: "Remove checklist section Base Rated Prospects Red from Red" }),
     ).toBeVisible();
+    // NEO-496: the set has no SportLots link (filed under All Brands from BSC), so SportLots is
+    // skipped, not paused: its column says it wasn't asked, in place of a search box and a
+    // "Nothing pending" that would claim an answer nobody got. UNMEASURED live: whether the
+    // Donruss set gains a SportLots link with SportLots back is not known, so the live run
+    // asserts nothing here. R2: BSC's own column, searchable, is the positive half.
+    if (env.SL_PAUSED) {
+      await expect(reconcileParallels.getByText(`SportLots wasn't asked: ${SET} has no SportLots link.`, { exact: true })).toBeVisible();
+      await expect(reconcileParallels.getByRole("textbox", { name: "Filter BSC items" })).toBeVisible();
+      await expect(reconcileParallels.getByRole("textbox", { name: "Search SportLots items" })).toHaveCount(0);
+      await expect(reconcileParallels.getByText("Nothing pending on SportLots")).toHaveCount(0);
+    }
+    // The subtitle's "N pending" jumps to the pending work: the Pending heading side by side, and on
+    // a phone, where the columns stack, the first column holding anything. BSC's other parallels
+    // are pending here, and BSC is the first column, so its label is where the jump lands.
+    await reconcileParallels.getByRole("button", { name: /^[1-9][0-9]* pending, go to Pending$/ }).click();
+    await expect(reconcileParallels.getByRole("heading", { name: /^Pending \([1-9][0-9]*\)$/ })).toBeInViewport();
+    await expect(reconcileParallels.getByText(/^BSC \([1-9][0-9]*\)$/)).toBeInViewport();
     await expectAccessible(page, { within: reconcileParallels, label: "Reconcile Parallels with the Base's checklist runs" });
     await reconcileParallels.getByRole("button", { name: /^Save [0-9]+ sets$/ }).click();
     await expect(reconcileParallels).toBeHidden();
