@@ -70,16 +70,17 @@ function plan(): ParallelBuildPlan {
   return {
     truncated: false,
     parallels: [
-      { _id: A, value: "Anime Gold", sides: { bsc: true, sportlots: false }, hasCards: false },
+      { _id: A, value: "Anime Gold", owned: { bsc: true, sportlots: false }, sides: { bsc: true, sportlots: false }, hasCards: false },
       {
         _id: B_BLOCKED,
         value: "Anime Silver",
+        owned: { bsc: true, sportlots: false },
         sides: { bsc: true, sportlots: false },
         hasCards: true,
         blocked: "some of its cards have scans on them, and a rebuild would lose them",
       },
-      { _id: C_NO_IDS, value: "Anime Bronze", sides: { bsc: false, sportlots: false }, hasCards: false },
-      { _id: D, value: "Anime Platinum", sides: { bsc: true, sportlots: false }, hasCards: false },
+      { _id: C_NO_IDS, value: "Anime Bronze", owned: { bsc: false, sportlots: false }, sides: { bsc: false, sportlots: false }, hasCards: false },
+      { _id: D, value: "Anime Platinum", owned: { bsc: true, sportlots: false }, sides: { bsc: true, sportlots: false }, hasCards: false },
     ],
   };
 }
@@ -451,6 +452,7 @@ describe("ParallelBuildPanel — the live region announcement", () => {
       parallels: Array.from({ length: 12 }, (_, i) => ({
         _id: `p-${i}` as unknown as Id<"selectorOptions">,
         value: `Parallel ${i}`,
+        owned: { bsc: true, sportlots: false },
         sides: { bsc: true, sportlots: false },
         hasCards: false,
       })),

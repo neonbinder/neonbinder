@@ -5996,7 +5996,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     mockGetParallelsForBuild.mockResolvedValue({
       truncated: false,
       parallels: [
-        { _id: "parallel-a", value: "Anime Gold", sides: { bsc: true, sportlots: false }, hasCards: false },
+        { _id: "parallel-a", value: "Anime Gold", owned: { bsc: true, sportlots: false }, sides: { bsc: true, sportlots: false }, hasCards: false },
       ],
     });
     mockResolveEntities.mockResolvedValue({ unknownPlayers: [], unknownTeams: [], batchId: undefined });

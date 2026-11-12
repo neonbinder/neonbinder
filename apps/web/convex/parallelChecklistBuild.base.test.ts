@@ -267,7 +267,13 @@ describe("getParallelsForBuild — standing on the Parallel variant type", () =>
     expect(result.sourceBlocked).toBeUndefined();
     expect(result.truncated).toBe(false);
     expect(result.parallels).toEqual([
-      { _id: gold, value: "Gold Wave", sides: { bsc: true, sportlots: true }, hasCards: false },
+      {
+        _id: gold,
+        value: "Gold Wave",
+        owned: { bsc: true, sportlots: true },
+        sides: { bsc: true, sportlots: true },
+        hasCards: false,
+      },
     ]);
   });
 

@@ -25,6 +25,7 @@ import {
   BLOCKED_UNLINKED_OVER_LINKED_CARDS,
   MAX_INSERT_CARDS_FOR_BUILD,
   blockedAllPaused,
+  blockedIdsUnreachable,
   blockedSidePaused,
 } from "./parallelChecklistBuild";
 import { insertTestCard } from "../lib/testing/card-row";
@@ -263,6 +264,7 @@ describe("getParallelsForBuild", () => {
       {
         _id: parallelId,
         value: "Anime Kanji",
+        owned: { bsc: true, sportlots: true },
         sides: { bsc: true, sportlots: true },
         hasCards: false,
       },
@@ -303,6 +305,141 @@ describe("getParallelsForBuild", () => {
       .withIdentity(ADMIN)
       .query(api.parallelChecklistBuild.getParallelsForBuild, { insertId: insert });
     expect(result.parallels[0].sides).toEqual({ bsc: false, sportlots: false });
+    expect(result.parallels[0].owned).toEqual({ bsc: false, sportlots: false });
+    expect(result.parallels[0].blocked).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-496 — the list says what the build will do. Each case asks the list
+// query AND runs the build on the same rows, and pins that the two agree.
+// ---------------------------------------------------------------------------
+
+describe("getParallelsForBuild — judged as the build judges it (NEO-496)", () => {
+  /** The list's line for `parallelId`, then the build's answer for it. */
+  async function listThenBuild(
+    t: T,
+    insert: Id<"selectorOptions">,
+    parallelId: Id<"selectorOptions">,
+  ) {
+    const listed = await t
+      .withIdentity(ADMIN)
+      .query(api.parallelChecklistBuild.getParallelsForBuild, { sourceId: insert });
+    const line = listed.parallels.find((p) => p._id === parallelId)!;
+    const built = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+    return { line, built };
+  }
+
+  test("owns ids it can't reach: blocked with the build's own sentence, not counted unlinked", async () => {
+    const t = convexTest(schema, modules);
+    const { insert, year } = await seedTree(t);
+    // The year loses its BSC id, so the parallel's own BSC id can't be asked.
+    await t.run(async (ctx) => ctx.db.patch(year, { platformData: { sportlots: { s0: "2024" } } }));
+    const parallelId = await seedParallel(t, insert, {
+      platformData: { bsc: { b0: "anime-kanji" } },
+      platformFacets: { bsc: { b0: "variantName" } },
+    });
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Someone" });
+
+    const { line, built } = await listThenBuild(t, insert, parallelId);
+
+    expect(line.owned).toEqual({ bsc: true, sportlots: false });
+    expect(line.sides).toEqual({ bsc: false, sportlots: false });
+    expect(line.blocked).toBe(blockedIdsUnreachable("2024", "bsc"));
+    expect(built.status).toBe("blocked");
+    expect(built.blockedReason).toBe(line.blocked);
+    expect(bscState.calls).toHaveLength(0);
+  });
+
+  test("every owned side paused: the list says paused, as the build does", async () => {
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert);
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Someone" });
+    vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "sportlots,buysportscards");
+
+    const { line, built } = await listThenBuild(t, insert, parallelId);
+
+    expect(line.owned).toEqual({ bsc: true, sportlots: true });
+    // A paused side is not one a build would ask.
+    expect(line.sides).toEqual({ bsc: false, sportlots: false });
+    expect(line.blocked).toBe(blockedAllPaused(["bsc", "sportlots"]));
+    expect(built.blockedReason).toBe(line.blocked);
+  });
+
+  test("one side paused while old cards hold links there: blockedSidePaused on both", async () => {
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert);
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Someone" });
+    await insertCard(t, parallelId, {
+      cardNumber: "1",
+      cardName: "Someone",
+      platformData: { sportlots: { ref: "sl-old-ref", src: "s0" } },
+    });
+    bscState.cards = [{ cardNumber: "1", cardName: "Someone", platformRef: "bsc-1" }];
+    vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "sportlots");
+
+    const { line, built } = await listThenBuild(t, insert, parallelId);
+
+    expect(line.sides).toEqual({ bsc: true, sportlots: false });
+    expect(line.blocked).toBe(blockedSidePaused("sportlots"));
+    expect(built.blockedReason).toBe(line.blocked);
+  });
+
+  test("unlinked parallel over old cards that hold links: blocked in the list, as the build blocks it", async () => {
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert, { platformData: {}, platformFacets: undefined });
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Someone" });
+    await insertCard(t, parallelId, {
+      cardNumber: "1",
+      cardName: "Someone",
+      platformData: { bsc: { ref: "bsc-1", src: "b0" } },
+    });
+
+    const { line, built } = await listThenBuild(t, insert, parallelId);
+
+    expect(line.owned).toEqual({ bsc: false, sportlots: false });
+    expect(line.blocked).toBe(BLOCKED_UNLINKED_OVER_LINKED_CARDS);
+    expect(built.blockedReason).toBe(line.blocked);
+  });
+
+  test("one side reachable, old links on the side it can't reach (Security 1): blocked on both", async () => {
+    const t = convexTest(schema, modules);
+    const { insert, year } = await seedTree(t);
+    // The year loses its SportLots id: BSC still reachable, SportLots not.
+    await t.run(async (ctx) => ctx.db.patch(year, { platformData: { bsc: { b0: "2024" } } }));
+    const parallelId = await seedParallel(t, insert);
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Someone" });
+    await insertCard(t, parallelId, {
+      cardNumber: "1",
+      cardName: "Someone",
+      platformData: { sportlots: { ref: "sl-old-ref", src: "s0" } },
+    });
+    bscState.cards = [{ cardNumber: "1", cardName: "Someone", platformRef: "bsc-1" }];
+
+    const { line, built } = await listThenBuild(t, insert, parallelId);
+
+    expect(line.owned).toEqual({ bsc: true, sportlots: true });
+    expect(line.sides).toEqual({ bsc: true, sportlots: false });
+    expect(line.blocked).toBe(blockedIdsUnreachable("2024", "sportlots"));
+    expect(built.blockedReason).toBe(line.blocked);
+  });
+
+  test("control: an unlinked parallel with no old cards is buildable in the list and builds", async () => {
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert, { platformData: {}, platformFacets: undefined });
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Someone" });
+
+    const { line, built } = await listThenBuild(t, insert, parallelId);
+
+    expect(line.blocked).toBeUndefined();
+    expect(built.status).toBe("built");
+    expect(built.copied).toBe(1);
   });
 });
 

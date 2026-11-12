@@ -222,6 +222,7 @@ const planWith = (parallels: Array<Record<string, unknown>>): Plan => ({
 const PARALLEL_A = {
   _id: "p-a",
   value: "Gold Wave",
+  owned: { bsc: true, sportlots: false },
   sides: { bsc: true, sportlots: false },
   hasCards: false,
 };

@@ -114,15 +114,19 @@ export type ParallelTally = {
   /** Buildable parallels with no cards: what a run would fill. */
   filled: number;
   /**
-   * Not linked to any marketplace yet. NEO-496 (NQ2): the run builds them
-   * too, as copies with no marketplace links; counted only to say so.
+   * Buildable parallels holding no marketplace id of their own. NEO-496
+   * (NQ2): the run builds them too, as copies with no marketplace links;
+   * counted only to say so. A parallel that owns ids it can't reach right now
+   * (paused, or the row above it unlinked) is not one of these: the server
+   * marks it `blocked`, as the build would.
    */
   unlinked: number;
   /** The server already knows a build would be refused. */
   blocked: number;
 };
 
-const linked = (p: ParallelPlanEntry) => p.sides.bsc || p.sides.sportlots;
+/** Ownership, not reach: what the parallel's own copies could be linked to. */
+const ownsIds = (p: ParallelPlanEntry) => p.owned.bsc || p.owned.sportlots;
 
 export function tallyParallels(parallels: ParallelPlanEntry[]): ParallelTally {
   // NEO-496 (NQ2): linked or not, every parallel that is not blocked builds.
@@ -132,7 +136,7 @@ export function tallyParallels(parallels: ParallelPlanEntry[]): ParallelTally {
     withCards: parallels.filter((p) => p.hasCards).length,
     replaced: buildable.filter((p) => p.hasCards).length,
     filled: buildable.filter((p) => !p.hasCards).length,
-    unlinked: parallels.filter((p) => !p.blocked && !linked(p)).length,
+    unlinked: buildable.filter((p) => !ownsIds(p)).length,
     blocked: parallels.filter((p) => p.blocked).length,
   };
 }

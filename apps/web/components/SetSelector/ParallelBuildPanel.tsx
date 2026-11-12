@@ -108,9 +108,15 @@ export type ParallelPlanEntry = {
   _id: Id<"selectorOptions">;
   value: string;
   /** Which marketplace ids the parallel ITSELF holds (M4 — never inherited). */
+  owned: { bsc: boolean; sportlots: boolean };
+  /** Which sides a build would ask right now (ids complete, not paused). */
   sides: { bsc: boolean; sportlots: boolean };
   hasCards: boolean;
-  /** Set when the server already knows a build would be refused. */
+  /**
+   * Set when the server already knows a build would be refused — judged by
+   * the build's own rules (NEO-496), so a parallel shown buildable here is
+   * one the build will try.
+   */
   blocked?: string;
 };
 
