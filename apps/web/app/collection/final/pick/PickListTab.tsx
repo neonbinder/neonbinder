@@ -939,7 +939,7 @@ function BoxView({
       <PickTable
         caption={
           stop.cantFind
-            ? "Sales NB couldn't tie to a card"
+            ? "Sales NB couldn't place"
             : stop.notInBox
               ? "Sales not in NB, by set"
               : stop.unrecorded
