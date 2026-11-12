@@ -135,7 +135,7 @@ describe("the Pick List demo", () => {
     fireEvent.click(screen.getByRole("button", { name: "Only slabs" }));
     expect(pageUrl().get("pslabs")).toBe("1");
     expect(screen.getAllByRole("button", { name: /^Pulled / })).toHaveLength(2);
-    expect(screen.getByText("2 cards match.")).toBeTruthy();
+    expect(screen.getByText("2 match.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back to default" }));
     // The button switches itself off, so the keyboard lands on Find, not the page.
     expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Find a card" }));
@@ -158,12 +158,12 @@ describe("the Pick List demo", () => {
     expect(screen.getByRole("heading", { level: 3 }).textContent).toContain("Box 1 of 5");
   });
 
-  it("names the box in the title, says the sales NB couldn't tie are coming, walks Not in a box by set, and ends on Can't find it", async () => {
+  it("names the box in the title, says the sales NB couldn't place are coming, walks Not in a box by set, and ends on Can't find it", async () => {
     renderPick();
     fireEvent.click(await screen.findByRole("link", { name: "By the Box" }));
     expect(document.title).toContain("2026 Baseball");
     // Three: the demo's listing NB filed by its words (Not in a box) and its two strays (Can't find it).
-    expect(screen.getByText("Plus 3 sales NB couldn't tie to a card. They wait after the boxes.")).toBeTruthy();
+    expect(screen.getByText("Plus 3 sales NB couldn't place. They wait after the boxes.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Print this box" })).toBeTruthy();
     for (let i = 0; i < 4; i += 1) fireEvent.click(screen.getByRole("button", { name: "Next box" }));
     fireEvent.click(screen.getByRole("button", { name: "Not in a box (1)" }));
@@ -195,7 +195,7 @@ describe("the Pick List demo", () => {
     const names = screen.getAllByRole("button", { name: /^Pulled / }).map((b) => b.getAttribute("aria-label"));
     expect(names).toHaveLength(3);
     expect(names.every((n) => !n!.startsWith("Pulled #"))).toBe(true);
-    expect(screen.getByText("3 cards match.")).toBeTruthy();
+    expect(screen.getByText("3 match.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back to default" }));
     expect(pageUrl().get("pnotnb")).toBeNull();
   });
@@ -225,6 +225,11 @@ describe("the Pick List demo", () => {
     act(() => pull.focus());
     fireEvent.click(pull);
     expect(screen.getByText("All pulled! Totally tubular.")).toBeTruthy();
+    // NEO-520: the totals never call a line a card; a line NB didn't list may be anything.
+    expect(screen.getByText("Everything on the list is pulled. Hit Undo to put the last one back.")).toBeTruthy();
+    expect(screen.getByText(/^Pulled the last \d+\. Pull complete!$/)).toBeTruthy();
+    const count = screen.getByText((_, el) => el?.tagName === "P" && /^\d+ of \d+ pulled$/.test(el.textContent ?? ""));
+    expect(count.textContent).not.toMatch(/card/i);
     expect(screen.getAllByRole("button", { name: /^Pulled / }).every((b) => b.getAttribute("aria-pressed") === "true")).toBe(true);
     expect(pull.getAttribute("aria-disabled")).toBe("true");
     expect(document.activeElement).toBe(pull);
@@ -387,12 +392,12 @@ describe("a store that saves to a server: more than one save", () => {
     return { notify, jobs, toggles: screen.getAllByRole("button", { name: /^Pulled #/ }) };
   }
 
-  it("a failed put-back says the card didn't go back, not that the pull didn't save", async () => {
+  it("a failed put-back says it didn't go back, not that the pull didn't save", async () => {
     const { notify, jobs, toggles } = await mountSaving(true);
     fireEvent.click(toggles[0]);
     expect(jobs[0].on).toBe(false);
     await act(async () => jobs[0].reject(new Error("offline")));
-    expect(notify).toHaveBeenLastCalledWith("That card didn't go back on the list. Try it again.");
+    expect(notify).toHaveBeenLastCalledWith("That one didn't go back on the list. Try it again.");
   });
 
   it("a mark that lands after a newer one began stays quiet; the newer one has the last word", async () => {
@@ -423,12 +428,12 @@ describe("a store that saves to a server: more than one save", () => {
     expect(jobs[1].ids).toEqual(jobs[0].ids);
     expect(jobs[1].on).toBe(false);
     await act(async () => jobs[1].reject(new Error("offline")));
-    expect(notify).toHaveBeenLastCalledWith("That card didn't go back on the list. Try it again.");
+    expect(notify).toHaveBeenLastCalledWith("That one didn't go back on the list. Try it again.");
   });
 });
 
 describe("the signed-in Pick List's ways out", () => {
-  async function show(data: Partial<import("./types").PickListData>, withSales: boolean) {
+  async function show(data: Partial<import("./types").PickListData>, withSales: boolean, url = "/inventory?tab=pick") {
     const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
     const { default: PickListTab } = await import("./PickListTab");
     const { CollectionModeProvider } = await import("../mode");
@@ -443,7 +448,7 @@ describe("the signed-in Pick List's ways out", () => {
     );
     render(
       <Theme>
-        <MemoryRouter initialEntries={["/inventory?tab=pick"]}>
+        <MemoryRouter initialEntries={[url]}>
           <CollectionModeProvider mode="app" surface="inventory">
             {withSales ? <CollectionStoreContext.Provider value={store}>{tab}</CollectionStoreContext.Provider> : tab}
           </CollectionModeProvider>
@@ -522,15 +527,59 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "NB couldn't match this line. Check the order's photo.",
+      problem: "NB didn't list this one. Check the order's photo.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
     const toggle = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` });
     const row = toggle.closest("tr")!;
     expect(row.closest("tbody")!.textContent).toContain("Can't find it");
+    expect(row.closest("tbody")!.textContent).toContain("NB couldn't place these sales. Each listing's photo shows what sold.");
     // The seller sees the title; the Not in NB chip belongs to rows the listing describes as a card.
     expect(within(row).getAllByText(title).length).toBeGreaterThan(0);
     expect(within(row).queryByText("Not in NB", { exact: true })).toBeNull();
+  });
+
+  it("NEO-520: a 200-character title with no spaces wraps in the wide cell and the phone's cell (WCAG 1.4.10)", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const title = "X".repeat(200);
+    const extra = {
+      id: "x-long",
+      quantity: 1,
+      condition: "",
+      order: { id: "oe", venue: "eBay", number: "27-11111-22222" },
+      card: null,
+      sportCode: null,
+      listingTitle: title,
+      listed: { title },
+      problem: "NB didn't list this one. Check the order's photo.",
+    };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
+    const cells = within(region).getAllByText(title);
+    expect(cells).toHaveLength(2);
+    for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
+  });
+
+  it("NEO-520: grouped by order, an order holding a line NB didn't list counts items, and an all-card order counts cards", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const order = { id: "oe", venue: "eBay", number: "27-11111-22222" };
+    const lost = (id: string) => ({
+      id,
+      quantity: 1,
+      condition: "",
+      order,
+      card: null,
+      sportCode: null,
+      listingTitle: `Lot ${id}`,
+      listed: { title: `Lot ${id}` },
+      problem: "NB didn't list this one. Check the order's photo.",
+    });
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, lost("a"), lost("b")] }, true, "/inventory?tab=pick&pgroup=order");
+    const countOf = (name: string) => within(region).getByRole("heading", { level: 3, name }).parentElement!.textContent!.slice(name.length);
+    expect(countOf("eBay 27-11111-22222")).toBe("2 items");
+    // An order with one line NB didn't list beside its cards still counts items (the demo's eBay 12-3502).
+    expect(countOf("eBay 12-3502")).toMatch(/^\d+ items?$/);
+    // Every line a card: cards, as before.
+    expect(countOf("eBay 12-3456")).toMatch(/^\d+ cards?$/);
   });
 
   it("a line NB couldn't match names its order, and its order opens that sale on the Sales tab", async () => {

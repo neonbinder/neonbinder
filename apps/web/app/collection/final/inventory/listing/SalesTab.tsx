@@ -295,7 +295,7 @@ function Line({ item, platform, card }: { item: SaleItem; platform: ListingPlatf
   return (
     <li className="text-sm">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-        <span className="min-w-0 flex-1 text-ink">
+        <span className="min-w-0 flex-1 break-words text-ink">
           <span className="font-semibold tabular-nums">{item.quantity}×</span> {name}
           {condition && <span className="text-ink-3"> ({condition})</span>}
         </span>

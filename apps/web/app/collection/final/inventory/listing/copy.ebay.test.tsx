@@ -117,7 +117,7 @@ describe("listing copy, per platform (NEO-415)", () => {
   });
 
   it("NEO-520: an eBay sale with no card and no title never says card; BuySportsCards keeps its words", () => {
-    expect(unmatchedSale("ebay")).toBe("Sold on eBay, not listed by NeonBinder");
+    expect(unmatchedSale("ebay")).toBe("A sale with no title");
     expect(unmatchedSale("ebay")).not.toMatch(/card/i);
     expect(unmatchedSale("bsc")).toBe(unmatchedCard("bsc"));
     expect(unmatchedSale()).toBe(unmatchedCard("bsc"));
@@ -125,7 +125,7 @@ describe("listing copy, per platform (NEO-415)", () => {
 
   it("NEO-520: an unmatched line says NB didn't list it on eBay, and keeps BuySportsCards' words there", () => {
     const eBay = saleItemProblem({ problem: "unmatched", quantity: 1 }, "ebay");
-    expect(eBay).toBe("NeonBinder didn't list this one, so your boxes stayed put. Pull it by hand.");
+    expect(eBay).toBe("NeonBinder didn't list this one. Boxes untouched. Pull it by hand.");
     expect(eBay).not.toMatch(/card/i);
     expect(saleItemProblem({ problem: "unmatched", quantity: 1 }, "bsc")).toBe(
       "We couldn't match this to a card in NeonBinder, so your boxes weren't touched. Pull it by hand.",

@@ -163,6 +163,8 @@ html:has(.nb-pick) {
   .nb-pick-sheet-lost td,
   .nb-pick-sheet td.nb-pick-sheet-wrap {
     white-space: normal;
+    /* A long title with no spaces breaks rather than clips. */
+    overflow-wrap: anywhere;
   }
   .nb-pick-sheet-row[data-pulled] td:not(:first-child) {
     text-decoration: line-through;

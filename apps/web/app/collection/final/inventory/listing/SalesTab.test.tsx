@@ -254,7 +254,7 @@ describe("the Sales tab", () => {
     expect(within(order).getByText("Ready to ship")).toBeTruthy();
     expect(within(order).getByText("(Near Mint or better)")).toBeTruthy();
     // NEO-520: a line NB didn't list is never called a card; with no title it says where it sold.
-    expect(within(order).getByText("Sold on eBay, not listed by NeonBinder")).toBeTruthy();
+    expect(within(order).getByText("A sale with no title")).toBeTruthy();
     const link = within(order).getByRole("link", { name: "Open order 12-34567-89012 on eBay (opens in a new tab)" });
     expect(link.getAttribute("href")).toBe("https://www.sandbox.ebay.com/sh/ord/details?orderid=12-34567-89012");
     // Both platforms' orders pages up top: BSC is connected in the stub, eBay sold.
@@ -281,20 +281,28 @@ describe("the Sales tab", () => {
       setup({ sales: [ebay([foreign({ title: "2024 Topps Chrome #205 Some Player RC" })])] });
       const line = within(orderOf("eBay order 27-11111-22222")).getAllByRole("listitem")[0];
       expect(line.textContent).toBe(
-        "1× 2024 Topps Chrome #205 Some Player RC$4.99 eachNeonBinder didn't list this one, so your boxes stayed put. Pull it by hand.",
+        "1× 2024 Topps Chrome #205 Some Player RC$4.99 eachNeonBinder didn't list this one. Boxes untouched. Pull it by hand.",
       );
       expect(line.textContent).not.toContain("()");
       expect(line.textContent).not.toMatch(/\bcard\b/i);
     });
 
-    it("a line with no title says where it sold, never calling it a card", () => {
+    it("a line with no title says it has none, never calling it a card", () => {
       setup({ sales: [ebay([foreign()])] });
-      expect(within(orderOf("eBay order 27-11111-22222")).getByText("Sold on eBay, not listed by NeonBinder")).toBeTruthy();
+      expect(within(orderOf("eBay order 27-11111-22222")).getByText("A sale with no title")).toBeTruthy();
+    });
+
+    it("a 200-character title with no spaces wraps instead of running off the screen (WCAG 1.4.10)", () => {
+      const title = "X".repeat(200);
+      setup({ sales: [ebay([foreign({ title })])] });
+      const name = within(orderOf("eBay order 27-11111-22222")).getByText(title);
+      expect(name.className).toContain("break-words");
+      expect(name.className).toContain("min-w-0");
     });
 
     it("a blank title falls back to the plain words", () => {
       setup({ sales: [ebay([foreign({ title: "   " })])] });
-      expect(within(orderOf("eBay order 27-11111-22222")).getByText("Sold on eBay, not listed by NeonBinder")).toBeTruthy();
+      expect(within(orderOf("eBay order 27-11111-22222")).getByText("A sale with no title")).toBeTruthy();
     });
 
     it("the header counts items when any line has no NB card, and the singular is item", () => {

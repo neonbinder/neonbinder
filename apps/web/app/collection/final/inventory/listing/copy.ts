@@ -149,13 +149,16 @@ export function unmatchedCard(platform: ListingPlatform = "bsc"): string {
 }
 export const UNMATCHED_CARD = unmatchedCard("bsc");
 
+/** NEO-520 — what both the Sales tab and the Pick List call an eBay line with no title and no card words. */
+export const EBAY_UNTITLED_SALE = "A sale with no title";
+
 /**
  * NEO-520 — a sold line with no NB card and no title to show. On eBay the
  * line may be anything the seller listed outside NeonBinder, so it is never
  * called a card; BuySportsCards lines are always cards and keep their words.
  */
 export function unmatchedSale(platform: ListingPlatform = "bsc"): string {
-  return platform === "ebay" ? `Sold on ${PLATFORM_NAME.ebay}, not listed by NeonBinder` : unmatchedCard(platform);
+  return platform === "ebay" ? EBAY_UNTITLED_SALE : unmatchedCard(platform);
 }
 
 /** Which card a problem is about: "#12 Ken Griffey Jr.", else that NB has no card for it. */
@@ -260,7 +263,7 @@ export function saleItemProblem(
     case "unmatched":
       // NEO-520: an eBay line NB can't tie to a card is one NB didn't list (it may not be a card at all).
       return platform === "ebay"
-        ? "NeonBinder didn't list this one, so your boxes stayed put. Pull it by hand."
+        ? "NeonBinder didn't list this one. Boxes untouched. Pull it by hand."
         : "We couldn't match this to a card in NeonBinder, so your boxes weren't touched. Pull it by hand.";
     case "linkMismatch":
       return `This sale points at a card whose ${name} link doesn't line up. We left your boxes alone; give it a look.`;
