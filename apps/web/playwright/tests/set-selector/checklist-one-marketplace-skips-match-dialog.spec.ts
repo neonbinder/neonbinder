@@ -348,6 +348,38 @@ test(
     await wizard.getByRole("button", { name: /^Other team. — #/ }).nth(1).click();
     const teamSearch = wizard.getByLabel("Team name to find", { exact: true });
     await expect(teamSearch).toBeVisible();
+
+    // NEO-518: THE FIELD RANKS BY THE SET. This is a Hockey 1995 set, so its league is the NHL
+    // and its year 1995. "pittsburgh" is shared by the NHL's Pittsburgh Penguins (active since
+    // 1967), a long-gone Pittsburgh Pirates (1925-29) and Pittsburgh Panthers (a college), all
+    // Hockey rows the reference catalogue holds. Searching with no set context, the old field
+    // listed them Panthers, Pirates, Penguins; ranked by the set the Penguins lead, are the
+    // highlighted row, and Enter takes them. The catalogue's own teams, so nothing is created
+    // here; the pick is undone by card 2's real answer below (a one-team row is a radio group).
+    const suggestions = wizard.getByRole("listbox", { name: "Team name to find suggestions" });
+    const rankedOptions = suggestions.getByRole("option");
+    // Press the field first, so the pointer rests on it and not where the list opens: on the
+    // phone layout the list flips above the field, over the "Other team..." press's own spot,
+    // and a pointer resting on a row moves the highlight (onMouseEnter) off the first row.
+    await teamSearch.click();
+    await teamSearch.fill("pittsburgh");
+    // The slowest-ranked rows are on screen, so the list is the settled answer, and the create
+    // row is last. Only then is "first" the first of the final order.
+    await expect(rankedOptions.filter({ hasText: "Pittsburgh Panthers" })).toBeVisible();
+    await expect(rankedOptions.filter({ hasText: "Pittsburgh Pirates" })).toBeVisible();
+    await expect(rankedOptions).toHaveCount(4);
+    await expect(rankedOptions.first()).toHaveAccessibleName(/^Pittsburgh Penguins/);
+    // The highlighted row is the one Enter takes: exactly one, and it is the Penguins.
+    await expect(suggestions.getByRole("option", { selected: true })).toHaveCount(1);
+    await expect(rankedOptions.first()).toHaveAttribute("aria-selected", "true");
+    await expectAccessible(page, { within: wizard, label: "Other team search ranked by the set's league and year" });
+    await teamSearch.press("Enter");
+    // Enter assigned the Penguins to card 2, and the field is closed again.
+    await expect(wizard.getByRole("radio", { name: /^Pittsburgh Penguins — #/ })).toBeChecked();
+    await expect(teamSearch).toBeHidden();
+    // Card 2's real answer replaces the pick (the Penguins stay offered, unchecked).
+    await wizard.getByRole("button", { name: /^Other team. — #/ }).nth(1).click();
+    await expect(teamSearch).toBeVisible();
     await teamSearch.fill(other);
     // NOTHING MATCHES THAT NAME: the precondition for creating it, and the proof
     // that Enter below can only mean "create" (the field shows "No matches." only
@@ -363,6 +395,8 @@ test(
     await newTeamDialog.getByRole("button", { name: `Create team ${other}` }).click();
     // The created team joins card 2's row SELECTED.
     await expect(wizard.getByRole("radio", { name: new RegExp(`^${other} — #`) })).toBeChecked();
+    // ...and the Penguins pick above no longer holds: one team per card on this row.
+    await expect(wizard.getByRole("radio", { name: /^Pittsburgh Penguins — #/ })).not.toBeChecked();
 
     // THE PRE-FILL, or invariant 8's hold-back (NEO-489, Jason 2026-11-11: a 429 or an open
     // cooldown on the live card is a pass). The wizard opened behind the team fence (every
