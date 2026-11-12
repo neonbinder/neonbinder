@@ -2,8 +2,8 @@
 .github
 .venv
 venv
-__pycache__
-*.pyc
+**/__pycache__
+**/*.pyc
 .pytest_cache
 .ruff_cache
 .mypy_cache
@@ -11,3 +11,4 @@ tests
 README.md
 requirements-dev.txt
 pyproject.toml
+.parity

@@ -109,13 +109,19 @@ jobs:
         # cwd = services/browser (workflow default); Dockerfile.prod + context here.
         env:
           SHA: ${{ github.sha }}
+        # NEO-484: --provenance=false --sbom=false pushes ONE image manifest,
+        # not an OCI index + attestation (see .github/scripts/image-push-report.sh).
         run: |
-          docker build -f Dockerfile.prod \
+          set -euo pipefail
+          docker build --provenance=false --sbom=false \
+            --label "org.opencontainers.image.revision=$SHA" \
+            -f Dockerfile.prod \
             -t gcr.io/neonbinder-dev/neonbinder-browser:$SHA \
             -t gcr.io/neonbinder-dev/neonbinder-browser:latest \
             .
           docker push gcr.io/neonbinder-dev/neonbinder-browser:$SHA
           docker push gcr.io/neonbinder-dev/neonbinder-browser:latest
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "gcr.io/neonbinder-dev/neonbinder-browser:$SHA"
 
       # Prod-GCR retag only on a real (enabled) push — a dispatch validation
       # stays dev-only and never touches the prod registry.
@@ -139,6 +145,7 @@ jobs:
           docker tag gcr.io/neonbinder-dev/neonbinder-browser:$SHA gcr.io/neonbinder/neonbinder-browser:latest
           docker push gcr.io/neonbinder/neonbinder-browser:$SHA
           docker push gcr.io/neonbinder/neonbinder-browser:latest
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "gcr.io/neonbinder/neonbinder-browser:$SHA"
 
   # Dev blue/green: land the new image at 0% traffic under the sha tag. Live dev
   # keeps serving the prior revision until dev-promote.

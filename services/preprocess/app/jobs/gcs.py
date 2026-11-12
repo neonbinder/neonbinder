@@ -20,16 +20,19 @@ to a lazily-constructed `storage.Client()`, which picks up ADC from the Cloud
 Run runtime service account exactly like `app.orient` does for Vision.
 Construction is lazy because importing this module must not require credentials
 — `/process` and `/crop` do not use GCS and must keep working without them.
+The SDK import is lazy too (NEO-484 C6): `google.cloud.storage` is imported on
+the first client build, not with `app.main`, and `app.prewarm` imports it in the
+background after the startup hook.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
-from google.api_core import exceptions as gcs_exceptions
-from google.cloud import storage
+if TYPE_CHECKING:
+    from google.cloud import storage
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +100,8 @@ class ObjectStore:
         # thread touches the store — preserve that ordering (or add a lock)
         # if the call sequence is ever reordered.
         if self._client is None:
+            from google.cloud import storage
+
             self._client = storage.Client()
         return self._client
 
@@ -153,6 +158,8 @@ class ObjectStore:
         rather than an upsert. GCS answers 412 when the key is occupied, which
         surfaces here as `ObjectAlreadyExistsError`.
         """
+        from google.api_core import exceptions as gcs_exceptions
+
         blob = self.client.bucket(ref.bucket).blob(ref.name)
         try:
             blob.upload_from_string(data, content_type=content_type, if_generation_match=0)

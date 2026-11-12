@@ -119,6 +119,9 @@ export const SELECTOR_DEPENDANT_TABLES = [
   // before the selector rows and the cards.
   "listingOutbox",
   "marketplaceListingSyncs",
+  // NEO-509 — a sale line's description names NB's sport row
+  // (`items[].listed.sportId`). Drained by the same reset batch.
+  "marketplaceSales",
   "cardPlayerLinks",
   "cardChecklist",
   "cardCrossListings",

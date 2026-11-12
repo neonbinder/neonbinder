@@ -43,7 +43,7 @@
 - [convex-test ids fail real-id codecs](reference_convex_test_ids_fail_real_id_codecs.md) — mock id-checksum codecs (listingSku); fake timers when a test only inspects scheduled network actions
 - [Hold a runAfter(0) action in convex-test](reference_hold_runafter0_in_convex_test.md) — fake setTimeout, hand-run walks, cancel before useRealTimers; count drains in any state
 - [Scratch test typecheck: node-types noise](reference_scratch_test_typecheck_node_types_noise.md) — fixture-reading tests report TS2591/TS2304 under the convex tsconfig; encodeId mints real ids for lib tests
-- [New table naming a card: three places](reference_new_table_naming_a_card_three_places.md) — wipe reference graph (tested), set-builder reset batch and per-user testing reset (untested)
+- [New table naming a card: four places](reference_new_table_naming_a_card_three_places.md) — wipe graph (tested), set-builder reset, per-user reset (untested), reference-seed dependant list (tested; nested ids count)
 - [eBay Sell API shapes come from the OAS specs](reference_ebay_sell_api_shapes_come_from_the_oas_specs.md) — no schemas on doc pages; bulk 400 per-entry; 25002 adopt; enums via SDK; cost types loose; hash every item field
 - [Work under the credential lock reads tokens directly](reference_work_under_the_credential_lock_reads_tokens_directly.md) — getSiteTokenForUser/re-auth contend for the held lock (busy = no token); read cache, refresh body, reauthAttempted:true
 - [Public refusals: return or ConvexError](reference_public_refusals_are_returns_or_convex_error.md) — a plain Error from a public function is "Server Error" in prod; return {ok:false,error}
@@ -56,13 +56,17 @@
 - [Adapter retry pause is injected](reference_adapter_retry_pause_is_injected.md) — optional `pause` param threaded via DrainOptions; instant counting pause in drain tests; fake only setTimeout for the default
 - [playerIds key pin reads any line](reference_playerids_key_pin_reads_any_line.md) — playerLinksPin flags any `^playerIds:` line in selectorOptions.ts, types and runQuery args too; keep such keys inline
 - [Client wizard gate reads unknown lists](reference_client_wizard_gate_reads_unknown_lists.md) — a batchId with empty unknowns commits silently; a decided-only batch needs its own result field
-- [Preprocess pytest runs without torch](reference_preprocess_pytest_runs_without_torch.md) — tests/unit and the OpenAPI snapshot run on a Mac in a plain venv minus torch/transformers/accelerate
+- [Preprocess pytest runs without torch](reference_preprocess_pytest_runs_without_torch.md) — tests/unit runs on a Mac (uv 3.12 venv minus torch/transformers/accelerate); rembg+ORT install too, lite model for real-mask checks
 - [Unstub globals before real timers](reference_unstub_globals_before_real_timers.md) — stubGlobal(setTimeout) after useFakeTimers: undo it first or the fake stays and the network guard's afterAll times out
 - [New pool enqueue breaks convex-test](reference_new_pool_enqueue_breaks_convex_test.md) — spy enqueueAction; run the lane by hand via the real onComplete; a scheduled enqueue fails silently
 - [eBay inventory offset is a page number](reference_ebay_inventory_offset_is_a_page_number.md) — unlike getOrders; follow the next link, fail on an unreadable one
 - [Testing wired BSC call telemetry](reference_testing_wired_bsc_call_telemetry.md) — flush-once = count bscCallStats scheduled rows; drain flag past the 4 KB clone; backoff spy
 - [NB card numbers are not bare by rule](reference_nb_card_numbers_are_not_bare_by_rule.md) — sync commits BSC cardNo raw despite the comments; strip on both sides; BSC prefixes per variant
 - [Recording hits stage career teams by QID](reference_recording_hits_stage_career_teams_by_qid.md) — fixture hits stage dated clubs looked up with knownQid; null/other QID = refused miss; capture team+league by id
+- [--noconftest when a sibling breaks conftest](reference_noconftest_when_a_sibling_breaks_conftest.md) — a deleted attr in a shared autouse fixture errors every test; run your files with --noconftest, rerun the gate later
+- [Dry-run a live itest against fakes](reference_dry_run_a_live_itest_against_fakes.md) — patch storage.Client/RPC/loader in a scratch module, star-import the test, --noconftest; -rs shows no skips
+- [Preprocess cold import cost is module count](reference_preprocess_cold_import_cost_is_module_count.md) — gen2 lazy layers: count modules, not local ms; SDKs import on first use; hold prewarm threads in tests
+- [Agent Bash is zsh: no word split](reference_agent_bash_is_zsh_no_word_split.md) — unquoted $VAR of paths is one arg; wrap list/array commands in bash -c; perl alarm for timeouts
 - [test:unit ignores file args](reference_test_unit_ignores_file_args.md) — `npm run test:unit -- files` runs the whole suite (args hit the verify script); iterate with npx vitest run
 - [Client parse rows hit strict arg validators](reference_client_parse_rows_hit_strict_arg_validators.md) — a new parser row field passed straight to an action arg fails v.object at runtime; widen optional + drop server-side
 - [Spy `_handler` to count convex-test calls](reference_convex_test_spy_handler_to_count_calls.md) — nested runQuery goes through `_handler`; an `invokeQuery` spy stays at 0; pair every "never called" with a control
@@ -73,3 +77,6 @@
 - [Wall-clock unit tests red under load](reference_wall_clock_unit_tests_red_under_load.md) — parser 2 MB bound and theme-allowlist scan time out at load ~30+; rerun alone, never raise the bound
 - [Scratch probe via a sibling test's header](reference_scratch_probe_via_sibling_test_header.md) — copy a test file's pre-describe header into convex/zz*.test.ts, probe, rm in the same call
 - [Seed hops that consume rows replay on retry](reference_seed_hops_that_consume_rows_replay_on_retry.md) — an apply-seed lowers the copies it resolved from; replay the stored order by token on a re-visit
+- [Convex doc-size budget counts framing](reference_convex_doc_size_budget_counts_framing.md) — getDocumentSize adds ~3 B/field + ~10 B/object; test both fat and many-tiny worst shapes
+- [Edit tool decodes \u escapes](reference_edit_tool_decodes_unicode_escapes.md) — format/bidi escapes land as literal chars; U+2028 in a regex = PARSE_ERROR; write via python, grep -P after
+- [Lint crashes beside a vitest run](reference_lint_crashes_beside_a_vitest_run.md) — eslint glob stack trace when .vitest/ vanishes mid-walk is not a result; rerun lint alone

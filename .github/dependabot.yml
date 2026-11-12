@@ -76,3 +76,17 @@ updates:
       # ~190MB CPU wheel for the ~2.5GB CUDA build, in an image that already
       # bakes ~375MB of SAM weights. Bump torch by hand, keeping the suffix.
       - dependency-name: "torch"
+
+  # NEO-484 mask-parity pins (services/preprocess/tests/parity): the frozen
+  # rembg 2.0.78 ORACLE (requirements-oracle.txt) and the check image's test
+  # runner (requirements-check.txt). The block above does not read them, as
+  # Dependabot's pip updater does not scan arbitrary subdirectories. A bump here changes the oracle, not the product, so version
+  # updates are off (limit 0) and the pins move only by hand, with the goldens
+  # regenerated (README "BiRefNet: direct onnxruntime"). Security updates are
+  # not governed by this limit and can still open a PR; treat one the same
+  # way: rebuild the oracle and re-run the goldens before merging it.
+  - package-ecosystem: pip
+    directory: "/services/preprocess/tests/parity"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0

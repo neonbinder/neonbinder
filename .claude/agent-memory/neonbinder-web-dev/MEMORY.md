@@ -204,3 +204,4 @@
 - [A name in a NeonButton needs free height](reference_a_name_in_a_neonbutton_needs_free_height.md) — Radix fixes height, not nowrap; h-auto min-h-8 py-1.5 max-w-full wrap-anywhere (size 1: min-h-6 py-1)
 - [Demo content column is ~806px at 1024](reference_demo_content_column_is_806px_at_e2e_width.md) — lg:pr-170 rail gutter; budget demo tables to ~800px or they slide under the exit rail
 - [Picker context league is the row's own feature](reference_picker_context_league_is_the_rows_own_feature.md) — pickerCandidates reads L off the context row only (year walks up); prove tiers on a tree built via addCustomSelectorOption
+- [sr-only suffix in a name is unstable](reference_sr_only_suffix_in_a_name_is_unstable.md) — extra screen-reader words on a role=heading: aria-label, not an sr-only child (happy-dom pads it)

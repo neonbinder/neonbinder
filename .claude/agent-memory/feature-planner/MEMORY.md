@@ -44,6 +44,7 @@
 - [Player match panels: fixture + stored text](player-match-panels-fixture-and-stored-text.md) — prove NearMatchPanel on /admin/players, not the wizard; careerSummary is stored text
 - [Teamless-rows red = BSC lookup stall/429](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — lookup_failures failed==requested (timeout or awselb 429); no pre-fill + extra namesake step; seed hit = teamless Gold Wave copies, hunt-tray strict mode; rerun
 - [BSC cold sheet read is per job](bsc-cold-sheet-read-is-per-job-not-per-condition.md) — first read 503s at 30 s whatever the condition; fewer sheets needs a 503-only serial retry beside it
+- [Preprocess spend is heavy cold starts x CI runs](preprocess-spend-is-heavy-cold-starts-times-ci-runs.md) — spend scales with E2E runs, not idle; cold-start time x run count is the lever; read startup_latencies + per-instance logs first
 - [Chromium fires focusout on removal](chromium-fires-focusout-on-removal.md) — relatedTarget null on unmount; happy-dom silent; focusout-cleared focus refs pass Vitest, fail E2E (NEO-450)
 - [BSC profile stalls heal with time](bsc-profile-stalls-heal-with-time-not-new-sessions.md) — new session/token does not escape a stall, time does (~50% 30 s, ~70% 60 s); seller id always live; seed re-signs in
 - [Workpool lanes and throttle rows survive the E2E reset](workpool-lanes-and-throttle-rows-survive-the-e2e-reset.md) — reset drains allSteps only; add the table, cancelAll the pool, item reads its row before any cooldown wait
@@ -54,3 +55,4 @@
 - [Commit prelude walks teams before players](commit-prelude-walks-teams-before-players.md) — team row picked from the card's player must be a decided review row, not a commit-time inference (NEO-490)
 - [Pairing modal absorbs only teams](checklist-pairing-modal-absorbs-only-teams.md) — post-stream answers apply to PairingResult cards client-side, not candidate rows (NEO-490)
 - [Publisher checklist is a Match Cards source](publisher-checklist-is-a-match-cards-source.md) — third column in CardPairingModal; rows discardable, marketplace cards never (NEO-490)
+- [BSC poll re-reads open orders](bsc-poll-rereads-open-orders-so-sale-fields-self-fill.md) — new recordOrder fields self-fill open orders within one poll; check before planning a backfill; sportId→sport slot

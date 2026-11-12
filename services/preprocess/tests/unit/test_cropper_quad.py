@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from app.cropper import quad, tiered
+from app.cropper import birefnet, quad, tiered
 from app.cropper.quad import DECLINE_REASONS, QuadResult, quad_crop
 
 MAT = (48, 46, 44)  # BGR dark desk mat
@@ -108,7 +108,8 @@ def _forbid_birefnet(monkeypatch):
         raise AssertionError("quad_crop must not touch BiRefNet")
 
     monkeypatch.setattr(tiered, "birefnet_mask", _boom)
-    monkeypatch.setattr(tiered, "_get_session", _boom)
+    monkeypatch.setattr(birefnet, "get_session", _boom)
+    monkeypatch.setattr(birefnet, "predict_alpha", _boom)
 
 
 # ── Accepts ─────────────────────────────────────────────────────────────────

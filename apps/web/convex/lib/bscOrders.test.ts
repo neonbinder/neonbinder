@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  BSC_LISTED_BOUNDS,
   BSC_ORDER_BOUNDS,
+  bscListedText,
   bscOrderDisposition,
   chooseCopiesToLower,
   parseBscDate,
@@ -46,7 +48,7 @@ describe("parseBscOrder (NEO-370) over the recorded payload", () => {
     });
   });
 
-  test("reads each item: BSC card id, condition, quantity, unit price, SKU", () => {
+  test("reads each item: BSC card id, condition, quantity, unit price, SKU, description (NEO-509)", () => {
     expect(order?.items).toEqual([
       {
         bscCardId: "859115a1371626f4911ba3d70722d757",
@@ -55,6 +57,16 @@ describe("parseBscOrder (NEO-370) over the recorded payload", () => {
         quantity: 1,
         priceCents: 25,
         sellerSku: "303|TB2",
+        listed: {
+          sport: "Football",
+          platformSportId: "football",
+          year: "2021",
+          setName: "2021 Score",
+          players: "Justin Fields",
+          cardNo: "TB2",
+          variant: "Insert",
+          variantName: "1991 Throwback",
+        },
       },
       {
         bscCardId: "b02b20ed43c7c2debf315550f92ddc13",
@@ -63,6 +75,16 @@ describe("parseBscOrder (NEO-370) over the recorded payload", () => {
         quantity: 1,
         priceCents: 25,
         sellerSku: "303|TB10",
+        listed: {
+          sport: "Football",
+          platformSportId: "football",
+          year: "2021",
+          setName: "2021 Score",
+          players: "Kyle Trask",
+          cardNo: "TB10",
+          variant: "Insert",
+          variantName: "1991 Throwback",
+        },
       },
     ]);
   });
@@ -79,7 +101,9 @@ describe("parseBscOrder (NEO-370) over the recorded payload", () => {
     withPii.stripePaymentId = "pi_123";
     const parsed = parseBscOrder(withPii);
     const text = JSON.stringify(parsed);
-    for (const leak of ["example.com", "1 Main", "pi_123", "REDACTED", "fixtureseller", "stockImg", "Justin Fields"]) {
+    // NEO-509: the card's description words are kept (`listed`); image paths,
+    // prices and seller fields on `item.card` and the item are not.
+    for (const leak of ["example.com", "1 Main", "pi_123", "REDACTED", "fixtureseller", "stockImg", "/Catalog/", "lowestPrice", "playerAttribute"]) {
       expect(text).not.toContain(leak);
     }
     expect(Object.keys(parsed ?? {}).sort()).toEqual(
@@ -130,7 +154,7 @@ describe("parseBscOrder (NEO-370) edges", () => {
       orderItems: [{ cardId: "c1", condition: "ex", orderQuantity: 2 }],
     });
     expect(order?.items).toEqual([
-      { bscCardId: "c1", condition: "ex", productType: null, quantity: 2, priceCents: null, sellerSku: null },
+      { bscCardId: "c1", condition: "ex", productType: null, quantity: 2, priceCents: null, sellerSku: null, listed: null },
     ]);
   });
 
@@ -350,5 +374,124 @@ describe("NEO-370 round 3 — BSC strings past NB's bounds are unreadable, never
     });
     expect(page?.orders.map((o) => o.orderId)).toEqual(["ok-1"]);
     expect(page?.unreadable).toBe(2);
+  });
+});
+
+describe("NEO-509 — the card a line describes (listed)", () => {
+  type Item = Record<string, unknown> & { card: Record<string, unknown> };
+  const base = () => clone(FIXTURE) as Record<string, unknown> & { orderItems: Item[] };
+  const listedOf = (o: unknown) => parseBscOrder(o)?.items[0]?.listed;
+
+  test("a value past its bound drops THAT field only; never truncated, the line still read", () => {
+    const cardKeys = ["sport", "year", "setName", "players", "cardNo", "variant", "variantName"] as const;
+    for (const key of cardKeys) {
+      const o = base();
+      o.orderItems[0].card[key] = "x".repeat(BSC_LISTED_BOUNDS[key] + 1);
+      const parsed = parseBscOrder(o);
+      expect(parsed?.unreadableItems).toBe(0);
+      const listed = parsed?.items[0]?.listed;
+      expect(listed).not.toBeNull();
+      expect(listed && key in listed).toBe(false);
+      expect(listed?.cardNo ?? listed?.players).toBeDefined();
+      o.orderItems[0].card[key] = "y".repeat(BSC_LISTED_BOUNDS[key]);
+      expect(listedOf(o)?.[key]).toBe("y".repeat(BSC_LISTED_BOUNDS[key]));
+    }
+    const o = base();
+    o.orderItems[0].sportId = "x".repeat(BSC_LISTED_BOUNDS.platformSportId + 1);
+    expect(listedOf(o)?.platformSportId).toBeUndefined();
+    expect(listedOf(o)?.sport).toBe("Football");
+  });
+
+  test("trims; blank, control characters and non-strings are absent", () => {
+    const o = base();
+    const card = o.orderItems[0].card;
+    card.players = "  Justin Fields  ";
+    card.setName = "   ";
+    card.cardNo = "TB\u00002";
+    card.variant = "Insert\n";
+    card.variantName = 42;
+    card.sport = { name: "Football" };
+    const listed = listedOf(o);
+    expect(listed).toEqual({ platformSportId: "football", year: "2021", players: "Justin Fields", variant: "Insert" });
+  });
+
+  test("a control character inside a value drops it", () => {
+    const o = base();
+    o.orderItems[0].card.cardNo = "TB\u00072";
+    expect(listedOf(o)?.cardNo).toBeUndefined();
+  });
+
+  // A format character can reorder or hide what a seller reads on the Pick
+  // List (U+202E turns "TB2" into a visually different number), so each range
+  // is absent like a control character. Escapes only: no literal format chars.
+  test.each([
+    ["U+200B zero-width space", "\u200b"],
+    ["U+200C zero-width non-joiner", "\u200c"],
+    ["U+200D zero-width joiner", "\u200d"],
+    ["U+200E left-to-right mark", "\u200e"],
+    ["U+200F right-to-left mark", "\u200f"],
+    ["U+2028 line separator", "\u2028"],
+    ["U+2029 paragraph separator", "\u2029"],
+    ["U+202A left-to-right embedding", "\u202a"],
+    ["U+202B right-to-left embedding", "\u202b"],
+    ["U+202C pop directional formatting", "\u202c"],
+    ["U+202D left-to-right override", "\u202d"],
+    ["U+202E right-to-left override", "\u202e"],
+    ["U+2060 word joiner", "\u2060"],
+    ["U+2066 left-to-right isolate", "\u2066"],
+    ["U+2067 right-to-left isolate", "\u2067"],
+    ["U+2068 first strong isolate", "\u2068"],
+    ["U+2069 pop directional isolate", "\u2069"],
+    ["U+FEFF zero-width no-break space", "\ufeff"],
+  ])("a format character (%s) inside a value drops it", (_name, ch) => {
+    const o = base();
+    o.orderItems[0].card.cardNo = `TB${ch}2`;
+    o.orderItems[0].card.players = `Justin${ch} Fields`;
+    o.orderItems[0].card.setName = `2021 ${ch}Score`;
+    const listed = listedOf(o);
+    expect(listed?.cardNo).toBeUndefined();
+    expect(listed?.players).toBeUndefined();
+    expect(listed?.setName).toBeUndefined();
+    expect(listed?.year).toBe("2021");
+    // At an edge: trim() removes U+2028, U+2029 and U+FEFF (JS whitespace),
+    // which leaves clean text; every other one still drops the value.
+    const atEdge = /\s/.test(ch) ? "TB2" : null;
+    expect(bscListedText(`${ch}TB2`, BSC_LISTED_BOUNDS.cardNo)).toBe(atEdge);
+    expect(bscListedText(`TB2${ch}`, BSC_LISTED_BOUNDS.cardNo)).toBe(atEdge);
+  });
+
+  test("the neighbours of the format ranges are still display text", () => {
+    // One past each range edge (U+2010, U+2027, U+202F, U+205F, U+2070, U+FEFE),
+    // plus U+00A0 no-break space and U+00E9 (e acute): readable, so kept.
+    for (const ch of ["\u2010", "\u2027", "\u202f", "\u205f", "\u2070", "\ufefe", "\u00a0", "\u00e9"]) {
+      expect(bscListedText(`TB${ch}2`, BSC_LISTED_BOUNDS.cardNo)).toBe(`TB${ch}2`);
+    }
+  });
+
+  test("an integer year is read as its digits; other number shapes are not", () => {
+    const o = base();
+    o.orderItems[0].card.year = 2021;
+    expect(listedOf(o)?.year).toBe("2021");
+    o.orderItems[0].card.year = 2021.5;
+    expect(listedOf(o)?.year).toBeUndefined();
+  });
+
+  test("reads only the named keys: no image paths, prices or attributes", () => {
+    const o = base();
+    o.orderItems[0].card.playerAttribute = "RC";
+    const listed = listedOf(o) ?? {};
+    expect(Object.keys(listed).sort()).toEqual(
+      ["cardNo", "platformSportId", "players", "setName", "sport", "variant", "variantName", "year"].sort(),
+    );
+  });
+
+  test("an item with no card and no sport id has no description", () => {
+    const order = parseBscOrder({
+      orderId: "o1",
+      orderStatus: "READY_TO_SHIP",
+      orderItems: [{ cardId: "c1", condition: "ex", orderQuantity: 1, card: "junk" }],
+    });
+    expect(order?.items[0]?.listed).toBeNull();
+    expect(order?.unreadableItems).toBe(0);
   });
 });

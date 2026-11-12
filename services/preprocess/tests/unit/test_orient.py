@@ -133,7 +133,7 @@ class TestShrinkForVision:
         stale.text_detection.side_effect = ServiceUnavailable("stream removed")
         fresh = _mock_client(_make_response([]))
         monkeypatch.setattr(orient, "_client", stale)
-        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", lambda: fresh)
+        monkeypatch.setattr(orient.vision_sdk(), "ImageAnnotatorClient", lambda: fresh)
 
         detect_orientation(original)
 
@@ -287,7 +287,7 @@ def shared_client_factory(monkeypatch):
         built.append(client)
         return client
 
-    monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _factory)
+    monkeypatch.setattr(orient.vision_sdk(), "ImageAnnotatorClient", _factory)
 
     def script(*behaviours: list[object]) -> list[MagicMock]:
         queued.extend(behaviours)
@@ -340,7 +340,7 @@ class TestSharedVisionClient:
             raise AssertionError("shared client must not be built when one is injected")
 
         monkeypatch.setattr(orient, "_client", None)
-        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _refuse)
+        monkeypatch.setattr(orient.vision_sdk(), "ImageAnnotatorClient", _refuse)
         client = _mock_client(_make_response([]))
 
         detect_orientation(b"img", client=client)
@@ -441,7 +441,7 @@ class TestVisionReconnect:
             raise AssertionError("an injected client must never be rebuilt")
 
         monkeypatch.setattr(orient, "_client", None)
-        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _refuse)
+        monkeypatch.setattr(orient.vision_sdk(), "ImageAnnotatorClient", _refuse)
         client = MagicMock()
         client.text_detection.side_effect = ServiceUnavailable("Stream removed")
 

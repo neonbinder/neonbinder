@@ -71,6 +71,33 @@ describe("the Pick List demo", () => {
     expect(within(table).getByRole("heading", { level: 3, name: "2026 Topps Series 1" })).toBeTruthy();
   });
 
+  it("files a sale NB couldn't match with its set when the listing says what it is, marked Not in NB (NEO-509)", async () => {
+    renderPick();
+    // The toggle reads the title's parts as pauses: "2024 Score #302 · Malik Nabers" visibly.
+    const nabers = await screen.findByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in NB, BSC 88240" });
+    const row = nabers.closest("tr")!;
+    expect(within(row).getAllByText("Not in NB", { exact: true }).length).toBeGreaterThan(0);
+    // The chip says why, to a pointer and to a screen reader (the demo has no Sales tab to link to).
+    const chip = within(row).getAllByText("Not in NB", { exact: true })[0].parentElement!;
+    expect(chip.getAttribute("title")).toBe("NB doesn't have this copy. Go by the listing.");
+    expect(chip.textContent).toBe("Not in NB. NB doesn't have this copy. Go by the listing.");
+    expect(within(row).queryByText("Unmatched")).toBeNull();
+    expect(within(row).getAllByText("#302").length).toBeGreaterThan(0);
+    // The listing said Base, so the Base chip; and its next step stays under the variant.
+    expect(within(row).getAllByText("Base", { exact: true }).length).toBeGreaterThan(0);
+    expect(within(row).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
+    // Under the 2024 Score divider, before that set's insert, not in Can't find it.
+    const group = row.closest("tbody")!;
+    expect(within(group).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
+    const order = within(group)
+      .getAllByRole("button", { name: /^Pulled / })
+      .map((b) => b.getAttribute("aria-label"));
+    expect(order[0]).toBe(nabers.getAttribute("aria-label"));
+    expect(order[1]).toMatch(/^Pulled #7 JC Latham/);
+    fireEvent.click(nabers);
+    expect(nabers.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("never gives two rows' controls the same name", async () => {
     renderPick();
     const names = (await screen.findAllByRole("button", { name: /^Pulled / })).map((b) => b.getAttribute("aria-label"));
@@ -131,16 +158,46 @@ describe("the Pick List demo", () => {
     expect(screen.getByRole("heading", { level: 3 }).textContent).toContain("Box 1 of 5");
   });
 
-  it("names the box in the title, says Can't find it is coming, and ends the walk there", async () => {
+  it("names the box in the title, says the sales NB couldn't tie are coming, walks Not in a box by set, and ends on Can't find it", async () => {
     renderPick();
     fireEvent.click(await screen.findByRole("link", { name: "By the Box" }));
     expect(document.title).toContain("2026 Baseball");
-    expect(screen.getByText("Plus 2 sales NB couldn't tie to a card. They're the last stop, after the boxes.")).toBeTruthy();
+    // Three: the demo's listing NB filed by its words (Not in a box) and its two strays (Can't find it).
+    expect(screen.getByText("Plus 3 sales NB couldn't tie to a card. They wait after the boxes.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Print this box" })).toBeTruthy();
     for (let i = 0; i < 4; i += 1) fireEvent.click(screen.getByRole("button", { name: "Next box" }));
+    fireEvent.click(screen.getByRole("button", { name: "Not in a box (1)" }));
+    expect(screen.getByRole("heading", { level: 3, name: "Not in a box · 1 to pull" })).toBeTruthy();
+    expect(screen.getByText("NB has no copy of these, so no box to check. Go by each listing, set by set.")).toBeTruthy();
+    const described = screen.getByRole("table", { name: "Sales not in NB, by set" });
+    // The list's own set divider, its sport's tab beside it.
+    expect(within(described).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
+    expect(within(described).getByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in NB, BSC 88240" })).toBeTruthy();
+    expect(within(described).getAllByText("Not in NB", { exact: true }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "All found" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Can't find it (2)" }));
-    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("Last stop · Can't find it · 2 to pull");
-    expect(within(screen.getByRole("table")).getAllByRole("button", { name: /^Pulled / })).toHaveLength(2);
+    expect(screen.getByRole("heading", { level: 3, name: "Last stop · Can't find it · 2 to pull" })).toBeTruthy();
+    expect(screen.getByText("These sales don't say enough to file. The order's photo is your best clue.")).toBeTruthy();
+    const lost = screen.getByRole("table", { name: "Sales NB couldn't tie to a card" });
+    expect(within(lost).getAllByRole("button", { name: /^Pulled / })).toHaveLength(2);
+    // The heading already says it: no Not in NB chip here.
+    expect(within(lost).queryByText("Not in NB", { exact: true })).toBeNull();
+    // Back steps to Not in a box.
+    fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    expect(screen.getByRole("heading", { level: 3, name: "Not in a box · 1 to pull" })).toBeTruthy();
+  });
+
+  it("Only not in NB keeps just the sales NB has no card for, and Back to default clears it", async () => {
+    renderPick();
+    fireEvent.click(await screen.findByRole("button", { name: "Only not in NB" }));
+    expect(pageUrl().get("pnotnb")).toBe("1");
+    expect(screen.getByRole("button", { name: "Only not in NB" }).getAttribute("aria-pressed")).toBe("true");
+    const names = screen.getAllByRole("button", { name: /^Pulled / }).map((b) => b.getAttribute("aria-label"));
+    expect(names).toHaveLength(3);
+    expect(names.every((n) => !n!.startsWith("Pulled #"))).toBe(true);
+    expect(screen.getByText("3 cards match.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to default" }));
+    expect(pageUrl().get("pnotnb")).toBeNull();
   });
 
   it("Box done marks the box after a confirm and steps to the next one", async () => {
@@ -202,6 +259,12 @@ describe("the Pick List demo", () => {
     expect(groups.filter((g) => g?.startsWith("Baseball"))).toHaveLength(1);
     expect(groups.some((g) => g?.startsWith("2022 Topps Heritage"))).toBe(true);
     expect(within(sheet).getAllByText(/Last ones/).length).toBeGreaterThan(0);
+    // The described sale prints like a card, marked Not in NB, its next step kept and free to wrap.
+    const nabers = lines.find((r) => r.textContent?.includes("Malik Nabers"))!;
+    expect(nabers.textContent).toContain("#302");
+    expect(nabers.textContent).toContain("Not in NB");
+    expect(nabers.textContent).toContain("Base NB couldn't match this line. Check the order's photo.");
+    expect(nabers.className).toContain("nb-pick-sheet-lost");
     act(() => {
       window.dispatchEvent(new Event("afterprint"));
     });
@@ -404,6 +467,49 @@ describe("the signed-in Pick List's ways out", () => {
     expect(within(demo).getByRole("link", { name: "Open your inventory" })).toBeTruthy();
   });
 
+  it("a listed row keeps every variant word, its sport on Can't find it, and a twin divider reads apart", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const order = { id: "ox", venue: "BSC", number: "99001" };
+    const base = { quantity: 1, condition: "NM", order, card: null, sportCode: null, problem: "NB couldn't match this line. Check the order's photo." };
+    const extra = [
+      {
+        ...base,
+        id: "x-variation",
+        listingTitle: "2024 Score Variation #302 · Malik Nabers",
+        // A word NB does not file by, joined to the demo's 2024 Score by sport name.
+        listed: { sportName: "Football", year: 2024, season: "2024", setName: "Score", players: "Malik Nabers", cardNumber: "302", variantWord: "Variation" },
+      },
+      {
+        ...base,
+        id: "x-twin",
+        listingTitle: "2024 Score #9 · Someone",
+        // Resolved to a sport row no NB set on the list carries: its own divider, titled like NB's.
+        listed: { sportId: "sp-other", sportName: "Football", sportCode: "FB", year: 2024, season: "2024", setName: "Score", players: "Someone", cardNumber: "9" },
+      },
+      {
+        ...base,
+        id: "x-thin",
+        listingTitle: "Hockey only · Somebody",
+        listed: { sportName: "Hockey", players: "Somebody" },
+      },
+    ];
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, ...extra] }, true);
+    const variation = within(region).getByRole("button", { name: "Pulled 2024 Score Variation #302, Malik Nabers, not in NB, BSC 99001" }).closest("tr")!;
+    // The listing's own word, never a Base chip it did not say.
+    expect(within(variation).getAllByText("Variation", { exact: true }).length).toBeGreaterThan(0);
+    expect(within(variation).queryByText("Base", { exact: true })).toBeNull();
+    // With a Sales tab, the chip points at the order link.
+    const chip = within(variation).getAllByText("Not in NB", { exact: true })[0].parentElement!;
+    expect(chip.getAttribute("title")).toBe("NB doesn't have this copy. Go by the listing; the order link has the photo.");
+    // NB's 2024 Score heading stays plain; the listing's own reads apart.
+    expect(within(region).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
+    expect(within(region).getByRole("heading", { level: 3, name: "2024 Score, not matched to a set" })).toBeTruthy();
+    // Can't find it shows the listing's sport.
+    const thin = within(region).getByRole("button", { name: "Pulled Hockey only, Somebody, not in NB, BSC 99001" }).closest("tr")!;
+    expect(thin.closest("tbody")!.textContent).toContain("Can't find it");
+    expect(within(thin).getAllByText("Hockey", { exact: true }).length).toBeGreaterThan(0);
+  });
+
   it("a line NB couldn't match names its order, and its order opens that sale on the Sales tab", async () => {
     const region = await show({}, true);
     // The toggle carries the order: two orders' strays never read alike.
@@ -454,6 +560,16 @@ describe("the Pick List's rare states pass axe", () => {
     const { region, violations } = await violationsFor({ truncated: true }, "/inventory?tab=pick");
     expect(within(region).getByText(/^Your Pick List is too long to show at once/)).toBeTruthy();
     expect(violations).toEqual([]);
+  });
+
+  it("the Not in a box and Can't find it stops in By the Box", async () => {
+    const notInBox = await violationsFor({}, "/inventory?tab=pick&pv=box&pbox=not-in-box");
+    expect(within(notInBox.region).getByRole("heading", { level: 3, name: "Not in a box · 1 to pull" })).toBeTruthy();
+    expect(notInBox.violations).toEqual([]);
+    cleanup();
+    const cantFind = await violationsFor({}, "/inventory?tab=pick&pv=box&pbox=cant-find");
+    expect(within(cantFind.region).getByRole("heading", { level: 3, name: "Last stop · Can't find it · 2 to pull" })).toBeTruthy();
+    expect(cantFind.violations).toEqual([]);
   });
 
   it("the Box not recorded stop in By the Box", async () => {
