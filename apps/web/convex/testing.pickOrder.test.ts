@@ -279,54 +279,79 @@ describe("seedMyTestPickOrder", () => {
   });
 });
 
-describe("seedMyTestPickOrder — listedLine (NEO-509)", () => {
-  test("adds one unmatched line described from the first card's set, its sport resolved by the sport row's BSC id", async () => {
+describe("seedMyTestPickOrder — listedLines (NEO-509)", () => {
+  const TWO_LINES = [
+    { cardNumber: "208", players: "Listed Player" },
+    { players: "Numberless Player" },
+  ];
+
+  test("adds one unmatched line per entry, described from the first card's set, its sport resolved by the sport row's BSC id", async () => {
     const s = await setup();
     await s.a.add(s.cards.a, 2);
-    const result = await seed(s, {
-      cards: [{ cardNumber: "901", quantity: 1 }],
-      listedLine: { cardNumber: "208", players: "Listed Player" },
-    });
-    expect(result.lines).toBe(2);
+    const result = await seed(s, { cards: [{ cardNumber: "901", quantity: 1 }], listedLines: TWO_LINES });
+    expect(result.lines).toBe(3);
     expect(result.applied).toBe(1);
     const [sale] = await sales(s);
-    const line = sale.items[1];
-    expect(line.problem).toBe("unmatched");
-    expect(line.applied).toBe(false);
     const sport = await s.t.run(async (ctx) =>
       (await ctx.db.query("selectorOptions").collect()).find((r) => r.level === "sport"),
     );
-    expect(line.listed).toEqual({
-      sport: "Baseball",
-      sportId: sport?._id,
-      year: "2024",
-      setName: "2024 Topps Chrome",
-      players: "Listed Player",
-      cardNo: "208",
-      variant: "Base",
-    });
+    const described = { sport: "Baseball", sportId: sport?._id, year: "2024", setName: "2024 Topps Chrome", variant: "Base" };
     expect(sale.items[0].listed).toBeUndefined();
+    expect(sale.items[1]).toMatchObject({ problem: "unmatched", applied: false });
+    expect(sale.items[1].listed).toEqual({ ...described, players: "Listed Player", cardNo: "208" });
+    // The no-number line: stored WITHOUT a cardNo key, still unmatched and
+    // still carrying its description.
+    expect(sale.items[2]).toMatchObject({ problem: "unmatched", applied: false });
+    expect(sale.items[2].listed).toEqual({ ...described, players: "Numberless Player" });
+    expect(sale.items[2].listed && "cardNo" in sale.items[2].listed).toBe(false);
+    // Each line its own BSC card id and SKU, so the store keys them apart.
+    const keys = sale.items.slice(1).map((item) => [item.platformCardId, item.sellerSku]);
+    expect(keys).toEqual([
+      ["nb-test-listed-card-1", "nb-test-listed-not-an-nb-sku-1"],
+      ["nb-test-listed-card-2", "nb-test-listed-not-an-nb-sku-2"],
+    ]);
   });
 
-  test("a retried hop keeps the stored description and applies nothing twice", async () => {
+  test("a blank card number is the no-number line", async () => {
     const s = await setup();
     await s.a.add(s.cards.a, 2);
-    const args = { cards: [{ cardNumber: "901", quantity: 1 }], listedLine: { cardNumber: "208", players: "Listed Player" } };
-    await seed(s, args);
-    const again = await seed(s, args);
-    expect(again.applied).toBe(0);
+    await seed(s, { cards: [{ cardNumber: "901", quantity: 1 }], listedLines: [{ cardNumber: "  ", players: "P" }] });
     const [sale] = await sales(s);
-    expect(sale.items).toHaveLength(2);
-    expect(sale.items[1].listed?.players).toBe("Listed Player");
+    expect(sale.items[1].listed?.players).toBe("P");
+    expect(sale.items[1].listed && "cardNo" in sale.items[1].listed).toBe(false);
+  });
+
+  test("a retried hop keeps the stored descriptions and applies nothing twice", async () => {
+    const s = await setup();
+    await s.a.add(s.cards.a, 2);
+    const args = { cards: [{ cardNumber: "901", quantity: 1 }], listedLines: TWO_LINES };
+    const first = await seed(s, args);
+    const again = await seed(s, args);
+    expect(again).toEqual({ saleId: first.saleId, lines: 3, applied: 0 });
+    const all = await sales(s);
+    expect(all).toHaveLength(1);
+    const [sale] = all;
+    expect(sale.items).toHaveLength(3);
+    expect(sale.items.map((item) => item.listed?.players)).toEqual([undefined, "Listed Player", "Numberless Player"]);
+    expect(sale.items[1].listed?.cardNo).toBe("208");
+    expect(sale.items[2].listed && "cardNo" in sale.items[2].listed).toBe(false);
+    expect(sale.items.slice(1).map((item) => item.problem)).toEqual(["unmatched", "unmatched"]);
     expect(await copies(s, USER_A)).toEqual([{ cardId: s.cards.a, quantity: 1 }]);
   });
 
-  test("refuses a blank card number or players", async () => {
+  test("refuses blank players, an over-long or control-character card number, and more than three lines", async () => {
     const s = await setup();
     await s.a.add(s.cards.a, 2);
+    const cards = [{ cardNumber: "901", quantity: 1 }];
+    await expect(seed(s, { cards, listedLines: [{ cardNumber: "208", players: " " }] })).rejects.toThrow(/listedLines\[0\]/);
+    await expect(seed(s, { cards, listedLines: [{ players: "P" }, { cardNumber: "x".repeat(33), players: "P" }] })).rejects.toThrow(
+      /listedLines\[1\]/,
+    );
+    await expect(seed(s, { cards, listedLines: [{ cardNumber: "2\u202e08", players: "P" }] })).rejects.toThrow(/listedLines\[0\]/);
     await expect(
-      seed(s, { cards: [{ cardNumber: "901", quantity: 1 }], listedLine: { cardNumber: " ", players: "P" } }),
-    ).rejects.toThrow(/listedLine/);
+      seed(s, { cards, listedLines: [{ players: "A" }, { players: "B" }, { players: "C" }, { players: "D" }] }),
+    ).rejects.toThrow(/at most 3/);
     expect(await sales(s)).toEqual([]);
+    expect(await copies(s, USER_A)).toEqual([{ cardId: s.cards.a, quantity: 2 }]);
   });
 });
