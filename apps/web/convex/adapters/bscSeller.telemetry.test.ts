@@ -50,18 +50,7 @@ const session = (): BscSellerSession => ({ ownerId: "owner", token: "tok", reaut
 let logs: string[];
 let warns: string[];
 
-/**
- * A fixed clock (Date only; real timers keep running). The leak checks below
- * look for the fixture phone's digits ("555", "867", "5309") in the logged
- * line and the scheduled row, and both carry an epoch-ms stamp: off the real
- * clock, a stamp that happened to hold "5309" failed the test. This instant's
- * digits (1767225600000, 2026-01-01T00:00:00Z) hold none of them.
- */
-const FIXED_NOW = Date.UTC(2026, 0, 1);
-
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(FIXED_NOW);
   resetBscInflightForTests();
   logs = [];
   warns = [];
@@ -74,7 +63,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   delete process.env.NEONBINDER_PAUSED_PLATFORMS;
