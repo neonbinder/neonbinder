@@ -22,7 +22,7 @@ is coordinator policy: read live, store once).
 
 **How to apply:** read the drainOwner log lines for the press before blaming
 the diff; if sellerProfile timed out, it is environment, rerun after the
-seller-id seed fix is on main. See [[seller-spec-red-with-no-step-ledger-is-the-sales-poll]].
+seller-id seed fix is on main. See [[listing-specs-race-the-sales-poll]].
 
 **After NEO-482 the same stall surfaces earlier, at the seed hop:** the
 listing-on BSC seed signs in up to 5 times (one `seed_bsc_relogin` line each)
