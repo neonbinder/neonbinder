@@ -15,6 +15,7 @@ import { useTheme } from "../../src/theme/ThemeProvider";
 import type { ThemeMode } from "../../src/theme/theme-mode";
 import { tokenHex } from "../../src/theme/tokens";
 import { teamFullName } from "../../lib/teams/team-name";
+import { nameMatchesQuery } from "../../lib/entities/name-search";
 import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
 import { Autocomplete, focusWithoutOpening } from "../primitives/Autocomplete";
 import { eraLabel } from "../../lib/teams/team-era";
@@ -1048,20 +1049,64 @@ function OtherTeamPicker({
       ? { query: term, sportId, contextOptionId, limit: OTHER_TEAM_SEARCH_LIMIT }
       : "skip",
   );
+  /**
+   * NEO-518 — the last ranked answer, held while the next one loads
+   * (TeamPicker's NEO-331 pattern). Without it the list collapsed to the
+   * "+ New team" row on every keystroke, highlighted, so a fast Enter on
+   * "houston" opened New Team instead of taking the Astros.
+   *
+   * Held per sport and set: rows ranked for another context are wrong rows,
+   * not stale ones. Compared by ids in order, not identity, so a caller (or a
+   * test mock) that hands back a fresh array each render cannot loop. State
+   * adjusted during render, as in TeamPicker.
+   */
+  const rankKey = `${sportId}|${contextOptionId}`;
+  const [held, setHeld] = useState<{
+    key: string;
+    rows: NonNullable<typeof searched>;
+  } | null>(null);
+  if (
+    searched !== undefined &&
+    (held === null ||
+      held.key !== rankKey ||
+      held.rows.length !== searched.length ||
+      searched.some((r, i) => r.team._id !== held.rows[i].team._id))
+  ) {
+    setHeld({ key: rankKey, rows: searched });
+  }
+  /** The server has answered for exactly what is in the field now. */
+  const answered = typed !== "" && typed === term && searched !== undefined;
+  /** Something is typed and its answer is still on its way. */
+  const pending = typed !== "" && !answered;
+  const shown = useMemo(() => {
+    if (!typed) return [];
+    if (answered) return searched ?? [];
+    // An EARLIER query's answer (the debounce has not caught up, or the new
+    // one is loading): name-filtered against what is typed, so it can only
+    // show fewer rows, never wrong ones. The current answer is never
+    // filtered — it keeps exact-alias hits whose name lacks the text.
+    const earlier = searched ?? (held?.key === rankKey ? held.rows : []);
+    return earlier.filter(({ team }) => nameMatchesQuery(teamFullName(team), typed));
+  }, [typed, answered, searched, held, rankKey]);
   const items = useMemo<OtherTeamOption[]>(() => {
     if (!typed) return [];
-    const teams: OtherTeamOption[] = (searched ?? []).map(({ team }) => ({
+    const teams: OtherTeamOption[] = shown.map(({ team }) => ({
       kind: "team",
       teamId: team._id,
       label: teamFullName(team),
       era: eraLabel(team.yearsActive),
     }));
-    // Always last, and always there once something is typed: a sport can
-    // hold two teams under one name (two Winnipeg Jets), so an exact match
-    // never hides it — the New Team dialog is where a second era is refused
-    // or confirmed, as from TeamPicker.
+    // Nothing to show yet: an empty list, so the field says "Searching…"
+    // rather than offering only "+ New team" for a team that may exist.
+    if (pending && teams.length === 0) return [];
+    // Always last once there is something to show: a sport can hold two
+    // teams under one name (two Winnipeg Jets), so an exact match never
+    // hides it — the New Team dialog is where a second era is refused or
+    // confirmed, as from TeamPicker.
     return [...teams, { kind: "create", name: typed }];
-  }, [typed, searched]);
+  }, [typed, shown, pending]);
+  /** "No matches." is a verdict, so only the CURRENT answer may give it. */
+  const noMatches = answered && searched !== undefined && searched.length === 0;
 
   return (
     <div
@@ -1103,17 +1148,27 @@ function OtherTeamPicker({
         }}
         label={OTHER_TEAM_SEARCH_LABEL}
         placeholder={OTHER_TEAM_PLACEHOLDER}
-        loading={typed !== "" && (typed !== term || searched === undefined) && items.length <= 1}
+        loading={pending}
+        // Held or not-yet-answered rows: Enter on "+ New team" does nothing
+        // (it could mint a team the answer is about to show). A highlighted
+        // real match still takes Enter; a click on the create row still acts.
+        holdEnter={(o) => o.kind === "create" && pending}
         disabled={disabled}
         listMaxHeightClassName="max-h-56"
         inputGeometryClassName="p-1.5 text-sm"
       />
       {/* TeamPicker's own wording, for the same moment: the search answered
           and only "+ New team …" is left. Flows wait on it before Enter
-          (which then can only mean "create"). */}
-      {typed !== "" && typed === term && searched !== undefined && searched.length === 0 && (
-        <p className="mt-1 px-1 text-xs text-ink-3">No matches.</p>
-      )}
+          (which then can only mean "create"). An always-mounted status
+          region, so the verdict is announced as well as drawn; only its text
+          changes, and it takes its margin only while it has words, so the
+          empty region adds no gap under the field. */}
+      <p
+        role="status"
+        className={noMatches ? "mt-1 px-1 text-xs text-ink-3" : "text-xs text-ink-3"}
+      >
+        {noMatches ? "No matches." : ""}
+      </p>
       {creating !== null && (
         <NewTeamDialog
           sportId={sportId}
