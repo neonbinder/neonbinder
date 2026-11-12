@@ -21,6 +21,10 @@
 //   5. An EMPTY type renamed "Base" becomes the Base: terminal (no Variants
 //      column), its checklist hangs off the type, and the Base mapping panel
 //      answers. A second type renamed "Base" is refused.
+//   6. NEO-496 (NQ2): with a card on that Base, the "Parallel" type's
+//      Parallels of Base section lists the parallel row, which has no
+//      marketplace id, as one to build (never skipped for want of a link), and
+//      a run copies Base's card onto it with no marketplace badge.
 //
 // R2 - WHY HAND-MADE TYPES: before NEO-334 the kind was a flag that only a sync
 // conferred, so a type an operator typed in had no kind at all and every claim
@@ -37,7 +41,8 @@
 // the very creates it needs. Nothing is deleted; the set is the debris.
 //
 // MINTED NAMES are single tokens: `vtk<token>` (set) and `vtkins` / `vtksub` /
-// `vtkpar` / `vtkpro` / `vtksec` + token (rows), from env.ATTEMPT_TOKEN, which
+// `vtkpar` / `vtkpro` / `vtksec` + token (rows), and claim 6's Base card
+// `vtknum<token>` / `Vtkcard<token>`, from env.ATTEMPT_TOKEN, which
 // carries the project marker, so desktop and mobile never meet. The kind words
 // themselves ("Inserts", "Insert", "Parallel", "Base", "Promos") are the inputs
 // under test and are deliberately NOT minted: the per-attempt set scopes them.
@@ -70,6 +75,7 @@ import {
   columnSelection,
   pick,
 } from "../../support/set-builder";
+import { addCardViaForm, editCardButton } from "../../support/cards";
 import type { Page } from "@playwright/test";
 
 /** A refusal rendered in a role=alert line (the custom form's, or the rename's). */
@@ -105,6 +111,8 @@ test(
     const PARALLEL_ROW = `vtkpar${T}`;
     const PROMO_TYPE = `vtkpro${T}`;
     const SECOND_TYPE = `vtksec${T}`;
+    const CARD_NUMBER = `vtknum${T}`;
+    const CARD_NAME = `Vtkcard${T}`;
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -181,8 +189,9 @@ test(
 
     await addCustomEntry(page, "Parallels", PARALLEL_ROW, { confirm: "required" });
     // Scoped to the Parallels listbox: the Base-parallels section under the
-    // columns lists this row too ("<row> - skipped: not linked to a marketplace
-    // yet"), and must not be what gets clicked.
+    // columns can name this row too, and must not be what gets clicked. (No
+    // marketplace id is no reason to skip it: since NEO-496 an unlinked
+    // parallel is built like any other, claim 6.)
     await columnOption(page, "Parallels", PARALLEL_ROW).click();
     // The pick has rendered: its column is on its card. The Sub-Variants column
     // is decided in the SAME render (it reads the selection and the
@@ -263,6 +272,8 @@ test(
     // ... and the checklist hangs off the type itself, with no variant picked.
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     await expectAccessible(page, { label: "A type titled Base: terminal, with its checklist" });
+    // Claim 6's source: one hand-made card on the Base.
+    await addCardViaForm(page, { cardNumber: CARD_NUMBER, playerName: CARD_NAME });
 
     // ── CLAIM 5b: A SECOND TYPE RENAMED "Base" IS REFUSED ──
     await addCustomEntry(page, "Variant Types", SECOND_TYPE, { confirm: "required" });
@@ -276,7 +287,37 @@ test(
     // DRAFT copy, see the header. The one-Base rule runs before the sibling
     // clash in renameSelectorOption, so this is the sentence, not the same-word one.
     await expect(refusal(page, /already has a Base/)).toBeVisible();
-    // The title stands: the spec ends on a positive.
+    // The title stands.
     await expect(panelFor(page, SECOND_TYPE)).toBeVisible();
+
+    // ── CLAIM 6 (NEO-496, NQ2): A PARALLEL WITH NO MARKETPLACE ID IS BUILT FROM BASE ──
+    // Rows with and without marketplace ids behave the same (product invariant 6): the section
+    // counts the row as one to build, says its copies carry no link, and names nothing blocked
+    // or skipped.
+    await repickVariantType(page, SECOND_TYPE, "Parallel");
+    const section = page.getByRole("region", { name: "Parallels of Base" });
+    await expect(
+      section.getByText(/^1 parallel, all empty\. 1 has no marketplace link yet, so its cards copy over without one\. /),
+    ).toBeVisible();
+    await expect(section.getByText(/ — (blocked|skipped)/i)).toHaveCount(0);
+    const build = section.getByRole("button", { name: "Build 1 parallel from Base" });
+    await expect(build).toBeVisible();
+    await expectAccessible(page, { label: "Parallels of Base on a hand-made set, its parallel unlinked" });
+    // Empty, so nothing asks before replacing: the run starts on the press.
+    await build.click();
+    await expect(section.getByRole("heading", { name: "Base parallels — 1 built" })).toBeVisible();
+    await expect(
+      section.getByRole("listitem").filter({ hasText: new RegExp(`^${PARALLEL_ROW} — Built 1 card`) }),
+    ).toBeVisible();
+    await expectAccessible(page, { label: "Base parallels run on an unlinked parallel" });
+
+    // The copy is on the parallel, with no marketplace badge ("BSC" / "SL" on a linked card).
+    await columnOption(page, "Parallels", PARALLEL_ROW).click();
+    await expect(columnSelection(page, "Parallels", PARALLEL_ROW)).toBeVisible();
+    await expect(editCardButton(page, CARD_NUMBER)).toBeVisible();
+    await expect(page.getByText("BSC", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("SL", { exact: true })).toHaveCount(0);
+    // The spec ends on a positive: the card is still listed.
+    await expect(editCardButton(page, CARD_NUMBER)).toBeVisible();
   },
 );

@@ -66,6 +66,7 @@ import {
   nameFallbackFacts,
   publishersChecklistButton,
   publishersChecklistChip,
+  removeSetChecklistUnderAllBrands,
   usePublishersChecklist,
 } from "../../support/published-checklist";
 import {
@@ -75,6 +76,7 @@ import {
   drillToColdManufacturer,
   columnSelection,
   INSERT_FETCH,
+  openAttributesPanel,
   setBuilderReady,
   syncChecklistButton,
   VARIANT_TYPES_SYNC,
@@ -416,10 +418,7 @@ test(
     await expect(columnOption(page, "Inserts", INSERT)).toBeVisible();
     await page.goBack();
     await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
-    const editAttributes = page.getByRole("button", { name: "Edit attributes" });
-    const hideAttributes = page.getByRole("button", { name: "Hide attributes" });
-    await expect(editAttributes.or(hideAttributes)).toBeVisible();
-    if (await editAttributes.isVisible()) await editAttributes.click();
+    await openAttributesPanel(page);
     const panel = page.getByRole("region", { name: "Official checklist" });
     await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
     await panel.getByLabel("Upload checklist").setInputFiles({
@@ -434,198 +433,212 @@ test(
     // Panini's credit line sits above the header: read and set aside, said by reason.
     await expect(preview.getByText(/^Above the column headings \(1\)$/)).toBeVisible();
     await expectAccessible(page, { within: preview, label: "Checklist preview of a Donruss spreadsheet" });
-    await preview.getByRole("button", { name: "Save checklist" }).click();
-    await expect(preview).toBeHidden();
-    await expect(panel.getByText("2026-donruss-baseball-checklist.xlsx", { exact: true })).toBeVisible();
+    // R7: from the save on, the set holds this run's checklist. A red body leaves it there, and the
+    // next run would start with one (PHASE C's precondition fails by name), so the `finally`
+    // removes it.
+    let checklistOnSet = true;
+    try {
+      await preview.getByRole("button", { name: "Save checklist" }).click();
+      await expect(preview).toBeHidden();
+      await expect(panel.getByText("2026-donruss-baseball-checklist.xlsx", { exact: true })).toBeVisible();
 
-    // ── C1. Map Base Set: the checklist's Base and Base Rated Prospects are both the base ──
-    await columnOption(page, "Variant Types", "Base").click();
-    const picker = page.getByRole("dialog", { name: "Select Base Set" });
-    await expect(picker).toBeVisible();
-    await expectAfterMarketplace(page, picker.getByRole("option", { name: /^BSC base candidate: / }).first(), {
-      platform: "BuySportsCards",
-      what: "the Donruss base picker's BSC candidates",
-    });
-    const checklistBase = picker.getByRole("listbox", { name: "Checklist base" });
-    // Exact names: "Base" is a prefix of every other section's name here.
-    await expect(checklistBase.getByRole("option", { name: "Checklist base section: Base", exact: true })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    await expect(
-      checklistBase.getByRole("option", { name: "Checklist base section: Base Rated Prospects", exact: true }),
-    ).toHaveAttribute("aria-selected", "true");
-    // Their Red runs are parallels of the base, never the base itself.
-    await expect(checklistBase.getByRole("option", { name: /^Checklist base section: .* Red$/ })).toHaveCount(0);
-    // It is a multi-select the operator can work, on a phone too: take Base Rated Prospects off and
-    // put it back, and both are selected again.
-    const ratedProspects = checklistBase.getByRole("option", { name: "Checklist base section: Base Rated Prospects", exact: true });
-    await ratedProspects.scrollIntoViewIfNeeded();
-    await expect(ratedProspects).toBeInViewport();
-    await ratedProspects.click();
-    await expect(ratedProspects).toHaveAttribute("aria-selected", "false");
-    await expect(checklistBase.getByRole("option", { name: "Checklist base section: Base", exact: true })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    await ratedProspects.click();
-    await expect(ratedProspects).toHaveAttribute("aria-selected", "true");
-    await expectAccessible(page, { within: picker, label: "Select Base Set with two checklist base sections" });
-    await picker.getByRole("button", { name: "Confirm Base Set" }).click();
-    await expect(picker).toBeHidden();
+      // ── C1. Map Base Set: the checklist's Base and Base Rated Prospects are both the base ──
+      await columnOption(page, "Variant Types", "Base").click();
+      const picker = page.getByRole("dialog", { name: "Select Base Set" });
+      await expect(picker).toBeVisible();
+      await expectAfterMarketplace(page, picker.getByRole("option", { name: /^BSC base candidate: / }).first(), {
+        platform: "BuySportsCards",
+        what: "the Donruss base picker's BSC candidates",
+      });
+      const checklistBase = picker.getByRole("listbox", { name: "Checklist base" });
+      // Exact names: "Base" is a prefix of every other section's name here.
+      await expect(checklistBase.getByRole("option", { name: "Checklist base section: Base", exact: true })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      await expect(
+        checklistBase.getByRole("option", { name: "Checklist base section: Base Rated Prospects", exact: true }),
+      ).toHaveAttribute("aria-selected", "true");
+      // Their Red runs are parallels of the base, never the base itself.
+      await expect(checklistBase.getByRole("option", { name: /^Checklist base section: .* Red$/ })).toHaveCount(0);
+      // It is a multi-select the operator can work, on a phone too: take Base Rated Prospects off and
+      // put it back, and both are selected again.
+      const ratedProspects = checklistBase.getByRole("option", { name: "Checklist base section: Base Rated Prospects", exact: true });
+      await ratedProspects.scrollIntoViewIfNeeded();
+      await expect(ratedProspects).toBeInViewport();
+      await ratedProspects.click();
+      await expect(ratedProspects).toHaveAttribute("aria-selected", "false");
+      await expect(checklistBase.getByRole("option", { name: "Checklist base section: Base", exact: true })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      await ratedProspects.click();
+      await expect(ratedProspects).toHaveAttribute("aria-selected", "true");
+      await expectAccessible(page, { within: picker, label: "Select Base Set with two checklist base sections" });
+      await picker.getByRole("button", { name: "Confirm Base Set" }).click();
+      await expect(picker).toBeHidden();
 
-    // ── C2. Parallels, first visit: the Base's Red runs ride on BSC's bare "Red" ──
-    await columnSelection(page, "Variant Types", "Base").click();
-    await columnOption(page, "Variant Types", "Parallel").click();
-    const reconcileParallels = page.getByRole("dialog", { name: "Reconcile Parallels" });
-    await expectAfterMarketplace(page, reconcileParallels, { platform: "BuySportsCards", what: "Reconcile Parallels on the first visit" });
-    await expect(reconcileParallels.getByRole("textbox", { name: "NeonBinder set name for Red" })).toBeVisible();
-    await expect(reconcileParallels.getByRole("button", { name: "Remove checklist section Base Red from Red" })).toBeVisible();
-    await expect(
-      reconcileParallels.getByRole("button", { name: "Remove checklist section Base Rated Prospects Red from Red" }),
-    ).toBeVisible();
-    // NEO-496: the set has no SportLots link (filed under All Brands from BSC), so SportLots is
-    // skipped, not paused: its column says it wasn't asked, in place of a search box and a
-    // "Nothing pending" that would claim an answer nobody got. UNMEASURED live: whether the
-    // Donruss set gains a SportLots link with SportLots back is not known, so the live run
-    // asserts nothing here. R2: BSC's own column, searchable, is the positive half.
-    if (env.SL_PAUSED) {
-      await expect(reconcileParallels.getByText(`SportLots wasn't asked: ${SET} has no SportLots link.`, { exact: true })).toBeVisible();
-      await expect(reconcileParallels.getByRole("textbox", { name: "Filter BSC items" })).toBeVisible();
-      await expect(reconcileParallels.getByRole("textbox", { name: "Search SportLots items" })).toHaveCount(0);
-      await expect(reconcileParallels.getByText("Nothing pending on SportLots")).toHaveCount(0);
+      // ── C2. Parallels, first visit: the Base's Red runs ride on BSC's bare "Red" ──
+      await columnSelection(page, "Variant Types", "Base").click();
+      await columnOption(page, "Variant Types", "Parallel").click();
+      const reconcileParallels = page.getByRole("dialog", { name: "Reconcile Parallels" });
+      await expectAfterMarketplace(page, reconcileParallels, { platform: "BuySportsCards", what: "Reconcile Parallels on the first visit" });
+      await expect(reconcileParallels.getByRole("textbox", { name: "NeonBinder set name for Red" })).toBeVisible();
+      await expect(reconcileParallels.getByRole("button", { name: "Remove checklist section Base Red from Red" })).toBeVisible();
+      await expect(
+        reconcileParallels.getByRole("button", { name: "Remove checklist section Base Rated Prospects Red from Red" }),
+      ).toBeVisible();
+      // NEO-496: the set has no SportLots link (filed under All Brands from BSC), so SportLots is
+      // skipped, not paused: its column says it wasn't asked, in place of a search box and a
+      // "Nothing pending" that would claim an answer nobody got. UNMEASURED live: whether the
+      // Donruss set gains a SportLots link with SportLots back is not known, so the live run
+      // asserts nothing here. R2: BSC's own column, searchable, is the positive half.
+      if (env.SL_PAUSED) {
+        await expect(reconcileParallels.getByText(`SportLots wasn't asked: ${SET} has no SportLots link.`, { exact: true })).toBeVisible();
+        await expect(reconcileParallels.getByRole("textbox", { name: "Filter BSC items" })).toBeVisible();
+        await expect(reconcileParallels.getByRole("textbox", { name: "Search SportLots items" })).toHaveCount(0);
+        await expect(reconcileParallels.getByText("Nothing pending on SportLots")).toHaveCount(0);
+      }
+      // The subtitle's "N pending" jumps to the pending work: the Pending heading side by side, and on
+      // a phone, where the columns stack, the first column holding anything. BSC's other parallels
+      // are pending here, and BSC is the first column, so its label is where the jump lands.
+      await reconcileParallels.getByRole("button", { name: /^[1-9][0-9]* pending, go to Pending$/ }).click();
+      await expect(reconcileParallels.getByRole("heading", { name: /^Pending \([1-9][0-9]*\)$/ })).toBeInViewport();
+      await expect(reconcileParallels.getByText(/^BSC \([1-9][0-9]*\)$/)).toBeInViewport();
+      await expectAccessible(page, { within: reconcileParallels, label: "Reconcile Parallels with the Base's checklist runs" });
+      await reconcileParallels.getByRole("button", { name: /^Save [0-9]+ sets$/ }).click();
+      await expect(reconcileParallels).toBeHidden();
+
+      // ── C3. Sync Inserts: a near-miss section name still finds its insert ──
+      await columnSelection(page, "Variant Types", "Parallel").click();
+      await columnOption(page, "Variant Types", "Insert").click();
+      await expect(columnHeading(page, "Inserts")).toBeVisible();
+      await page.getByRole("button", { name: "Sync Inserts" }).click();
+      const reconcileInserts = page.getByRole("dialog", { name: "Reconcile Inserts" });
+      await expectAfterMarketplace(page, reconcileInserts, { platform: "BuySportsCards", what: "Reconcile Inserts on Sync Inserts" });
+      // Panini's "Donruss Ballpark Stars Signatures" is BSC's "Donruss Ballparks Stars Signatures".
+      await expect(
+        reconcileInserts.getByRole("button", {
+          name: `Remove checklist section ${BALLPARK} from ${BALLPARK_BSC}`,
+        }),
+      ).toBeVisible();
+      await expect(reconcileInserts.getByRole("button", { name: `Remove checklist section ${UNLEASHED} from ${UNLEASHED}` })).toBeVisible();
+      await expect(reconcileInserts.getByText("Nothing pending on the checklist")).toBeVisible();
+      await expectAccessible(page, { within: reconcileInserts, label: "Reconcile Inserts with a near-miss checklist section" });
+      await reconcileInserts.getByRole("button", { name: /^Save [0-9]+ sets$/ }).click();
+      await expect(reconcileInserts).toBeHidden();
+
+      // ── C4. Unleashed: BSC lists two football cards the checklist does not ──
+      await columnSearch(page, "Inserts").fill(UNLEASHED);
+      await columnOption(page, "Inserts", UNLEASHED).click();
+      await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+      await syncChecklistButton(page).click();
+      await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards for Unleashed" });
+      await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
+      await expect(matchCards.getByRole("heading", { name: "BSC only (2)" })).toBeVisible();
+      await expect(matchCards.getByRole("button", { name: "Keep #SG-CO Chris Olave as BSC-only" })).toBeVisible();
+      await expect(matchCards.getByRole("button", { name: "Keep #SG-TB Treylon Burks as BSC-only" })).toBeVisible();
+      // The file's rows 21 and 22 have no BSC card: two checklist-only rows, each with its own Keep.
+      await expect(matchCards.getByRole("heading", { name: "Checklist only (2)" })).toBeVisible();
+      const keepAnthony = matchCards.getByRole("button", { name: /^Keep #21 Roman Anthony.* as checklist-only$/ });
+      await expect(keepAnthony).toBeVisible();
+      await expect(matchCards.getByRole("button", { name: /^Keep #22 Kristian Campbell.* as checklist-only$/ })).toBeVisible();
+      await expect(matchCards.getByRole("heading", { name: "Keeping (0)" })).toBeVisible();
+      await expectAccessible(page, { within: matchCards, label: "Match Cards for Unleashed, BSC-only and checklist-only cards" });
+      // Phone width (e2e-mobile, 412 px) too: a row's Keep and the column's Keep all are on screen.
+      await keepAnthony.scrollIntoViewIfNeeded();
+      await expect(keepAnthony).toBeInViewport();
+      const keepAllRows = matchCards.getByRole("button", { name: "Keep all checklist-only cards" });
+      await keepAllRows.scrollIntoViewIfNeeded();
+      await expect(keepAllRows).toBeInViewport();
+      // Keep all keeps both rows; BSC's two football cards stay unkept.
+      await keepAllRows.click();
+      await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
+      await expect(matchCards.getByRole("heading", { name: "Keeping (2)" })).toBeVisible();
+      await expect(matchCards.getByRole("heading", { name: "BSC only (2)" })).toBeVisible();
+      await expectAccessible(page, { within: matchCards, label: "Match Cards for Unleashed, two checklist rows kept" });
+      // Left unkept: confirming discards the football cards and saves the kept rows.
+      await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
+      await expect(matchCards).toBeHidden();
+      // The wizard: every name is skipped (no player or team is minted), then Save. The 20 paired cards
+      // and the 2 kept rows save (22); neither football card is among them.
+      await expect(wizard).toBeVisible();
+      const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
+      await expect(skipRemaining.or(nextStepButton(page)).or(confirmSaveButton(page)).first()).toBeVisible();
+      if (await skipRemaining.isVisible()) await skipRemaining.click();
+      await advanceToSave(page);
+      await expect(wizard.getByText(`Save ${UNLEASHED_ROWS} cards?`)).toBeVisible();
+      await confirmSaveButton(page).click();
+      await expect(page.getByText(new RegExp(`Saved ${UNLEASHED_ROWS} cards`)).first()).toBeVisible();
+      await expect(editCardButton(page, "1")).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Edit card SG-(CO|TB)(, .*)?$/ })).toHaveCount(0);
+      // The two kept rows are cards of their own, found by number the way a collector would.
+      for (const [number, player] of [["21", "Roman Anthony"], ["22", "Kristian Campbell"]] as const) {
+        await search.fill(player);
+        await expect(page.getByRole("button", { name: `Edit card ${number}, ${player}` })).toBeVisible();
+      }
+      await search.fill("");
+
+      // ── C5. Replace with the same checklist as a plain CSV: nothing changes ──
+      // Back through the picks to the set (Unleashed -> the Insert type -> Parallel -> Base -> the set),
+      // each step the view it was.
+      await page.goBack();
+      await expect(columnSelection(page, "Variant Types", "Insert")).toBeVisible();
+      await expect(columnOption(page, "Inserts", UNLEASHED)).toBeVisible();
+      await page.goBack();
+      await expect(columnSelection(page, "Variant Types", "Parallel")).toBeVisible();
+      await page.goBack();
+      await expect(columnSelection(page, "Variant Types", "Base")).toBeVisible();
+      await page.goBack();
+      await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
+      await openAttributesPanel(page);
+      await panel.getByLabel("Replace checklist").setInputFiles({
+        name: "2026-donruss-baseball-checklist.csv",
+        mimeType: "text/csv",
+        buffer: buildDonrussCsv(DONRUSS),
+      });
+      await expect(preview).toBeVisible();
+      await expect(preview.getByText(`${DONRUSS.sections.length} sections`, { exact: true })).toBeVisible();
+      await expect(preview.getByText(`${DONRUSS_CARDS} cards`, { exact: true })).toBeVisible();
+      await preview.getByRole("button", { name: "Save checklist" }).click();
+      await expect(preview).toBeHidden();
+      await expect(panel.getByText("2026-donruss-baseball-checklist.csv", { exact: true })).toBeVisible();
+      await expect(panel.getByText(new RegExp(`^${DONRUSS.sections.length} sections, ${DONRUSS_CARDS} cards\\. Saved `))).toBeVisible();
+      // Nothing changed for the cards it gave: Unleashed still holds the 20 it committed, and neither
+      // football card. (Sync Inserts after the replace opens no Reconcile: every section is already
+      // linked, so there is nothing to reconcile.)
+      await columnOption(page, "Variant Types", "Insert").click();
+      await expect(columnHeading(page, "Inserts")).toBeVisible();
+      await columnSearch(page, "Inserts").fill(UNLEASHED);
+      await columnOption(page, "Inserts", UNLEASHED).click();
+      await expect(page.getByRole("heading", { name: `Cards (${UNLEASHED_ROWS})` })).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Edit card SG-(CO|TB)(, .*)?$/ })).toHaveCount(0);
+
+      // ── C6. Remove the set's checklist (self-cleaning: the next run starts with none) ──
+      // Back through the two picks above: the Insert type, then the set.
+      await page.goBack();
+      await expect(columnSelection(page, "Variant Types", "Insert")).toBeVisible();
+      await page.goBack();
+      await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
+      await openAttributesPanel(page);
+      await panel.getByRole("button", { name: "Remove checklist" }).click();
+      const removeConfirm = page.getByRole("dialog", { name: "Remove this set's checklist?" });
+      await expect(removeConfirm).toBeVisible();
+      await removeConfirm.getByRole("button", { name: "Yes, remove it" }).click();
+      await expect(removeConfirm).toBeHidden();
+      await expect(page.getByText("Checklist removed.")).toBeVisible();
+      checklistOnSet = false;
+      await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
+    } finally {
+      if (checklistOnSet) {
+        try {
+          await removeSetChecklistUnderAllBrands(page, env, { year: "2026", set: SET });
+        } catch (error) {
+          // The body's own error stays the one the report shows.
+          test.info().annotations.push({ type: "cleanup", description: `set checklist not removed: ${String(error)}` });
+        }
+      }
     }
-    // The subtitle's "N pending" jumps to the pending work: the Pending heading side by side, and on
-    // a phone, where the columns stack, the first column holding anything. BSC's other parallels
-    // are pending here, and BSC is the first column, so its label is where the jump lands.
-    await reconcileParallels.getByRole("button", { name: /^[1-9][0-9]* pending, go to Pending$/ }).click();
-    await expect(reconcileParallels.getByRole("heading", { name: /^Pending \([1-9][0-9]*\)$/ })).toBeInViewport();
-    await expect(reconcileParallels.getByText(/^BSC \([1-9][0-9]*\)$/)).toBeInViewport();
-    await expectAccessible(page, { within: reconcileParallels, label: "Reconcile Parallels with the Base's checklist runs" });
-    await reconcileParallels.getByRole("button", { name: /^Save [0-9]+ sets$/ }).click();
-    await expect(reconcileParallels).toBeHidden();
-
-    // ── C3. Sync Inserts: a near-miss section name still finds its insert ──
-    await columnSelection(page, "Variant Types", "Parallel").click();
-    await columnOption(page, "Variant Types", "Insert").click();
-    await expect(columnHeading(page, "Inserts")).toBeVisible();
-    await page.getByRole("button", { name: "Sync Inserts" }).click();
-    const reconcileInserts = page.getByRole("dialog", { name: "Reconcile Inserts" });
-    await expectAfterMarketplace(page, reconcileInserts, { platform: "BuySportsCards", what: "Reconcile Inserts on Sync Inserts" });
-    // Panini's "Donruss Ballpark Stars Signatures" is BSC's "Donruss Ballparks Stars Signatures".
-    await expect(
-      reconcileInserts.getByRole("button", {
-        name: `Remove checklist section ${BALLPARK} from ${BALLPARK_BSC}`,
-      }),
-    ).toBeVisible();
-    await expect(reconcileInserts.getByRole("button", { name: `Remove checklist section ${UNLEASHED} from ${UNLEASHED}` })).toBeVisible();
-    await expect(reconcileInserts.getByText("Nothing pending on the checklist")).toBeVisible();
-    await expectAccessible(page, { within: reconcileInserts, label: "Reconcile Inserts with a near-miss checklist section" });
-    await reconcileInserts.getByRole("button", { name: /^Save [0-9]+ sets$/ }).click();
-    await expect(reconcileInserts).toBeHidden();
-
-    // ── C4. Unleashed: BSC lists two football cards the checklist does not ──
-    await columnSearch(page, "Inserts").fill(UNLEASHED);
-    await columnOption(page, "Inserts", UNLEASHED).click();
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-    await syncChecklistButton(page).click();
-    await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards for Unleashed" });
-    await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "BSC only (2)" })).toBeVisible();
-    await expect(matchCards.getByRole("button", { name: "Keep #SG-CO Chris Olave as BSC-only" })).toBeVisible();
-    await expect(matchCards.getByRole("button", { name: "Keep #SG-TB Treylon Burks as BSC-only" })).toBeVisible();
-    // The file's rows 21 and 22 have no BSC card: two checklist-only rows, each with its own Keep.
-    await expect(matchCards.getByRole("heading", { name: "Checklist only (2)" })).toBeVisible();
-    const keepAnthony = matchCards.getByRole("button", { name: /^Keep #21 Roman Anthony.* as checklist-only$/ });
-    await expect(keepAnthony).toBeVisible();
-    await expect(matchCards.getByRole("button", { name: /^Keep #22 Kristian Campbell.* as checklist-only$/ })).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "Keeping (0)" })).toBeVisible();
-    await expectAccessible(page, { within: matchCards, label: "Match Cards for Unleashed, BSC-only and checklist-only cards" });
-    // Phone width (e2e-mobile, 412 px) too: a row's Keep and the column's Keep all are on screen.
-    await keepAnthony.scrollIntoViewIfNeeded();
-    await expect(keepAnthony).toBeInViewport();
-    const keepAllRows = matchCards.getByRole("button", { name: "Keep all checklist-only cards" });
-    await keepAllRows.scrollIntoViewIfNeeded();
-    await expect(keepAllRows).toBeInViewport();
-    // Keep all keeps both rows; BSC's two football cards stay unkept.
-    await keepAllRows.click();
-    await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "Keeping (2)" })).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "BSC only (2)" })).toBeVisible();
-    await expectAccessible(page, { within: matchCards, label: "Match Cards for Unleashed, two checklist rows kept" });
-    // Left unkept: confirming discards the football cards and saves the kept rows.
-    await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
-    await expect(matchCards).toBeHidden();
-    // The wizard: every name is skipped (no player or team is minted), then Save. The 20 paired cards
-    // and the 2 kept rows save (22); neither football card is among them.
-    await expect(wizard).toBeVisible();
-    const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-    await expect(skipRemaining.or(nextStepButton(page)).or(confirmSaveButton(page)).first()).toBeVisible();
-    if (await skipRemaining.isVisible()) await skipRemaining.click();
-    await advanceToSave(page);
-    await expect(wizard.getByText(`Save ${UNLEASHED_ROWS} cards?`)).toBeVisible();
-    await confirmSaveButton(page).click();
-    await expect(page.getByText(new RegExp(`Saved ${UNLEASHED_ROWS} cards`)).first()).toBeVisible();
-    await expect(editCardButton(page, "1")).toBeVisible();
-    await expect(page.getByRole("button", { name: /^Edit card SG-(CO|TB)(, .*)?$/ })).toHaveCount(0);
-    // The two kept rows are cards of their own, found by number the way a collector would.
-    for (const [number, player] of [["21", "Roman Anthony"], ["22", "Kristian Campbell"]] as const) {
-      await search.fill(player);
-      await expect(page.getByRole("button", { name: `Edit card ${number}, ${player}` })).toBeVisible();
-    }
-    await search.fill("");
-
-    // ── C5. Replace with the same checklist as a plain CSV: nothing changes ──
-    // Back through the picks to the set (Unleashed -> the Insert type -> Parallel -> Base -> the set),
-    // each step the view it was.
-    await page.goBack();
-    await expect(columnSelection(page, "Variant Types", "Insert")).toBeVisible();
-    await expect(columnOption(page, "Inserts", UNLEASHED)).toBeVisible();
-    await page.goBack();
-    await expect(columnSelection(page, "Variant Types", "Parallel")).toBeVisible();
-    await page.goBack();
-    await expect(columnSelection(page, "Variant Types", "Base")).toBeVisible();
-    await page.goBack();
-    await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
-    await expect(editAttributes.or(hideAttributes)).toBeVisible();
-    if (await editAttributes.isVisible()) await editAttributes.click();
-    await panel.getByLabel("Replace checklist").setInputFiles({
-      name: "2026-donruss-baseball-checklist.csv",
-      mimeType: "text/csv",
-      buffer: buildDonrussCsv(DONRUSS),
-    });
-    await expect(preview).toBeVisible();
-    await expect(preview.getByText(`${DONRUSS.sections.length} sections`, { exact: true })).toBeVisible();
-    await expect(preview.getByText(`${DONRUSS_CARDS} cards`, { exact: true })).toBeVisible();
-    await preview.getByRole("button", { name: "Save checklist" }).click();
-    await expect(preview).toBeHidden();
-    await expect(panel.getByText("2026-donruss-baseball-checklist.csv", { exact: true })).toBeVisible();
-    await expect(panel.getByText(new RegExp(`^${DONRUSS.sections.length} sections, ${DONRUSS_CARDS} cards\\. Saved `))).toBeVisible();
-    // Nothing changed for the cards it gave: Unleashed still holds the 20 it committed, and neither
-    // football card. (Sync Inserts after the replace opens no Reconcile: every section is already
-    // linked, so there is nothing to reconcile.)
-    await columnOption(page, "Variant Types", "Insert").click();
-    await expect(columnHeading(page, "Inserts")).toBeVisible();
-    await columnSearch(page, "Inserts").fill(UNLEASHED);
-    await columnOption(page, "Inserts", UNLEASHED).click();
-    await expect(page.getByRole("heading", { name: `Cards (${UNLEASHED_ROWS})` })).toBeVisible();
-    await expect(page.getByRole("button", { name: /^Edit card SG-(CO|TB)(, .*)?$/ })).toHaveCount(0);
-
-    // ── C6. Remove the set's checklist (self-cleaning: the next run starts with none) ──
-    // Back through the two picks above: the Insert type, then the set.
-    await page.goBack();
-    await expect(columnSelection(page, "Variant Types", "Insert")).toBeVisible();
-    await page.goBack();
-    await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
-    await expect(editAttributes.or(hideAttributes)).toBeVisible();
-    if (await editAttributes.isVisible()) await editAttributes.click();
-    await panel.getByRole("button", { name: "Remove checklist" }).click();
-    const removeConfirm = page.getByRole("dialog", { name: "Remove this set's checklist?" });
-    await expect(removeConfirm).toBeVisible();
-    await removeConfirm.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(removeConfirm).toBeHidden();
-    await expect(page.getByText("Checklist removed.")).toBeVisible();
-    await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
   },
 );
 

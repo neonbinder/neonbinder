@@ -13,6 +13,7 @@ import {
 } from "../../support/set-builder";
 import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import type { Page } from "@playwright/test";
 
 const BOWMAN = { sport: "Baseball", year: "2026", manufacturer: "Bowman", set: "Bowman" };
@@ -156,12 +157,14 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
     await syncChecklistButton(page).click();
 
-    // The cards come from BSC (and SportLots, paired, when it is live): the flow's 120 s.
     // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
-    // with SportLots paused or live.
+    // with SportLots paused or live. The cards come from BSC (and SportLots, paired, when it is
+    // live): GUIDE R5's marketplace wait, measured time plus 7 s, never a flat ceiling.
     const matchCards = matchCardsDialog(page);
-    await expect(matchCards).toBeVisible({ timeout: 120_000 });
-    await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible({ timeout: 120_000 });
+    await expectAfterMarketplace(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), {
+      platform: "BuySportsCards",
+      what: "the Anime fetch's Match Cards",
+    });
     await expect(matchCards.getByRole("heading", { name: "Match Cards — Anime" })).toBeVisible();
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog" });
     // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.

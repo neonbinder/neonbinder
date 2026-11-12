@@ -20,6 +20,8 @@ import { expect, type Locator, type Page } from "@playwright/test";
 // The product's own rules for a team cell, so this file cannot drift from the parser (NEO-489).
 import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
 import { expectAfterMarketplace } from "./marketplace-wait";
+import type { FlowEnv } from "./env";
+import { columnOption, columnSearch, drillToColdManufacturer, openAttributesPanel } from "./set-builder";
 
 const DIRECTORY = fileURLToPath(new URL("../fixtures/checklists/", import.meta.url));
 
@@ -456,4 +458,34 @@ export async function confirmChecklistMatchCards(
   }
   await confirm.click();
   await expect(dialog).toBeHidden();
+}
+
+/** The set panel's region, on the set level with its attributes open. Contract: a locator, nothing waited for. */
+export function setChecklistPanel(page: Page): Locator {
+  return page.getByRole("region", { name: "Official checklist" });
+}
+
+/**
+ * NEO-496 — the `finally` of a sole-writer spec that stores a checklist on a SET filed under the
+ * year's All Brands view, run only when the body went red with the checklist still saved: a fresh
+ * drill back to the set, its attributes open, and the checklist removed through the UI, so the
+ * next run starts with none. The body removes it itself on the green path.
+ *
+ * Contract: ENTRY anywhere signed in, the set holding a checklist. EXIT the set holds none.
+ */
+export async function removeSetChecklistUnderAllBrands(
+  page: Page,
+  env: FlowEnv,
+  target: { year: string; set: string },
+): Promise<void> {
+  await drillToColdManufacturer(page, env, { sport: "Baseball", year: target.year, manufacturer: "All Brands" });
+  await columnSearch(page, "Sets").fill(target.set);
+  await columnOption(page, "Sets", target.set).click();
+  await openAttributesPanel(page);
+  const panel = setChecklistPanel(page);
+  await panel.getByRole("button", { name: "Remove checklist" }).click();
+  const confirm = page.getByRole("dialog", { name: "Remove this set's checklist?" });
+  await confirm.getByRole("button", { name: "Yes, remove it" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
 }

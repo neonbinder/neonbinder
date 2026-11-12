@@ -342,7 +342,15 @@ async function fetchInsertToWizard(
       platform: "BuySportsCards",
       what: `${name}'s fetch landing`,
     });
-    if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
+    if (env.SL_PAUSED) {
+      // The gate above admits three landings; paused, it must be this one, said in full: BSC is
+      // the one source, so every card is kept and nothing is matched. Then (R2, a positive first)
+      // no Match Cards.
+      await expect(
+        page.getByText(/^Kept all [0-9]+ cards? from BSC\. Nothing to match, no other marketplace attached\.$/),
+      ).toBeVisible();
+      await expect(matchCards).toBeHidden();
+    }
     if (await matchCards.isVisible()) {
       const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
       await expect(confirm).toBeVisible({ timeout: LIVE_BSC_FETCH });

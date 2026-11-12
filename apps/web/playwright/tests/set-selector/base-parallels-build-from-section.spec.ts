@@ -73,6 +73,21 @@ test(
     const parallel = ((await built.textContent()) ?? "").split(" — ")[0].trim();
     expect(parallel.length).toBeGreaterThan(0);
 
+    // NEO-496 (Jason): a finished run's ledger belongs to the row that started it, and the set
+    // builder retires it once the operator picks another row. A sibling parallel's pick takes it
+    // away, and Back to the Parallel type does not bring it back. Each absence is read on a page
+    // that has just shown its own positive (R2).
+    const ledger = page.getByRole("heading", { name: /^Base parallels — / });
+    const sibling = "Gold Wave Refractors";
+    expect(parallel, "the sibling picked below is another parallel than the one built").not.toBe(sibling);
+    await columnSearch(page, "Parallels").fill(sibling);
+    await columnOption(page, "Parallels", sibling).click();
+    await expect(page.getByRole("heading", { name: `Attributes for ${sibling}` })).toBeVisible();
+    await expect(ledger).toBeHidden();
+    await page.goBack();
+    await expect(section.getByRole("button", { name: `Build ${parallels} parallels from Base` })).toBeVisible();
+    await expect(ledger).toBeHidden();
+
     // Reopen that parallel; its copy's title names it.
     await drillToSet(page, env);
     await pick(page, "Variant Types", "Parallel", { search: false });

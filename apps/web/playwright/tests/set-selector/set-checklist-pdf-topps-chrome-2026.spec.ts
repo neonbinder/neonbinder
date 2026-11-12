@@ -55,16 +55,20 @@ import {
   columnSearch,
   columnSelection,
   drillToColdManufacturer,
+  openAttributesPanel,
   setBuilderReady,
   syncChecklistButton,
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
-import { matchCardsDialog } from "../../support/published-checklist";
+import { matchCardsDialog, removeSetChecklistUnderAllBrands } from "../../support/published-checklist";
 import { expectChecklistDisagreementFirst, reviewWizard } from "../../support/wizard";
 import { buildToppsPdf } from "../../fixtures/checklists/build-fixtures.mjs";
 
 const SET = "Topps Chrome";
+/** PublishedChecklistPanel's NO_SECTIONS_FOUND: a file with cards and no section has nothing to save. */
+const NO_SECTIONS_FOUND =
+  "No sections found. A set checklist needs a section heading (like FUTURE STARS) above its cards, or a set column.";
 const INSERT = "Future Stars";
 
 /** FUTURE STARS as BSC lists FS-1..FS-8 (identical to the PDF, plan decision 5). */
@@ -171,181 +175,233 @@ test(
     await expect(preview.getByText(/^Looks like a title, not a card \(1\)$/)).toBeVisible();
     await expect(preview.getByText(/^Only one column here, so it isn't a card \([0-9]+\)$/)).toBeVisible();
     await expectAccessible(page, { within: preview, label: "Checklist preview of a Topps PDF" });
-    await preview.getByRole("button", { name: "Save checklist" }).click();
-    await expect(preview).toBeHidden();
-    await expect(page.getByText("Checklist saved: 3 sections, 17 cards.")).toBeVisible();
-    await expect(panel.getByText("2026-topps-chrome-checklist.pdf", { exact: true })).toBeVisible();
-    await expect(panel.getByText(/^3 sections, 17 cards\. Saved .*\. Syncs in this set read its sections\.$/)).toBeVisible();
-    await expect(panel.getByRole("button", { name: "Remove checklist" })).toBeVisible();
-    await expectAccessible(page, { within: panel, label: "Official checklist saved on the set" });
+    // R7: from the save on, the set holds this run's checklist. A red body leaves it there, and the
+    // next run would start with one (its precondition fails by name), so the `finally` removes it.
+    let checklistOnSet = true;
+    try {
+      await preview.getByRole("button", { name: "Save checklist" }).click();
+      await expect(preview).toBeHidden();
+      await expect(page.getByText("Checklist saved: 3 sections, 17 cards.")).toBeVisible();
+      await expect(panel.getByText("2026-topps-chrome-checklist.pdf", { exact: true })).toBeVisible();
+      await expect(panel.getByText(/^3 sections, 17 cards\. Saved .*\. Syncs in this set read its sections\.$/)).toBeVisible();
+      await expect(panel.getByRole("button", { name: "Remove checklist" })).toBeVisible();
+      await expectAccessible(page, { within: panel, label: "Official checklist saved on the set" });
 
-    // ══ 2. MAP BASE: the checklist's base section is preselected ══
-    await columnOption(page, "Variant Types", "Base").click();
-    const picker = page.getByRole("dialog", { name: "Select Base Set" });
-    await expect(picker).toBeVisible();
-    // The BSC candidates are one live BSC round trip (probed 2026-11-11: about 1 s).
-    await expectAfterMarketplace(page, picker.getByRole("option", { name: /^BSC base candidate: / }).first(), {
-      platform: "BuySportsCards",
-      what: "the base picker's BSC candidates",
-    });
-    const checklistBase = picker.getByRole("listbox", { name: "Checklist base" });
-    await expect(checklistBase.getByRole("option", { name: "Checklist base section: BASE CARDS" })).toHaveAttribute("aria-selected", "true");
-    // Only base-like sections are listed; the other two wait behind the toggle.
-    await expect(checklistBase.getByRole("option")).toHaveCount(1);
-    await expect(picker.getByRole("checkbox", { name: "Show all checklist sections" })).toBeVisible();
-    await expect(picker.getByText("Show all checklist sections (2 more)")).toBeVisible();
-    await expectAccessible(page, { within: picker, label: "Select Base Set with a checklist base section" });
-    await picker.getByRole("button", { name: "Confirm Base Set" }).click();
-    await expect(picker).toBeHidden();
-    await expect(columnSelection(page, "Variant Types", "Base")).toBeVisible();
+      // ══ 2. MAP BASE: the checklist's base section is preselected ══
+      await columnOption(page, "Variant Types", "Base").click();
+      const picker = page.getByRole("dialog", { name: "Select Base Set" });
+      await expect(picker).toBeVisible();
+      // The BSC candidates are one live BSC round trip (probed 2026-11-11: about 1 s).
+      await expectAfterMarketplace(page, picker.getByRole("option", { name: /^BSC base candidate: / }).first(), {
+        platform: "BuySportsCards",
+        what: "the base picker's BSC candidates",
+      });
+      const checklistBase = picker.getByRole("listbox", { name: "Checklist base" });
+      await expect(checklistBase.getByRole("option", { name: "Checklist base section: BASE CARDS" })).toHaveAttribute("aria-selected", "true");
+      // Only base-like sections are listed; the other two wait behind the toggle.
+      await expect(checklistBase.getByRole("option")).toHaveCount(1);
+      await expect(picker.getByRole("checkbox", { name: "Show all checklist sections" })).toBeVisible();
+      await expect(picker.getByText("Show all checklist sections (2 more)")).toBeVisible();
+      await expectAccessible(page, { within: picker, label: "Select Base Set with a checklist base section" });
+      await picker.getByRole("button", { name: "Confirm Base Set" }).click();
+      await expect(picker).toBeHidden();
+      await expect(columnSelection(page, "Variant Types", "Base")).toBeVisible();
 
-    // ══ 3. INSERT, FIRST VISIT: Reconcile Inserts with BSC and the checklist ══
-    await columnSelection(page, "Variant Types", "Base").click();
-    await columnOption(page, "Variant Types", "Insert").click();
-    const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
-    // The column's first sync is one live BSC round trip (probed 2026-11-11: about 2 s).
-    await expectAfterMarketplace(page, reconcile, { platform: "BuySportsCards", what: "Reconcile Inserts on the first visit" });
-    // FUTURE STARS rides on BSC's Future Stars, auto-matched by name.
-    await expect(reconcile.getByRole("textbox", { name: `NeonBinder set name for ${INSERT}` })).toBeVisible();
-    await expect(reconcile.getByRole("button", { name: `Remove checklist section FUTURE STARS from ${INSERT}` })).toBeVisible();
-    // The token section matches nothing: Pending, with its own "Make its own set".
-    const ownSet = reconcile.getByRole("button", { name: `Make its own set from checklist section: ${tokenHeading}` });
-    await expect(ownSet).toBeVisible();
-    // BASE CARDS is the Base's own now: not offered here, even with every section shown.
-    await reconcile.getByRole("checkbox", { name: "Show all checklist sections" }).check();
-    await expect(reconcile.getByRole("button", { name: /^Make its own set from checklist section: BASE CARDS$/ })).toHaveCount(0);
-    await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts with a checklist source" });
+      // ══ 3. INSERT, FIRST VISIT: Reconcile Inserts with BSC and the checklist ══
+      await columnSelection(page, "Variant Types", "Base").click();
+      await columnOption(page, "Variant Types", "Insert").click();
+      const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
+      // The column's first sync is one live BSC round trip (probed 2026-11-11: about 2 s).
+      await expectAfterMarketplace(page, reconcile, { platform: "BuySportsCards", what: "Reconcile Inserts on the first visit" });
+      // FUTURE STARS rides on BSC's Future Stars, auto-matched by name.
+      await expect(reconcile.getByRole("textbox", { name: `NeonBinder set name for ${INSERT}` })).toBeVisible();
+      await expect(reconcile.getByRole("button", { name: `Remove checklist section FUTURE STARS from ${INSERT}` })).toBeVisible();
+      // The token section matches nothing: Pending, with its own "Make its own set".
+      const ownSet = reconcile.getByRole("button", { name: `Make its own set from checklist section: ${tokenHeading}` });
+      await expect(ownSet).toBeVisible();
+      // BASE CARDS is the Base's own now: not offered here, even with every section shown.
+      await reconcile.getByRole("checkbox", { name: "Show all checklist sections" }).check();
+      await expect(reconcile.getByRole("button", { name: /^Make its own set from checklist section: BASE CARDS$/ })).toHaveCount(0);
+      await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts with a checklist source" });
 
-    await ownSet.click();
-    await expect(reconcile.getByText("Nothing pending on the checklist")).toBeVisible();
-    const tokenTitleBox = reconcile.getByRole("textbox", { name: `NeonBinder set name for ${tokenTitle}` });
-    await expect(tokenTitleBox).toHaveValue(tokenTitle);
-    // R7: a minted name is the single token.
-    await tokenTitleBox.fill(token);
-    await tokenTitleBox.press("Enter");
-    await expect(reconcile.getByRole("textbox", { name: `NeonBinder set name for ${token}` })).toHaveValue(token);
-    await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts with the checklist section made its own set" });
-    await reconcile.getByRole("button", { name: /^Save [0-9]+ sets$/ }).click();
-    await expect(reconcile).toBeHidden();
+      await ownSet.click();
+      await expect(reconcile.getByText("Nothing pending on the checklist")).toBeVisible();
+      const tokenTitleBox = reconcile.getByRole("textbox", { name: `NeonBinder set name for ${tokenTitle}` });
+      await expect(tokenTitleBox).toHaveValue(tokenTitle);
+      // R7: a minted name is the single token.
+      await tokenTitleBox.fill(token);
+      await tokenTitleBox.press("Enter");
+      await expect(reconcile.getByRole("textbox", { name: `NeonBinder set name for ${token}` })).toHaveValue(token);
+      await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts with the checklist section made its own set" });
+      await reconcile.getByRole("button", { name: /^Save [0-9]+ sets$/ }).click();
+      await expect(reconcile).toBeHidden();
 
-    // ══ 4. THE TOKEN SET: a checklist-only fetch ══
-    await expect(columnHeading(page, "Inserts")).toBeVisible();
-    await columnSearch(page, "Inserts").fill(token);
-    await columnOption(page, "Inserts", token).click();
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-    await syncChecklistButton(page).click();
-    // No marketplace is attached, so nothing is asked of one and nothing is matched: the fetch
-    // keeps the three rows ("Kept all 3 cards from your checklist. Nothing to match, no
-    // marketplace attached.") and, every name being on the catalogue, the commit goes straight
-    // through, its "Saved" line replacing the kept one. Both lines are this fetch's (the set was
-    // empty a step ago), so either is the sync point; the saved line, exactly, is the proof.
-    const kept = page.getByText("Kept all 3 cards from your checklist. Nothing to match, no marketplace attached.");
-    const saved = page.getByText("Saved 3 cards. Teams from your checklist: 3 of 3 cards.", { exact: true });
-    await expect(kept.or(saved).first()).toBeVisible();
-    await expect(saved).toBeVisible();
-    await expect(matchCardsDialog(page)).toHaveCount(0);
-    await expect(reviewWizard(page)).toHaveCount(0);
+      // ══ 4. THE TOKEN SET: a checklist-only fetch ══
+      await expect(columnHeading(page, "Inserts")).toBeVisible();
+      await columnSearch(page, "Inserts").fill(token);
+      await columnOption(page, "Inserts", token).click();
+      await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+      await syncChecklistButton(page).click();
+      // No marketplace is attached, so nothing is asked of one and nothing is matched: the fetch
+      // keeps the three rows ("Kept all 3 cards from your checklist. Nothing to match, no
+      // marketplace attached.") and, every name being on the catalogue, the commit goes straight
+      // through, its "Saved" line replacing the kept one. Both lines are this fetch's (the set was
+      // empty a step ago), so either is the sync point; the saved line, exactly, is the proof.
+      const kept = page.getByText("Kept all 3 cards from your checklist. Nothing to match, no marketplace attached.");
+      const saved = page.getByText("Saved 3 cards. Teams from your checklist: 3 of 3 cards.", { exact: true });
+      await expect(kept.or(saved).first()).toBeVisible();
+      await expect(saved).toBeVisible();
+      await expect(matchCardsDialog(page)).toHaveCount(0);
+      await expect(reviewWizard(page)).toHaveCount(0);
 
-    for (const number of ["1", "2", "NNO"]) await expect(editCardButton(page, number)).toBeVisible();
-    await expect(editCardButton(page, "1")).toHaveAccessibleName("Edit card 1, Colt Keith");
-    await expect(editCardButton(page, "NNO")).toHaveAccessibleName("Edit card NNO, Bobby Witt Jr.");
-    // The clubs as NB holds them: the publisher's marks are not part of a name.
-    await expect(page.getByText(/^Detroit Tigers/).first()).toBeVisible();
-    await expect(page.getByText(/[®™]/)).toHaveCount(0);
-    // No marketplace link on any of the three (the badges BSC and SportLots cards carry).
-    await expect(page.getByTitle(/^(Listable on |BSC source: |SL source: )/)).toHaveCount(0);
-    await expectAccessible(page, { label: "Checklist-only set saved" });
+      for (const number of ["1", "2", "NNO"]) await expect(editCardButton(page, number)).toBeVisible();
+      await expect(editCardButton(page, "1")).toHaveAccessibleName("Edit card 1, Colt Keith");
+      await expect(editCardButton(page, "NNO")).toHaveAccessibleName("Edit card NNO, Bobby Witt Jr.");
+      // The clubs as NB holds them: the publisher's marks are not part of a name.
+      await expect(page.getByText(/^Detroit Tigers/).first()).toBeVisible();
+      await expect(page.getByText(/[®™]/)).toHaveCount(0);
+      // No marketplace link on any of the three (the badges BSC and SportLots cards carry).
+      await expect(page.getByTitle(/^(Listable on |BSC source: |SL source: )/)).toHaveCount(0);
+      await expectAccessible(page, { label: "Checklist-only set saved" });
 
-    // Proved: clean the token set up now, its cards and then its row (a delete rewrites the
-    // address in place, so the drill is the Insert type with its column open again).
-    for (const number of ["1", "2", "NNO"]) {
-      await deleteCardButton(page, number).click();
-      await confirmDeleteCardButton(page, number).click();
-      await expect(editCardButton(page, number)).toHaveCount(0);
+      // Proved: clean the token set up now, its cards and then its row (a delete rewrites the
+      // address in place, so the drill is the Insert type with its column open again).
+      for (const number of ["1", "2", "NNO"]) {
+        await deleteCardButton(page, number).click();
+        await confirmDeleteCardButton(page, number).click();
+        await expect(editCardButton(page, number)).toHaveCount(0);
+      }
+      await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+      await openAttributesPanel(page);
+      await page.getByRole("button", { name: `Delete ${token}`, exact: true }).click();
+      const deleteRow = page.getByRole("dialog", { name: new RegExp(`^Delete .*"${token}"\\?$`) });
+      await expect(deleteRow).toBeVisible();
+      await deleteRow.getByRole("button", { name: "Yes, delete" }).click();
+      await expect(deleteRow).toBeHidden();
+      await expect(columnOption(page, "Inserts", token)).toHaveCount(0);
+
+      // ══ 5. FUTURE STARS: two sources, so Match Cards ══
+      await columnSearch(page, "Inserts").fill(INSERT);
+      await columnOption(page, "Inserts", INSERT).click();
+      await expect(columnSelection(page, "Inserts", INSERT)).toBeVisible();
+      // Navigation lives in the URL: Back is the Insert type with nothing picked, Forward is Future Stars.
+      await page.goBack();
+      await expect(columnOption(page, "Inserts", INSERT)).toBeVisible();
+      await expect(columnSelection(page, "Inserts", INSERT)).toHaveCount(0);
+      await page.goForward();
+      await expect(columnSelection(page, "Inserts", INSERT)).toBeVisible();
+      await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+
+      await syncChecklistButton(page).click();
+      const matchCards = matchCardsDialog(page);
+      // One live BSC round trip (probed 2026-11-11: about 2.4 s).
+      await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards for Future Stars" });
+      await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
+      await expect(
+        matchCards.getByText("No cards save until you confirm. Anything left below gets tossed. Keep it to save it."),
+      ).toBeVisible();
+      // The card the checklist left out is BSC's alone.
+      await expect(matchCards.getByRole("heading", { name: "BSC only (1)" })).toBeVisible();
+      const benge = matchCards.getByRole("button", { name: "Keep #FS-10 Carson Benge as BSC-only" });
+      await expect(benge).toBeVisible();
+      // Every checklist row found its card, FS-9 among them by name.
+      await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
+      await expect(matchCards.getByText("Every checklist row found its card.")).toBeVisible();
+      await matchCards.getByRole("button", { name: /^Expand matched cards/ }).click();
+      await expect(matchCards.getByText("Matched (9)")).toBeVisible();
+      const skenes = matchCards
+        .getByRole("listitem")
+        .filter({ has: page.getByRole("button", { name: "Edit name for #FS-9 Paul Skenes" }) });
+      await expect(skenes.getByText("Checklist: #109", { exact: true })).toBeVisible();
+      await expect(skenes.getByText(/^Name match [0-9]{2}%$/)).toBeVisible();
+      await expectAccessible(page, { within: matchCards, label: "Match Cards with BSC and the set checklist" });
+
+      await benge.click();
+      await expect(matchCards.getByRole("heading", { name: "BSC only (0)" })).toBeVisible();
+      await expect(matchCards.getByRole("heading", { name: "Keeping (1)" })).toBeVisible();
+      await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
+      await expect(matchCards).toBeHidden();
+      // The checklist's "Paul Skenns" against the card's "Paul Skenes": the operator decides.
+      await expectChecklistDisagreementFirst(page);
+      await expectAccessible(page, { within: reviewWizard(page), label: "Wizard opens on the checklist disagreement" });
+      // Nothing was decided in the wizard (Match Cards' keep is not a wizard decision), so Cancel
+      // leaves at once, with no "Discard N decisions?" to answer, and saves nothing.
+      await reviewWizard(page).getByRole("button", { name: "Cancel (Esc)" }).click();
+      await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
+      await expect(reviewWizard(page)).toBeHidden();
+      await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+
+      // ══ 6. CLEAN UP: Back to the set itself, whose panel holds the checklist ══
+      // Back steps through the picks: Future Stars -> the Insert type (the token set's entry, rewritten
+      // in place by its delete) -> the Insert type as first picked -> Base -> the set.
+      await page.goBack();
+      await expect(columnOption(page, "Inserts", INSERT)).toBeVisible();
+      await expect(columnSelection(page, "Inserts", INSERT)).toHaveCount(0);
+      await page.goBack();
+      await expect(columnSelection(page, "Variant Types", "Insert")).toBeVisible();
+      await page.goBack();
+      await expect(columnSelection(page, "Variant Types", "Base")).toBeVisible();
+      await page.goBack();
+      await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
+      await openAttributesPanel(page);
+      await expect(panel).toBeVisible();
+      await panel.getByRole("button", { name: "Remove checklist" }).click();
+      const removeConfirm = page.getByRole("dialog", { name: "Remove this set's checklist?" });
+      await expect(removeConfirm).toBeVisible();
+      await expectAccessible(page, { within: removeConfirm, label: "Remove the set's checklist confirmation" });
+      await removeConfirm.getByRole("button", { name: "Yes, remove it" }).click();
+      await expect(removeConfirm).toBeHidden();
+      await expect(page.getByText("Checklist removed.")).toBeVisible();
+      checklistOnSet = false;
+      await expect(panel.getByLabel("Upload checklist")).toBeAttached();
+
+      // ══ 7. A FILE WITH CARDS BUT NO SECTION: nothing to save ══
+      // A set checklist is read by sections, so a list of cards with no heading above them saves
+      // nothing: the preview says why and Save is held.
+      await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
+      await panel.getByLabel("Upload checklist").setInputFiles({
+        name: "no-sections.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("1 Colt Keith - Detroit Tigers\n2 Gunnar Henderson - Baltimore Orioles\n"),
+      });
+      await expect(preview).toBeVisible();
+      await expect(preview.getByText(NO_SECTIONS_FOUND, { exact: true })).toBeVisible();
+      await expect(preview.getByRole("button", { name: "Save checklist" })).toHaveAttribute("aria-disabled", "true");
+      await expectAccessible(page, { within: preview, label: "Checklist preview of a file with no section" });
+      await preview.getByRole("button", { name: "Cancel" }).click();
+      await expect(preview).toBeHidden();
+      await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
+
+      // ══ 8. PASTE ONE INSTEAD: a pasted checklist saves on the set like a file ══
+      await panel.getByRole("button", { name: "Paste one instead" }).click();
+      await expect(preview).toBeVisible();
+      await preview
+        .getByRole("textbox", { name: "Paste the set's checklist" })
+        .fill(`${tokenHeading}\n1 Colt Keith - Detroit Tigers\n2 Gunnar Henderson - Baltimore Orioles\n`);
+      await expect(preview.getByText("1 section", { exact: true })).toBeVisible();
+      await expect(preview.getByText("2 cards", { exact: true })).toBeVisible();
+      await expectAccessible(page, { within: preview, label: "Paste a set checklist" });
+      checklistOnSet = true;
+      await preview.getByRole("button", { name: "Save checklist" }).click();
+      await expect(preview).toBeHidden();
+      await expect(page.getByText("Checklist saved: 1 section, 2 cards.")).toBeVisible();
+      await expect(panel.getByText("Pasted checklist", { exact: true })).toBeVisible();
+      // And away again, so the next run starts with none.
+      await panel.getByRole("button", { name: "Remove checklist" }).click();
+      await expect(removeConfirm).toBeVisible();
+      await removeConfirm.getByRole("button", { name: "Yes, remove it" }).click();
+      await expect(removeConfirm).toBeHidden();
+      checklistOnSet = false;
+      await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
+    } finally {
+      if (checklistOnSet) {
+        try {
+          await removeSetChecklistUnderAllBrands(page, env, { year: "2026", set: SET });
+        } catch (error) {
+          // The body's own error stays the one the report shows.
+          test.info().annotations.push({ type: "cleanup", description: `set checklist not removed: ${String(error)}` });
+        }
+      }
     }
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-    await expect(editAttributes.or(hideAttributes)).toBeVisible();
-    if (await editAttributes.isVisible()) await editAttributes.click();
-    await page.getByRole("button", { name: `Delete ${token}`, exact: true }).click();
-    const deleteRow = page.getByRole("dialog", { name: new RegExp(`^Delete .*"${token}"\\?$`) });
-    await expect(deleteRow).toBeVisible();
-    await deleteRow.getByRole("button", { name: "Yes, delete" }).click();
-    await expect(deleteRow).toBeHidden();
-    await expect(columnOption(page, "Inserts", token)).toHaveCount(0);
-
-    // ══ 5. FUTURE STARS: two sources, so Match Cards ══
-    await columnSearch(page, "Inserts").fill(INSERT);
-    await columnOption(page, "Inserts", INSERT).click();
-    await expect(columnSelection(page, "Inserts", INSERT)).toBeVisible();
-    // Navigation lives in the URL: Back is the Insert type with nothing picked, Forward is Future Stars.
-    await page.goBack();
-    await expect(columnOption(page, "Inserts", INSERT)).toBeVisible();
-    await expect(columnSelection(page, "Inserts", INSERT)).toHaveCount(0);
-    await page.goForward();
-    await expect(columnSelection(page, "Inserts", INSERT)).toBeVisible();
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-
-    await syncChecklistButton(page).click();
-    const matchCards = matchCardsDialog(page);
-    // One live BSC round trip (probed 2026-11-11: about 2.4 s).
-    await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards for Future Stars" });
-    await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
-    await expect(
-      matchCards.getByText("No cards save until you confirm. Anything left below gets tossed. Keep it to save it."),
-    ).toBeVisible();
-    // The card the checklist left out is BSC's alone.
-    await expect(matchCards.getByRole("heading", { name: "BSC only (1)" })).toBeVisible();
-    const benge = matchCards.getByRole("button", { name: "Keep #FS-10 Carson Benge as BSC-only" });
-    await expect(benge).toBeVisible();
-    // Every checklist row found its card, FS-9 among them by name.
-    await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
-    await expect(matchCards.getByText("Every checklist row found its card.")).toBeVisible();
-    await matchCards.getByRole("button", { name: /^Expand matched cards/ }).click();
-    await expect(matchCards.getByText("Matched (9)")).toBeVisible();
-    const skenes = matchCards
-      .getByRole("listitem")
-      .filter({ has: page.getByRole("button", { name: "Edit name for #FS-9 Paul Skenes" }) });
-    await expect(skenes.getByText("Checklist: #109", { exact: true })).toBeVisible();
-    await expect(skenes.getByText(/^Name match [0-9]{2}%$/)).toBeVisible();
-    await expectAccessible(page, { within: matchCards, label: "Match Cards with BSC and the set checklist" });
-
-    await benge.click();
-    await expect(matchCards.getByRole("heading", { name: "BSC only (0)" })).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "Keeping (1)" })).toBeVisible();
-    await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
-    await expect(matchCards).toBeHidden();
-    // The checklist's "Paul Skenns" against the card's "Paul Skenes": the operator decides.
-    await expectChecklistDisagreementFirst(page);
-    await expectAccessible(page, { within: reviewWizard(page), label: "Wizard opens on the checklist disagreement" });
-    // Nothing was decided in the wizard (Match Cards' keep is not a wizard decision), so Cancel
-    // leaves at once, with no "Discard N decisions?" to answer, and saves nothing.
-    await reviewWizard(page).getByRole("button", { name: "Cancel (Esc)" }).click();
-    await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
-    await expect(reviewWizard(page)).toBeHidden();
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-
-    // ══ 6. CLEAN UP: Back to the set itself, whose panel holds the checklist ══
-    // Back steps through the picks: Future Stars -> the Insert type (the token set's entry, rewritten
-    // in place by its delete) -> the Insert type as first picked -> Base -> the set.
-    await page.goBack();
-    await expect(columnOption(page, "Inserts", INSERT)).toBeVisible();
-    await expect(columnSelection(page, "Inserts", INSERT)).toHaveCount(0);
-    await page.goBack();
-    await expect(columnSelection(page, "Variant Types", "Insert")).toBeVisible();
-    await page.goBack();
-    await expect(columnSelection(page, "Variant Types", "Base")).toBeVisible();
-    await page.goBack();
-    await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
-    await expect(editAttributes.or(hideAttributes)).toBeVisible();
-    if (await editAttributes.isVisible()) await editAttributes.click();
-    await expect(panel).toBeVisible();
-    await panel.getByRole("button", { name: "Remove checklist" }).click();
-    const removeConfirm = page.getByRole("dialog", { name: "Remove this set's checklist?" });
-    await expect(removeConfirm).toBeVisible();
-    await expectAccessible(page, { within: removeConfirm, label: "Remove the set's checklist confirmation" });
-    await removeConfirm.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(removeConfirm).toBeHidden();
-    await expect(page.getByText("Checklist removed.")).toBeVisible();
-    await expect(panel.getByLabel("Upload checklist")).toBeAttached();
   },
 );
