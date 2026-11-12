@@ -49,6 +49,10 @@ test(
     await expect(haveOff).not.toHaveAttribute("aria-disabled", "true");
     await haveOff.click();
     await expect(checklist.getByRole("button", { name: `Have ${short}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
+    // Have flips at once; the server's answer then puts Add and Trade on the row, which moves
+    // Details right. Press Details only once that answer has landed, or the press is lost.
+    await expect(page.getByRole("status").filter({ hasText: `Added ${short} to Main` })).toBeVisible();
+    await expect(checklist.getByRole("button", { name: `Add another ${short}`, exact: true })).toBeVisible();
 
     // --- The drawer rides on the URL: Back closes it, then "Add another" opens it on the form ---
     const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 Topps Chrome ${escapeRe(short)}`) });
