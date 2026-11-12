@@ -1,5 +1,5 @@
 /**
- * NEO-496 — the set's publisher checklist panel: upload with a preview,
+ * NEO-496 — the set's official checklist panel: upload with a preview,
  * saving in whole-section calls with progress, a replay-safe retry, Replace,
  * Remove behind a confirm, and the server's refusals in operator words.
  *
@@ -51,6 +51,7 @@ vi.mock("convex/react", () => ({
   },
 }));
 
+import { HIDDEN_FILE_NAME_CHARS as HIDDEN_FILE_NAME } from "@/lib/checklists/read-checklist-file";
 import PublishedChecklistPanel, {
   NO_SECTIONS_FOUND,
   NOTHING_TO_SAVE,
@@ -132,7 +133,7 @@ afterEach(() => {
 describe("PublishedChecklistPanel — no checklist yet", () => {
   it("is a named section with Upload checklist and a paste door, and no Remove", () => {
     renderPanel();
-    const region = screen.getByRole("region", { name: "Publisher checklist" });
+    const region = screen.getByRole("region", { name: "Official checklist" });
     expect(within(region).getByLabelText("Upload checklist")).toBeTruthy();
     expect((screen.getByLabelText("Upload checklist") as HTMLInputElement).accept).toBe(
       ".xlsx,.pdf,.csv,.tsv,.txt",
@@ -151,6 +152,29 @@ describe("PublishedChecklistPanel — no checklist yet", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(mockStart).not.toHaveBeenCalled();
   });
+
+  it("ties a read refusal to the picker while it stands (A-N6)", async () => {
+    renderPanel();
+    const input = screen.getByLabelText("Upload checklist") as HTMLInputElement;
+    const before = (input.getAttribute("aria-describedby") ?? "").split(" ");
+    expect(before).toHaveLength(1);
+    const xls = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    await choose("Upload checklist", fileOf("old.xls", xls));
+    const alert = await waitFor(() => screen.getByRole("alert"));
+    const ids = (input.getAttribute("aria-describedby") ?? "").split(" ");
+    expect(ids).toEqual([before[0], alert.id]);
+  });
+
+  it("refuses a file whose name hides direction or zero-width characters, before reading it", async () => {
+    const { onStatus } = renderPanel();
+    await choose("Upload checklist", fileOf("topps\u202egnp.txt", TOPPS));
+    expect(screen.getByRole("alert").textContent).toBe(HIDDEN_FILE_NAME);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onStatus).not.toHaveBeenCalled();
+    await choose("Upload checklist", fileOf("top\u200bps.txt", TOPPS));
+    expect(screen.getByRole("alert").textContent).toBe(HIDDEN_FILE_NAME);
+    expect(mockStart).not.toHaveBeenCalled();
+  });
 });
 
 describe("PublishedChecklistPanel — the preview", () => {
@@ -167,8 +191,16 @@ describe("PublishedChecklistPanel — the preview", () => {
     expect(within(rowOf("BASE CARDS")).getByText("1 to 2")).toBeTruthy();
     expect(within(rowOf("FANATICS AUTHENTICS")).getByText("NNO only")).toBeTruthy();
     expect(within(rowOf("CHROME LEGEND AUTOGRAPHS")).getByText("CLA-1 to CLA-10, plus 1 NNO")).toBeTruthy();
-    // One group heading over the run of its two sections.
-    expect(within(table).getAllByRole("columnheader", { name: "AUTOGRAPH" })).toHaveLength(1);
+    // One group heading over the run of its two sections, heading its own
+    // row group (A-N7: scope="rowgroup" on a body of its own, not colgroup).
+    const groupHeads = within(table).getAllByRole("rowheader", { name: "AUTOGRAPH" });
+    expect(groupHeads).toHaveLength(1);
+    expect(groupHeads[0].getAttribute("scope")).toBe("rowgroup");
+    const groupBody = groupHeads[0].closest("tbody") as HTMLElement;
+    expect(within(groupBody).getByRole("rowheader", { name: "FANATICS AUTHENTICS" })).toBeTruthy();
+    expect(within(groupBody).getByRole("rowheader", { name: "CHROME LEGEND AUTOGRAPHS" })).toBeTruthy();
+    expect(within(groupBody).queryByRole("rowheader", { name: "BASE CARDS" })).toBeNull();
+    expect(table.querySelector('[scope="colgroup"]')).toBeNull();
     // Nothing is saved by looking.
     expect(mockStart).not.toHaveBeenCalled();
   });
@@ -233,7 +265,38 @@ describe("PublishedChecklistPanel — saving", () => {
     expect(sent.sections[1]).toMatchObject({ group: "AUTOGRAPH" });
     expect(mockFinish).toHaveBeenCalledWith({ checklistId: CHECKLIST_ID, sectionCount: 3, rowCount: 7 });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(onStatus).toHaveBeenCalledWith("Checklist saved: 3 sections, 7 cards.");
+    await waitFor(() =>
+      expect(onStatus).toHaveBeenCalledWith("Checklist saved: 3 sections, 7 cards."),
+    );
+  });
+
+  it("says 'Checklist saved' only once the dialog is gone and the page is no longer inert", async () => {
+    // A2: a line written into the status region while the page behind the
+    // dialog is still inert is never spoken. Record the page's state at the
+    // moment the line is said.
+    const seen: Array<{ message: string; dialogOpen: boolean; inert: number }> = [];
+    const onStatus = vi.fn((message: string) => {
+      seen.push({
+        message,
+        dialogOpen: document.querySelector('[role="dialog"]') !== null,
+        inert: document.querySelectorAll("[inert]").length,
+      });
+    });
+    renderPanel({ onStatus });
+    await choose("Upload checklist", fileOf("topps.txt", TOPPS));
+    const dialog = await waitFor(preview);
+    // The dialog holds the page inert while it is open.
+    expect(document.querySelectorAll("[inert]").length).toBeGreaterThan(0);
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Save checklist" }));
+    });
+    await waitFor(() => expect(seen.some((s) => s.message.startsWith("Checklist saved"))).toBe(true));
+    const said = seen.find((s) => s.message.startsWith("Checklist saved"));
+    expect(said).toEqual({
+      message: "Checklist saved: 3 sections, 7 cards.",
+      dialogOpen: false,
+      inert: 0,
+    });
   });
 
   it("shows its progress in sections while the save is in flight, and Stop saving ends it", async () => {
@@ -376,7 +439,7 @@ describe("PublishedChecklistPanel — a checklist on the set", () => {
 
   it("shows the file, its size, Replace, a paste door and Remove", () => {
     renderPanel();
-    const region = screen.getByRole("region", { name: "Publisher checklist" });
+    const region = screen.getByRole("region", { name: "Official checklist" });
     expect(within(region).getByText("2026-donruss.xlsx")).toBeTruthy();
     expect(within(region).getByText(/273 sections, 18,068 cards\./)).toBeTruthy();
     expect(within(region).getByLabelText("Replace checklist")).toBeTruthy();
@@ -413,7 +476,7 @@ describe("PublishedChecklistPanel — a checklist on the set", () => {
     });
     expect(mockRemove).toHaveBeenCalledWith({ setId: SET_ID });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(onStatus).toHaveBeenCalledWith("Checklist removed.");
+    await waitFor(() => expect(onStatus).toHaveBeenCalledWith("Checklist removed."));
   });
 
   it("a refused Remove stays in the confirm with a reason", async () => {

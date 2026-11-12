@@ -310,19 +310,21 @@ export function siblingHoldSummary(n: number): string {
 
 /**
  * DRAFT (NEO-325). What to do, one line per family present. The verbs are the
- * controls' own: "Detach" (MultiSourcePanel's detach confirm) and "Attach"
- * (its `ATTACH_MORE_LABEL` button). Never "link", "take off" or "move".
+ * controls' own: "Detach" (MultiSourcePanel's detach confirm), "Attach" (its
+ * `ATTACH_MORE_LABEL` button) and "map" (the Reconcile dialog's own word: its
+ * "already mapped" and "Remove this mapping"). Never "link", "pair", "take
+ * off" or "move".
  */
 export const SIBLING_FIX: Record<SiblingFamily, string> = {
   name: "Name taken? Sync again and give it a name of its own.",
   twice:
-    "Doubled up? Sync again: pair just one with that set and give the other a name of its own.",
+    "Doubled up? Sync again: map just one to that set and give the other a name of its own.",
   link: "On two sets? Detach it from the extra one, then sync again.",
   split:
     "Split across two sets? Detach one and Attach it on the other set, then sync again.",
-  // NEO-496 — "pair" and "Remove" are the Reconcile dialog's own words (its
-  // pairing, and the "Remove this section" control on a set's section).
-  sectionName: "Name taken? Sync again and pair the section with the set that already has that name.",
+  // NEO-496 — "map" and "Remove" are the Reconcile dialog's own words (its
+  // mapping, and the "Remove this section" control on a set's section).
+  sectionName: "Name taken? Sync again and map the section to the set that already has that name.",
   section: "Section already on another set? Remove it there, then sync again.",
 };
 

@@ -447,7 +447,10 @@ describe("CardPairingModal — the server's checklist pairs (NEO-496 D10)", () =
     });
     expandMatched();
     expect(screen.getByText("On checklist")).toBeTruthy();
-    expect(screen.getByText("94%")).toBeTruthy();
+    const percent = screen.getByText("94%");
+    // A3: read out as "Name match 94%", the tooltip kept.
+    expect(percent.textContent).toBe("Name match 94%");
+    expect(percent.getAttribute("title")).toBe("How close the names are");
   });
 
   test("a name pair whose numbers differ shows the row's number beside the card's own, which it keeps", async () => {
@@ -459,7 +462,9 @@ describe("CardPairingModal — the server's checklist pairs (NEO-496 D10)", () =
     });
     expandMatched();
     expect(screen.getByText("#3 Wyatt Langford")).toBeTruthy();
-    expect(screen.getByText("Checklist #FS-3")).toBeTruthy();
+    expect(screen.getByText("Checklist: #FS-3").getAttribute("title")).toBe(
+      "Your checklist prints this card as #FS-3",
+    );
     expect(screen.queryByText("On checklist")).toBeNull();
     // No conflict, no other note.
     expect(screen.queryByText(/conflict/i)).toBeNull();
@@ -540,17 +545,19 @@ describe("CardPairingModal — checklist names (NEO-490)", () => {
       screen.getByRole("heading", { name: "Checklist only (2)" }),
     ).toBeTruthy();
 
-    const select = screen.getByRole("button", {
+    // A-N4: a row's Select is a radio in a roving group, one Tab stop.
+    const group = screen.getByRole("radiogroup", { name: "Pick a checklist row to link" });
+    const select = within(group).getByRole("radio", {
       name: "Select #1 Frank Thomas · Chicago White Sox",
     });
-    expect(select.getAttribute("aria-pressed")).toBe("false");
+    expect(select.getAttribute("aria-checked")).toBe("false");
     // Without a picked row there is nothing to link yet.
     expect(
       screen.queryByRole("button", { name: /^Link selected checklist row to / }),
     ).toBeNull();
 
     fireEvent.click(select);
-    expect(select.getAttribute("aria-pressed")).toBe("true");
+    expect(select.getAttribute("aria-checked")).toBe("true");
     fireEvent.click(
       screen.getByRole("button", { name: "Link selected checklist row to #A2 Card Two" }),
     );
@@ -561,7 +568,7 @@ describe("CardPairingModal — checklist names (NEO-490)", () => {
       }),
     ).toBeTruthy();
     expect(screen.getByText("Linked to #A2 Card Two")).toBeTruthy();
-    expect(screen.getByText("Checklist #1")).toBeTruthy();
+    expect(screen.getByText("Checklist: #1")).toBeTruthy();
     expect(
       screen.getByRole("heading", { name: "Checklist only (1)" }),
     ).toBeTruthy();
@@ -625,7 +632,7 @@ describe("CardPairingModal — linking rows (NEO-490)", () => {
     fireEvent.click(screen.getByLabelText("Select #2 Jacob Wilson"));
     expect(screen.queryByLabelText("Link selected checklist row to #A1 Card One")).toBeNull();
     expect(screen.getByLabelText("Link selected checklist row to #A2 Card Two")).toBeTruthy();
-    expect(screen.getAllByText(/^Checklist #/)).toHaveLength(1);
+    expect(screen.getAllByText(/^Checklist: #/)).toHaveLength(1);
   });
 
   test("Unlink returns the row to the list and offers the card a row again", () => {
@@ -639,7 +646,7 @@ describe("CardPairingModal — linking rows (NEO-490)", () => {
     fireEvent.click(screen.getByLabelText("Unlink checklist row #1 Frank Thomas · Chicago White Sox from #A1 Card One"));
 
     expect(screen.getByLabelText("Select #1 Frank Thomas · Chicago White Sox")).toBeTruthy();
-    expect(screen.queryByText(/^Checklist #/)).toBeNull();
+    expect(screen.queryByText(/^Checklist: #/)).toBeNull();
     expect(screen.getByRole("heading", { name: "Checklist only (3)" })).toBeTruthy();
   });
 
@@ -690,7 +697,7 @@ describe("CardPairingModal — linking rows (NEO-490)", () => {
     fireEvent.click(screen.getByLabelText("Remove #A1 Card One from save list"));
 
     expect(screen.getByLabelText("Select #1 Frank Thomas")).toBeTruthy();
-    expect(screen.queryByText(/^Checklist #/)).toBeNull();
+    expect(screen.queryByText(/^Checklist: #/)).toBeNull();
     await confirm();
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
     expect(confirmedCards(onConfirm)).toHaveLength(0);
@@ -706,13 +713,13 @@ describe("CardPairingModal — linking rows (NEO-490)", () => {
     });
     fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas"));
     fireEvent.click(screen.getByLabelText("Link selected checklist row to #5 Pair Card"));
-    expect(screen.getByText("Checklist #1")).toBeTruthy();
+    expect(screen.getByText("Checklist: #1")).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText("Unlink #5 Pair Card"));
 
     // The BSC half is on the keep shelf with its chip, and the row is still linked.
     expect(screen.getByLabelText("Remove #5 Pair Card from save list")).toBeTruthy();
-    expect(screen.getByText("Checklist #1")).toBeTruthy();
+    expect(screen.getByText("Checklist: #1")).toBeTruthy();
     expect(
       screen.getByLabelText("Unlink checklist row #1 Frank Thomas from #5 Pair Card"),
     ).toBeTruthy();
@@ -1070,7 +1077,9 @@ describe("CardPairingModal — the checklist announcer (NEO-490 a11y)", () => {
     selectTop();
     linkTopTo("#A1 Card One");
     fireEvent.click(screen.getByLabelText(`Unlink checklist row #1 ${TOP} from #A1 Card One`));
-    expect(announcer().textContent).toBe("Unlinked.");
+    expect(announcer().textContent).toBe(
+      "Unlinked from #A1 Card One. Checklist row's back on the list.",
+    );
   });
 
   test("a marketplace Remove that takes the link with it says which row went", () => {
@@ -1161,7 +1170,7 @@ describe("CardPairingModal — the Selected strip (NEO-490 a11y)", () => {
     expect(screen.queryByLabelText(/^Link selected checklist row to /)).toBeNull();
     expect(announcer().textContent).toBe("Selection cleared.");
     const button = screen.getByLabelText(`Select #1 ${TOP}`);
-    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(button.getAttribute("aria-checked")).toBe("false");
     await waitFor(() => expect(document.activeElement).toBe(button));
   });
 
@@ -1213,8 +1222,8 @@ describe("CardPairingModal — rows that read alike (NEO-490 a11y)", () => {
     expect(screen.getByLabelText("Select NNO Same, row 2 of 3")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Select NNO Same, row 2 of 3"));
     linkTopTo("#A1 Card One");
-    expect(screen.getByText("Checklist NNO")).toBeTruthy();
-    expect(screen.queryByText("Checklist #NNO")).toBeNull();
+    expect(screen.getByText("Checklist: NNO")).toBeTruthy();
+    expect(screen.queryByText("Checklist: #NNO")).toBeNull();
   });
 
   test("the number chip says what the number is", () => {
@@ -1224,8 +1233,8 @@ describe("CardPairingModal — rows that read alike (NEO-490 a11y)", () => {
     });
     selectTop();
     linkTopTo("#A1 Card One");
-    expect(screen.getByText("Checklist #1").getAttribute("title")).toBe(
-      "Number on your checklist",
+    expect(screen.getByText("Checklist: #1").getAttribute("title")).toBe(
+      "Your checklist prints this card as #1",
     );
   });
 });
@@ -1443,7 +1452,7 @@ describe("CardPairingModal — the card's own Unlink on the checklist chip (NEO-
     fireEvent.click(screen.getByLabelText(CHIP_SOLO));
 
     expect(screen.getByLabelText(`Select #1 ${TOP}`)).toBeTruthy();
-    expect(screen.queryByText(/^Checklist #/)).toBeNull();
+    expect(screen.queryByText(/^Checklist: #/)).toBeNull();
     expect(screen.queryByLabelText(CHIP_SOLO)).toBeNull();
     expect(screen.getByRole("heading", { name: "Checklist only (3)" })).toBeTruthy();
     // The card is offered a row again.
@@ -1454,7 +1463,9 @@ describe("CardPairingModal — the card's own Unlink on the checklist chip (NEO-
   test("it says Unlinked", () => {
     soloLinked();
     fireEvent.click(screen.getByLabelText(CHIP_SOLO));
-    expect(announcer().textContent).toBe("Unlinked.");
+    expect(announcer().textContent).toBe(
+      "Unlinked from #A1 Card One. Checklist row's back on the list.",
+    );
   });
 
   test("focus lands on the row's Select button", async () => {
@@ -1472,15 +1483,17 @@ describe("CardPairingModal — the card's own Unlink on the checklist chip (NEO-
     });
     fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas"));
     fireEvent.click(screen.getByLabelText("Link selected checklist row to #5 Pair Card"));
-    expect(screen.getByText("Checklist #1")).toBeTruthy();
+    expect(screen.getByText("Checklist: #1")).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText("Unlink card #5 Pair Card from checklist row #1 Frank Thomas"));
 
-    expect(screen.queryByText("Checklist #1")).toBeNull();
+    expect(screen.queryByText("Checklist: #1")).toBeNull();
     expect(screen.getByLabelText("Select #1 Frank Thomas")).toBeTruthy();
     // The marketplace pair is untouched.
     expect(screen.getByLabelText("Unlink #5 Pair Card")).toBeTruthy();
-    expect(announcer().textContent).toBe("Unlinked.");
+    expect(announcer().textContent).toBe(
+      "Unlinked from #5 Pair Card. Checklist row's back on the list.",
+    );
   });
 
   test("from a keep-shelf card in a two-marketplace set it drops the link", () => {
@@ -1496,9 +1509,11 @@ describe("CardPairingModal — the card's own Unlink on the checklist chip (NEO-
 
     fireEvent.click(screen.getByLabelText("Unlink card #A1 Card One from checklist row #1 Frank Thomas"));
 
-    expect(screen.queryByText("Checklist #1")).toBeNull();
+    expect(screen.queryByText("Checklist: #1")).toBeNull();
     expect(screen.getByLabelText("Select #1 Frank Thomas")).toBeTruthy();
-    expect(announcer().textContent).toBe("Unlinked.");
+    expect(announcer().textContent).toBe(
+      "Unlinked from #A1 Card One. Checklist row's back on the list.",
+    );
   });
 
   test("its name is distinct from the marketplace Unlink and the row's Unlink", () => {
@@ -1577,7 +1592,9 @@ describe("CardPairingModal — Unlink on the server's checklist pairs (NEO-496)"
     expect(screen.getByText("BSC: #FS-1 Jackson Holliday")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Checklist only (1)" })).toBeTruthy();
     expect(screen.getByLabelText(`Select ${ROW_LINE}`)).toBeTruthy();
-    expect(announcer().textContent).toBe("Unlinked.");
+    expect(announcer().textContent).toBe(
+      "Unlinked from #FS-1 Jackson Holliday. Checklist row's back on the list.",
+    );
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("aria-label")).toBe(`Select ${ROW_LINE}`),
     );
@@ -1696,7 +1713,7 @@ describe("CardPairingModal — Unlink on the server's checklist pairs (NEO-496)"
     fireEvent.click(screen.getByLabelText(UNLINK));
     fireEvent.click(screen.getByLabelText(`Select ${ROW_LINE}`));
     fireEvent.click(screen.getByLabelText("Link selected checklist row to #FS-1 Jackson Holliday"));
-    expect(screen.getByText("Checklist #FS-1")).toBeTruthy();
+    expect(screen.getByText("Checklist: #FS-1")).toBeTruthy();
 
     await confirm();
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
@@ -1820,5 +1837,108 @@ describe("CardPairingModal — Unlink on the server's checklist pairs (NEO-496)"
     expect(sl).not.toHaveProperty("players");
     expect(sl).not.toHaveProperty("teams");
     expect(sl).not.toHaveProperty("checklistLink");
+  });
+});
+
+describe("CardPairingModal — keyboard and announcements (NEO-496 a11y audit)", () => {
+  const soloMount = () =>
+    mount({
+      data: { unmatchedBsc: plainCards() },
+      checklist: checklistFor(plainRows(), plainKeys),
+    });
+  const rowGroup = () => screen.getByRole("radiogroup", { name: "Pick a checklist row to link" });
+  const bscGroup = () => screen.getByRole("radiogroup", { name: "Pick a BSC card to link" });
+  const SELECT_1 = `Select #1 ${TOP}`;
+  const SELECT_2 = "Select #2 Jacob Wilson";
+  const SELECT_3 = "Select #3 Matt Shaw";
+
+  test("A-N4: the checklist rows are one Tab stop; arrows, Home and End move the pick", () => {
+    soloMount();
+    const radios = within(rowGroup()).getAllByRole("radio");
+    expect(radios.map((r) => r.getAttribute("tabindex"))).toEqual(["0", "-1", "-1"]);
+
+    fireEvent.keyDown(screen.getByLabelText(SELECT_1), { key: "ArrowDown" });
+    expect(screen.getByLabelText(SELECT_2).getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(screen.getByLabelText(SELECT_2));
+    expect(screen.getByLabelText(SELECT_2).getAttribute("tabindex")).toBe("0");
+    expect(screen.getByLabelText(SELECT_1).getAttribute("tabindex")).toBe("-1");
+    expect(announcer().textContent).toBe("Checklist row 2 selected. Press Link on a card.");
+
+    fireEvent.keyDown(screen.getByLabelText(SELECT_2), { key: "End" });
+    expect(document.activeElement).toBe(screen.getByLabelText(SELECT_3));
+    // Wraps at the end.
+    fireEvent.keyDown(screen.getByLabelText(SELECT_3), { key: "ArrowDown" });
+    expect(document.activeElement).toBe(screen.getByLabelText(SELECT_1));
+    expect(screen.getByLabelText(SELECT_1).getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(screen.getByLabelText(SELECT_1), { key: "ArrowUp" });
+    expect(document.activeElement).toBe(screen.getByLabelText(SELECT_3));
+    fireEvent.keyDown(screen.getByLabelText(SELECT_3), { key: "Home" });
+    expect(document.activeElement).toBe(screen.getByLabelText(SELECT_1));
+  });
+
+  test("A-N4: the BSC picks are a roving radio group too, with the same names", () => {
+    soloMount();
+    const radios = within(bscGroup()).getAllByRole("radio");
+    expect(radios.map((r) => r.getAttribute("aria-label"))).toEqual([
+      "Select BSC card #A1 Card One",
+      "Select BSC card #A2 Card Two",
+      "Select BSC card #A3 Card Three",
+    ]);
+    expect(radios.map((r) => r.getAttribute("tabindex"))).toEqual(["0", "-1", "-1"]);
+    fireEvent.keyDown(radios[0], { key: "ArrowRight" });
+    const picked = within(bscGroup()).getByRole("radio", { checked: true });
+    expect(picked.textContent).toBe("#A2 Card Two");
+    expect(document.activeElement).toBe(picked);
+    expect(picked.getAttribute("tabindex")).toBe("0");
+  });
+
+  test("A-N3: Keep on a checklist row moves focus to the next row's Select, else the one before, else the filter", async () => {
+    soloMount();
+    fireEvent.click(screen.getByLabelText(`Keep #1 ${TOP} as checklist-only`));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText(SELECT_2)));
+    fireEvent.click(screen.getByLabelText("Keep #3 Matt Shaw as checklist-only"));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText(SELECT_2)));
+    fireEvent.click(screen.getByLabelText("Keep #2 Jacob Wilson as checklist-only"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Filter checklist rows")),
+    );
+  });
+
+  test("A-N3: Keep on a BSC card moves focus to the next card's Select", async () => {
+    soloMount();
+    fireEvent.click(screen.getByLabelText("Keep #A1 Card One as BSC-only"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Select BSC card #A2 Card Two")),
+    );
+  });
+
+  test("A-N1 / A-N2: Unlink names the card, and clears a filter that hides the freed row so focus lands on it", async () => {
+    soloMount();
+    selectTop();
+    linkTopTo("#A1 Card One");
+    const filter = screen.getByLabelText("Filter checklist rows") as HTMLInputElement;
+    fireEvent.change(filter, { target: { value: "Jacob" } });
+    expect(screen.queryByLabelText(`Unlink checklist row #1 ${TOP} from #A1 Card One`)).toBeNull();
+
+    fireEvent.click(
+      screen.getByLabelText(`Unlink card #A1 Card One from checklist row #1 ${TOP}`),
+    );
+    expect(filter.value).toBe("");
+    expect(announcer().textContent).toBe(
+      "Unlinked from #A1 Card One. Checklist row's back on the list.",
+    );
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText(SELECT_1)));
+  });
+
+  test("A-N2: a filter that still shows the freed row is left alone", () => {
+    soloMount();
+    selectTop();
+    linkTopTo("#A1 Card One");
+    const filter = screen.getByLabelText("Filter checklist rows") as HTMLInputElement;
+    fireEvent.change(filter, { target: { value: "Frank" } });
+    fireEvent.click(
+      screen.getByLabelText(`Unlink card #A1 Card One from checklist row #1 ${TOP}`),
+    );
+    expect(filter.value).toBe("Frank");
   });
 });

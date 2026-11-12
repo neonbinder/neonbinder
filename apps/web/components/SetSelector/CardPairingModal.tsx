@@ -806,6 +806,8 @@ function PairableRow({
   return (
     <li
       ref={setRef}
+      // A-N3: the handle a Keep re-queries to move focus to the next row.
+      data-pair-row={`${side}:${cardKey}`}
       {...listeners}
       className={`flex items-center gap-2 rounded cursor-grab active:cursor-grabbing ${
         isDragging ? "opacity-40" : ""
@@ -2402,7 +2404,7 @@ export const CHECKLIST_COLUMN_SUBTITLE =
 
 /** NEO-496 — the usual subtitle, when a checklist row can be kept too. */
 export const CHECKLIST_SOURCES_SUBTITLE =
-  "No cards are saved until you confirm. Anything left in a column below is discarded — keep a card to save it anyway.";
+  "No cards save until you confirm. Anything left below gets tossed. Keep it to save it.";
 
 /** NEO-496 — every card lined up across the sources, the checklist among them. */
 export const CHECKLIST_ALL_LINED_UP =
@@ -2426,7 +2428,7 @@ export const CHECKLIST_ALL_FOUND = "Every checklist row found its card.";
 
 /**
  * NEO-496 — the server's checklist pairing, as a card's chip: "On checklist"
- * for a number match, "Checklist #FS-3" when the card paired by name and the
+ * for a number match, "Checklist: #FS-3" when the card paired by name and the
  * row prints another number (the card keeps its own; this is not a
  * conflict), and the % for a near-name pair, like a fuzzy BSC/SportLots link.
  */
@@ -2436,12 +2438,22 @@ export function serverChecklistChipText(link: NonNullable<PairingCard["checklist
 } {
   const number = link.checklistNumber?.trim();
   return {
-    label: number ? `Checklist #${number}` : "On checklist",
+    label: number ? `Checklist: #${number}` : "On checklist",
     percent:
       link.confidence !== undefined && link.confidence < 1
         ? `${Math.round(link.confidence * 100)}%`
         : null,
   };
+}
+
+/**
+ * N2 — a checklist chip's tooltip: the number the checklist prints for the
+ * card, or (no number) that the card is on the checklist.
+ */
+export function checklistNumberTitle(printed: string | undefined): string {
+  return printed
+    ? `Your checklist prints this card as #${printed}`
+    : "This card is on your checklist";
 }
 
 /**
@@ -2457,15 +2469,19 @@ function serverChecklistChip(
     <span className="inline-flex shrink-0 items-stretch rounded border border-pick-teal-rule bg-pick-teal text-xs text-pick-teal-ink">
       <span
         className="flex items-center px-1.5 py-0.5"
-        title={link.checklistNumber ? "Number on your checklist" : "This card is on your checklist"}
+        title={checklistNumberTitle(link.checklistNumber?.trim() || undefined)}
       >
         {text}
       </span>
       {percent && (
+        // A3: the percent alone says nothing to a screen reader; the hidden
+        // words say what it measures. `relative` keeps the sr-only text
+        // inside the chip.
         <span
-          className="flex items-center border-l border-pick-teal-rule px-1.5 py-0.5 font-semibold"
+          className="relative flex items-center border-l border-pick-teal-rule px-1.5 py-0.5 font-semibold"
           title="How close the names are"
         >
+          <span className="sr-only">Name match </span>
           {percent}
         </span>
       )}
@@ -2494,6 +2510,40 @@ export function checklistLinkedAnnouncement(
   return `Linked checklist row ${rowNumber} to ${cardLabel}. ${left}`;
 }
 export const CHECKLIST_UNLINKED = "Unlinked.";
+/**
+ * A-N1 — said when the operator's own Unlink drops a checklist link: which
+ * card it left, and that the row can be picked again.
+ */
+export function checklistUnlinkedAnnouncement(cardLabel: string | undefined): string {
+  return cardLabel
+    ? `Unlinked from ${cardLabel}. Checklist row's back on the list.`
+    : `${CHECKLIST_UNLINKED} Checklist row's back on the list.`;
+}
+
+/** A-N3 — the card after `card` in `list`, else the one before; by key. */
+function neighbourOf(list: readonly PairingCard[], card: PairingCard): PairingCard | undefined {
+  const key = candidateKey(card);
+  const at = list.findIndex((c) => candidateKey(c) === key);
+  if (at < 0) return undefined;
+  return list[at + 1] ?? list[at - 1];
+}
+
+/**
+ * A-N4 — where an arrow, Home or End moves a roving radio group of `count`
+ * radios from index `at` (-1: none focused), wrapping at both ends; null for
+ * any other key.
+ */
+export function radioStep(key: string, at: number, count: number): number | null {
+  if (count === 0) return null;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  if (key === "ArrowDown" || key === "ArrowRight") return at < 0 ? 0 : (at + 1) % count;
+  if (key === "ArrowUp" || key === "ArrowLeft") {
+    return at < 0 ? count - 1 : (at - 1 + count) % count;
+  }
+  return null;
+}
+
 /** A marketplace Unlink or Remove took a checklist link with it. */
 export function checklistLinkDroppedAnnouncement(rowNumber: string): string {
   return `Checklist row ${rowNumber} unlinked too.`;
@@ -2809,7 +2859,8 @@ export default function CardPairingModal({
       if (next.has(key)) continue;
       if (explicitUnlinkRef.current === key) {
         explicitUnlinkRef.current = null;
-        messages.push(CHECKLIST_UNLINKED);
+        const card = cards.find((c) => candidateKey(c) === key);
+        messages.push(checklistUnlinkedAnnouncement(card ? label(card) : undefined));
         continue;
       }
       const row = rows[rowIndex];
@@ -3078,6 +3129,49 @@ export default function CardPairingModal({
       (target ?? checklistFilterRef.current)?.focus();
     });
   }, []);
+  /**
+   * A-N2 — an Unlink puts a row back on the list; a filter that would hide
+   * it is cleared first, so focus (`focusChecklistRow`) lands on the row the
+   * operator just freed rather than on the filter.
+   */
+  const revealChecklistRow = useCallback(
+    (line: string) => {
+      if (checklistFilter !== "" && !line.toLowerCase().includes(checklistFilter.toLowerCase())) {
+        setChecklistFilter("");
+      }
+    },
+    [checklistFilter],
+  );
+  /**
+   * A-N3 — after a Keep takes a row out of its column, focus the next row's
+   * primary control (its Select, or the first enabled control when that one
+   * is disabled), else the previous row's, else the column's filter. `rowAttr`
+   * is the row handle (`data-pair-row`, `data-checklist-row`) and `neighbour`
+   * its value, re-queried after the render.
+   */
+  /** A-N4 — focus the radio `key` names inside its group, now. */
+  const focusPickRadio = useCallback((group: HTMLElement, key: string) => {
+    Array.from(group.querySelectorAll<HTMLElement>("[data-pick-radio]"))
+      .find((el) => el.getAttribute("data-pick-radio") === key)
+      ?.focus();
+  }, []);
+  const focusRowAfterRemoval = useCallback(
+    (rowAttr: string, neighbour: string | null, fallback: HTMLElement | null) => {
+      requestAnimationFrame(() => {
+        const row =
+          neighbour === null
+            ? undefined
+            : Array.from(
+                dialogRef.current?.querySelectorAll<HTMLElement>(`[${rowAttr}]`) ?? [],
+              ).find((el) => el.getAttribute(rowAttr) === neighbour);
+        const target =
+          row?.querySelector<HTMLElement>("[data-row-primary]:not(:disabled)") ??
+          row?.querySelector<HTMLElement>("button:not(:disabled)");
+        (target ?? fallback)?.focus();
+      });
+    },
+    [],
+  );
   const performChecklistLink = useCallback(
     (rowIndex: number, cardKey: string) => {
       dispatch({ type: "LINK_CHECKLIST", rowIndex, cardKey });
@@ -3444,6 +3538,19 @@ export default function CardPairingModal({
       ? selectedRow
       : null;
   /**
+   * A-N4 — the roving radio groups' one Tab stop each: the picked card or
+   * row while it is listed, else the first one listed.
+   */
+  const pickableRows = visibleRows.filter((i) => !rowToCard.has(i));
+  const checklistTabStop =
+    activeRow !== null && pickableRows.includes(activeRow) ? activeRow : (pickableRows[0] ?? null);
+  const bscTabStop =
+    selectedBsc !== null && visibleBsc.some((c) => candidateKey(c) === selectedBsc)
+      ? selectedBsc
+      : visibleBsc[0]
+        ? candidateKey(visibleBsc[0])
+        : null;
+  /**
    * "Checklist #1" on a linked card, with the card's own Unlink inside the
    * chip: the operator looking at the card can drop its row without hunting
    * for the row in the checklist column. Same move as the row's Unlink.
@@ -3473,7 +3580,8 @@ export default function CardPairingModal({
         className="min-h-6 rounded-r border-l border-pick-teal-rule px-1.5 font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
         onClick={() => {
           dispatch({ type: "UNLINK_SERVER_CHECKLIST", cardKey });
-          announceChecklist(CHECKLIST_UNLINKED);
+          announceChecklist(checklistUnlinkedAnnouncement(label(card)));
+          revealChecklistRow(checklistRowLine(pairedRowOf(card.checklistLink.row)));
           focusChecklistRow(rowIndex);
         }}
         aria-label={`Unlink card ${label(card)} from checklist row ${checklistRowLine(
@@ -3494,8 +3602,15 @@ export default function CardPairingModal({
     const cardLabel = cardLabels.get(cardKey) ?? "this card";
     return (
       <span className="inline-flex shrink-0 items-stretch rounded border border-pick-teal-rule bg-pick-teal text-xs text-pick-teal-ink">
-        <span className="flex items-center px-1.5 py-0.5" title="Number on your checklist">
-          Checklist {row.noNumber ? row.number : `#${row.number}`}
+        <span
+          className="flex items-center px-1.5 py-0.5"
+          title={
+            row.noNumber
+              ? "Your checklist prints this card with no number"
+              : checklistNumberTitle(row.number)
+          }
+        >
+          Checklist: {row.noNumber ? row.number : `#${row.number}`}
         </span>
         <button
           type="button"
@@ -3503,6 +3618,7 @@ export default function CardPairingModal({
           onClick={() => {
             explicitUnlinkRef.current = cardKey;
             dispatch({ type: "UNLINK_CHECKLIST", cardKey });
+            revealChecklistRow(checklistRowLine(row));
             focusChecklistRow(rowIndex);
           }}
           aria-label={`Unlink card ${cardLabel} from checklist row ${checklistRowLine(row)}`}
@@ -4395,6 +4511,28 @@ export default function CardPairingModal({
                   placeholder="Filter BSC cards"
                   aria-label="Filter BSC cards"
                 />
+                {/* A-N4: picking a BSC card is one-of-N, so the picks are
+                    a roving radio group (one Tab stop; arrows, Home and End
+                    move the pick), like the Matched rows' name choice. A
+                    click on the picked card still drops the pick. */}
+                <div
+                  role="radiogroup"
+                  aria-label="Pick a BSC card to link"
+                  onKeyDown={(e) => {
+                    const target = e.target as HTMLElement;
+                    if (target.getAttribute("role") !== "radio") return;
+                    const keys = visibleBsc.map(candidateKey);
+                    const next = radioStep(
+                      e.key,
+                      keys.indexOf(target.getAttribute("data-pick-radio") ?? ""),
+                      keys.length,
+                    );
+                    if (next === null) return;
+                    e.preventDefault();
+                    setSelectedBsc(keys[next]);
+                    focusPickRadio(e.currentTarget, keys[next]);
+                  }}
+                >
                 <ul className="flex flex-col gap-1 mt-2">
                   {visibleBsc.map((c) => (
                     <PairableRow
@@ -4405,6 +4543,10 @@ export default function CardPairingModal({
                     >
                       <button
                         type="button"
+                        role="radio"
+                        data-pick-radio={candidateKey(c)}
+                        data-row-primary=""
+                        tabIndex={bscTabStop === candidateKey(c) ? 0 : -1}
                         className={`flex-1 text-left text-sm rounded border px-2 py-1 ${
                           selectedBsc === candidateKey(c)
                             ? "bg-pick-blue border-pick-blue-rule text-pick-blue-ink selection-edge"
@@ -4416,7 +4558,7 @@ export default function CardPairingModal({
                           )
                         }
                         // Selection was conveyed by background colour alone.
-                        aria-pressed={selectedBsc === candidateKey(c)}
+                        aria-checked={selectedBsc === candidateKey(c)}
                         aria-label={
                           selectedBsc === candidateKey(c)
                             ? `${label(c)}, selected. Press to deselect.`
@@ -4431,12 +4573,18 @@ export default function CardPairingModal({
                         type="button"
                         className="text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
                         onClick={() => {
+                          const neighbour = neighbourOf(visibleBsc, c);
                           dispatch({
                             type: "KEEP",
                             side: "bsc",
                             key: candidateKey(c),
                           });
-                          refocus(bscFilterRef.current);
+                          // A-N3: on to the next card, not back to the top.
+                          focusRowAfterRemoval(
+                            "data-pair-row",
+                            neighbour ? `bsc:${candidateKey(neighbour)}` : null,
+                            bscFilterRef.current,
+                          );
                         }}
                         aria-label={`Keep ${label(c)} as BSC-only`}
                       >
@@ -4445,6 +4593,7 @@ export default function CardPairingModal({
                     </PairableRow>
                   ))}
                 </ul>
+                </div>
               </section>
               )}
 
@@ -4495,6 +4644,7 @@ export default function CardPairingModal({
                       <button
                         type="button"
                         disabled={!selectedBsc}
+                        data-row-primary=""
                         className="flex-1 text-left text-sm rounded border border-row-rule px-2 py-1 bg-row text-ink-2 enabled:hover:bg-row-hover disabled:opacity-60"
                         onClick={() => {
                           if (!selectedBsc) return;
@@ -4514,12 +4664,19 @@ export default function CardPairingModal({
                         type="button"
                         className="text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
                         onClick={() => {
+                          const neighbour = neighbourOf(visibleSl, c);
                           dispatch({
                             type: "KEEP",
                             side: "sl",
                             key: candidateKey(c),
                           });
-                          refocus(slFilterRef.current);
+                          // A-N3: the next card's Link, or its Keep while no
+                          // BSC card is picked (Link is disabled then).
+                          focusRowAfterRemoval(
+                            "data-pair-row",
+                            neighbour ? `sl:${candidateKey(neighbour)}` : null,
+                            slFilterRef.current,
+                          );
                         }}
                         aria-label={`Keep ${label(c)} as SportLots-only`}
                       >
@@ -4601,6 +4758,31 @@ export default function CardPairingModal({
                       query for one would otherwise find both). "Leftover":
                       these are the rows the server could not pair, linked
                       or not — a linked row stays listed. */}
+                  {/* A-N4: picking a row is one-of-N, a roving radio group
+                      as in the BSC column. Linked rows hold an Unlink and
+                      no radio; arrows step over them. */}
+                  <div
+                    role="radiogroup"
+                    aria-label="Pick a checklist row to link"
+                    onKeyDown={(e) => {
+                      const target = e.target as HTMLElement;
+                      if (target.getAttribute("role") !== "radio") return;
+                      const keys = pickableRows.map(String);
+                      const next = radioStep(
+                        e.key,
+                        keys.indexOf(target.getAttribute("data-pick-radio") ?? ""),
+                        keys.length,
+                      );
+                      if (next === null) return;
+                      e.preventDefault();
+                      const rowIndex = pickableRows[next];
+                      setSelectedRow(rowIndex);
+                      announceChecklist(
+                        checklistSelectedAnnouncement(checklistRows[rowIndex].number),
+                      );
+                      focusPickRadio(e.currentTarget, keys[next]);
+                    }}
+                  >
                   <ul aria-label="Leftover checklist rows" className="flex flex-col gap-1 mt-2">
                     {visibleRows.map((rowIndex) => {
                       const row = checklistRows[rowIndex];
@@ -4648,6 +4830,10 @@ export default function CardPairingModal({
                         <ChecklistRowItem key={rowIndex} rowIndex={rowIndex} linked={false}>
                           <button
                             type="button"
+                            role="radio"
+                            data-pick-radio={String(rowIndex)}
+                            data-row-primary=""
+                            tabIndex={checklistTabStop === rowIndex ? 0 : -1}
                             className={`min-w-0 flex-1 text-left text-sm rounded border px-2 py-1 ${
                               picked
                                 ? "bg-pick-teal border-pick-teal-rule text-pick-teal-ink selection-edge"
@@ -4662,7 +4848,7 @@ export default function CardPairingModal({
                               setSelectedRow(rowIndex);
                               announceChecklist(checklistSelectedAnnouncement(row.number));
                             }}
-                            aria-pressed={picked}
+                            aria-checked={picked}
                             aria-label={`Select ${named}`}
                           >
                             {line}
@@ -4671,9 +4857,16 @@ export default function CardPairingModal({
                             type="button"
                             className="shrink-0 text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
                             onClick={() => {
+                              const at = visibleRows.indexOf(rowIndex);
+                              const neighbour = visibleRows[at + 1] ?? visibleRows[at - 1];
                               if (picked) setSelectedRow(null);
                               dispatch({ type: "KEEP_CHECKLIST", rowIndex });
-                              refocus(checklistFilterRef.current);
+                              // A-N3: on to the next row, not back to the filter.
+                              focusRowAfterRemoval(
+                                "data-checklist-row",
+                                neighbour === undefined ? null : String(neighbour),
+                                checklistFilterRef.current,
+                              );
                             }}
                             aria-label={`Keep ${named} as checklist-only`}
                           >
@@ -4683,6 +4876,7 @@ export default function CardPairingModal({
                       );
                     })}
                   </ul>
+                  </div>
                 </section>
               )}
               </div>

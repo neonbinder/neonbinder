@@ -32,6 +32,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import BaseParallelsBuildSection, {
+  ALL_BLOCKED_TEXT,
   CONFIRM_LABEL,
   LOADING_TEXT,
   NO_PARALLELS_TEXT,
@@ -203,7 +204,7 @@ describe("BaseParallelsBuildSection — copy helpers", () => {
             owned: NO_SIDES,
             sides: NO_SIDES,
             hasCards: true,
-            blocked: "its cards are linked to a marketplace it isn't linked to — link it first",
+            blocked: "its cards have marketplace links this parallel doesn't. Link the parallel in Sync Parallels first.",
           },
         ],
         [
@@ -269,10 +270,10 @@ describe("BaseParallelsBuildSection — copy helpers", () => {
 
     it("adds the unlinked and blocked sentences only when true, singular and plural", () => {
       expect(summaryText(tally({ total: 4, unlinked: 1, blocked: 1 }))).toBe(
-        "4 parallels, all empty. 1 isn't linked to a marketplace yet, so its copy carries no marketplace links. 1 is blocked.",
+        "4 parallels, all empty. 1 has no marketplace link yet, so its cards copy over without one. 1 is blocked.",
       );
       expect(summaryText(tally({ total: 5, unlinked: 2, blocked: 3 }))).toBe(
-        "5 parallels, all empty. 2 aren't linked to a marketplace yet, so their copies carry no marketplace links. 3 are blocked.",
+        "5 parallels, all empty. 2 have no marketplace link yet, so their cards copy over without one. 3 are blocked.",
       );
     });
   });
@@ -398,6 +399,23 @@ describe("BaseParallelsBuildSection — disabled states", () => {
   it("when the list is empty: held, pointing at sync or add", () => {
     const { runner } = renderSection(planOf([]));
     expectHeld(NO_PARALLELS_TEXT, runner);
+  });
+
+  it("when every parallel is blocked: held, saying so, and no run starts", () => {
+    const why = "SportLots is paused right now — build it once it's back";
+    const { runner } = renderSection(
+      planOf([entry(1, { blocked: why }), entry(2, { hasCards: true, blocked: why })]),
+    );
+    expectHeld(ALL_BLOCKED_TEXT, runner);
+    expect(ALL_BLOCKED_TEXT).toBe(
+      "Every parallel here is blocked. Clear what's listed above, then build.",
+    );
+  });
+
+  it("with one parallel still buildable it is not held for the blocked ones", () => {
+    const why = "SportLots is paused right now — build it once it's back";
+    renderSection(planOf([entry(1, { blocked: why }), entry(2)]));
+    expect(screen.queryByText(ALL_BLOCKED_TEXT)).toBeNull();
   });
 
   it("while another run is live: held, described by the other-run line", () => {
@@ -604,7 +622,7 @@ describe("BaseParallelsBuildSection — the attention list", () => {
     );
     expect(items()).toEqual([`Parallel 2 — blocked: ${paused}`]);
     expect(screen.getByText(/1 is blocked\./)).toBeTruthy();
-    expect(screen.queryByText(/linked to a marketplace yet/)).toBeNull();
+    expect(screen.queryByText(/no marketplace link yet/)).toBeNull();
   });
 
   it("is absent when nothing is blocked, unlinked parallels included", () => {

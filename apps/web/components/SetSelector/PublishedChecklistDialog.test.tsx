@@ -665,6 +665,14 @@ describe("PublishedChecklistDialog — spreadsheets and PDFs (NEO-496)", () => {
     fireEvent.click(within(group).getByRole("checkbox", { name: "Beta" }));
     await waitFor(() => expect(screen.getByText(droppedRowsText(1000))).toBeTruthy());
     expect(droppedRowsText(1000)).toBe("Using the first 2,000 rows; 1,000 more left off.");
+    // The status says it too, with the count (A-N5).
+    await waitFor(
+      () =>
+        expect(
+          document.querySelector<HTMLElement>("[data-checklist-count-status]")!.textContent,
+        ).toBe("2,000 rows. Using the first 2,000 rows; 1,000 more left off."),
+      { timeout: 3000 },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
     expect(onUse.mock.calls[0][0].rows).toHaveLength(2000);
   });

@@ -619,7 +619,13 @@ describe("StoreHoldNotices — checklist sections held back (NEO-496)", () => {
 
   test("the section fixes use the dialog's own words and no internal ones", () => {
     expect(SIBLING_FIX.section).toContain("Remove");
-    expect(SIBLING_FIX.sectionName).toContain("pair");
+    // S10: Reconcile's own verb is "map" ("already mapped", "Remove this
+    // mapping"), never "pair".
+    expect(SIBLING_FIX.sectionName).toBe(
+      "Name taken? Sync again and map the section to the set that already has that name.",
+    );
+    expect(SIBLING_FIX.twice).toContain("map just one to that set");
+    for (const text of Object.values(SIBLING_FIX)) expect(text).not.toMatch(/\bpair\b/);
     for (const text of [SIBLING_FIX.section, SIBLING_FIX.sectionName, SIBLING_REASON_LINE.section]) {
       expect(text).not.toMatch(/\bkey\b|commit|checklistKey|sibling|withheld/i);
     }

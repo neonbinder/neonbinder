@@ -115,7 +115,7 @@ describe("BaseSetPicker — checklist list", () => {
     expect(option("Base").getAttribute("aria-selected")).toBe("true");
     expect(option("Base Rated Prospects").getAttribute("aria-selected")).toBe("false");
     expect(screen.queryByRole("option", { name: "Checklist base section: Bomb Squad" })).toBeNull();
-    fireEvent.click(screen.getByLabelText("Show all checklist sections"));
+    fireEvent.click(screen.getByLabelText(/^Show all checklist sections \(\d+ more\)$/));
     expect(option("Bomb Squad")).toBeTruthy();
   });
 

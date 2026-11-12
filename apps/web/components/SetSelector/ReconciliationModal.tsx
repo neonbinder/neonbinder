@@ -821,15 +821,16 @@ function ReadySetRow({
         TONE_CLASSES[source.tone].badge
       }`}
     >
-      <span className="opacity-70">{source.badge}</span>
-      <span className="break-words">
-        {/* The chip's own "BSC"/"SL" tag is already muted with opacity-70;
-            the id suffix matches it rather than adding a third tone. */}
+      {/* The tag and the id suffix are muted by size and weight, never by
+          opacity: a faded tone falls under 4.5:1 on the light theme's chips
+          (A1). Same for every tone. */}
+      <span className="text-[10px] font-normal">{source.badge}</span>
+      <span className="break-words font-medium">
         <ItemName
           item={item}
           source={source}
           dups={dups}
-          suffixClassName="opacity-70 font-normal tabular-nums"
+          suffixClassName="text-[10px] font-normal tabular-nums"
         />
       </span>
       <button
@@ -2602,9 +2603,9 @@ function ReconciliationDialog({
           // NEO-496 — the checklist's own "Show all": its column opens on
           // the sections that fit this dialog (`checklist.scope`).
           checklistScope === "all" ? (
-            <div className="mb-2 h-[18px]" aria-hidden="true" />
+            <div className="mb-2 h-6" aria-hidden="true" />
           ) : (
-            <label className="flex items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
+            <label className="flex min-h-6 items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
               <input
                 type="checkbox"
                 checked={showAllChecklist}
@@ -2618,9 +2619,9 @@ function ReconciliationDialog({
         ) : key !== "sportlots" ? (
           // Spacer keeps the lists' tops aligned; only SL has a prefix
           // filter worth toggling.
-          <div className="mb-2 h-[18px]" aria-hidden="true" />
+          <div className="mb-2 h-6" aria-hidden="true" />
         ) : (
-          <label className="flex items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
+          <label className="flex min-h-6 items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
             <input
               type="checkbox"
               checked={showAllSl}
@@ -2631,7 +2632,9 @@ function ReconciliationDialog({
             Show all SportLots items
           </label>
         )}
-        <label className="flex items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
+        {/* Each label is the box's 24px target (A-N8); the spacers above
+            match it so the columns' lists still start level. */}
+        <label className="flex min-h-6 items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
           <input
             type="checkbox"
             checked={showMapped[key]}

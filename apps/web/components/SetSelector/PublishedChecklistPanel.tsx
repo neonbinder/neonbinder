@@ -22,6 +22,7 @@ import { inertBackground } from "@/lib/dom/inert-background";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import {
   CHECKLIST_FILE_ACCEPT,
+  checklistFileNameProblem,
   readChecklistFile,
   readChecklistSections,
   type ChecklistFileReaders,
@@ -43,10 +44,10 @@ import {
 } from "./published-checklist-upload";
 
 /**
- * NEO-496 — the set's publisher checklist: one file on the SET, stored, that
+ * NEO-496 — the set's official checklist: one file on the SET, stored, that
  * every insert and parallel sync of the set can read as one more source.
  *
- *   ┌ Publisher checklist ─────────────────────────────────────────────┐
+ *   ┌ Official checklist ──────────────────────────────────────────────┐
  *   │ none:  [Upload checklist]  Paste one instead               │
  *   │ ready: 2026-donruss.xlsx                                   │
  *   │        273 sections, 18,068 cards. Saved Nov 11, 2026.     │
@@ -158,9 +159,13 @@ type Source =
 /** The file-input face, painted as NeonButton's secondary outline. */
 const FILE_BUTTON_FACE =
   "inline-flex h-8 cursor-pointer items-center rounded-md border border-neon-blue-text px-3 text-sm font-medium text-neon-blue-text transition-colors hover:border-neon-blue hover:bg-neon-blue hover:text-on-neon-blue focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus max-sm:min-h-11";
-/** A quiet action: ink-2 text that brightens under the pointer. */
+/**
+ * A quiet action: ink-2 text that brightens under the pointer. At least 24px
+ * tall (WCAG 2.5.8) on every width, 44px on a phone.
+ */
 const QUIET_BUTTON =
-  "rounded text-sm text-ink-2 underline underline-offset-2 transition-colors hover:text-ink focus-outline max-sm:min-h-11";
+  "inline-flex min-h-6 items-center rounded text-sm text-ink-2 underline underline-offset-2 transition-colors hover:text-ink focus-outline max-sm:min-h-11";
+
 
 /** A file input inside its visible label: the label IS the control's face. */
 function FilePickButton({
@@ -218,6 +223,7 @@ export default function PublishedChecklistPanel({
 }) {
   const headingId = useId();
   const hintId = useId();
+  const readErrorId = useId();
   const stored = useQuery(api.publishedChecklists.getForSet, { setId });
   const start = useMutation(api.publishedChecklists.start);
   const addSections = useMutation(api.publishedChecklists.addSections);
@@ -230,6 +236,24 @@ export default function PublishedChecklistPanel({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+
+  /**
+   * What to say, and where to land, once the dialog that just closed is gone.
+   * Said from the effect below, which runs after the dialog's own cleanup has
+   * released the inert page: a line written into the status region while the
+   * page is still inert is never spoken (A2).
+   */
+  const afterClose = useRef<{ message: string; focus: () => HTMLElement | null } | null>(null);
+  useEffect(() => {
+    if (preview || confirmRemove) return;
+    const pending = afterClose.current;
+    if (!pending) return;
+    afterClose.current = null;
+    requestAnimationFrame(() => {
+      pending.focus()?.focus();
+      onStatus(pending.message);
+    });
+  }, [preview, confirmRemove, onStatus]);
 
   /** Where the preview was opened from, so focus can go back on Cancel. */
   const openerRef = useRef<HTMLElement | null>(null);
@@ -249,6 +273,13 @@ export default function PublishedChecklistPanel({
   const onFile = async (file: File, opener: HTMLElement | null) => {
     if (reading) return;
     openerRef.current = opener;
+    // A name the server would refuse is refused before anything is read or
+    // said (the reader refuses it too; this keeps "Reading …" unsaid).
+    const refusal = checklistFileNameProblem(file.name);
+    if (refusal) {
+      setReadError(refusal);
+      return;
+    }
     setReadError(null);
     setReading(file.name);
     onStatus(`Reading ${file.name}…`);
@@ -279,6 +310,8 @@ export default function PublishedChecklistPanel({
 
   const ready = stored ?? null;
   const fileHint = ".xlsx, .pdf, .csv, .tsv or .txt. One file covers the whole set.";
+  // The picker reads the refusal out with its hint while one stands (A-N6).
+  const pickDescribedBy = readError ? `${hintId} ${readErrorId}` : hintId;
 
   return (
     <section
@@ -287,7 +320,7 @@ export default function PublishedChecklistPanel({
       className="space-y-2 rounded-md border border-rule p-3"
     >
       <h4 id={headingId} className="text-sm font-semibold text-ink">
-        Publisher checklist
+        Official checklist
       </h4>
 
       {ready ? (
@@ -305,8 +338,8 @@ export default function PublishedChecklistPanel({
         </div>
       ) : (
         <p className="text-xs text-ink-3">
-          Got the publisher&apos;s checklist? Drop it in once and every insert and parallel sync
-          in this set can read it. Nothing in the set changes until a sync uses it.
+          Got the official checklist? Upload it once and every insert and parallel sync in this
+          set reads it. Nothing changes until you sync.
         </p>
       )}
 
@@ -315,7 +348,7 @@ export default function PublishedChecklistPanel({
           <>
             <FilePickButton
               label="Replace checklist"
-              describedBy={hintId}
+              describedBy={pickDescribedBy}
               inputRef={replaceInputRef}
               onFile={(file) => void onFile(file, replaceInputRef.current)}
             />
@@ -344,7 +377,7 @@ export default function PublishedChecklistPanel({
           <>
             <FilePickButton
               label="Upload checklist"
-              describedBy={hintId}
+              describedBy={pickDescribedBy}
               inputRef={uploadInputRef}
               onFile={(file) => void onFile(file, uploadInputRef.current)}
             />
@@ -365,7 +398,7 @@ export default function PublishedChecklistPanel({
 
       {reading && <p className="text-xs text-ink-2">Reading {reading}…</p>}
       {readError && (
-        <p role="alert" className="text-xs text-neon-pink-text">
+        <p id={readErrorId} role="alert" className="text-xs text-neon-pink-text">
           {readError}
         </p>
       )}
@@ -387,12 +420,12 @@ export default function PublishedChecklistPanel({
             });
           }}
           onSaved={(saved) => {
-            setPreview(null);
-            onStatus(`Checklist saved: ${checklistSizeText(saved.sectionCount, saved.rowCount)}.`);
             // Upload became Replace: land there.
-            requestAnimationFrame(() =>
-              (replaceInputRef.current ?? uploadInputRef.current)?.focus(),
-            );
+            afterClose.current = {
+              message: `Checklist saved: ${checklistSizeText(saved.sectionCount, saved.rowCount)}.`,
+              focus: () => replaceInputRef.current ?? uploadInputRef.current,
+            };
+            setPreview(null);
           }}
         />
       )}
@@ -411,9 +444,11 @@ export default function PublishedChecklistPanel({
             setRemoveError(null);
             try {
               await remove({ setId });
+              afterClose.current = {
+                message: "Checklist removed.",
+                focus: () => uploadInputRef.current,
+              };
               setConfirmRemove(false);
-              onStatus("Checklist removed.");
-              requestAnimationFrame(() => uploadInputRef.current?.focus());
             } catch (e) {
               setRemoveError(userFacingMessage(e, "Couldn't remove the checklist. Try again."));
             } finally {
@@ -500,6 +535,11 @@ export function SetChecklistPreviewDialog({
   };
 
   const onFile = async (file: File) => {
+    const refusal = checklistFileNameProblem(file.name);
+    if (refusal) {
+      setFileNote({ tone: "error", text: refusal });
+      return;
+    }
     setFileNote({ tone: "status", text: `Reading ${file.name}…` });
     const read = await readChecklistFile(file, readers);
     if (!read.ok) {
@@ -672,8 +712,7 @@ export function SetChecklistPreviewDialog({
               <div id={summaryId}>
                 {parsed?.tooBig ? (
                   <p role="alert" className="text-sm text-neon-pink-text">
-                    Whoa, that&apos;s a lot. A pasted checklist is under 2 MB. Upload the file
-                    instead.
+                    Whoa, that&apos;s a lot to paste. Over 2 MB? Upload the file instead.
                   </p>
                 ) : parsed && sections.length === 0 ? (
                   <p className="text-sm text-neon-pink-text">{NO_SECTIONS_FOUND}</p>
@@ -715,24 +754,23 @@ export function SetChecklistPreviewDialog({
                         </th>
                       </tr>
                     </thead>
-                    <tbody>
-                      {sections.flatMap((section, i) => {
-                        const rows = [];
-                        // A group heading where a run of its sections starts.
-                        if (section.group && section.group !== sections[i - 1]?.group) {
-                          rows.push(
-                            <tr key={`group:${section.key}`}>
-                              <th
-                                scope="colgroup"
-                                colSpan={3}
-                                className="border-b border-rule bg-raised px-3 pb-1 pt-2 text-xs font-semibold text-ink-2"
-                              >
-                                {section.group}
-                              </th>
-                            </tr>,
-                          );
-                        }
-                        rows.push(
+                    {/* One body per run of sections: a group's heading
+                        heads its own body (scope="rowgroup"), so a screen
+                        reader reads it with every section beneath it. */}
+                    {sectionRuns(sections).map((run) => (
+                      <tbody key={run.sections[0].key}>
+                        {run.group && (
+                          <tr>
+                            <th
+                              scope="rowgroup"
+                              colSpan={3}
+                              className="border-b border-rule bg-raised px-3 pb-1 pt-2 text-xs font-semibold text-ink-2"
+                            >
+                              {run.group}
+                            </th>
+                          </tr>
+                        )}
+                        {run.sections.map((section) => (
                           <tr key={section.key} className={BODY_ROW}>
                             <th
                               scope="row"
@@ -748,11 +786,10 @@ export function SetChecklistPreviewDialog({
                             <td className="break-words px-3 py-1 align-top text-ink-2">
                               {sectionNumbersText(section)}
                             </td>
-                          </tr>,
-                        );
-                        return rows;
-                      })}
-                    </tbody>
+                          </tr>
+                        ))}
+                      </tbody>
+                    ))}
                   </table>
                 </div>
               )}
@@ -878,6 +915,23 @@ export function SetChecklistPreviewDialog({
 /** The preview's header cell: stuck to the top of the dialog body, opaque. */
 const HEAD_CELL =
   "sticky top-0 z-10 border-b border-rule bg-raised-deep px-3 py-1.5 font-medium";
-/** A preview row: a rule under every cell but the last row's. */
+/** A preview row: a rule under every cell but the table's last row's. */
 const BODY_ROW =
-  "[&>*]:border-b [&>*]:border-rule [&:last-child>*]:border-b-0";
+  "[&>*]:border-b [&>*]:border-rule [tbody:last-child>&:last-child>*]:border-b-0";
+
+/**
+ * The sections in runs that share a group, in order: a grouped run is headed
+ * by its group, an ungrouped run has no heading. A group that comes back after
+ * another section starts a new run, as the file has it.
+ */
+export function sectionRuns<S extends { group?: string; key: string }>(
+  sections: readonly S[],
+): Array<{ group?: string; sections: S[] }> {
+  const runs: Array<{ group?: string; sections: S[] }> = [];
+  for (const section of sections) {
+    const last = runs[runs.length - 1];
+    if (last && last.group === section.group) last.sections.push(section);
+    else runs.push({ group: section.group, sections: [section] });
+  }
+  return runs;
+}

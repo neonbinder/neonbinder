@@ -94,6 +94,9 @@ export function noSourceText(serverReason?: string): string {
   return serverReason ? `Nothing to copy from — ${serverReason}.` : NO_SOURCE_TEXT;
 }
 export const NO_PARALLELS_TEXT = "No parallels here yet. Sync or add some first.";
+/** Every parallel is one the build would refuse: a run would build nothing. */
+export const ALL_BLOCKED_TEXT =
+  "Every parallel here is blocked. Clear what's listed above, then build.";
 export const OTHER_RUN_TEXT =
   "Another parallel build is running. Let it finish or stop it first.";
 export const CONFIRM_LABEL = "Replace and build";
@@ -142,8 +145,8 @@ export function tallyParallels(parallels: ParallelPlanEntry[]): ParallelTally {
 }
 
 /**
- * "12 parallels: 9 empty, 3 with cards. 2 aren't linked to a marketplace yet,
- * so their copies carry no marketplace links. 1 is blocked." — only the
+ * "12 parallels: 9 empty, 3 with cards. 2 have no marketplace link yet, so
+ * their cards copy over without one. 1 is blocked." — only the
  * sentences that are true. NEO-496 (NQ2): an unlinked parallel is built, not
  * skipped.
  */
@@ -160,8 +163,8 @@ export function summaryText(tally: ParallelTally): string {
   if (tally.unlinked > 0) {
     parts.push(
       tally.unlinked === 1
-        ? "1 isn't linked to a marketplace yet, so its copy carries no marketplace links."
-        : `${tally.unlinked} aren't linked to a marketplace yet, so their copies carry no marketplace links.`,
+        ? "1 has no marketplace link yet, so its cards copy over without one."
+        : `${tally.unlinked} have no marketplace link yet, so their cards copy over without one.`,
     );
   }
   if (tally.blocked > 0) {
@@ -310,9 +313,11 @@ export default function BaseParallelsBuildSection({
           ? sourceEmptyText(source.value)
           : !tally || tally.total === 0
             ? NO_PARALLELS_TEXT
-            : runner.active && !showsRun
-              ? OTHER_RUN_TEXT
-              : null;
+            : tally.blocked === tally.total
+              ? ALL_BLOCKED_TEXT
+              : runner.active && !showsRun
+                ? OTHER_RUN_TEXT
+                : null;
   const held = reason !== null || ownRunLive;
 
   const run = () => {

@@ -442,10 +442,14 @@ export default function PublishedChecklistDialog({
   const shownRows = usedRows.slice(0, PREVIEW_ROWS);
   const shownSkipped = parsed.skipped.slice(0, PREVIEW_SKIPPED);
 
-  /** "248 rows. 3 lines skipped." — the count as a sentence, for the status. */
+  /**
+   * "248 rows. 3 lines skipped." — the count as a sentence, for the status,
+   * with the rows left off past the cap when there are any (A-N5): the
+   * visible line says so, so the status does too.
+   */
   const countSentence = `${rowCountText(usedRows.length)}.${
     hasText && parsed.skipped.length > 0 ? ` ${skippedLinesText(parsed.skipped.length)}` : ""
-  }`;
+  }${droppedRows > 0 ? ` ${droppedRowsText(droppedRows)}` : ""}`;
   const announcedCount = useDebouncedValue(countSentence, COUNT_ANNOUNCE_DEBOUNCE_MS);
   const blockedMessage = subsetPending ? PICK_A_SUBSET : NOTHING_TO_USE;
   /** The status: why not, at once; otherwise the count once it holds still. */

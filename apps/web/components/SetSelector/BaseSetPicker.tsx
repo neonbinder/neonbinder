@@ -993,7 +993,9 @@ export default function BaseSetPicker({
                     })}
                   </div>
                   {hiddenSectionCount > 0 && baseLikeSections.length > 0 && (
-                    <label className="mt-1.5 flex items-center gap-2 text-xs text-ink-3 select-none cursor-pointer">
+                    // The visible label names the box (A4), count and all;
+                    // the label is the 24px target (A-N8).
+                    <label className="mt-1 flex min-h-6 items-center gap-2 text-xs text-ink-3 select-none cursor-pointer">
                       <input
                         type="checkbox"
                         checked={showAllSections}
@@ -1001,7 +1003,6 @@ export default function BaseSetPicker({
                           setShowAllSections(e.target.checked);
                           setChecklistFocusIndex(0);
                         }}
-                        aria-label="Show all checklist sections"
                         className="h-3.5 w-3.5 rounded border-control bg-raised text-neon-teal-text focus-outline"
                       />
                       {`Show all checklist sections (${hiddenSectionCount} more)`}

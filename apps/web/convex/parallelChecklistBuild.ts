@@ -265,10 +265,10 @@ export const BLOCKED_REVIEW_OPEN =
  * old cards that hold one: the copy would drop it (rule 5).
  */
 export const BLOCKED_UNLINKED_OVER_LINKED_CARDS =
-  "its cards are linked to a marketplace it isn't linked to — link it first";
+  "its cards have marketplace links this parallel doesn't. Link the parallel in Sync Parallels first.";
 /** The no-name fallback of `blockedIdsUnreachable`. */
 export const BLOCKED_IDS_UNREACHABLE =
-  "its marketplace links need the set above it linked too — link that first";
+  "link the set above it first, then this one can carry its links.";
 // NEO-321 — "the insert" became a neutral phrase: a base parallel is built
 // from the Base, not an insert.
 // NEO-321 (audit N1) — the two size sentences now cover the byte cap too.
