@@ -177,6 +177,7 @@ import type * as referenceSeed from "../referenceSeed.js";
 import type * as rekeyEntityNames from "../rekeyEntityNames.js";
 import type * as repairSportHallOfFameQids from "../repairSportHallOfFameQids.js";
 import type * as resetArming from "../resetArming.js";
+import type * as saleListedBackfill from "../saleListedBackfill.js";
 import type * as selectorOptions from "../selectorOptions.js";
 import type * as selectorSyncMatch from "../selectorSyncMatch.js";
 import type * as selectorSyncStore from "../selectorSyncStore.js";
@@ -380,6 +381,7 @@ declare const fullApi: ApiFromModules<{
   rekeyEntityNames: typeof rekeyEntityNames;
   repairSportHallOfFameQids: typeof repairSportHallOfFameQids;
   resetArming: typeof resetArming;
+  saleListedBackfill: typeof saleListedBackfill;
   selectorOptions: typeof selectorOptions;
   selectorSyncMatch: typeof selectorSyncMatch;
   selectorSyncStore: typeof selectorSyncStore;
