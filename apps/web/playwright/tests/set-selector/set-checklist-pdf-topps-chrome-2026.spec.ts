@@ -375,9 +375,10 @@ test(
       // ══ 8. PASTE ONE INSTEAD: a pasted checklist saves on the set like a file ══
       await panel.getByRole("button", { name: "Paste one instead" }).click();
       await expect(preview).toBeVisible();
+      // A pasted heading is ALL CAPS words with no digit (the token's digits read as a number here).
       await preview
         .getByRole("textbox", { name: "Paste the set's checklist" })
-        .fill(`${tokenHeading}\n1 Colt Keith - Detroit Tigers\n2 Gunnar Henderson - Baltimore Orioles\n`);
+        .fill("ROOKIE DEBUT\n1 Colt Keith - Detroit Tigers\n2 Gunnar Henderson - Baltimore Orioles\n");
       await expect(preview.getByText("1 section", { exact: true })).toBeVisible();
       await expect(preview.getByText("2 cards", { exact: true })).toBeVisible();
       await expectAccessible(page, { within: preview, label: "Paste a set checklist" });
