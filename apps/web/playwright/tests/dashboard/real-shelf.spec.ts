@@ -4,7 +4,8 @@
 //
 // R1: the shelf stands, and a section with nothing behind it stays away: no
 // In the Hopper while nothing is in intake, and no Out the Door: the worker's
-// account has a saved marketplace sign-in (the bootstrap's) but no order, and
+// account has a saved marketplace sign-in (the bootstrap's) but no order (the
+// spec clears any test order other specs left), and
 // only a stored order puts the sales section up (Jason, 2026-11-10). New on
 // NeonBinder, the catalog's news, shows for everyone, and its tiles open real
 // checklists. It lists only the six newest uploads (`NEW_SETS_SHOWN`), so the spec
@@ -30,6 +31,13 @@ test("Dashboard shows the collector's own binder shelf", { tag: ["@smoke", "@das
   await selectOrCreate(page, "Variant Types", "Base", { via: "list" });
   await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
   await addCardViaForm(page, { cardNumber: "1", playerName: `Shelf${env.ATTEMPT_TOKEN}` });
+
+  // R7: no stored order, asked for, not assumed: other specs on this worker leave
+  // test orders behind (inventory-pick-list ships its orders and leaves them to the
+  // bootstrap's reset). The clear removes only the caller's marked test orders and
+  // forwards to the dashboard.
+  await page.goto("/testing/seed-dashboard?clear=1");
+  await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible({ timeout: LAUNCH_GATE });
 
   await signIn("/testing/seed-placeholder-run?clearHopper=1%26redirect=/dashboard");
 
