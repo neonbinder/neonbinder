@@ -287,4 +287,18 @@ describe("the Sales tab", () => {
     expect(loadMore).toHaveBeenCalledTimes(1);
     expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "BuySportsCards order 3" }));
   });
+
+  it("NEO-500: an order link waits out a page already loading, and gives up after ten pages", () => {
+    const first = [sale({ id: "o1", orderNo: "1" })];
+    const { loadMore, rerender } = setup(
+      { sales: first, canLoadMore: true, loadingMore: true },
+      { url: "/inventory?tab=sales&sorder=missing" },
+    );
+    expect(loadMore).not.toHaveBeenCalled();
+    for (let n = 0; n < 15; n++) {
+      rerender({ sales: first, canLoadMore: true, loadingMore: false });
+      rerender({ sales: first, canLoadMore: true, loadingMore: true });
+    }
+    expect(loadMore).toHaveBeenCalledTimes(10);
+  });
 });

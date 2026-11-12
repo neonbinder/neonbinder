@@ -291,6 +291,79 @@ describe("a store that saves to a server", () => {
   });
 });
 
+describe("a store that saves to a server: more than one save", () => {
+  type Job = { ids: readonly string[]; on: boolean; resolve: () => void; reject: (e: Error) => void };
+  async function mountSaving(pulledAll: boolean) {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const { default: PickListTab } = await import("./PickListTab");
+    const { CollectionModeProvider } = await import("../mode");
+    const { PickListStoreContext } = await import("./store");
+    const { PageApiContext } = await import("../pageApi");
+    const notify = vi.fn();
+    const jobs: Job[] = [];
+    const store = {
+      kind: "convex" as const,
+      data: DEMO_PICK_DATA,
+      pulled: new Set<string>(pulledAll ? DEMO_PICK_DATA.lines.map((l) => l.id) : []),
+      setPulled: (ids: readonly string[], on: boolean) =>
+        new Promise<void>((resolve, reject) => jobs.push({ ids, on, resolve, reject })),
+    };
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={["/inventory?tab=pick"]}>
+          <CollectionModeProvider mode="app" surface="inventory">
+            <PageApiContext.Provider value={{ notify, inform: vi.fn() } as never}>
+              <PickListStoreContext.Provider value={store}>
+                <PickListTab />
+              </PickListStoreContext.Provider>
+            </PageApiContext.Provider>
+          </CollectionModeProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    return { notify, jobs, toggles: screen.getAllByRole("button", { name: /^Pulled #/ }) };
+  }
+
+  it("a failed put-back says the card didn't go back, not that the pull didn't save", async () => {
+    const { notify, jobs, toggles } = await mountSaving(true);
+    fireEvent.click(toggles[0]);
+    expect(jobs[0].on).toBe(false);
+    await act(async () => jobs[0].reject(new Error("offline")));
+    expect(notify).toHaveBeenLastCalledWith("That card didn't go back on the list. Try it again.");
+  });
+
+  it("a mark that lands after a newer one began stays quiet; the newer one has the last word", async () => {
+    const { notify, jobs, toggles } = await mountSaving(false);
+    fireEvent.click(toggles[0]);
+    fireEvent.click(toggles[1]);
+    expect(jobs).toHaveLength(2);
+    await act(async () => jobs[0].resolve());
+    expect(notify).toHaveBeenLastCalledWith("Saving…", expect.any(Function));
+    await act(async () => jobs[1].resolve());
+    expect(notify.mock.lastCall?.[0]).toMatch(/^Pulled #/);
+  });
+
+  it("a failed save speaks even when a newer mark has begun", async () => {
+    const { notify, jobs, toggles } = await mountSaving(false);
+    fireEvent.click(toggles[0]);
+    fireEvent.click(toggles[1]);
+    await act(async () => jobs[0].reject(new Error("offline")));
+    expect(notify).toHaveBeenLastCalledWith("That pull didn't save. Try it again.");
+  });
+
+  it("Undo during Saving… asks the store to flip the same lines back, and a failed Undo says so", async () => {
+    const { notify, jobs, toggles } = await mountSaving(false);
+    fireEvent.click(toggles[0]);
+    const undo = notify.mock.lastCall![1] as () => void;
+    await act(async () => undo());
+    expect(jobs).toHaveLength(2);
+    expect(jobs[1].ids).toEqual(jobs[0].ids);
+    expect(jobs[1].on).toBe(false);
+    await act(async () => jobs[1].reject(new Error("offline")));
+    expect(notify).toHaveBeenLastCalledWith("That card didn't go back on the list. Try it again.");
+  });
+});
+
 describe("the signed-in Pick List's ways out", () => {
   async function show(data: Partial<import("./types").PickListData>, withSales: boolean) {
     const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");

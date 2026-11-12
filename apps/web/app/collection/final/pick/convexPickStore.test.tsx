@@ -144,4 +144,62 @@ describe("the signed-in Pick List store", () => {
     expect(store!.pulled.has(LINE)).toBe(false);
     expect(leaving()).toBe(false);
   });
+
+  it("a failed put-back puts the tick back on and rejects", async () => {
+    await mount();
+    mutate.mockResolvedValue(undefined);
+    await act(async () => {
+      await store!.setPulled([LINE], true);
+    });
+    expect(store!.pulled.has(LINE)).toBe(true);
+    mutate.mockRejectedValue(new Error("offline"));
+    let failed = false;
+    await act(async () => {
+      await (store!.setPulled([LINE], false) as Promise<void>).catch(() => (failed = true));
+    });
+    expect(failed).toBe(true);
+    expect(mutate).toHaveBeenLastCalledWith({ ids: [LINE], pulled: false });
+    expect(store!.pulled.has(LINE)).toBe(true);
+  });
+
+  it("two saves in flight: the guard holds until both have settled, even when one fails", async () => {
+    await mount();
+    const calls: { resolve: () => void; reject: (e: Error) => void }[] = [];
+    mutate.mockImplementation(
+      () => new Promise<void>((resolve, reject) => calls.push({ resolve, reject })),
+    );
+    await act(async () => {
+      void store!.setPulled([LINE], true);
+    });
+    await act(async () => {
+      void (store!.setPulled([LINE], false) as Promise<void>).catch(() => {});
+    });
+    expect(calls).toHaveLength(2);
+    expect(leaving()).toBe(true);
+    await act(async () => calls[1].reject(new Error("offline")));
+    expect(leaving()).toBe(true);
+    await act(async () => calls[0].resolve());
+    expect(leaving()).toBe(false);
+  });
+
+  it("leaving the page mid-save removes the guard with the store", async () => {
+    await mount();
+    mutate.mockReturnValue(new Promise<void>(() => {}));
+    await act(async () => {
+      void store!.setPulled([LINE], true);
+    });
+    expect(leaving()).toBe(true);
+    cleanup();
+    expect(leaving()).toBe(false);
+  });
+
+  it("a request sets no guard before it is made and none for an empty mark", async () => {
+    await mount();
+    expect(leaving()).toBe(false);
+    await act(async () => {
+      await store!.setPulled([], true);
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(leaving()).toBe(false);
+  });
 });
