@@ -13,16 +13,25 @@ import {
   CANT_FIND_STOP,
   buildSections,
   compareBoxes,
+  compareDefault,
   copiesLeft,
   filterRows,
   isPulled,
+  listedTitle,
+  listedSetFor,
+  listedVariant,
   mergeLines,
   naturalCompare,
+  NOT_IN_BOX_STOP,
+  rowFacts,
+  setSections,
+  setsOnList,
+  SORT_KEYS,
   sortRows,
   variantRole,
   type PickRow,
 } from "./model";
-import type { PickBox, PickOrder, SaleLine } from "./types";
+import type { ListedCard, PickBox, PickOrder, SaleLine } from "./types";
 
 const EBAY_1: PickOrder = { id: "o1", venue: "eBay", number: "12-3456" };
 const BSC_1: PickOrder = { id: "o2", venue: "BSC", number: "88213" };
@@ -315,5 +324,487 @@ describe("the demo fixture", () => {
     expect(new Set(DEMO_PICK_LINES.map((l) => sportHue(l.sportCode)))).toEqual(new Set(["baseball", "football", "basketball", "hockey", "other"]));
     const stops = boxWalk(DEMO_PICK_LINES, DEMO_PICK_BOXES);
     expect(stops.map((s) => s.box.name)).toEqual(["2026 Baseball", "Box 2", "Box 10", "Slabs", "Unsorted"]);
+  });
+});
+
+describe("NEO-509: a sale filed by its listing's words", () => {
+  const listed = (over: Partial<ListedCard> = {}): ListedCard => ({
+    sportName: "Baseball",
+    year: 2026,
+    season: "2026",
+    setName: "Topps",
+    players: "Listed Player",
+    cardNumber: "5",
+    role: "base",
+    ...over,
+  });
+  const stray = (l: ListedCard | undefined, extra: Partial<SaleLine> = {}) =>
+    line(null, { order: BSC_1, listingTitle: "a listing", sportCode: null, ...(l ? { listed: l } : {}), ...extra });
+
+  it("joins the one NB set with its sport, year and name, between that set's numbers", () => {
+    const s = buildSections(
+      [line(card({ number: "3" })), line(card({ number: "9" })), stray(listed({ setName: "2026 TOPPS" }))],
+      {},
+      { sort: null, dir: "asc", groupByOrder: false },
+    );
+    expect(s.map((x) => x.kind)).toEqual(["set"]);
+    expect(s[0].rows.map((r) => rowFacts(r)?.cardNumber)).toEqual(["3", "5", "9"]);
+    expect(s[0].rows[1].card).toBeNull();
+    // It wears the set's colour.
+    expect(s[0].rows[1].sportCode).toBe("BB");
+  });
+
+  it("gets its own divider, after NB's of the same name, when no single NB set fits", () => {
+    const two = [
+      line(card({ number: "1", setId: "a" })),
+      line(card({ number: "2", setId: "b" })),
+      stray(listed()),
+    ];
+    const s = buildSections(two, {}, { sort: null, dir: "asc", groupByOrder: false });
+    expect(s.map((x) => (x.kind === "set" ? x.title : x.kind))).toEqual(["2026 Topps", "2026 Topps", "2026 Topps"]);
+    expect(s[2].rows[0].card).toBeNull();
+    // Its heading reads apart from NB's two of the same text (an sr-only word); NB's never do.
+    expect(s.map((x) => (x.kind === "set" ? Boolean(x.unmatchedTwin) : null))).toEqual([false, false, true]);
+    const other = buildSections([line(card({ number: "1" })), stray(listed({ setName: "Bowman" }))], {}, {
+      sort: null,
+      dir: "asc",
+      groupByOrder: false,
+    });
+    expect(other.map((x) => (x.kind === "set" ? x.title : x.kind))).toEqual(["2026 Bowman", "2026 Topps"]);
+    // A title no NB divider shares needs no word.
+    expect(other.some((x) => x.kind === "set" && x.unmatchedTwin)).toBe(false);
+  });
+
+  it("wears NB's sport colour on its own divider when the store resolved its sport, and black only when it did not", () => {
+    const resolved = buildSections([stray(listed({ sportId: "sp-bb", sportCode: "BB", setName: "Bowman" }))], {}, {
+      sort: null,
+      dir: "asc",
+      groupByOrder: false,
+    });
+    expect(resolved[0].kind === "set" && resolved[0].sportCode).toBe("BB");
+    expect(sportHue(resolved[0].kind === "set" ? resolved[0].sportCode : null)).toBe("baseball");
+    // A listing-only sport word is never matched to NB's colour by its name.
+    const word = buildSections([stray(listed({ setName: "Bowman" }))], {}, { sort: null, dir: "asc", groupByOrder: false });
+    expect(sportHue(word[0].kind === "set" ? word[0].sportCode : null)).toBe("other");
+  });
+
+  it("keeps every variant word the listing gives, and shows a role only when its word is one", () => {
+    const facts = (l: ListedCard) => rowFacts(mergeLines([stray(l)])[0]);
+    // Base said Base: the Base chip, and a name it gives kept.
+    expect(facts(listed({ role: "base", variantName: "Photo Variation" }))).toMatchObject({
+      role: "base",
+      variantWord: null,
+      variantName: "Photo Variation",
+    });
+    // A word NB does not file by: shown as that word, never read as Base.
+    expect(facts(listed({ role: undefined, variantWord: "Variation" }))).toMatchObject({ role: null, variantWord: "Variation", variantName: null });
+    // With a name too: both, still no role.
+    expect(facts(listed({ role: undefined, variantWord: "SP", variantName: "Image" }))).toMatchObject({ role: null, variantWord: "SP", variantName: "Image" });
+    // No variant named: no role at all (no "base" default).
+    expect(facts(listed({ role: undefined }))).toMatchObject({ role: null, variantWord: null, variantName: null });
+    // A name that only repeats the role or the word is not written twice.
+    expect(listedVariant(listed({ role: "base", variantName: "Base" }))).toEqual({ word: null, name: null });
+    expect(listedVariant(listed({ role: "insert", variantName: "Inserts" }))).toEqual({ word: null, name: null });
+    expect(listedVariant(listed({ role: undefined, variantWord: "Promo", variantName: "promo" }))).toEqual({ word: "Promo", name: null });
+  });
+
+  it("walks a row with no role after Base and before the parallels and inserts", () => {
+    const s = buildSections(
+      [
+        stray(listed({ cardNumber: "1", role: "insert", variantName: "Throwback" })),
+        stray(listed({ cardNumber: "1", role: "parallel", variantName: "Gold" })),
+        stray(listed({ cardNumber: "1", role: undefined, variantWord: "Variation" })),
+        stray(listed({ cardNumber: "1", role: undefined })),
+        stray(listed({ cardNumber: "1", role: "base" })),
+      ],
+      {},
+      { sort: null, dir: "asc", groupByOrder: false },
+    );
+    expect(s[0].rows.map((r) => [rowFacts(r)?.role, rowFacts(r)?.variantWord ?? rowFacts(r)?.variantName ?? null])).toEqual([
+      ["base", null],
+      [null, null],
+      [null, "Variation"],
+      ["parallel", "Gold"],
+      ["insert", "Throwback"],
+    ]);
+  });
+
+  it("titles a listing as a seller finds it in a box: set, insert or parallel, number, then players", () => {
+    expect(
+      listedTitle({ season: "2021", year: 2021, setName: "Score", players: "Justin Fields", cardNumber: "TB2", role: "insert", variantName: "1991 Throwback" }),
+    ).toBe("2021 Score 1991 Throwback #TB2 · Justin Fields");
+    // Base is not written, and a "Base" name never writes "Base" either.
+    expect(listedTitle({ season: "2024", setName: "Score", players: "Malik Nabers", cardNumber: "302", role: "base", variantName: "Base" })).toBe(
+      "2024 Score #302 · Malik Nabers",
+    );
+    // A word NB does not file by is written; a name that already holds it is written once.
+    expect(listedTitle({ season: "2024", setName: "Score", cardNumber: "302", variantWord: "Variation" })).toBe("2024 Score Variation #302");
+    expect(listedTitle({ season: "2024", setName: "Score", cardNumber: "302", variantWord: "Variation", variantName: "Photo Variation" })).toBe(
+      "2024 Score Photo Variation #302",
+    );
+    expect(listedTitle({ season: "2024", setName: "Score", cardNumber: "302", variantWord: "SP", variantName: "Photo" })).toBe("2024 Score SP Photo #302");
+    // An Insert with no name says Insert; a set already led by its season is not doubled.
+    expect(listedTitle({ season: "2024", setName: "2024 Topps Chrome", cardNumber: "9", role: "insert" })).toBe("2024 Topps Chrome Insert #9");
+    // Only players: just the players. Nothing: empty.
+    expect(listedTitle({ players: "Someone" })).toBe("Someone");
+    expect(listedTitle({})).toBe("");
+  });
+
+  it("stays in Can't find it when it says too little; By the Box walks the described ones as Not in a box, by set, before Can't find it", () => {
+    const lines = [
+      line(card({ number: "1" }), { spot: { boxId: "b1" } }),
+      stray(listed({ cardNumber: undefined })),
+      stray(listed({ year: undefined })),
+      stray(listed()),
+    ];
+    const s = buildSections(lines, {}, { sort: null, dir: "asc", groupByOrder: false });
+    expect(s.map((x) => [x.kind, x.rows.length])).toEqual([
+      ["cantFind", 2],
+      ["set", 2],
+    ]);
+    const stops = boxStops(lines, [{ id: "b1", name: "Box 1" }]);
+    expect(stops.map((x) => [x.box.id, x.box.name, x.rows.length])).toEqual([
+      ["b1", "Box 1", 1],
+      [NOT_IN_BOX_STOP, "Not in a box", 1],
+      [CANT_FIND_STOP, "Can't find it", 2],
+    ]);
+    expect(stops[1].notInBox).toBe(true);
+    expect(stops[2].cantFind).toBe(true);
+    // Not in a box keeps the list's walking order and its set dividers (joined to NB's set here).
+    expect(setSections(stops[1].rows).map((x) => x.title)).toEqual(["2026 Topps"]);
+    // Only described sales: none of the stops comes up empty.
+    expect(boxStops([stray(listed())], []).map((x) => x.box.id)).toEqual([NOT_IN_BOX_STOP]);
+    expect(boxStops([stray(undefined)], []).map((x) => x.box.id)).toEqual([CANT_FIND_STOP]);
+  });
+
+  it("walks Not in a box by set across several sets, in the list's order", () => {
+    const lines = [
+      line(card({ number: "1" }), { spot: { boxId: "b1" } }),
+      stray(listed({ setName: "Bowman", cardNumber: "7" })),
+      stray(listed({ cardNumber: "9" })),
+      stray(listed({ setName: "Bowman", cardNumber: "2" })),
+    ];
+    const notInBox = boxStops(lines, [{ id: "b1", name: "Box 1" }]).find((x) => x.notInBox)!;
+    expect(setSections(notInBox.rows).map((x) => [x.title, x.rows.map((r) => rowFacts(r)?.cardNumber)])).toEqual([
+      ["2026 Bowman", ["2", "7"]],
+      ["2026 Topps", ["9"]],
+    ]);
+  });
+
+  it("filters and finds by its facts", () => {
+    const rows = mergeLines([line(card({ number: "1" })), stray(listed({ role: "insert", variantName: "1991 Throwback" }))]);
+    expect(filterRows(rows, { variant: "insert" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "throwback" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "not in nb" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "unmatched" })).toHaveLength(0);
+    expect(filterRows(rows, { sport: "baseball", year: "2026" })).toHaveLength(2);
+    // Only not in NB: every sale NB has no card for, described or not.
+    const withStray = mergeLines([line(card({ number: "1" })), stray(listed()), stray(undefined)]);
+    expect(filterRows(withStray, { notInNb: true }).map((r) => r.card)).toEqual([null, null]);
+    // Its own variant word finds it.
+    expect(filterRows(mergeLines([stray(listed({ role: undefined, variantWord: "Variation" }))]), { text: "variation" })).toHaveLength(1);
+  });
+
+  it("sorts transitively over any mix of cards, joined, own-divider and undescribed sales", () => {
+    const rows = mergeLines([
+      line(card({ number: "3" })),
+      line(card({ number: "4", setId: "s2", setName: "Bowman" })),
+      line(card({ number: "4", setId: "s3", setName: "Bowman" })),
+      line(card({ number: "1", sport: "Football", season: "2024" })),
+      stray(listed({ cardNumber: "2" })),
+      stray(listed({ setName: "Bowman", cardNumber: "1" })),
+      stray(listed({ setName: "Chrome", cardNumber: "1", role: "parallel", variantName: "Gold" })),
+      stray(listed({ setName: "Chrome", cardNumber: "1", role: undefined, variantWord: "SP" })),
+      stray(listed({ setName: "Chrome", cardNumber: "1", role: undefined })),
+      stray(listed({ setName: "Chrome", cardNumber: "1", role: "base", variantName: "Photo" })),
+      stray(listed({ sportName: "football", year: 2024, setName: "Topps", cardNumber: "0" })),
+      stray(listed({ sportName: "Hockey", year: 2023, season: "2023-24", setName: "Upper Deck", cardNumber: "9" })),
+      stray(undefined),
+      stray(listed({ setName: undefined })),
+    ]);
+    const sign = (x: number) => Math.sign(x);
+    for (const a of rows) {
+      expect(compareDefault(a, a)).toBe(0);
+      for (const b of rows) {
+        expect(sign(compareDefault(a, b)) + sign(compareDefault(b, a))).toBe(0);
+        for (const c of rows) {
+          if (compareDefault(a, b) <= 0 && compareDefault(b, c) <= 0) expect(compareDefault(a, c)).toBeLessThanOrEqual(0);
+        }
+      }
+    }
+  });
+});
+
+describe("NEO-509: which NB set a listing joins", () => {
+  const nb = (over: Parameters<typeof card>[0]) => line(card(over), { sportCode: "BB" });
+  const listed = (over: Partial<ListedCard> = {}): ListedCard => ({
+    sportName: "Baseball",
+    year: 2026,
+    season: "2026",
+    setName: "Topps",
+    cardNumber: "5",
+    role: "base",
+    ...over,
+  });
+  const stray = (l: ListedCard) => line(null, { order: BSC_1, listingTitle: "a listing", sportCode: null, listed: l });
+  const joins = (lines: SaleLine[], l: ListedCard) => listedSetFor(l, setsOnList(lines))?.set.id ?? null;
+
+  it("joins by NB's sport id, even when the listing writes the sport's name in another case", () => {
+    const lines = [nb({ number: "1", sport: "BASEBALL" })];
+    // The card factory ids a sport by its lowercased name.
+    expect(joins(lines, listed({ sportId: "baseball", sportName: "Baseball" }))).toBe("s1");
+    expect(joins(lines, listed({ sportId: "baseball", sportName: "baseball" }))).toBe("s1");
+    // No id at all: the name, folded.
+    expect(joins(lines, listed({ sportName: "baseBALL" }))).toBe("s1");
+  });
+
+  it("does not join a different sport id that happens to share the name: it gets its own divider", () => {
+    const lines = [nb({ number: "1" })];
+    expect(joins(lines, listed({ sportId: "some-other-sport-row" }))).toBeNull();
+    const s = buildSections([...lines, stray(listed({ sportId: "some-other-sport-row" }))], {}, { sort: null, dir: "asc", groupByOrder: false });
+    expect(s.map((x) => x.kind === "set" && [x.title, x.rows.length])).toEqual([
+      ["2026 Topps", 1],
+      ["2026 Topps", 1],
+    ]);
+    expect(s.map((x) => x.kind === "set" && Boolean(x.unmatchedTwin))).toEqual([false, true]);
+  });
+
+  it("does not join the same name in another year; it files under its own year", () => {
+    const lines = [nb({ number: "1", season: "2025" })];
+    expect(joins(lines, listed({ year: 2026, season: "2026" }))).toBeNull();
+    expect(joins(lines, listed({ year: 2025, season: "2025" }))).toBe("s1");
+    const s = buildSections([...lines, stray(listed())], {}, { sort: null, dir: "asc", groupByOrder: false });
+    // Newest year first.
+    expect(s.map((x) => x.kind === "set" && x.title)).toEqual(["2026 Topps", "2025 Topps"]);
+  });
+
+  it("joins a season by the set's start year, and a set name with its season in front", () => {
+    const lines = [nb({ number: "1", season: "2023-24", setName: "Prizm" })];
+    expect(joins(lines, listed({ year: 2023, season: "2023-24", setName: "2023-24 Prizm" }))).toBe("s1");
+    expect(joins(lines, listed({ year: 2023, season: "2023-24", setName: "Prizm" }))).toBe("s1");
+  });
+
+  it("does not join on a part of the name: Topps is not Topps Chrome", () => {
+    const lines = [nb({ number: "1", setName: "Topps Chrome" })];
+    expect(joins(lines, listed({ setName: "Topps" }))).toBeNull();
+    expect(joins(lines, listed({ setName: "Chrome" }))).toBeNull();
+  });
+
+  it("never joins when two NB sets fit, and a sale that matches no card joins nothing", () => {
+    const two = [nb({ number: "1", setId: "a" }), nb({ number: "1", setId: "b" })];
+    expect(joins(two, listed())).toBeNull();
+    expect(joins([stray(listed())], listed())).toBeNull();
+  });
+});
+
+describe("NEO-509: the variant words a listing gives", () => {
+  const listed = (over: Partial<ListedCard> = {}): ListedCard => ({
+    sportName: "Football",
+    year: 2024,
+    season: "2024",
+    setName: "Score",
+    cardNumber: "302",
+    ...over,
+  });
+
+  it("writes Photo Variation once however the word and the name come", () => {
+    const written = (l: Partial<ListedCard>) => listedTitle(listed(l));
+    expect(written({ variantWord: "Variation", variantName: "Photo Variation" })).toBe("2024 Score Photo Variation #302");
+    expect(written({ variantWord: "variation", variantName: "Photo Variation" })).toBe("2024 Score Photo Variation #302");
+    expect(written({ variantWord: "Variation", variantName: "Variation" })).toBe("2024 Score Variation #302");
+    expect(written({ variantWord: "Variation" })).toBe("2024 Score Variation #302");
+    expect(written({ variantName: "Photo Variation" })).toBe("2024 Score Photo Variation #302");
+    expect(written({ role: "base", variantName: "Photo Variation" })).toBe("2024 Score Photo Variation #302");
+  });
+
+  it("keeps Variation, SP and Promo whatever the name, and never writes Base for a listing that did not say it", () => {
+    for (const word of ["Variation", "SP", "Promo"]) {
+      const title = listedTitle(listed({ variantWord: word, variantName: "Gold" }));
+      expect(title).toBe(`2024 Score ${word} Gold #302`);
+      const facts = rowFacts(mergeLines([line(null, { sportCode: null, listed: listed({ variantWord: word }) })])[0])!;
+      expect(facts.role).toBeNull();
+      expect(facts.variantWord).toBe(word);
+    }
+    expect(listedTitle(listed())).not.toMatch(/base/i);
+    expect(rowFacts(mergeLines([line(null, { sportCode: null, listed: listed() })])[0])?.role).toBeNull();
+  });
+
+  // NEO-509 (found in the adversarial pass): the word collapses into the name only when the name
+  // says it as whole words, never as a substring of another word ("SP" inside "Special").
+  it("keeps a short word when the name only contains it inside another word", () => {
+    // The word is the seller's clue; "Special" does not say SP.
+    expect(listedTitle(listed({ variantWord: "SP", variantName: "Gold Special" }))).toBe("2024 Score SP Gold Special #302");
+    expect(listedTitle(listed({ variantWord: "SP", variantName: "Gold SPX" }))).toBe("2024 Score SP Gold SPX #302");
+    expect(listedTitle(listed({ variantWord: "Promo", variantName: "Promotional Gold" }))).toBe("2024 Score Promo Promotional Gold #302");
+  });
+
+  it("collapses a word the name says as whole words, multi-word words and punctuation included", () => {
+    const written = (l: Partial<ListedCard>) => listedTitle(listed(l));
+    expect(written({ variantWord: "SP", variantName: "Gold SP" })).toBe("2024 Score Gold SP #302");
+    expect(written({ variantWord: "sp", variantName: "SP Photo" })).toBe("2024 Score SP Photo #302");
+    expect(written({ variantWord: "SP", variantName: "Gold (SP)" })).toBe("2024 Score Gold (SP) #302");
+    expect(written({ variantWord: "Photo Variation", variantName: "Gold  photo   variation" })).toBe("2024 Score Gold  photo   variation #302");
+    expect(written({ variantWord: "Photo Variation", variantName: "Photo Variations" })).toBe(
+      "2024 Score Photo Variation Photo Variations #302",
+    );
+    expect(written({ variantWord: "1/1", variantName: "Gold 1/1" })).toBe("2024 Score Gold 1/1 #302");
+  });
+
+  it("a blank word or name is no word", () => {
+    expect(listedVariant(listed({ variantWord: "  ", variantName: " \t " }))).toEqual({ word: null, name: null });
+    expect(listedTitle(listed({ variantWord: " ", variantName: "" }))).toBe("2024 Score #302");
+  });
+});
+
+describe("NEO-509: sale lines that say too little, or oddly", () => {
+  const listed = (over: Partial<ListedCard> = {}): ListedCard => ({
+    sportName: "Football",
+    year: 2024,
+    season: "2024",
+    setName: "Score",
+    cardNumber: "302",
+    role: "base",
+    ...over,
+  });
+  const stray = (l: ListedCard) => line(null, { order: BSC_1, listingTitle: "a listing", sportCode: null, listed: l });
+  const facts = (l: ListedCard) => rowFacts(mergeLines([stray(l)])[0]);
+
+  it.each([
+    ["no year", { year: undefined }],
+    ["a year before 1800", { year: 1799 }],
+    ["a year after 2100", { year: 2101 }],
+    ["a year that is not whole", { year: 2024.5 }],
+    ["a year that is NaN", { year: Number.NaN }],
+    ["no set", { setName: undefined }],
+    ["a blank set", { setName: "   " }],
+    ["no number", { cardNumber: undefined }],
+    ["a blank number", { cardNumber: "  " }],
+    ["no sport", { sportName: undefined }],
+    ["a blank sport", { sportName: " " }],
+  ] as Array<[string, Partial<ListedCard>]>)("%s: stays out of the walk", (_name, over) => {
+    expect(facts(listed(over))).toBeNull();
+  });
+
+  it("a year at the edges files", () => {
+    expect(facts(listed({ year: 1800, season: "1800" }))?.year).toBe(1800);
+    expect(facts(listed({ year: 2100, season: "2100" }))?.year).toBe(2100);
+  });
+
+  it("By the Box splits the described from the rest exactly as the list does, whatever mix of order and newness", () => {
+    const lines = [
+      stray(listed({ cardNumber: "1" })),
+      stray(listed({ cardNumber: undefined })),
+      stray(listed({ cardNumber: "2" })),
+      line(null, { listingTitle: "x", sportCode: null }),
+    ];
+    lines[0] = { ...lines[0], isNew: true };
+    const stops = boxStops(lines, []);
+    expect(stops.map((x) => [x.box.id, x.rows.length])).toEqual([
+      [NOT_IN_BOX_STOP, 2],
+      [CANT_FIND_STOP, 2],
+    ]);
+    const sections = buildSections(lines, {}, { sort: null, dir: "asc", groupByOrder: false });
+    // The list files the described rows too (the new one with the new sales), the same four rows in all.
+    expect(sections.flatMap((x) => x.rows).length).toBe(4);
+    expect(sections.find((x) => x.kind === "cantFind")?.rows.length).toBe(2);
+    expect(sections.find((x) => x.kind === "new")?.rows.length).toBe(1);
+  });
+
+  it("Can't find it and Not in a box together hold every sale NB has no card for, and none of the matched", () => {
+    const lines = [line(card({ number: "1" }), { spot: { boxId: "b1" } }), stray(listed()), stray(listed({ year: undefined }))];
+    const stops = boxStops(lines, [{ id: "b1", name: "Box 1" }]);
+    const strays = stops.filter((x) => x.notInBox || x.cantFind).flatMap((x) => x.rows);
+    expect(strays.every((r) => r.card === null)).toBe(true);
+    expect(strays).toHaveLength(2);
+    expect(stops.find((x) => x.box.id === "b1")?.rows.every((r) => r.card !== null)).toBe(true);
+  });
+
+  it("the Only not in NB filter keeps a described sale and one that says nothing, and drops the matched, in any search", () => {
+    const rows = mergeLines([line(card({ number: "1" })), stray(listed()), stray(listed({ year: undefined })), stray(listed({ players: "Zed" }))]);
+    expect(filterRows(rows, { notInNb: true })).toHaveLength(3);
+    expect(filterRows(rows, { notInNb: true, text: "zed" })).toHaveLength(1);
+    expect(filterRows(rows, { notInNb: true, sport: "sport:football" })).toHaveLength(2);
+    expect(filterRows(rows, {})).toHaveLength(4);
+    const sections = buildSections([line(card({ number: "1" })), stray(listed()), stray(listed({ year: undefined }))], { notInNb: true }, {
+      sort: null,
+      dir: "asc",
+      groupByOrder: false,
+    });
+    expect(sections.flatMap((x) => x.rows).every((r) => r.card === null)).toBe(true);
+    expect(sections.map((x) => x.kind)).toEqual(["cantFind", "set"]);
+  });
+});
+
+describe("NEO-509: one total order over cards and listings", () => {
+  // A deterministic generator: every combination that could tie or cross.
+  function mix(): SaleLine[] {
+    const out: SaleLine[] = [];
+    const listed = (over: Partial<ListedCard>): ListedCard => ({
+      sportName: "Baseball",
+      year: 2026,
+      season: "2026",
+      setName: "Topps",
+      cardNumber: "5",
+      ...over,
+    });
+    for (const number of ["1", "10", "2", "TB2"]) out.push(line(card({ number })));
+    out.push(line(card({ number: "1", setId: "s2", setName: "topps" })));
+    out.push(line(card({ number: "1", sport: "Football", season: "2025" })));
+    out.push(line(card({ number: "7", kind: "insert", insertName: "Throwback", name: "Throwback" })));
+    out.push(line(card({ number: "7", kind: "parallel", name: "Gold" })));
+    for (const role of [undefined, "base", "parallel", "insert"] as const) {
+      for (const variantWord of [undefined, "SP", "Variation"]) {
+        for (const setName of ["Topps", "TOPPS", "Bowman"]) {
+          out.push(
+            line(null, {
+              sportCode: null,
+              listed: listed({ role, variantWord, setName, cardNumber: variantWord ? "5" : "6", variantName: role && role !== "base" ? "Gold" : undefined }),
+            }),
+          );
+        }
+      }
+    }
+    out.push(line(null, { listed: listed({ sportId: "baseball", sportName: "BASEBALL", sportCode: "BB" }) }));
+    out.push(line(null, { listed: listed({ sportId: "x", sportName: "Baseball" }) }));
+    out.push(line(null, { listed: listed({ year: 2025, season: "2025-26" }) }));
+    out.push(line(null, { listed: listed({ year: undefined }) }));
+    out.push(line(null, { listed: undefined }));
+    return out;
+  }
+
+  it("is transitive and antisymmetric over the whole mix", () => {
+    const rows = mergeLines(mix());
+    const sign = Math.sign;
+    for (const a of rows) {
+      expect(compareDefault(a, a)).toBe(0);
+      for (const b of rows) {
+        expect(sign(compareDefault(a, b)) + sign(compareDefault(b, a))).toBe(0);
+        if (a !== b) expect(compareDefault(a, b)).not.toBe(0);
+        for (const c of rows) {
+          if (compareDefault(a, b) <= 0 && compareDefault(b, c) <= 0) expect(compareDefault(a, c)).toBeLessThanOrEqual(0);
+        }
+      }
+    }
+  });
+
+  it.each([null, ...SORT_KEYS])("sorting by %s gives the same order whatever order the rows arrive in", (key) => {
+    const rows = mergeLines(mix());
+    const ids = (r: PickRow[]) => r.map((x) => x.key);
+    for (const dir of ["asc", "desc"] as const) {
+      const expected = ids(sortRows(rows, key, dir));
+      // A fixed set of shuffles (a linear congruential generator, so no flake).
+      let seed = 12345;
+      const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+      for (let round = 0; round < 12; round += 1) {
+        const shuffled = [...rows].sort(() => next() - 0.5);
+        expect(ids(sortRows(shuffled, key, dir))).toEqual(expected);
+      }
+    }
+  });
+
+  it("keeps every set's rows together in the walk, whatever mix it sorts", () => {
+    const sections = buildSections(mix(), {}, { sort: null, dir: "asc", groupByOrder: false }).filter((x) => x.kind === "set");
+    const keys = sections.map((x) => x.key);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

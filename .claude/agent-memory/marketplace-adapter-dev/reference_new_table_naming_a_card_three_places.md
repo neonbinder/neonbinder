@@ -1,6 +1,6 @@
 ---
 name: new-table-naming-a-card-three-places
-description: A new Convex table holding a v.id("cardChecklist") (or a selector/variant id) must be handled in the wipe reference graph, the global set-builder reset and the per-user testing reset; only the first fails a test
+description: A new Convex table (or a new nested field on an existing one) holding a v.id("cardChecklist") or v.id("selectorOptions") must be handled in the wipe reference graph, the global set-builder reset, the per-user testing reset and the reference-seed dependant list
 metadata:
   type: reference
 ---
@@ -17,6 +17,13 @@ or another id the variant-type wipe deletes touches three places:
    naming them must drain before them. Nothing fails if you forget.
 3. `testing.ts` per-user reset (`resetMyTestData`-style handler): clear the
    caller's rows by an owner-first index. Nothing fails if you forget.
+
+4. `scripts/reference-seed/cli.mjs` `SELECTOR_DEPENDANT_TABLES` (drained by
+   the reset) or `SELECTOR_DEPENDANT_UNDRAINED_TABLES`, plus the mirror list
+   `DEPENDANTS` in `convex/resetSetBuilderData.test.ts`. `cli.test.mjs` walks
+   the exported schema for ANY `v.id("selectorOptions")`, nested ones too (a
+   sale line's `items[].listed.sportId` tripped it), so it goes red on its own,
+   but only in the full `vitest run`, not in the area tests.
 
 **How to apply:** when a schema change adds such a table, grep for an
 existing sibling table name (e.g. `marketplaceSales`) across `convex/` and

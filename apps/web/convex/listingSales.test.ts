@@ -805,6 +805,16 @@ describe("projectBscOrder", () => {
       priceCents: 25,
       sellerSku: "303|TB2",
       graded: false,
+      listed: {
+        sport: "Football",
+        platformSportId: "football",
+        year: "2021",
+        setName: "2021 Score",
+        players: "Justin Fields",
+        cardNo: "TB2",
+        variant: "Insert",
+        variantName: "1991 Throwback",
+      },
     });
   });
 });

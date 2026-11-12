@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
-import { playerNames, setLabel } from "../data/labels";
+import { playerNames } from "../data/labels";
 import { SPORT_LINE, VARIANT_STRIPE, sportHue } from "./colours";
-import { isPulled, orderLabel, VARIANT_ROLE_LABEL, variantName, variantRole, type PickRow, type PickSection } from "./model";
+import { isPulled, NOT_IN_NB, orderLabel, rowFacts, VARIANT_ROLE_LABEL, type PickRow, type PickSection } from "./model";
 
 /**
  * NEO-500 — the printed pick sheet: the screen's rows as a dense list, one
@@ -16,6 +16,12 @@ import { isPulled, orderLabel, VARIANT_ROLE_LABEL, variantName, variantRole, typ
  * order at the right. A set's divider is a thin rule in its sport's colour
  * with the set title inline; the sport's name is written once, where the
  * sport starts. Colours are the paper roles (pick-list.css).
+ *
+ * NEO-509: a sale filed with its set by the listing's words alone prints
+ * like a card, with "Not in NB" among its marks, the listing's own variant
+ * word, and its next step (check the order's photo) after the variant. Every
+ * line NB has no card for wraps rather than cut that step short
+ * (`nb-pick-sheet-lost`).
  */
 
 /** True while the page is printing: the Print button, Ctrl/⌘+P and print emulation all count. */
@@ -39,17 +45,16 @@ export function usePrinting(): boolean {
   return printing;
 }
 
-/** "Parallel Gold Foil", "Insert parallel 8 Bit Ballers Red", "Base". */
+/** "Parallel Gold Foil", "Insert parallel 8 Bit Ballers Red", "Base", a listing's "Variation". */
 function variantText(row: PickRow): string {
-  const c = row.card;
-  if (!c) return "";
-  const role = variantRole(c);
-  const name = variantName(c);
-  return name ? `${VARIANT_ROLE_LABEL[role]} ${name}` : VARIANT_ROLE_LABEL[role];
+  const facts = rowFacts(row);
+  if (!facts) return "";
+  return [facts.role && VARIANT_ROLE_LABEL[facts.role], facts.variantWord, facts.variantName].filter(Boolean).join(" ");
 }
 
 function markersText(row: PickRow): string {
-  const marks = [row.isNew && "New", row.lastOnes && "Last ones", row.short > 0 && `Short ${row.short}`].filter(Boolean);
+  const notInNb = !row.card && rowFacts(row) !== null;
+  const marks = [notInNb && NOT_IN_NB, row.isNew && "New", row.lastOnes && "Last ones", row.short > 0 && `Short ${row.short}`].filter(Boolean);
   return marks.length ? marks.join(", ") : "";
 }
 
@@ -118,12 +123,15 @@ export default function PrintSheet({
             )}
             {section.rows.map((row) => {
               const c = row.card;
+              const facts = rowFacts(row);
               const done = isPulled(row, pulled);
-              const role = c ? variantRole(c) : null;
+              const role = facts?.role ?? null;
               // Outside a set's divider the line names its set too.
-              const card = c
-                ? `${section.kind === "set" ? "" : `${setLabel(c.set)} `}${variantText(row)}${row.serial ? ` ${row.serial}` : ""}`
+              const card = facts
+                ? [section.kind === "set" ? "" : facts.setTitle, variantText(row), row.serial ?? ""].filter(Boolean).join(" ")
                 : (row.problem ?? "");
+              // A sale NB has no card for keeps its next step on paper too.
+              const step = facts && !c && row.problem ? row.problem : "";
               const marks = markersText(row);
               return (
                 <tr key={row.key} data-pulled={done || undefined} className={c ? "nb-pick-sheet-row" : "nb-pick-sheet-row nb-pick-sheet-lost"}>
@@ -132,13 +140,15 @@ export default function PrintSheet({
                   </td>
                   {showSlot && <td>{row.spot?.slot ?? ""}</td>}
                   <td className="nb-pick-sheet-strong">{row.quantity > 1 ? `×${row.quantity}` : ""}</td>
-                  <td className="nb-pick-sheet-strong">{c ? `#${c.cardNumber}` : ""}</td>
+                  <td className="nb-pick-sheet-strong">{facts ? `#${facts.cardNumber}` : ""}</td>
                   <td>
                     {c ? (
                       <>
                         <span className="nb-pick-sheet-strong">{playerNames(c)}</span>
                         {c.teams.length > 0 && ` ${c.teams.map((t) => t.name).join(" / ")}`}
                       </>
+                    ) : facts?.players ? (
+                      <span className="nb-pick-sheet-strong">{facts.players}</span>
                     ) : (
                       row.listingTitle
                     )}
@@ -147,6 +157,7 @@ export default function PrintSheet({
                   <td>
                     {role && <span aria-hidden="true" className={`nb-pick-band nb-pick-sheet-band ${VARIANT_STRIPE[role]}`} />}
                     {card}
+                    {step && <i>{card ? ` ${step}` : step}</i>}
                   </td>
                   <td>{row.grade ? `${row.grade.grader} ${row.grade.grade} #${row.grade.cert}` : row.condition}</td>
                   <td className={`nb-pick-sheet-right${row.orders.length > 1 ? " nb-pick-sheet-wrap" : ""}`}>{row.orders.map(orderLabel).join(", ")}</td>
