@@ -1888,10 +1888,30 @@ export const listForPicker = query({
  * `_creationTime` within a sport, and one sport alone can pass the cap. The
  * rows are still sorted by NAME for display below; the order only decides
  * which rows survive the cap.
+ *
+ * NEO-495 — `leagueId` reads ONE league's teams by `by_league_id`, so the
+ * league dropdown is answered from that league's own rows rather than by
+ * filtering the newest-2000 window in the browser. Filtered client-side, MLB
+ * showed only the handful of MLB-tagged rows that happened to be recent, and
+ * every real club (all of them older than the window) was unreachable.
+ * `"none"` is the screen's "No league" value: `leagueId` is optional, and an
+ * index equality on `undefined` reads exactly the rows that carry none.
+ *
+ * Same cap and the same `truncated` report as the unscoped window, newest
+ * first within the league (`by_league_id` orders by `_creationTime` inside
+ * one key).
+ *
+ * `leagueId` and `sportId` together are REFUSED. Applied after the capped
+ * league read, a sport filter could drop rows the cap had already spent, and
+ * `truncated` would then say "complete" about a list that is not. A real league
+ * belongs to one sport anyway, and no caller passes both.
  */
 
 export const listForManagement = query({
-  args: { sportId: v.optional(v.id("selectorOptions")) },
+  args: {
+    sportId: v.optional(v.id("selectorOptions")),
+    leagueId: v.optional(v.union(v.id("leagues"), v.literal("none"))),
+  },
   returns: v.object({
     teams: v.array(teamDocValidator),
     totalCount: v.number(),
@@ -1899,17 +1919,32 @@ export const listForManagement = query({
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    if (args.leagueId !== undefined && args.sportId !== undefined) {
+      throw new ConvexError(
+        "Pass a league or a sport to listForManagement, not both.",
+      );
+    }
 
-    const rows = args.sportId
-      ? await ctx.db
-          .query("teams")
-          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-          .order("desc")
-          .take(TEAM_MANAGEMENT_CAP + 1)
-      : await ctx.db
-          .query("teams")
-          .order("desc")
-          .take(TEAM_MANAGEMENT_CAP + 1);
+    let rows: Doc<"teams">[];
+    if (args.leagueId !== undefined) {
+      const leagueKey = args.leagueId === "none" ? undefined : args.leagueId;
+      rows = await ctx.db
+        .query("teams")
+        .withIndex("by_league_id", (q) => q.eq("leagueId", leagueKey))
+        .order("desc")
+        .take(TEAM_MANAGEMENT_CAP + 1);
+    } else if (args.sportId) {
+      rows = await ctx.db
+        .query("teams")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+        .order("desc")
+        .take(TEAM_MANAGEMENT_CAP + 1);
+    } else {
+      rows = await ctx.db
+        .query("teams")
+        .order("desc")
+        .take(TEAM_MANAGEMENT_CAP + 1);
+    }
 
     const truncated = rows.length > TEAM_MANAGEMENT_CAP;
     const teams = rows.slice(0, TEAM_MANAGEMENT_CAP);
