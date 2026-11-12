@@ -224,7 +224,7 @@ describe("a Pick List cut short", () => {
     const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
     const { default: PickListTab } = await import("./PickListTab");
     const { CollectionModeProvider } = await import("../mode");
-    const NOTE = "Your Pick List is too long to show all at once. Pull these and the rest will show up.";
+    const NOTE = "Your Pick List is too long to show at once, so it starts with your oldest orders. Pull these and the rest will show up.";
     const show = (truncated: boolean) =>
       render(
         <Theme>

@@ -115,6 +115,33 @@ describe("open", () => {
     expect(JSON.stringify(open)).not.toContain("NB1-");
   });
 
+  test("past the open-order read the list is cut short and keeps the oldest orders", async () => {
+    const { t, applied, me } = await setup();
+    await t.run(async (ctx) => {
+      // The newest 100 sales have shipped, so the temporary date window adds nothing.
+      for (let i = 0; i < 100; i += 1) {
+        await ctx.db.insert("marketplaceSales", {
+          ownerId: ME.subject, platform: "bsc", orderId: `s-${i}`, orderNo: `S-${i}`, orderDate: 10_000 + i,
+          status: "SHIPPED", totals: {}, items: [applied()], firstSeenAt: 0, lastUpdated: 0,
+        });
+      }
+      // 201 open orders, oldest O-1.
+      for (let i = 1; i <= 201; i += 1) {
+        await ctx.db.insert("marketplaceSales", {
+          ownerId: ME.subject, platform: "bsc", orderId: `o-${i}`, orderNo: `O-${i}`, orderDate: i,
+          status: "READY_TO_SHIP", totals: {}, items: [applied()], pullOpen: true, firstSeenAt: 0, lastUpdated: 0,
+        });
+      }
+    });
+    const open = await me.query(api.pickList.open, {});
+    expect(open.truncated).toBe(true);
+    const orders = open.lines.map((l) => l.orderNo);
+    expect(orders).toHaveLength(200);
+    expect(orders[0]).toBe("O-1");
+    expect(orders).toContain("O-200");
+    expect(orders).not.toContain("O-201");
+  });
+
   test("anonymous is refused", async () => {
     const { t } = await setup();
     await expect(t.query(api.pickList.open, {})).rejects.toThrow(/Not authenticated/);

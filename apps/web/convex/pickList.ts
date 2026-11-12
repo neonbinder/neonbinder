@@ -39,7 +39,10 @@ import { collectionCopyConditionValidator, listingPlatformValidator } from "./sc
 type Sale = Doc<"marketplaceSales">;
 type SaleItem = Sale["items"][number];
 
-/** Orders `open` reads off the `pullOpen` index, newest first. */
+/**
+ * Orders `open` reads off the `pullOpen` index, OLDEST first: past this the
+ * list is cut short and keeps the oldest orders, which ship first.
+ */
 export const OPEN_SALES_READ = 200;
 /**
  * The owner's most recent orders `open` also reads, whatever their `pullOpen`.
@@ -145,7 +148,7 @@ export const open = query({
     const openSales = await ctx.db
       .query("marketplaceSales")
       .withIndex("by_owner_pull_open", (q) => q.eq("ownerId", ownerId).eq("pullOpen", true))
-      .order("desc")
+      .order("asc")
       .take(OPEN_SALES_READ + 1);
     let truncated = openSales.length > OPEN_SALES_READ;
 

@@ -40,7 +40,7 @@ describe("PrivacyPage", () => {
 
   it("shows the last-updated date", () => {
     renderPrivacy();
-    expect(screen.getByText("November 4, 2026").getAttribute("datetime")).toBe("2026-11-04");
+    expect(screen.getByText("November 11, 2026").getAttribute("datetime")).toBe("2026-11-11");
   });
 
   it("covers eBay and lets the visitor jump to each section", () => {
