@@ -3188,3 +3188,29 @@ describe("NEO-490: the operator's checklist links are admin-gated", () => {
   });
 });
 
+
+/**
+ * NEO-500 — the Pick List (`pickList.ts`). Every function is the signed-in
+ * caller's own; the owner is never an argument. `open`, `soldPhotos` and
+ * `setPulled` read or write only the caller's sales and photos (pinned in
+ * `pickList.test.ts`); `cards` is catalog data, signed in like
+ * `collectionCatalog.cards`.
+ */
+describe("NEO-500: the Pick List is the signed-in seller's own", () => {
+  const CALLS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["pickList.open", (t) => t.query(api.pickList.open, {})],
+    ["pickList.cards", (t) => t.query(api.pickList.cards, { cardIds: [] })],
+    ["pickList.soldPhotos", (t) => t.query(api.pickList.soldPhotos, { copyIds: [] })],
+    ["pickList.setPulled", (t) => t.mutation(api.pickList.setPulled, { ids: [], pulled: true })],
+  ];
+
+  test.each(CALLS)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(CALLS)("%s answers a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN))).resolves.not.toThrow();
+  });
+});

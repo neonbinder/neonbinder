@@ -40,6 +40,12 @@ export interface PickSpot {
   slot?: number;
 }
 
+/** A photo of the very copy that sold: the small one for the row, the big one for the dialog. */
+export interface PickPhoto {
+  thumbUrl: string;
+  imageUrl: string;
+}
+
 /** A box the seller keeps inventory in. */
 export interface PickBox {
   id: string;
@@ -74,7 +80,18 @@ export interface SaleLine {
   serial?: string;
   grade?: PickGrade;
   order: PickOrder;
+  /**
+   * Where the copy sits. On a `boxUnrecorded` line it is the box the listing
+   * was pushed from, a best guess, when the store has one.
+   */
   spot?: PickSpot;
+  /**
+   * NB did not note which box the copy came from (a sale applied before the
+   * Pick List kept track). With no `spot` it is walked as its own stop.
+   */
+  boxUnrecorded?: boolean;
+  /** The sold copy's own photo, when it has one; the row draws the card otherwise. */
+  photo?: PickPhoto;
   /** The sale took every copy NB held. */
   lastOnes?: boolean;
   /** NB held fewer copies than sold: this many short. */

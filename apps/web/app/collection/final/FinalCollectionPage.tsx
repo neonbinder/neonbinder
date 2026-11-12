@@ -73,8 +73,18 @@ import InventoryListTab from "./inventory/InventoryListTab";
 // The Sales and Sync status tabs (NEO-370) load only when opened.
 const SalesTab = lazy(() => import("./inventory/listing/SalesTab"));
 const SyncStatusTab = lazy(() => import("./inventory/listing/SyncStatusTab"));
-// NEO-500 — the Pick List (demo only until its Convex store lands).
+// NEO-500 — the Pick List: the demo's fixture, or the signed-in seller's
+// orders through the Convex store mounted around it.
 const PickListTab = lazy(() => import("./pick/PickListTab"));
+const ConvexPickListTab = lazy(() =>
+  import("./pick/convexPickStore").then(({ ConvexPickListProvider }) => ({
+    default: (props: { onTitleDetail: (detail: string | null) => void }) => (
+      <ConvexPickListProvider>
+        <PickListTab {...props} />
+      </ConvexPickListProvider>
+    ),
+  })),
+);
 // The inventory Checklists' target box (`box=`, NEO-364 D8): replaced in
 // place by the picker, carried here on each drill step within Checklists
 // like the scope, and dropped on a tab change (the Inventory list's rail
@@ -315,10 +325,16 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
   const isPublic = mode === "public";
   const { capabilities: storeCapabilities, demo, binderMemory, listing, kind: storeKind } = useCollectionStore();
   // NEO-370: listing needs the store's listing half as well as the flag.
-  const capabilities = useMemo<Capabilities>(
-    () => ({ ...storeCapabilities, marketplaceListing: storeCapabilities.marketplaceListing && listing !== undefined }),
-    [storeCapabilities, listing],
-  );
+  // NEO-500: a store that lists shows the Pick List only beside Sales (sales
+  // are what it pulls); the demo, which never lists, shows its fixture's.
+  const capabilities = useMemo<Capabilities>(() => {
+    const listingOn = storeCapabilities.marketplaceListing && listing !== undefined;
+    return {
+      ...storeCapabilities,
+      marketplaceListing: listingOn,
+      pickList: storeCapabilities.pickList && (listingOn || !storeCapabilities.marketplaceListing),
+    };
+  }, [storeCapabilities, listing]);
   const containers = useContainers();
   const tabs = tabsFor(side, capabilities);
   const [params, setParams] = useCollectionParams();
@@ -893,7 +909,11 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
                 )}
                 {!redirect && tab === "pick" && capabilities.pickList && (
                   <Suspense fallback={<SkeletonBars rows={4} />}>
-                    <PickListTab onTitleDetail={setPickDetail} />
+                    {storeKind === "convex" ? (
+                      <ConvexPickListTab onTitleDetail={setPickDetail} />
+                    ) : (
+                      <PickListTab onTitleDetail={setPickDetail} />
+                    )}
                   </Suspense>
                 )}
                 {!redirect && tab === "sync" && capabilities.marketplaceListing && (

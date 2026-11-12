@@ -14,7 +14,7 @@
 
 import { setLabel } from "../data/labels";
 import type { Card } from "../data/types";
-import type { PickBox, PickGrade, PickOrder, PickSpot, SaleLine } from "./types";
+import type { PickBox, PickGrade, PickOrder, PickPhoto, PickSpot, SaleLine } from "./types";
 
 // ---------------------------------------------------------------------------
 // Natural order
@@ -88,6 +88,10 @@ export interface PickRow {
   short: number;
   isNew: boolean;
   spot?: PickSpot;
+  /** NB did not note the box for at least one merged line. */
+  boxUnrecorded: boolean;
+  /** The first merged line's copy photo, when one has it. */
+  photo?: PickPhoto;
 }
 
 function gradeKey(g: PickGrade | undefined): string {
@@ -139,6 +143,8 @@ function toRow(key: string, group: SaleLine[]): PickRow {
     short: group.reduce((n, l) => n + (l.short ?? 0), 0),
     isNew: group.every((l) => l.isNew),
     spot: first.spot,
+    boxUnrecorded: group.some((l) => l.boxUnrecorded),
+    photo: group.find((l) => l.photo)?.photo,
   };
 }
 
@@ -365,10 +371,15 @@ export interface BoxStop {
   rows: PickRow[];
   /** The walk's last stop: the sales NB could not tie to a card, after every box. */
   cantFind?: boolean;
+  /** The stop after the boxes for cards whose box NB did not note (before Can't find it). */
+  unrecorded?: boolean;
 }
 
 /** The `pbox` id of the Can't find it stop; never a box's own id. */
 export const CANT_FIND_STOP = "cant-find";
+
+/** The `pbox` id of the Box not recorded stop; never a box's own id. */
+export const BOX_NOT_RECORDED_STOP = "no-box";
 
 /** The catch-all for a copy filed nowhere, when the store names none. */
 export const UNSORTED_BOX: PickBox = { id: "unsorted", name: "Unsorted", unsorted: true };
@@ -382,8 +393,10 @@ export function compareBoxes(a: PickBox, b: PickBox): number {
 /**
  * The walk through the boxes: every box that holds something to pull, in
  * box order, empty ones skipped. A line with no box (or a box the store
- * does not list) goes to Unsorted. Lines NB could not match to a card are
- * in no box and are left out (the list's "Can't find it" has them).
+ * does not list) goes to Unsorted, unless NB never noted its box
+ * (`boxUnrecorded`): those are left for the Box not recorded stop. Lines NB
+ * could not match to a card are in no box and are left out (the list's
+ * "Can't find it" has them).
  *
  * Inside a box: slot order when the box keeps slots (rows without one after,
  * in the default order), else the default order.
@@ -394,7 +407,9 @@ export function boxWalk(lines: readonly SaleLine[], boxes: readonly PickBox[]): 
   const byBox = new Map<string, SaleLine[]>();
   for (const line of lines) {
     if (!line.card) continue;
-    const box = (line.spot && known.get(line.spot.boxId)) || unsorted;
+    const spotBox = line.spot && known.get(line.spot.boxId);
+    if (!spotBox && line.boxUnrecorded) continue;
+    const box = spotBox || unsorted;
     const list = byBox.get(box.id);
     if (list) list.push(line);
     else byBox.set(box.id, [line]);
@@ -409,11 +424,21 @@ export function boxWalk(lines: readonly SaleLine[], boxes: readonly PickBox[]): 
 }
 
 /**
- * The whole By the Box walk: the boxes in order, then one last stop for the
- * sales NB could not tie to a card (the list's Can't find it), when there are any.
+ * The whole By the Box walk: the boxes in order, then a stop for the cards
+ * whose box NB never noted, then one last stop for the sales NB could not
+ * tie to a card (the list's Can't find it), each when there are any.
  */
 export function boxStops(lines: readonly SaleLine[], boxes: readonly PickBox[]): BoxStop[] {
   const stops = boxWalk(lines, boxes);
+  const known = new Set(boxes.map((b) => b.id));
+  const loose = lines.filter((l) => l.card && l.boxUnrecorded && !(l.spot && known.has(l.spot.boxId)));
+  if (loose.length) {
+    stops.push({
+      box: { id: BOX_NOT_RECORDED_STOP, name: "Box not recorded" },
+      rows: sortRows(mergeLines(loose, { bySpot: true }), null),
+      unrecorded: true,
+    });
+  }
   const lost = lines.filter((l) => !l.card);
   if (lost.length) {
     stops.push({

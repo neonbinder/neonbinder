@@ -160,7 +160,8 @@ test(
     await expect(pick.find).toBeFocused();
     await expect(pick.backToDefault).toBeDisabled();
     await expect(order.getByRole("option", { selected: true })).toHaveText("All orders");
-    await expect(pick.matches).toBeHidden();
+    // Still in the accessibility tree (sr-only), just empty.
+    await expect(pick.matches).toHaveText("");
     await expect(pulledToggle(table, WEMBANYAMA)).toBeVisible();
 
     // --- Mark pulled with a click --------------------------------------------

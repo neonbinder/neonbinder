@@ -835,8 +835,8 @@ export interface Capabilities {
   marketplaceListing: boolean;
   /**
    * NEO-500 — the Pick List: every sold card still to pull from a box. The
-   * demo's runs on a fixture (`../pick/demoPickStore`); the real one waits on
-   * a Convex store.
+   * demo's runs on a fixture (`../pick/demoPickStore`), the signed-in one on
+   * the seller's orders (`../pick/convexPickStore`).
    */
   pickList: boolean;
 }
@@ -899,6 +899,7 @@ export const REAL_CAPABILITIES: Capabilities = {
   intake: true,
   copyPhotos: true,
   marketplaceListing: true,
+  pickList: true,
 };
 
 // ---------------------------------------------------------------------------

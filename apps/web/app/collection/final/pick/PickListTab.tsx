@@ -43,9 +43,9 @@ import "./pick-list.css";
 
 /**
  * NEO-500 — the Pick List: every card the seller has sold and not yet pulled
- * from a box, in the order they walk the boxes. Phase 1 is the public demo's
- * (`?demo=on&side=inventory&tab=pick`); the signed-in app gets it once a
- * Convex store supplies `PickListStore` (`./store`).
+ * from a box, in the order they walk the boxes. The public demo's runs on a
+ * fixture (`?demo=on&side=inventory&tab=pick`); the signed-in seller's on
+ * their orders (`./convexPickStore`). Both supply `PickListStore` (`./store`).
  *
  * Two views, each a history entry: the list (default) and By the Box
  * (`pv=box`, one box at a time, `pbox=<id>`; Next box pushes, and the walk
@@ -101,6 +101,8 @@ const COPY = {
   matches: (n: number) => (n === 1 ? "1 card matches." : `${n} cards match.`),
   cantFind: "Can't find it",
   cantFindNote: "NB couldn't tie these sales to one card. Check each listing's photo to find it.",
+  noBox: "Box not recorded",
+  noBoxNote: "These sold before NB kept track of boxes. Look wherever you keep the set.",
   fresh: "Sold since you started",
   freshNote: "These came in mid-pull. Grab them on your way out.",
   boxesDone: "Every box is clear. Totally tubular.",
@@ -168,6 +170,8 @@ interface PullScope {
   key: string;
   rows: PickRow[];
   name?: string;
+  /** By the Box: the Box not recorded stop, which is no box. */
+  unrecorded?: boolean;
   /** By the Box: the stop to step to once this one is done. */
   next?: number;
 }
@@ -229,6 +233,7 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
           key: `box:${stop.box.id}`,
           rows: stop.rows,
           name: stop.box.name,
+          unrecorded: stop.unrecorded,
           next: index + 1 < stops.length ? index + 1 : undefined,
         }
       : null
@@ -250,7 +255,9 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
             ? n === 1
               ? "Pulled the 1 card that matches."
               : `Pulled all ${n} that match.`
-            : `Pulled ${n} from ${scope.name}.`;
+            : scope.unrecorded
+              ? `Pulled ${n} with no box noted.`
+              : `Pulled ${n} from ${scope.name}.`;
       mark(ids, true, message);
     }
     if (scope.next !== undefined) goStop(scope.next);
@@ -478,13 +485,18 @@ function ListView({
         setParam={setParam}
         onDefault={() => replace((p) => LIST_TWEAKS.forEach((k) => p.delete(k)))}
       />
-      {/* Always here, so a screen reader hears each filter's count. */}
+      {/*
+        Always rendered and never display:none, so a screen reader hears the
+        first count after a filter: an empty region is sr-only, not hidden.
+      */}
       <p
         role="status"
         className={`nb-pick-noprint ${
           filtered && matching === 0
             ? "rounded-xl border border-dashed border-rule-strong px-4 py-8 text-center text-ink-2"
-            : "text-sm text-ink-2 empty:hidden"
+            : filtered
+              ? "text-sm text-ink-2"
+              : "sr-only"
         }`}
       >
         {filtered ? (matching ? COPY.matches(matching) : COPY.noMatch) : ""}
@@ -773,7 +785,7 @@ function BoxView({
 
   if (!stop) return <p className="text-ink-2">{COPY.boxesDone}</p>;
   const left = copiesLeft(stop.rows, pulled);
-  const boxCount = stops.filter((s) => !s.cantFind).length;
+  const boxCount = stops.filter((s) => !s.cantFind && !s.unrecorded).length;
   const lost = stops.find((s) => s.cantFind);
   const lostLeft = lost ? copiesLeft(lost.rows, pulled) : 0;
   const nextStop = stops[index + 1];
@@ -787,7 +799,11 @@ function BoxView({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <h3 ref={heading} tabIndex={-1} className="nb-pick-boxhead rounded px-1 -mx-1 text-lg font-bold text-ink focus-outline">
-            {stop.cantFind ? `Last stop · ${COPY.cantFind} · ${leftText}` : `Box ${index + 1} of ${boxCount} · ${stop.box.name} · ${leftText}`}
+            {stop.cantFind
+              ? `Last stop · ${COPY.cantFind} · ${leftText}`
+              : stop.unrecorded
+                ? `${COPY.noBox} · ${leftText}`
+                : `Box ${index + 1} of ${boxCount} · ${stop.box.name} · ${leftText}`}
           </h3>
           {oneSport && <SportChip code={stop.rows[0].sportCode} name={oneSport.set.sport.name} />}
         </div>
@@ -807,17 +823,29 @@ function BoxView({
             onClick={() => goStop(index + 1)}
             className="min-h-11 sm:min-h-9"
           >
-            {nextStop?.cantFind ? `${COPY.cantFind} (${lostLeft})` : "Next box"}
+            {nextStop?.cantFind
+              ? `${COPY.cantFind} (${lostLeft})`
+              : nextStop?.unrecorded
+                ? `${COPY.noBox} (${copiesLeft(nextStop.rows, pulled)})`
+                : "Next box"}
           </NeonButton>
         </div>
       </div>
       {stop.cantFind ? (
         <p className="text-sm text-ink-2">{COPY.cantFindNote}</p>
+      ) : stop.unrecorded ? (
+        <p className="text-sm text-ink-2">{COPY.noBoxNote}</p>
       ) : (
         index === 0 && lost && lostLeft > 0 && <p className="text-sm text-ink-2">{COPY.lastStop(lostLeft)}</p>
       )}
       <PickTable
-        caption={stop.cantFind ? "Sales NB couldn't tie to a card" : `Cards to pull from ${stop.box.name}`}
+        caption={
+          stop.cantFind
+            ? "Sales NB couldn't tie to a card"
+            : stop.unrecorded
+              ? "Cards with no box noted"
+              : `Cards to pull from ${stop.box.name}`
+        }
         sections={[{ kind: "flat", key: `box:${stop.box.id}`, rows: stop.rows }]}
         pulled={pulled}
         mark={mark}
@@ -1016,7 +1044,15 @@ function PickTable({
           onClose={() => setThumb(null)}
         >
           <div className="flex flex-col items-center gap-3 pb-2">
-            <CardFace model={thumb.card} size="lg" serial={thumb.serial} />
+            {thumb.photo ? (
+              <img
+                src={thumb.photo.imageUrl}
+                alt={`The copy that sold: ${rowName(thumb)}`}
+                className="max-h-[60vh] w-auto max-w-full rounded-md"
+              />
+            ) : (
+              <CardFace model={thumb.card} size="lg" serial={thumb.serial} />
+            )}
             <p className="text-sm text-ink-2">
               {thumb.grade ? `${thumb.grade.grader} ${thumb.grade.grade}, cert ${thumb.grade.cert}` : thumb.condition}
               {thumb.serial ? `, numbered ${thumb.serial}` : ""}
@@ -1097,13 +1133,19 @@ function SportChip({ code, name }: { code: string | null; name: string }) {
 }
 
 function Markers({ row }: { row: PickRow }) {
-  if (!row.lastOnes && !row.short && !row.isNew) return null;
+  const noBox = row.boxUnrecorded && !row.spot;
+  if (!row.lastOnes && !row.short && !row.isNew && !noBox) return null;
   return (
     <span className="flex flex-wrap gap-1 whitespace-nowrap">
       {row.isNew && <span className="nb-pick-chip rounded bg-neon-blue px-1.5 text-xs font-bold leading-5 text-on-neon-blue">New</span>}
       {row.lastOnes && (
         <span className="nb-pick-chip rounded border border-notice-info-rule bg-notice-info-bg px-1.5 text-xs font-semibold leading-5 text-notice-info-ink">
           Last ones
+        </span>
+      )}
+      {noBox && (
+        <span className="nb-pick-chip rounded border border-rule-strong px-1.5 text-xs font-semibold leading-5 text-ink-2">
+          {COPY.noBox}
         </span>
       )}
       {row.short > 0 && (
@@ -1257,7 +1299,11 @@ function Row({
             aria-label={`Bigger picture of ${name}`}
             className="nb-pick-thumb block w-10 rounded-sm focus-outline"
           >
-            <CardFace model={c} size="fill" serial={row.serial} />
+            {row.photo ? (
+              <img src={row.photo.thumbUrl} alt="" loading="lazy" className="block aspect-[5/7] w-10 rounded-sm object-cover" />
+            ) : (
+              <CardFace model={c} size="fill" serial={row.serial} />
+            )}
           </button>
         ) : (
           <span
