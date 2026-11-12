@@ -19,10 +19,10 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import {
   BLOCKED_CROSS_LISTED,
-  BLOCKED_NO_IDS,
   BLOCKED_NOTHING_MATCHED,
   BLOCKED_SCANS,
   BLOCKED_TOO_MANY_CARDS,
+  BLOCKED_UNLINKED_OVER_LINKED_CARDS,
   MAX_INSERT_CARDS_FOR_BUILD,
   blockedAllPaused,
   blockedSidePaused,
@@ -861,19 +861,24 @@ describe("buildParallelChecklist — rebuild (J3)", () => {
 });
 
 describe("buildParallelChecklist — blocks write nothing", () => {
-  test("no marketplace ids of its own: blocked, nothing changes", async () => {
+  test("old cards holding a marketplace link block an unlinked rebuild (NEO-496 NQ2), nothing changes", async () => {
     const t = convexTest(schema, modules);
     const { insert } = await seedTree(t);
     const parallelId = await seedParallel(t, insert, { platformData: {}, platformFacets: undefined });
     await insertCard(t, insert, { cardNumber: "1", cardName: "Someone" });
+    const oldCard = await insertCard(t, parallelId, {
+      cardNumber: "1",
+      cardName: "Someone",
+      platformData: { bsc: { ref: "bsc-1", src: "b0" } },
+    });
 
     const result = await t
       .withIdentity(ADMIN)
       .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
 
     expect(result.status).toBe("blocked");
-    expect(result.blockedReason).toBe(BLOCKED_NO_IDS);
-    expect(await cardsOn(t, parallelId)).toHaveLength(0);
+    expect(result.blockedReason).toBe(BLOCKED_UNLINKED_OVER_LINKED_CARDS);
+    expect((await cardsOn(t, parallelId)).map((c) => c._id)).toEqual([oldCard]);
     expect(bscState.calls).toHaveLength(0);
     expect(slState.calls).toHaveLength(0);
   });
@@ -1091,5 +1096,104 @@ describe("buildParallelChecklist — blocks write nothing", () => {
     expect(src).toMatch(
       /deletedTotal > 0 \? BLOCKED_CHANGED_MID_BUILD : page\.blockedReason/,
     );
+  });
+});
+
+describe("buildParallelChecklist — a parallel with no marketplace ids (NEO-496 NQ2)", () => {
+  const noIds = { platformData: {}, platformFacets: undefined };
+
+  test("copies EVERY card of its insert, unlinked, and asks no marketplace", async () => {
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert, noIds);
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Ken Griffey Jr.", sortOrder: 0 });
+    await insertCard(t, insert, {
+      cardNumber: "2",
+      cardName: "Mike Trout",
+      sortOrder: 1,
+      platformData: { bsc: { ref: "insert-ref-2", src: "b0" } },
+    });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+
+    expect(result.status).toBe("built");
+    expect(result.copied).toBe(2);
+    expect(result.notCopied).toBe(0);
+    expect(result.cards.leftOff).toEqual([]);
+    expect(result.sidesFetched).toEqual([]);
+    expect(result.sidesSkipped).toEqual(["bsc", "sportlots"]);
+    expect(result.rebuilt).toBe(false);
+    expect(bscState.calls).toHaveLength(0);
+    expect(slState.calls).toHaveLength(0);
+    const copies = await cardsOn(t, parallelId);
+    expect(copies.map((c) => c.cardNumber).sort()).toEqual(["1", "2"]);
+    // The insert's own links are never inherited.
+    expect(copies.every((c) => Object.keys(c.platformData ?? {}).length === 0)).toBe(true);
+  });
+
+  test("a rebuild over unlinked cards replaces them and keeps each SKU by card key (R2)", async () => {
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert, noIds);
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Ken Griffey Jr." });
+    await insertCard(t, insert, { cardNumber: "2", cardName: "Mike Trout" });
+    await insertCard(t, parallelId, { cardNumber: "1", cardName: "Ken Griffey Jr.", sku: "NB-BB-KEPT-1" });
+    await insertCard(t, parallelId, { cardNumber: "9", cardName: "Gone Player", sku: "NB-BB-GONE-9" });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+
+    expect(result.status).toBe("built");
+    expect(result.rebuilt).toBe(true);
+    const copies = await cardsOn(t, parallelId);
+    const byNumber = new Map(copies.map((c) => [c.cardNumber, c]));
+    expect([...byNumber.keys()].sort()).toEqual(["1", "2"]);
+    expect(byNumber.get("1")?.sku).toBe("NB-BB-KEPT-1");
+    expect(byNumber.get("2")?.sku).toBeTruthy();
+    expect(byNumber.get("2")?.sku).not.toBe("NB-BB-GONE-9");
+  });
+
+  test("two old cards sharing one key: neither SKU is carried", async () => {
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert, noIds);
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Ken Griffey Jr." });
+    await insertCard(t, parallelId, { cardNumber: "1", cardName: "Ken Griffey Jr.", sku: "NB-BB-SKU-A" });
+    await insertCard(t, parallelId, { cardNumber: "1", cardName: "Ken Griffey Jr.", sku: "NB-BB-SKU-B" });
+
+    await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+
+    const [copy] = await cardsOn(t, parallelId);
+    expect(copy.sku).not.toBe("NB-BB-SKU-A");
+    expect(copy.sku).not.toBe("NB-BB-SKU-B");
+  });
+
+  test("an id the leaf gate cannot use (untagged BSC slot) counts as none: an unlinked copy, the row's id untouched", async () => {
+    // The owned-but-unreachable case stays blocked (the "unreachable ids"
+    // block above); this is the id no side can ever be asked with.
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert, {
+      platformData: { bsc: { b0: "anime-kanji" } },
+      platformFacets: undefined,
+    });
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Someone" });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+
+    expect(result.status).toBe("built");
+    expect(result.sidesFetched).toEqual([]);
+    expect(bscState.calls).toHaveLength(0);
+    const [copy] = await cardsOn(t, parallelId);
+    expect(copy.platformData).toEqual({});
+    const row = await t.run((ctx) => ctx.db.get(parallelId));
+    expect(row?.platformData).toEqual({ bsc: { b0: "anime-kanji" } });
   });
 });

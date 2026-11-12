@@ -1436,3 +1436,81 @@ describe("nameTwinKeys (NEO-325)", () => {
     ).toEqual(new Set());
   });
 });
+
+describe("planSelectorSync — checklist sections made their own set (NEO-496 D7)", () => {
+  const section = (value: string, extra: Partial<IncomingItem> = {}): IncomingItem => ({
+    value,
+    ids: {},
+    identityOnly: true,
+    checklistOnly: true,
+    ...extra,
+  });
+
+  test("an id-less checklist line with a new name inserts (not noIdToAttach)", () => {
+    const plan = planSelectorSync({ existing: [], items: [section("Radiating Rookies")] });
+    expect(plan.outcomes[0]).toEqual({ kind: "insert" });
+    expect(plan.siblingWithholds[0]).toBeUndefined();
+  });
+
+  test("its name already a sibling's: withheld nameTakenBySibling, naming the sibling", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "Radiating Rookies")],
+      items: [section("radiating rookies ")],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+    expect(plan.siblingWithholds[0]).toEqual({ reason: "nameTakenBySibling", rowIds: ["a"] });
+  });
+
+  test("two checklist lines with one name: both withheld nameSharedInBatch", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [section("Legends"), section("Legends")],
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld"]);
+    expect(plan.siblingWithholds.map((w) => w?.reason)).toEqual([
+      "nameSharedInBatch",
+      "nameSharedInBatch",
+    ]);
+  });
+
+  test("a checklist line sharing its name with a marketplace line in the batch is withheld too", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [section("Legends"), item("Legends", { bsc: "b1" })],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+    expect(plan.siblingWithholds[0]?.reason).toBe("nameSharedInBatch");
+  });
+
+  test("a caller's presetWithhold wins over every tier, and is reported as given", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "Expose"), row("b", "Future Stars")],
+      items: [
+        section("Expose", {
+          presetWithhold: { reason: "checklistKeyHeldByMany", rowIds: ["a", "b"] },
+        }),
+      ],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+    expect(plan.siblingWithholds[0]).toEqual({
+      reason: "checklistKeyHeldByMany",
+      rowIds: ["a", "b"],
+    });
+  });
+
+  test("an id-less identityOnly line WITHOUT sections is still noIdToAttach", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [{ value: "Anime", ids: {}, identityOnly: true }],
+    });
+    expect(plan.siblingWithholds[0]?.reason).toBe("noIdToAttach");
+  });
+
+  test("a checklist line routed to its row by existingId matches that row", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "Legends Autos")],
+      items: [section("Chrome Legends Autographs", { existingId: "a" })],
+    });
+    expect(plan.outcomes[0]).toMatchObject({ kind: "matched", existingId: "a" });
+  });
+});

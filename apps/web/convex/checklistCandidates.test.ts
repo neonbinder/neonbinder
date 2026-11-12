@@ -1241,3 +1241,51 @@ describe("resolveChecklistTeamTexts past its cap (PR 451)", () => {
     expect(out.slice(MAX_CHECKLIST_TEAM_TEXTS)).toEqual([null, null]);
   });
 });
+
+describe("NEO-496 — checklist-only candidates and checklistLink", () => {
+  test("a checklistOnly candidate (no refs) and a card's checklistLink come back as written", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-496",
+      userId: ADMIN.subject,
+      readyImmediately: true,
+      candidates: [
+        {
+          ...cand("1", "b1"),
+          checklistLink: { via: "number" as const },
+        },
+        {
+          ...cand("7", "b7"),
+          checklistLink: { via: "playerFuzzy" as const, confidence: 0.96, checklistNumber: "77" },
+        },
+        {
+          cardNumber: "NNO",
+          cardName: "Noelvi Marte",
+          platformData: {},
+          bucket: "checklistOnly" as const,
+          players: ["Noelvi Marte"],
+          teams: ["Cincinnati Reds"],
+          teamLookup: "checklist" as const,
+        },
+      ],
+    });
+
+    const res = await readAs(t, ADMIN, id);
+
+    const byNumber = new Map(res.cards.map((c) => [c.cardNumber, c]));
+    expect(byNumber.get("1")?.checklistLink).toEqual({ via: "number" });
+    expect(byNumber.get("7")?.checklistLink).toEqual({
+      via: "playerFuzzy",
+      confidence: 0.96,
+      checklistNumber: "77",
+    });
+    expect(byNumber.get("NNO")).toMatchObject({
+      bucket: "checklistOnly",
+      platformData: {},
+      teams: ["Cincinnati Reds"],
+    });
+    expect(byNumber.get("NNO")?.checklistLink).toBeUndefined();
+  });
+});

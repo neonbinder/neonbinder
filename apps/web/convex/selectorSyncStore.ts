@@ -557,8 +557,9 @@ export type WithheldElsewhereEntry = {
  *               `nameSharedInBatch` (twins with no namesake row yet): the
  *               other twins are the items with the same `label`.
  *
- * Only items that carry at least one marketplace id are reported: an id-less
- * line has no link to lose.
+ * Only items that carry at least one marketplace id, or (NEO-496) a
+ * publisher-checklist section, are reported: any other id-less line has no
+ * link to lose.
  */
 export const withheldSiblingEntryValidator = v.object({
   itemIndex: v.number(),
@@ -574,6 +575,9 @@ export const withheldSiblingEntryValidator = v.object({
     v.literal("nameClaimedTwice"),
     v.literal("nameSharedInBatch"),
     v.literal("rowClaimedInBatch"),
+    // NEO-496 — see `SiblingWithholdReason`.
+    v.literal("nameTakenBySibling"),
+    v.literal("checklistKeyHeldByMany"),
   ),
   rows: v.array(
     v.object({ id: v.id("selectorOptions"), value: v.string() }),

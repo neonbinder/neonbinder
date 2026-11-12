@@ -177,7 +177,7 @@ function SiblingHoldsBox({
             <li key={`${i}-${w.label}`}>
               <span className="font-medium">{w.label}</span>
               <span className="block text-xs opacity-90">
-                {SIBLING_REASON_LINE[siblingFamily(w.reason)]}
+                {siblingReasonLine(w.reason, w.rows.length)}
               </span>
               {w.rows.length > 0 && (
                 <ul className="pl-3 text-xs">
@@ -253,13 +253,19 @@ function RefusedRenamesBox({
  *    marketplace id, or by name).
  *  - `link`  — the line's link is already on more than one row here.
  *  - `split` — its BSC link names one row and its SportLots link another.
+ *  - `sectionName` (NEO-496) — a checklist section made its own set, but a
+ *    set here already has that name.
+ *  - `section` (NEO-496) — the line's checklist section is already used by
+ *    another set (here, or under another variant type).
  */
-export type SiblingFamily = "name" | "twice" | "link" | "split";
+export type SiblingFamily = "name" | "sectionName" | "twice" | "link" | "section" | "split";
 
 const SIBLING_FAMILY_ORDER: readonly SiblingFamily[] = [
   "name",
+  "sectionName",
   "twice",
   "link",
+  "section",
   "split",
 ];
 
@@ -274,6 +280,10 @@ export function siblingFamily(reason: SiblingWithholdReason): SiblingFamily {
       return "link";
     case "idsPointAtDifferentRows":
       return "split";
+    case "nameTakenBySibling":
+      return "sectionName";
+    case "checklistKeyHeldByMany":
+      return "section";
     case "nameSharedBySiblings":
     case "nameLinkedToOtherSet":
     case "noIdToAttach":
@@ -310,6 +320,10 @@ export const SIBLING_FIX: Record<SiblingFamily, string> = {
   link: "On two sets? Detach it from the extra one, then sync again.",
   split:
     "Split across two sets? Detach one and Attach it on the other set, then sync again.",
+  // NEO-496 — "pair" and "Remove" are the Reconcile dialog's own words (its
+  // pairing, and the "Remove this section" control on a set's section).
+  sectionName: "Name taken? Sync again and pair the section with the set that already has that name.",
+  section: "Section already on another set? Remove it there, then sync again.",
 };
 
 /** DRAFT (NEO-325). The line under each item, before the rows it names. */
@@ -318,7 +332,19 @@ export const SIBLING_REASON_LINE: Record<SiblingFamily, string> = {
   twice: "Points at the same set as another one in this save:",
   link: "Its link is already on more than one set:",
   split: "Its BSC and SportLots links point at different sets:",
+  sectionName: "A set here already goes by that name:",
+  section: "Its checklist section is already on another set:",
 };
+
+/**
+ * The line under a held item. It ends in a colon when the sets it names
+ * follow, and in a full stop when the store named none (the set is under
+ * another variant type, or the reason names no set).
+ */
+export function siblingReasonLine(reason: SiblingWithholdReason, rowCount: number): string {
+  const line = SIBLING_REASON_LINE[siblingFamily(reason)];
+  return rowCount > 0 ? line : line.replace(/:$/, ".");
+}
 
 /** DRAFT (NEO-325). */
 export function refusedRenameSummary(n: number): string {

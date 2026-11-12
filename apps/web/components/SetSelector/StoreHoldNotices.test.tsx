@@ -422,7 +422,8 @@ describe("StoreHoldNotices — lines withheld against the parent's own rows (NEO
       "Anime",
       "Anime",
     ]);
-    expect(items[1].textContent).toContain(SIBLING_REASON_LINE.split);
+    // No set named: the line closes with a full stop, not a dangling colon.
+    expect(items[1].textContent).toContain(SIBLING_REASON_LINE.split.replace(/:$/, "."));
     expect(within(items[1]).queryAllByRole("listitem")).toHaveLength(0);
   });
 
@@ -476,6 +477,8 @@ describe("StoreHoldNotices — lines withheld against the parent's own rows (NEO
     ["idOnManySiblings", "link"],
     ["idsPointAtDifferentRows", "split"],
     ["nameSharedInBatch", "name"],
+    ["nameTakenBySibling", "sectionName"],
+    ["checklistKeyHeldByMany", "section"],
   ])("%s is the %s kind", (reason, family) => {
     expect(siblingFamily(reason)).toBe(family);
   });
@@ -573,5 +576,52 @@ describe("StoreHoldNotices — title edits the store refused (NEO-325)", () => {
     expect(refusedRenameSummary(1)).toMatch(/saved/);
     expect(refusedRenameSummary(3)).toMatch(/saved/);
     expect(refusedRenameSummary(1)).not.toBe(refusedRenameSummary(3));
+  });
+});
+
+describe("StoreHoldNotices — checklist sections held back (NEO-496)", () => {
+  const renderSiblings = (siblings: SiblingHold[]) =>
+    render(
+      <StoreHoldNotices
+        holds={{
+          withheld: [],
+          withheldTotal: 0,
+          subtreeWalkSkipped: false,
+          siblings,
+          siblingsTotal: siblings.length,
+        }}
+      />,
+    );
+
+  test("a section whose name a set has, and a section another set uses: each says why and what to do", () => {
+    renderSiblings([
+      {
+        label: "Radiating Rookies",
+        reason: "nameTakenBySibling",
+        rows: [{ id: "r1", value: "Radiating Rookies" }],
+      },
+      { label: "Expose", reason: "checklistKeyHeldByMany", rows: [] },
+    ]);
+
+    const live = screen.getByText(siblingHoldSummary(2)).closest('[role="status"]') as HTMLElement;
+    expect(live.textContent).toContain(SIBLING_FIX.sectionName);
+    expect(live.textContent).toContain(SIBLING_FIX.section);
+    expect(live.textContent).not.toContain(SIBLING_FIX.name);
+    const list = screen.getByRole("list", { name: siblingHoldSummary(2) });
+    const items = within(list).getAllByRole("listitem").filter((li) => li.parentElement === list);
+    expect(items[0].textContent).toContain(SIBLING_REASON_LINE.sectionName);
+    expect(within(items[0]).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
+      "Radiating Rookies",
+    ]);
+    // The set using it is under another type: no set named, a full stop.
+    expect(items[1].textContent).toContain("Its checklist section is already on another set.");
+  });
+
+  test("the section fixes use the dialog's own words and no internal ones", () => {
+    expect(SIBLING_FIX.section).toContain("Remove");
+    expect(SIBLING_FIX.sectionName).toContain("pair");
+    for (const text of [SIBLING_FIX.section, SIBLING_FIX.sectionName, SIBLING_REASON_LINE.section]) {
+      expect(text).not.toMatch(/\bkey\b|commit|checklistKey|sibling|withheld/i);
+    }
   });
 });

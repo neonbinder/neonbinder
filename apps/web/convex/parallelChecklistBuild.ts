@@ -11,12 +11,17 @@
  *   J1  After an insert's checklist is saved, the client builds its parallels
  *       one at a time, calling `buildParallelChecklist` for each.
  *   J2  A card is copied only if it links on at least one marketplace side;
- *       the rest are left off and reported.
+ *       the rest are left off and reported. NEO-496 (NQ2, Jason): a parallel
+ *       with no marketplace ids of its own is built anyway, as an UNLINKED
+ *       copy of every card of its source; J2 applies only when a side was
+ *       fetched. Refused while its old cards hold a marketplace link, which
+ *       the copy would drop (rule 5).
  *   J3  A parallel that already has cards is REBUILT from a fresh copy — the
  *       automatic run included (R1: no confirm, no "empty only").
  *   J4  "Fetch from Marketplaces" on a parallel row runs the same build for
  *       that one parallel.
- *   R2  A rebuilt card that is clearly the old one keeps the old SKU.
+ *   R2  A rebuilt card that is clearly the old one keeps the old SKU. With
+ *       no side fetched (an unlinked copy) "clearly" is the card key alone.
  *
  * ## What a build does, in order (M2)
  *
@@ -255,7 +260,12 @@ const LIST_BLOCK_COLLECTOR_LINES = 20;
  */
 export const BLOCKED_REVIEW_OPEN =
   "a checklist review is running on it in another window — try again in a few minutes";
-export const BLOCKED_NO_IDS = "it isn't linked to a marketplace yet";
+/**
+ * NEO-496 (NQ2) — an unlinked parallel is copied without links, but not over
+ * old cards that hold one: the copy would drop it (rule 5).
+ */
+export const BLOCKED_UNLINKED_OVER_LINKED_CARDS =
+  "its cards are linked to a marketplace it isn't linked to — link it first";
 /** The no-name fallback of `blockedIdsUnreachable`. */
 export const BLOCKED_IDS_UNREACHABLE =
   "its marketplace links need the set above it linked too — link that first";
@@ -2006,13 +2016,15 @@ export const buildParallelChecklist = action({
       );
     }
 
-    if (toFetch.length === 0) {
+    // NEO-496 (NQ2) — no ids of its own on either side: an unlinked copy of
+    // every source card, no marketplace asked.
+    const unlinkedCopy = SIDES.every((side) => !plan.owned[side]);
+    if (toFetch.length === 0 && !unlinkedCopy) {
       const pausedOwned = SIDES.filter(
         (side) => plan.owned[side] && plan.paused[side],
       );
       if (pausedOwned.length > 0) return blocked(blockedAllPaused(pausedOwned));
       const ownedSides = SIDES.filter((side) => plan.owned[side]);
-      if (ownedSides.length === 0) return blocked(BLOCKED_NO_IDS);
       const side = ownedSides.find((s) => plan.unreachableRow[s]);
       return blocked(
         side
@@ -2058,6 +2070,13 @@ export const buildParallelChecklist = action({
       side: PlatformSide,
     ): string | undefined => (side === "bsc" ? card.bscRef : card.slRef);
 
+    // NEO-496 (NQ2) — an unlinked copy never replaces linked cards.
+    if (
+      toFetch.length === 0 &&
+      old.cards.some((card) => oldRefOf(card, "bsc") || oldRefOf(card, "sportlots"))
+    ) {
+      return blocked(BLOCKED_UNLINKED_OVER_LINKED_CARDS);
+    }
     // Security 1 — a side the parallel owns but this build cannot ask, while
     // old cards hold links there: rebuilding would drop every one of them.
     for (const side of SIDES) {
@@ -2317,7 +2336,8 @@ export const buildParallelChecklist = action({
       };
       const bsc = link("bsc");
       const sl = link("sportlots");
-      if (!bsc && !sl) {
+      // J2 — only when a side was asked; an unlinked copy takes every card.
+      if (!bsc && !sl && toFetch.length > 0) {
         listPush(lists.leftOff, label);
         continue;
       }
@@ -2368,7 +2388,10 @@ export const buildParallelChecklist = action({
     const oldForCopy = new Map<Copy, number>();
     const copiesPerOld = new Map<number, number>();
     for (const copy of copies) {
+      // NEO-496 (NQ2) — with no side asked there is no ref to compare (and
+      // no old card holds one): the key alone, exactly one each way.
       const hits = (oldByKey.get(copy.key) ?? []).filter((i) => {
+        if (toFetch.length === 0) return true;
         const card = old.cards[i];
         return (
           (copy.bsc !== undefined && card.bscRef === copy.bsc.ref) ||

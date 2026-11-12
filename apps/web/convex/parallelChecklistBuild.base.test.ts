@@ -21,7 +21,6 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   BLOCKED_MANY_BASES,
   BLOCKED_NO_BASE,
-  BLOCKED_NO_IDS,
   blockedSourceHasNoCards,
   pickBaseVariantType,
   snapshotForCopies,
@@ -465,18 +464,26 @@ describe("buildParallelChecklist — a base parallel", () => {
     expect(bscState.calls).toHaveLength(0);
   });
 
-  test("a base parallel with no ids of its own is skipped on every side — the Parallel type's ids are never inherited", async () => {
+  test("a base parallel with no ids of its own is skipped on every side — the Parallel type's ids are never inherited; it is an unlinked copy of the Base (NEO-496 NQ2)", async () => {
     const t = convexTest(schema, modules);
     const { base, gold } = await seedSet(t, {
       gold: { platformData: {}, platformFacets: undefined },
     });
-    await addCard(t, base!, { cardNumber: "1", cardName: "Aaron Judge" });
+    await addCard(t, base!, {
+      cardNumber: "1",
+      cardName: "Aaron Judge",
+      platformData: { bsc: { ref: "base-ref-1", src: "b0" } },
+    });
     const result = await t
       .withIdentity(ADMIN)
       .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: gold });
-    expect(result.blockedReason).toBe(BLOCKED_NO_IDS);
+    expect(result.status).toBe("built");
+    expect(result.copied).toBe(1);
+    expect(result.sidesFetched).toEqual([]);
     expect(bscState.calls).toHaveLength(0);
     expect(slState.calls).toHaveLength(0);
+    const copies = await cardsOn(t, gold);
+    expect(copies.map((c) => [c.cardNumber, c.platformData])).toEqual([["1", {}]]);
   });
 
   test.each(["Inserts", "Promo", "Parallel Set"])(
