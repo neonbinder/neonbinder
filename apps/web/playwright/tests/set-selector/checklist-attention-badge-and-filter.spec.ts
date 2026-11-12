@@ -21,6 +21,7 @@ import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm, editCardButton, escapeRe } from "../../support/cards";
 import { recordedNoMatchPlayer } from "../../support/recorded-names";
 import type { Page } from "@playwright/test";
+import { TIDY_UP_NAME } from "../../support/wizard";
 
 /** Raise a brand-new team through the card form's team picker. */
 async function addNewTeam(page: Page, name: string) {
@@ -159,7 +160,7 @@ test(
     // linked) reads "Step 1 of 2" / "of 3". The Skip button is the walker's one
     // card-specific handle (the wizard shares its title). Nothing is answered.
     await pill("1 needs you").click();
-    const walker = page.getByRole("dialog", { name: "Tidy up this set" });
+    const walker = page.getByRole("dialog", { name: TIDY_UP_NAME });
     await expect(walker).toBeVisible();
     await expect(walker.getByRole("button", { name: `Skip for now, card 701-${id}` })).toBeVisible();
     await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();

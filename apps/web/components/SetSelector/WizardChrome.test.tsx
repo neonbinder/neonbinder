@@ -1,20 +1,73 @@
 /**
- * NEO-335 Phase 2 — the shared "Tidy up this set" header.
+ * NEO-335 Phase 2 — the shared "Tidy up …" header. NEO-497 — its title names
+ * the set ("Tidy up 2024 Topps Chrome"), never with a trailing "Base".
  */
 import { render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it } from "vitest";
-import WizardChrome, { railFraction, stepCounterText, WIZARD_TITLE } from "./WizardChrome";
+import WizardChrome, {
+  railFraction,
+  stepCounterText,
+  tidyUpTitle,
+  tidyUpTitleFromChain,
+  WIZARD_TITLE,
+} from "./WizardChrome";
 import { STEP_SUBTITLE, type WizardStepKind } from "./entity-review-steps";
 
 const fill = () => document.querySelector<HTMLElement>("[data-rail-fill]")!;
 
 describe("WizardChrome", () => {
-  it("titles the screen 'Tidy up this set' and exposes the title by id", () => {
+  it("titles the screen 'Tidy up this set' by default and exposes the title by id", () => {
     render(<WizardChrome titleId="t-id" step={3} total={12} subtitle="New team" />);
     const heading = screen.getByRole("heading", { name: WIZARD_TITLE });
     expect(WIZARD_TITLE).toBe("Tidy up this set");
     expect(heading.id).toBe("t-id");
+  });
+
+  it("shows the host's title, and lets a long one wrap beside the counter", () => {
+    const long = "Tidy up 2024 Topps Chrome Update Series Gold Wave Refractors";
+    render(<WizardChrome titleId="t-id" title={long} step={3} total={12} subtitle="New team" />);
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading.textContent).toBe(long);
+    expect(heading.id).toBe("t-id");
+    expect(screen.queryByText(WIZARD_TITLE)).toBeNull();
+    // Wraps (never truncates) and may shrink; the counter never does.
+    expect(heading.className).toContain("min-w-0");
+    expect(heading.className).toContain("wrap-anywhere");
+    expect(heading.className).not.toContain("truncate");
+    expect(screen.getByText("Step 3 of 12").className).toContain("shrink-0");
+  });
+
+  it("clamps a long title to three lines visually, keeping the full text as its name and title", () => {
+    const long =
+      "Tidy up 2024 Topps Chrome Update Series Sapphire Edition Future Stars Gold Wave Refractors";
+    render(<WizardChrome titleId="t-id" title={long} step={3} total={12} subtitle="New team" />);
+    // The accessible name is the WHOLE title: the clamp is CSS only.
+    const heading = screen.getByRole("heading", { level: 2, name: long });
+    expect(heading.textContent).toBe(long);
+    expect(heading.className).toMatch(/(^|\s)line-clamp-3(\s|$)/);
+    expect(heading.getAttribute("title")).toBe(long);
+  });
+
+  it("gives the title the whole row below sm and the counter its own right-aligned line", () => {
+    render(<WizardChrome step={9} total={12} subtitle="New team" />);
+    const heading = screen.getByRole("heading", { level: 2 });
+    const counter = screen.getByText("Step 9 of 12");
+    const row = heading.parentElement!;
+    // Title and counter share one wrapping row.
+    expect(counter.parentElement).toBe(row);
+    expect(row.className.split(/\s+/)).toEqual(expect.arrayContaining(["flex", "flex-wrap"]));
+    // Below sm the title takes the full row, so the counter wraps to its own
+    // line; from sm up the title takes what the counter leaves.
+    expect(heading.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["basis-full", "sm:basis-auto", "sm:flex-1"]),
+    );
+    // The counter sits at the right on its own line, and from sm up holds a
+    // constant width ("Step 99 of 99"), so "Step 9" -> "Step 10" never
+    // re-wraps the title beside it.
+    expect(counter.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["ml-auto", "text-right", "whitespace-nowrap", "sm:min-w-[6.5rem]"]),
+    );
   });
 
   it("says 'Step x of y' as one text node in a status region", () => {
@@ -122,3 +175,168 @@ describe("WizardChrome", () => {
 });
 
 void React;
+
+describe("tidyUpTitle (NEO-497)", () => {
+  it("joins year, set and variant after 'Tidy up'", () => {
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss", variant: "Unleashed" })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
+    );
+  });
+
+  it("drops a trailing whole word 'Base', case-folded", () => {
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "Base" })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
+    );
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "base" })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
+    );
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "BASE " })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
+    );
+    // A set's own name ending in Base loses it too: the rule reads the joined name.
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Base" })).toBe("Tidy up 2024 Topps");
+  });
+
+  it("leaves 'Base' alone when it is not the last whole word", () => {
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Baseball" })).toBe(
+      "Tidy up 2024 Topps Chrome Baseball",
+    );
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Base Set Gold" })).toBe(
+      "Tidy up 2024 Topps Chrome Base Set Gold",
+    );
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Rebase" })).toBe(
+      "Tidy up 2024 Topps Chrome Rebase",
+    );
+  });
+
+  it("falls back to 'Tidy up this set' when 'Base' is all there is", () => {
+    expect(tidyUpTitle({ variant: "Base" })).toBe(WIZARD_TITLE);
+    expect(tidyUpTitle({ year: " ", setName: "", variant: " base " })).toBe(WIZARD_TITLE);
+  });
+
+  it("skips the year when the set name already opens with it as its own word", () => {
+    expect(tidyUpTitle({ year: "2024", setName: "2024 Topps Chrome", variant: "Refractor" })).toBe(
+      "Tidy up 2024 Topps Chrome Refractor",
+    );
+    expect(tidyUpTitle({ year: " 2024 ", setName: "2024 Topps Chrome" })).toBe(
+      "Tidy up 2024 Topps Chrome",
+    );
+    // A different season, or the year glued to another word, is not a repeat.
+    expect(tidyUpTitle({ year: "2024", setName: "2024-25 Hoops" })).toBe(
+      "Tidy up 2024 2024-25 Hoops",
+    );
+    expect(tidyUpTitle({ year: "2024", setName: "2023 Topps Chrome" })).toBe(
+      "Tidy up 2024 2023 Topps Chrome",
+    );
+  });
+
+  it("skips any part that is missing or blank", () => {
+    expect(tidyUpTitle({ setName: "Donruss", variant: "Unleashed" })).toBe(
+      "Tidy up Donruss Unleashed",
+    );
+    expect(tidyUpTitle({ year: "2026", setName: null, variant: "Gold" })).toBe("Tidy up 2026 Gold");
+    expect(tidyUpTitle({ year: "  ", setName: " Donruss ", variant: "" })).toBe("Tidy up Donruss");
+  });
+
+  it("falls back to 'Tidy up this set' when nothing is known", () => {
+    expect(tidyUpTitle({})).toBe(WIZARD_TITLE);
+    expect(tidyUpTitle({ year: null, setName: undefined, variant: " " })).toBe(WIZARD_TITLE);
+  });
+});
+
+describe("tidyUpTitleFromChain (NEO-497)", () => {
+  const chain = [
+    { level: "sport", value: "Baseball" },
+    { level: "year", value: "2024" },
+    { level: "manufacturer", value: "Topps" },
+    { level: "setName", value: "Topps Chrome" },
+  ];
+
+  it("reads the year and set by level, never the manufacturer, and drops a Base leaf", () => {
+    expect(tidyUpTitleFromChain([...chain, { level: "variantType", value: "Base" }])).toBe(
+      "Tidy up 2024 Topps Chrome",
+    );
+  });
+
+  it("names an insert under Insert by its own value, unchanged by the Base rule", () => {
+    expect(
+      tidyUpTitleFromChain([
+        ...chain,
+        { level: "variantType", value: "Insert" },
+        { level: "insert", value: "Future Stars" },
+      ]),
+    ).toBe("Tidy up 2024 Topps Chrome Future Stars");
+  });
+
+  it("drops an insert-level Base leaf the same way (a Base row under Insert)", () => {
+    expect(
+      tidyUpTitleFromChain([
+        ...chain,
+        { level: "variantType", value: "Insert" },
+        { level: "insert", value: "Base" },
+      ]),
+    ).toBe("Tidy up 2024 Topps Chrome");
+  });
+
+  it("names an insert leaf by its own value, never the variant type", () => {
+    expect(
+      tidyUpTitleFromChain([
+        ...chain,
+        { level: "variantType", value: "Parallel" },
+        { level: "insert", value: "Gold Wave Refractors" },
+      ]),
+    ).toBe("Tidy up 2024 Topps Chrome Gold Wave Refractors");
+  });
+
+  it("names a parallel after its insert, never the variant type", () => {
+    expect(
+      tidyUpTitleFromChain([
+        ...chain,
+        { level: "variantType", value: "Insert" },
+        { level: "insert", value: "Future Stars" },
+        { level: "parallel", value: "Gold" },
+      ]),
+    ).toBe("Tidy up 2024 Topps Chrome Future Stars Gold");
+  });
+
+  it("leaves a parallel alone when its name already opens with its insert's", () => {
+    const donruss = [
+      { level: "sport", value: "Baseball" },
+      { level: "year", value: "2026" },
+      { level: "manufacturer", value: "Panini" },
+      { level: "setName", value: "Donruss" },
+      { level: "variantType", value: "Inserts" },
+      { level: "insert", value: "Unleashed" },
+    ];
+    expect(tidyUpTitleFromChain([...donruss, { level: "parallel", value: "Unleashed Blue Ice" }])).toBe(
+      "Tidy up 2026 Donruss Unleashed Blue Ice",
+    );
+    // Case-folded.
+    expect(tidyUpTitleFromChain([...donruss, { level: "parallel", value: "unleashed Gold" }])).toBe(
+      "Tidy up 2026 Donruss unleashed Gold",
+    );
+    // A token, not a substring: "Unleashedx" does not open with "Unleashed".
+    expect(tidyUpTitleFromChain([...donruss, { level: "parallel", value: "Unleashedx" }])).toBe(
+      "Tidy up 2026 Donruss Unleashed Unleashedx",
+    );
+  });
+
+  it("does not say the year twice when the set's own name opens with it", () => {
+    const yearInName = chain.map((row) =>
+      row.level === "setName" ? { ...row, value: "2024 Topps Chrome" } : row,
+    );
+    expect(tidyUpTitleFromChain([...yearInName, { level: "variantType", value: "Base" }])).toBe(
+      "Tidy up 2024 Topps Chrome",
+    );
+  });
+
+  it("never names the set twice when the chain ends at the set", () => {
+    expect(tidyUpTitleFromChain(chain)).toBe("Tidy up 2024 Topps Chrome");
+  });
+
+  it("is 'Tidy up this set' while the chain is loading or empty", () => {
+    expect(tidyUpTitleFromChain(undefined)).toBe(WIZARD_TITLE);
+    expect(tidyUpTitleFromChain(null)).toBe(WIZARD_TITLE);
+    expect(tidyUpTitleFromChain([])).toBe(WIZARD_TITLE);
+  });
+});
