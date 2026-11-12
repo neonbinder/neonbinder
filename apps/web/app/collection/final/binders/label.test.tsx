@@ -1,12 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render } from "@testing-library/react";
 import { contrastRatio } from "@/lib/print/contrast";
 import { spineFontById } from "@/lib/print/spine-fonts";
 import { cards as fixtureCards, getTeam } from "../../prototypes/_shared/data";
 import { demoCard } from "../data/demoStore";
 import type { Card, ContainerRule } from "../data/types";
+import { DASHBOARD_SPINE_PX } from "@/app/dashboard/screen/Shelf";
+import SpineLabel from "./SpineLabel";
 import {
   ALL_LABEL,
   BOX_LABEL,
+  BOX_LETTERING_PX,
   LARGE_TEXT_PX,
   PLAIN_LABEL,
   defaultLabel,
@@ -235,5 +241,68 @@ describe("lettering on the shelf never drops below AA", () => {
       fontId: "system",
     });
     expect(validLabel({ background: "#12", text: "#000000", fontId: "anton" })).toBeNull();
+  });
+});
+
+/**
+ * The contrast check has to read the size the lettering is actually drawn
+ * at. A box end's tape is a fixed 15px hand (box.css), and the dashboard's
+ * spines are shorter than My Binders', so both would otherwise be estimated
+ * large (3:1) while drawn as normal text (4.5:1).
+ */
+describe("the shelf checks contrast at the size it draws", () => {
+  afterEach(cleanup);
+
+  // The CSS as text, so the numbers the contrast check reads are held to it.
+  // (Vitest hands a stylesheet's `?raw` import back empty.)
+  const boxCss = readFileSync(join(__dirname, "box.css"), "utf8");
+  const combinedCss = readFileSync(join(__dirname, "../../../dashboard/screen/combined.css"), "utf8");
+
+  // Bears navy and orange: about 3.4:1, enough only for large lettering.
+  const between = { background: "#0B162A", text: "#C83803", fontId: "anton" };
+  const swapped = (el: HTMLElement) => el.querySelector(".nb-label")?.getAttribute("data-ink-swapped") ?? null;
+
+  it("uses a pair between 3:1 and 4.5:1", () => {
+    const ratio = contrastRatio(between.text, between.background);
+    expect(ratio).toBeGreaterThan(3);
+    expect(ratio).toBeLessThan(4.5);
+  });
+
+  it("checks a box end's tape at the size box.css letters it", () => {
+    const size = /\.nb-boxspine-end \.nb-label-name \{[^}]*font-size: (\d+)px !important/.exec(boxCss);
+    expect(Number(size?.[1])).toBe(BOX_LETTERING_PX);
+    expect(BOX_LETTERING_PX).toBeLessThan(LARGE_TEXT_PX);
+  });
+
+  it("swaps a box name's lettering when the tape's pair is below 4.5:1", () => {
+    // Estimated from the box's width this short name looks large, so the pair would pass.
+    expect(smallestLetteringPx("Show box", spineFontById("anton"), 108)).toBeGreaterThanOrEqual(LARGE_TEXT_PX);
+    const { container } = render(
+      <SpineLabel name="Show box" label={between} spineWidth={108} letteringPx={BOX_LETTERING_PX} />,
+    );
+    expect(swapped(container)).toBe("true");
+  });
+
+  it("holds the dashboard's spine height to the shortest .cb-spine in combined.css", () => {
+    const rule = /\.cb-spine \{[^}]*?[\s;]height: (\d+)px/g;
+    const heights = [...combinedCss.matchAll(rule)].map((m) => Number(m[1]));
+    expect(heights.length).toBeGreaterThan(0);
+    expect(DASHBOARD_SPINE_PX).toBe(Math.min(...heights));
+  });
+
+  it("checks a 14-character name at the dashboard's shorter spine", () => {
+    const anton = spineFontById("anton");
+    const name = "Green Bay 1996";
+    expect(name).toHaveLength(14);
+    // My Binders' phone spine would letter it large; the dashboard's draws it
+    // below large-text size even at its taller desktop height (170px).
+    expect(smallestLetteringPx(name, anton, 62)).toBeGreaterThanOrEqual(LARGE_TEXT_PX);
+    expect(smallestLetteringPx(name, anton, 62, 170)).toBeLessThan(LARGE_TEXT_PX);
+    expect(smallestLetteringPx(name, anton, 62, DASHBOARD_SPINE_PX)).toBeLessThan(LARGE_TEXT_PX);
+
+    const { container } = render(
+      <SpineLabel name={name} label={between} spineWidth={62} spineHeight={DASHBOARD_SPINE_PX} count={12} />,
+    );
+    expect(swapped(container)).toBe("true");
   });
 });

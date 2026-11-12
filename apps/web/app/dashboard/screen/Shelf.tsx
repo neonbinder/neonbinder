@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router";
 import { ChevronDownIcon, PlusIcon } from "@heroicons/react/24/outline";
 import { useOpen } from "./useOpen";
 import SpineLabel, { SpineFontFaces } from "@/app/collection/final/binders/SpineLabel";
+import { BOX_LETTERING_PX } from "@/app/collection/final/binders/label";
 import "@/app/collection/final/binders/binders.css";
 import "@/app/collection/final/binders/box.css";
 import type { ShelfBox } from "../fake-data";
@@ -67,6 +68,13 @@ function useNarrow(): boolean {
     () => false,
   );
 }
+
+/**
+ * The shortest a spine stands here, in px: `.cb-spine` in combined.css is
+ * 150px on a phone and 170px from 640px up. The lettering's contrast is
+ * checked at the smaller, so it holds at every width. Keep the two in step.
+ */
+export const DASHBOARD_SPINE_PX = 150;
 
 /** A thicker binder for more cards, within reason. */
 function spineWidth(cards: number, narrow: boolean): number {
@@ -141,6 +149,7 @@ function Spine({
         name={binder.name}
         label={binder.label}
         spineWidth={width}
+        spineHeight={DASHBOARD_SPINE_PX}
         count={binder.cardCount}
         badge={
           binder.kind === "smart" ? (
@@ -183,7 +192,7 @@ function BoxEnd({ box, index, width }: { box: ShelfBox; index: number; width: st
     >
       <span aria-hidden="true" className="nb-boxspine-lid" />
       <span aria-hidden="true" className="nb-boxspine-end">
-        <SpineLabel name={box.name} label={box.label} spineWidth={108} />
+        <SpineLabel name={box.name} label={box.label} spineWidth={108} letteringPx={BOX_LETTERING_PX} />
         <span className="nb-boxspine-handle" />
       </span>
       <span aria-hidden="true" className="nb-longbox-tag nb-boxspine-tag">

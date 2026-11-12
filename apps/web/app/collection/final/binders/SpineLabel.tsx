@@ -26,6 +26,8 @@ export default function SpineLabel({
   name,
   label,
   spineWidth,
+  spineHeight,
+  letteringPx,
   count,
   badge,
 }: {
@@ -33,11 +35,19 @@ export default function SpineLabel({
   label: ContainerLabel;
   /** The spine's width in px, for the contrast check at its smallest size. */
   spineWidth: number;
+  /** The shortest the shelf draws this spine, in px, when shorter than My Binders' phone spine. */
+  spineHeight?: number;
+  /**
+   * The lettering's size in px when CSS fixes it rather than the fitter (a
+   * box end's tape, `BOX_LETTERING_PX`). The contrast check then reads this
+   * instead of estimating from the spine.
+   */
+  letteringPx?: number;
   count?: ReactNode;
   badge?: ReactNode;
 }) {
   const font = spineFontById(label.fontId);
-  const colors = shelfColors(label, smallestLetteringPx(name, font, spineWidth));
+  const colors = shelfColors(label, letteringPx ?? smallestLetteringPx(name, font, spineWidth, spineHeight));
   return (
     <span
       aria-hidden="true"
