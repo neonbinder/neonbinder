@@ -117,3 +117,35 @@ describe("checklistTeamTextNeedsResolving", () => {
     expect(checklistTeamTextNeedsResolving("Boston Red Sox")).toBe(false);
   });
 });
+
+describe("applyChecklistRow: NEO-489 a No Team row", () => {
+  const noTeam = (players: string[] = ["A One"]) => ({ players, teams: [] as string[], noTeam: true as const });
+
+  test("answers a teamless card with no team: teams [] and answered", () => {
+    const r = applyChecklistRow({ players: ["A One"], teams: [] }, noTeam(), noResolve);
+    expect(r).toEqual({ teams: [], answered: true });
+  });
+
+  test("against a card with a team it is a conflict with an empty checklist side, never answered", () => {
+    const r = applyChecklistRow({ players: ["A One"], teams: ["Boston Red Sox"] }, noTeam(), noResolve);
+    expect(r.answered).toBe(false);
+    expect(r.conflict).toEqual({ teams: { marketplace: ["Boston Red Sox"], checklist: [] } });
+  });
+
+  test("the legacy singular team counts as the card's team", () => {
+    const r = applyChecklistRow({ players: ["A One"], team: "Boston Red Sox" }, noTeam(), noResolve);
+    expect(r.answered).toBe(false);
+    expect(r.conflict?.teams).toEqual({ marketplace: ["Boston Red Sox"], checklist: [] });
+  });
+
+  test("still fills the players of a card that has none", () => {
+    const r = applyChecklistRow({ players: [], teams: [] }, noTeam(["A One"]), noResolve);
+    expect(r).toEqual({ fillPlayers: ["A One"], teams: [], answered: true });
+  });
+
+  test("never asks resolveText", () => {
+    const resolve = vi.fn(() => ["X"]);
+    applyChecklistRow({}, noTeam(), resolve);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+});

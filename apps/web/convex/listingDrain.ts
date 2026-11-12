@@ -1816,7 +1816,12 @@ async function syncVariant(
   // confirms are added once the reads say whether they are needed.
   const reads = bscSheetSteps("read", conditions, era);
   ledger.plan([...reads.steps, { key: "send", kind: "send" }]);
-  await ledger.write();
+  // NEO-489 — the first read starts BEFORE the session opens: the sign-in
+  // (the token read) is BSC wait time, and a wait edge with no working step
+  // shows nothing. `readSheets` starts the same key first (`reads.order[0]`,
+  // the key it reads first, not `conditions[0]`), which is then a no-op. A
+  // session that cannot open fails this step: the read it was signing in for.
+  await ledger.start(reads.keyOf(reads.order[0]));
 
   const opened = await getSession();
   if (!opened.ok) {
