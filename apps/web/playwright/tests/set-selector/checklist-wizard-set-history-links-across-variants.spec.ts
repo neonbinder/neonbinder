@@ -2,8 +2,8 @@
 // the same set links to that same player when another variant of the set is
 // synced, whatever sport the player is filed under, and the wizard SHOWS the
 // link in its Decided list with a Change that reopens the step. Proved on live
-// data through the operator's own path (Sync card checklist -> "Tidy up this
-// set" -> Confirm & Save), insert to insert (set history covers the whole set,
+// data through the operator's own path (Sync card checklist -> the "Tidy up"
+// wizard -> Confirm & Save), insert to insert (set history covers the whole set,
 // and the Base's 62 s live fetch is over the 7 s budget, so the spec skips it).
 // Phases 0-5 are inside Baseball -> 2010 -> Topps -> Topps; 6 and 7 add the
 // product's 2009 edition:
@@ -281,7 +281,7 @@ async function skipEverythingLeft(page: Page): Promise<void> {
  * default; `target` is the set they sit in, re-drilled after the save) their
  * own sets in the Reconcile Inserts dialog, by their exact buttons, never
  * "Keep all"; the paused column fills from BSC alone and has nothing to reconcile.
- * EXIT the "Tidy up this set" dialog is open (a fetch that saved straight
+ * EXIT the tidy-up wizard is open (a fetch that saved straight
  * through fails here, by name).
  */
 async function fetchInsertToWizard(
@@ -344,7 +344,7 @@ async function fetchInsertToWizard(
     await expect(page.getByText(/Match Cards/)).toBeHidden();
   }
   // Our own backend after the live fetch: the 7 s default.
-  await expect(wizard, `${name}'s sync opens Tidy up this set`).toBeVisible();
+  await expect(wizard, `${name}'s sync opens the tidy-up wizard`).toBeVisible();
   if (published !== undefined) await expectTeamsFromChecklist(page, published);
 }
 

@@ -156,8 +156,11 @@ describes.
    Jason ("PR #N is ready to merge; no PR queue is running") and do not merge.
 2. Send `PR-QUEUE JOIN #<pr> <NEO-id> <short title>` to the owner. Keep the
    session title as `NEO-123(499) Description`, and mark the tab as waiting
-   in line (`cc-state queue`, where installed). Switch it to `cc-state ci` on
-   `YOUR TURN`, and `cc-state clear` on `LEAVE` or `RELEASED`.
+   in line (`cc-state queue`, where installed). Switch it to `cc-state ci`
+   (blue) as the very first action on `YOUR TURN`, before the main merge, so
+   Jason can see which PR holds CI. Once merged and the production check has
+   passed, `cc-state test` (purple). `cc-state clear` only when leaving
+   without a merge (`LEAVE`, `OUT` or `RELEASED`).
 3. Wait for `QUEUED` or `YOUR TURN`. Until your turn, keep working on the PR
    if you like and push for testing as often as you need: only the merge
    waits. If you push a fix that changes the PR's behaviour after joining,
@@ -178,7 +181,8 @@ describes.
       Jason, because the queue was bypassed.
    5. Merge with `pr-close`. The moment the merge commit exists, send
       `PR-QUEUE MERGED #<pr> <short sha>`, then carry on with `pr-close`'s
-      production check, Linear and cleanup.
+      production check, Linear and cleanup. When production checks out, set
+      the tab purple (`cc-state test`, where installed).
    6. If the merge needs Jason (his authorisation is missing or the permission
       check denies it), send `PR-QUEUE HOLD #<pr> <reason>` and ask Jason. Do
       not ask another session to merge for you. If he answers and the merge
