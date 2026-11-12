@@ -42,7 +42,8 @@ test(
       // Read the create back off its own row ("Already decided: Added as new"),
       // never off the "Decided (N)" history: with the reference catalogue loaded
       // this create can be the batch's last name, the wizard has then walked on
-      // to "Cards with no team", and the history is not rendered there. The
+      // to its next step (the default set's file answers every card "No Team",
+      // so it is no longer "Cards with no team"; NEO-489), and the history is not rendered there. The
       // footer Back is "Back to previous decision/step"; the panel's footer
       // still carries "Back to Match Cards", which is pressed next.
       await readBackDecision(page, "Added as new");

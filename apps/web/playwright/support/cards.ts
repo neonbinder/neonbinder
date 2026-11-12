@@ -13,12 +13,14 @@ import {
   columnSearch,
   CUSTOM_CONFIRM,
   drillToCustomSet,
+  escapeRe,
   type Column,
 } from "./set-builder";
 
-export function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+// One implementation, in set-builder.ts (its failed-sync regex needs it, and
+// set-builder must not import this module back); re-exported for the specs
+// that import it from here.
+export { escapeRe };
 
 /** A checklist row's edit control; its name may carry the card's title after a comma. */
 export function editCardButton(page: Page, cardNumber: string): Locator {

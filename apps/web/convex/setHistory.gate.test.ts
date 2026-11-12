@@ -571,11 +571,16 @@ describe("the gate: Hall of Fame (rule D) is a visible link, and history outrank
     expect(row.decision).toMatchObject({ linkedPlayerId: other, autoLinked: "setHistory" });
   });
 
-  test("a card naming the rival's team keeps the legend out: the name is a pick step", async () => {
+  // NEO-490 — before rule 6b this name was a pick step. The card names the
+  // Pirates and only the rival has a Pirates stint (the legend has a career on
+  // file that does not), so the card's team picks the rival: the Hall of Famer
+  // is still kept out, and the answer is a VISIBLE careerTeam row the operator
+  // can Change, the legend offered beside him.
+  test("a card naming the rival's team keeps the legend out: the rival is a decided careerTeam row", async () => {
     const t = newT();
     const baseball = await sport(t, "Baseball");
     const p = await product(t, baseball, { year: "2024" });
-    await thomases(t, baseball);
+    const { legend, other } = await thomases(t, baseball);
 
     const result = await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.resolveChecklistEntities,
@@ -586,9 +591,16 @@ describe("the gate: Hall of Fame (rule D) is a visible link, and history outrank
       },
     );
 
-    expect(result.ambiguousPlayers).toEqual(["Frank Thomas"]);
+    expect(result.unknownPlayers).toEqual([]);
+    expect(result.ambiguousPlayers).toEqual([]);
+    expect(result.autoLinkedCount).toBe(1);
     const rows = (await rowsOf(t, result.batchId)).filter((r) => r.kind === "player");
-    expect(rows[0].decision).toBeUndefined();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sportId: baseball,
+      decision: { action: "link", linkedPlayerId: other, autoLinked: "careerTeam" },
+    });
+    expect(rows[0].enrichment?.existingCandidates?.map((c) => c.playerId)).toEqual([other, legend]);
   });
 });
 

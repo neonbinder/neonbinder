@@ -177,18 +177,24 @@
 - [Tap target inside a scrolling list](reference_tap_target_inside_a_scrolling_list.md) — 44px target past the tile makes an overflow-auto lane scroll; extend upward, add `relative`
 - [Playwright click checks first mouse event only](reference_playwright_click_checks_first_mouse_event_only.md) — mid-press reflow: click() succeeds, onClick never runs; line up convex-logs with the click
 - [Click before the passive flush](reference_click_before_passive_flush_via_layout_effect.md) — click from a child useLayoutEffect to test a press beating a pending effect; functional updater fixes only stale closures
+- [Failure PNG is viewport-only](reference_failure_png_is_viewport_only.md) — under-card content is off a 629px frame; read error-context in the blob zip; grep templated locators too
 - [Clipboard write with a promise](reference_clipboard_write_with_a_promise.md) — copy text that lands after awaits: start clipboard.write in the click with a promise; headless shell denies writes, so specs stub it
 - [useEffectEvent does not evade set-state-in-effect](reference_effect_event_does_not_evade_set_state_rule.md) — compiler traces through it; justified disable for a one-edge effect; rAF is FIFO after close()
 - [Always-mounted live region in space-y](reference_always_mounted_live_region_in_space_y.md) — empty region still takes the gap; nest beside a min-h line; no sr-only copy of a getByText line
 - [Failed dynamic import is cached per document](reference_failed_dynamic_import_is_cached_per_document.md) — Chromium: re-import or lazy retry cannot recover, only a reload; prefetch failures poison the route
 - [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
 - [backdrop-filter makes a containing block](reference_backdrop_filter_makes_a_containing_block.md) — a "fixed" button in a blurred scroller scrolls away; blur a sibling. Also h-0 min-h-full
+- [Happy-dom XHR bypasses the fetch guard](reference_happy_dom_xhr_bypasses_fetch_guard.md) — photo uploads use XHR since NEO-466; stubbing fetch no longer covers them, inject `transport`; attach xhr.upload listeners before send()
 - [Live region text via ref, not state](reference_live_region_text_via_ref_not_state.md) — mount empty, write textContent in the effect; set-state-in-effect lint refuses setState
 - [dnd-kit droppables in their own scroll pane](reference_dndkit_droppables_in_their_own_scroll_pane.md) — two-pane drags need no measuring config (Rect tracks its pane's scroll); what autoscroll scrolls; grid-rows-1 + min-h-0
 - [react-hooks/refs flags helper arguments](reference_react_hooks_refs_flags_helper_arguments.md) — a ref-reading closure passed INTO renderRow() trips the lint; build it in the JSX prop instead
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
+- [canvas.toBlob waits ~1 s in the app page](reference_canvas_toblob_waits_a_second_in_the_app_page.md) — each encode ~1000 ms under Playwright Chromium (idle deadline) after a write; encode at pick time, concurrently
+- [vitest spies handle returned promises](reference_vitest_spies_handle_returned_promises.md) — a vi.fn rejection is never unhandled; an unhandled-rejection test through a mock can't go red
+- [Ref guard in a handler passed to a render builder](reference_ref_guard_in_a_handler_passed_to_a_render_builder.md) — react-hooks/refs flags it via idleButtons(fn); go refless: scope in state, render-time reset, updater bail-out
 - [axe radiogroup may wrap content](reference_axe_radiogroup_may_wrap_content.md) — no requiredOwned in axe 4.13; wrap the card in the radiogroup, keep the li plain
 - [Leak assertion matches the epoch](reference_leak_assertion_matches_the_epoch.md) — bscSeller.telemetry "555" check trips on the epoch-ms `at`; rerun before blaming
 - [Real-app screenshots via suite helpers](reference_real_app_screenshots_reuse_the_suite_helpers.md) — scratch config + {"type":"module"}; emulateMedia per mode; force-click an aria-disabled NeonButton
 - [Sticky header in a padded scroller](reference_sticky_header_in_a_padded_scroller.md) — sticks at the padding edge; thead bg does not paint; sticky+bg per th, border-separate, overflow-clip
 - [Wait line mounting breaks test mocks](reference_wait_line_mounting_breaks_test_mocks.md) — useQuery/watchQuery stubs, one-status pins, waitKey toEqual; 50 rows per key
+- [Playwright harness mirrors the checklist parser](playwright-harness-mirrors-checklist-parser.md) — checklistFacts must share lib/checklists rules; check it on parser changes (NEO-489)

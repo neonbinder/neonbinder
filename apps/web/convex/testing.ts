@@ -767,6 +767,14 @@ export const seedBscReloginClock = {
 type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: string };
 
 /**
+ * NEO-489: the reason a listing-on BSC seed reports when its listing save
+ * left the row dormant on a seller conflict (another NB owner already lists
+ * from the same BSC seller account). Carries no id.
+ */
+export const SEED_BSC_SELLER_CONFLICT_REASON =
+  "BuySportsCards listing not started (sellerConflict): this seller account already lists from another NeonBinder account.";
+
+/**
  * NEO-482 — a listing-on BuySportsCards seed must leave the caller's BSC
  * seller id saved, or report why not.
  *
@@ -783,8 +791,12 @@ type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: s
  *   store branch runs one normal store. No extra call.
  * - id missing: a fresh password login through `storeTestCredentials`, on
  *   both branches (the "already present" branch never signs in otherwise, so
- *   nothing would save the id). After each login, the profile is read for
- *   the id. Missing: sign in fresh again, no logout. A BSC profile stall
+ *   nothing would save the id). NEO-489: each of these sign-ins stores with
+ *   listing OFF (the test marker), so no listing run can start before the id
+ *   exists; once the id is saved, one `updateSiteCredentialStatus` with
+ *   `listing: "save"` turns listing on, and a seed that stalls leaves it off.
+ *   After each login, the profile is read for the id. Missing: sign in fresh
+ *   again, no logout. A BSC profile stall
  *   heals with time, not with a new session, and our password login is
  *   already a new session each time, so the loop is what buys the time. At
  *   most {@link SEED_BSC_MAX_RELOGINS} re-logins after the first, each
@@ -802,6 +814,12 @@ type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: s
  *   printing the reason. Either way the run is red.
  * - a login that fails (`success: false` or a throw) stops at once, with that
  *   login's message as the reason.
+ * - NEO-489: every listing save above runs with the id saved, so
+ *   `listingSync.setUpListing` checks one NB owner per seller account and can
+ *   leave the row dormant on `sellerConflict`. After each save the row is
+ *   read (`listingSync.listingSettings`); a conflict reports stored false
+ *   with {@link SEED_BSC_SELLER_CONFLICT_REASON}, so the seed hop names it
+ *   instead of a later step missing its "Listing your boxes" line.
  *
  * Logs one line per sign-in: `{msg: "seed_bsc_relogin", attempt, idSaved,
  * elapsedMs, waitedMs}` (attempt 1 is the first sign-in; `waitedMs` is the
@@ -825,18 +843,25 @@ async function seedBscWithSellerId(
     const profile = await ctx.runQuery(api.userProfile.getUserProfile, {});
     return !!profile?.marketplaceAccountIds?.bscSellerId;
   };
-  const store = async (): Promise<{ success: boolean; message: string }> => {
+  const store = async (listing: boolean): Promise<{ success: boolean; message: string }> => {
     try {
       return await ctx.runAction(internal.credentials.storeTestCredentials, {
         userId: args.userId,
         site,
         username: args.username,
         password: args.password,
-        listing: true,
+        listing,
       });
     } catch (error) {
       return { success: false, message: error instanceof Error ? error.message : String(error) };
     }
+  };
+  /** After a listing save: stored, unless the save left the row on a seller conflict. */
+  const listingSaved = async (): Promise<SeededSite> => {
+    const settings = await ctx.runQuery(api.listingSync.listingSettings, {});
+    return settings.bsc.sellerConflict
+      ? { site, stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON }
+      : { site, stored: true };
   };
 
   if (await sellerIdSaved()) {
@@ -848,10 +873,10 @@ async function seedBscWithSellerId(
         needsReauth: false,
         listing: "save",
       });
-      return { site, stored: true };
+      return await listingSaved();
     }
-    const stored = await store();
-    return stored.success ? { site, stored: true } : { site, stored: false, reason: stored.message };
+    const stored = await store(true);
+    return stored.success ? await listingSaved() : { site, stored: false, reason: stored.message };
   }
 
   let attempt = 0;
@@ -859,13 +884,24 @@ async function seedBscWithSellerId(
   for (;;) {
     attempt += 1;
     const signInStartedAt = Date.now();
-    const stored = await store();
+    // NEO-489: listing stays off (the test marker) while the id is missing.
+    const stored = await store(false);
     if (!stored.success) return { site, stored: false, reason: stored.message };
     const idSaved = await sellerIdSaved();
     console.log(
       JSON.stringify({ msg: "seed_bsc_relogin", attempt, idSaved, elapsedMs: Date.now() - startedAt, waitedMs }),
     );
-    if (idSaved) return { site, stored: true };
+    if (idSaved) {
+      // The id is saved: now, and only now, turn listing on (clears the marker).
+      await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+        userId: args.userId,
+        site,
+        hasCredentials: true,
+        needsReauth: false,
+        listing: "save",
+      });
+      return await listingSaved();
+    }
     const stalled = {
       site,
       stored: false,

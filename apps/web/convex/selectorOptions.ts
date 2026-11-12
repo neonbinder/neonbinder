@@ -293,6 +293,8 @@ import {
   findCollidingTeams,
   resolveTeamForSetYear,
   teamRowFields,
+  CARD_PLAYER_TEAM_MAX_CARDS,
+  CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD,
 } from "./lib/teamRow";
 import {
   // NEO-331: names resolve link-only; only a New League answer (which carries
@@ -305,11 +307,21 @@ import {
 // PR 451 (NEO-478 / NEO-487) — the publisher checklist's pairing (pure, rule
 // 7), the shared team splitter, and the "Waiting on BuySportsCards…" run key.
 import {
-  checklistNameKey,
   matchPublishedChecklist,
   rowHasNoNumber,
-  type ChecklistConflict,
 } from "../lib/checklists/match-published-checklist";
+// NEO-489 — "No Team" in a publisher checklist: a claim, never a team name.
+import {
+  checklistClaimsNoTeam,
+  isNoClaimTeamText,
+  isNoTeamText,
+} from "../lib/checklists/no-team";
+// NEO-490 — what one paired row does to its card, shared with the operator's
+// own links (`publishedChecklistPairs.ts`).
+import {
+  applyChecklistRow,
+  checklistTeamTextNeedsResolving,
+} from "../lib/checklists/apply-published-row";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
 import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
@@ -1281,6 +1293,46 @@ function addCardTeamNames(
 }
 
 /**
+ * NEO-490 — which players appeared on each card printing a team name: per
+ * NORMALIZED team name (the gate's `teamByNorm` key), one entry per card, the
+ * card's player names as printed. The gate turns them into player ids and asks
+ * `teams.resolveTeamByCardPlayers` to settle a team name the set year could
+ * not settle to one era.
+ *
+ * Bounded by that helper's own bounds: a name printed on more than
+ * `CARD_PLAYER_TEAM_MAX_CARDS` cards, or on a card with more than
+ * `CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD` players, is marked `overflow` and
+ * never asked about (the helper would refuse it anyway); the list stops
+ * growing there, so the map is small whatever the batch size.
+ */
+type CardPlayersByTeam = Map<string, { cards: string[][]; overflow: boolean }>;
+
+function addCardPlayerNames(
+  target: CardPlayersByTeam,
+  teamName: string,
+  playersOnCard: ReadonlyArray<string>,
+): void {
+  const key = normalizeTeamName(teamName.trim());
+  if (!key) return;
+  let entry = target.get(key);
+  if (!entry) {
+    entry = { cards: [], overflow: false };
+    target.set(key, entry);
+  }
+  if (entry.overflow) return;
+  const players = playersOnCard.map((p) => p.trim()).filter(Boolean);
+  if (
+    entry.cards.length >= CARD_PLAYER_TEAM_MAX_CARDS ||
+    players.length > CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD
+  ) {
+    entry.overflow = true;
+    entry.cards = [];
+    return;
+  }
+  entry.cards.push(players);
+}
+
+/**
  * NEO-254 — the set's year, for an ACTION that needs it.
  *
  * `resolveUnknownsAndStartBatch` runs in an action, so it cannot walk the
@@ -1322,7 +1374,7 @@ type NameReviewAnswer = {
   matchCount: number;
   playerId?: Id<"players">;
   narrowedByCardYear?: boolean;
-  narrowedBy?: "cardYear" | "hallOfFame";
+  narrowedBy?: "cardYear" | "hallOfFame" | "careerTeam";
   candidatePlayerIds?: Array<Id<"players">>;
 };
 /** PR 451 — names per `players.resolveNamesForReview` call, and calls in flight. */
@@ -1348,6 +1400,15 @@ async function resolveUnknownsAndStartBatch(
      * tie-break.
      */
     cardTeamNamesByPlayer?: Map<string, string[]>;
+    /**
+     * NEO-490 — the players printed on each card naming a team, keyed by the
+     * NORMALIZED team name (see `addCardPlayerNames`). Used only for a team
+     * name neither the set year nor set history settled: when every player on
+     * every such card resolved, `teams.resolveTeamByCardPlayers` may settle it
+     * to the one era those players played for (a visible `careerTeam` row).
+     * Absent, such names are asked exactly as before.
+     */
+    cardPlayerNamesByTeam?: CardPlayersByTeam;
     /**
      * NEO-335 — filled with what this gate RESOLVED (normalized name → player
      * id / team full name), for the "Card titles" step's `titleContext`. The
@@ -1569,9 +1630,16 @@ async function resolveUnknownsAndStartBatch(
   const pendingPlayerLinks: Array<{
     name: string;
     playerId: Id<"players">;
-    origin: "setHistory" | "hallOfFame";
+    origin: "setHistory" | "hallOfFame" | "careerTeam";
     candidatePlayerIds: Array<Id<"players">>;
   }> = [];
+  /**
+   * NEO-490 — the player each name resolved to at this gate (single match,
+   * year or team narrowing, set history, Hall of Fame, career team), by
+   * NORMALIZED name. Read only by the career-team settling of team names
+   * below, which needs every player on a card to be known.
+   */
+  const gatePlayerIdByNorm = new Map<string, Id<"players">>();
   /**
    * NEO-424 — names this set has linked to two or more players: a pick step
    * between exactly those (rule A). They count as unknown (and ambiguous) for
@@ -1666,6 +1734,7 @@ async function resolveUnknownsAndStartBatch(
     const resolved: NameReviewAnswer = resolvedByNorm.get(normalized) ?? { matchCount: 0 };
     const verdict = setHistoryVerdict(resolved, historyPlayers.get(normalized));
     if (verdict.kind === "autoLink") {
+      gatePlayerIdByNorm.set(normalized, verdict.playerId);
       pendingPlayerLinks.push({
         name,
         playerId: verdict.playerId,
@@ -1687,6 +1756,7 @@ async function resolveUnknownsAndStartBatch(
     // NEO-335 — recorded for the title context. A no-op when not asked for.
     if (resolved.playerId) {
       args.resolvedNames?.playerIdByNorm.set(normalized, resolved.playerId);
+      gatePlayerIdByNorm.set(normalized, resolved.playerId);
     }
     // NEO-402 — kept for the commit, which would otherwise look this name up
     // again. Only the outright single match: a narrowed one is an inference
@@ -1727,6 +1797,29 @@ async function resolveUnknownsAndStartBatch(
         name,
         playerId: resolved.playerId,
         origin: "hallOfFame",
+        candidatePlayerIds: [
+          resolved.playerId,
+          ...(resolved.candidatePlayerIds ?? []).filter(
+            (id) => id !== resolved.playerId,
+          ),
+        ],
+      });
+    } else if (resolved.narrowedBy === "careerTeam" && verdict.kind === "none") {
+      /*
+       * NEO-490 — rule 6b, the career-team tie-break, as a VISIBLE link.
+       *
+       * No same-name player was active in the set's year on a team the card
+       * names and none is the lone Hall of Famer, but exactly one of them has
+       * a stint (any year) on a team the card names, and every rival has a
+       * career on file that does not. The card's printed team is the data
+       * claim; this only picks which namesake it names. Weaker than a year,
+       * so never silent: a decided row the operator sees and can Change. When
+       * set history named the same player (`agrees`) the name is silent.
+       */
+      pendingPlayerLinks.push({
+        name,
+        playerId: resolved.playerId,
+        origin: "careerTeam",
         candidatePlayerIds: [
           resolved.playerId,
           ...(resolved.candidatePlayerIds ?? []).filter(
@@ -1781,7 +1874,7 @@ async function resolveUnknownsAndStartBatch(
     name: string;
     teamId: Id<"teams">;
     rowSportId: Id<"selectorOptions">;
-    origin: "setHistory";
+    origin: "setHistory" | "careerTeam";
   }> = [];
   const unresolvedTeams: Array<{ normalized: string; name: string }> = [];
   for (const [normalized, name] of teamByNorm) {
@@ -1808,6 +1901,7 @@ async function resolveUnknownsAndStartBatch(
     unresolvedTeams.length > 0 && history?.complete && history.teamIds.size > 0
       ? await setHistoryTeamKeys(ctx, history.teamIds)
       : null;
+  const unresolvedAfterHistory: Array<{ normalized: string; name: string }> = [];
   for (const { normalized, name } of unresolvedTeams) {
     const teamId = historyTeams ? onlyId(historyTeams.teamsByKey.get(normalized)) : undefined;
     const team = teamId ? historyTeams!.teamById.get(teamId) : undefined;
@@ -1822,7 +1916,79 @@ async function resolveUnknownsAndStartBatch(
       args.resolvedNames?.teamNameByNorm.set(normalized, team.fullName);
       continue;
     }
-    unknownTeams.push(name);
+    unresolvedAfterHistory.push({ normalized, name });
+  }
+
+  /*
+   * NEO-490 (2b) — a team name still unresolved (several eras the set year
+   * did not separate) is settled by the players on the cards that print it:
+   * `teams.resolveTeamByCardPlayers` answers the one era every card's players
+   * have a stint on, or null. Asked only when every player on every such card
+   * resolved at this gate (a card with an unresolved player is asked about as
+   * today, so the operator answers the player first), and only within the
+   * helper's bounds (`addCardPlayerNames`). A name operators ruled "not a
+   * person" is no player and is left off the card. The answer is a VISIBLE
+   * decided row (`careerTeam`), never a silent link; a null, or a team row
+   * gone since, asks the operator exactly as before. Never creates.
+   */
+  const careerTeamAsks: Array<{
+    normalized: string;
+    name: string;
+    cardPlayerIds: Array<Array<Id<"players">>>;
+  }> = [];
+  for (const { normalized, name } of unresolvedAfterHistory) {
+    const entry = args.cardPlayerNamesByTeam?.get(normalized);
+    let cardPlayerIds: Array<Array<Id<"players">>> | null =
+      entry && !entry.overflow && entry.cards.length > 0 ? [] : null;
+    for (const players of cardPlayerIds ? entry!.cards : []) {
+      const ids: Array<Id<"players">> = [];
+      for (const player of players) {
+        const key = normalizePlayerName(player);
+        if (!key || skippedKeys.has(`player:${key}`)) continue;
+        const id = gatePlayerIdByNorm.get(key);
+        if (!id) {
+          cardPlayerIds = null;
+          break;
+        }
+        if (!ids.includes(id)) ids.push(id);
+      }
+      if (!cardPlayerIds) break;
+      cardPlayerIds.push(ids);
+    }
+    if (cardPlayerIds) careerTeamAsks.push({ normalized, name, cardPlayerIds });
+    else unknownTeams.push(name);
+  }
+  for (let start = 0; start < careerTeamAsks.length; start += NAME_REVIEW_CONCURRENCY) {
+    const group = careerTeamAsks.slice(start, start + NAME_REVIEW_CONCURRENCY);
+    const answers = await Promise.all(
+      group.map(async (ask) => {
+        const teamId: Id<"teams"> | null = await ctx.runQuery(
+          internal.teams.resolveTeamByCardPlayers,
+          {
+            sportId: args.sportId,
+            name: ask.name,
+            ...(setYear !== undefined ? { setYear } : {}),
+            cardPlayerIds: ask.cardPlayerIds,
+          },
+        );
+        return teamId ? await ctx.runQuery(internal.teams.getInternal, { id: teamId }) : null;
+      }),
+    );
+    group.forEach((ask, k) => {
+      const team = answers[k];
+      if (!team) {
+        unknownTeams.push(ask.name);
+        return;
+      }
+      teamAutoLinks.push({
+        kind: "team",
+        name: ask.name,
+        teamId: team._id,
+        rowSportId: team.sportId,
+        origin: "careerTeam",
+      });
+      args.resolvedNames?.teamNameByNorm.set(ask.normalized, teamFullName(team));
+    });
   }
 
   /**
@@ -1932,7 +2098,7 @@ async function resolveUnknownsAndStartBatch(
         name: string;
         playerId: Id<"players">;
         rowSportId: Id<"selectorOptions">;
-        origin: "setHistory" | "hallOfFame";
+        origin: "setHistory" | "hallOfFame" | "careerTeam";
         candidatePlayerIds: Array<Id<"players">>;
       }
     | (typeof teamAutoLinks)[number]
@@ -14321,13 +14487,6 @@ interface ReconciledCard {
   teamLookup?: "checklist";
 }
 
-/** PR 451 — two team lists name the same teams, as the checklist matcher compares names. */
-function sameNames(a: readonly string[], b: readonly string[]): boolean {
-  const key = (names: readonly string[]) =>
-    [...new Set(names.map(checklistNameKey).filter(Boolean))].sort().join("|");
-  return key(a) === key(b);
-}
-
 /**
  * PR 451 (NEO-478) — the operator's publisher checklist as the fetch receives
  * it. Never stored: it is matched against this run's cards and dropped.
@@ -14342,24 +14501,36 @@ export const MAX_PUBLISHED_CHECKLIST_ROWS = 2000;
  * BSC stop sends them down; the "Still looking up teams" line covers them.
  */
 export const BSC_FETCH_TIME_LOOKUP_CAP = 40;
+/**
+ * One publisher-checklist row as it crosses the wire. NEO-490 — exported for
+ * `publishedChecklistPairs.applyPublishedChecklistPairs`, which takes the rows
+ * the operator linked in Match Cards in this same shape.
+ */
+export const publishedChecklistRowValidator = v.object({
+  number: v.string(),
+  players: v.array(v.string()),
+  teams: v.array(v.string()),
+  // PR 451 (D-B) — the publisher printed no number ("NNO"). The re-check
+  // below sets it from the number too, so a row sent without the flag
+  // reads the same; the matcher pairs such a row by player only.
+  noNumber: v.optional(v.boolean()),
+  // NEO-489 — the checklist says the card shows no team ("No Team");
+  // `teams` is then empty. The re-check below also reads it from a team
+  // string that is exactly "No Team", so a row sent either way reads the
+  // same, and refuses a row that says No Team and names a team.
+  noTeam: v.optional(v.boolean()),
+  // The parser's subset label (a file's "set" / "insert" column). The
+  // client chooses rows by it; the fetch never reads it and drops it in
+  // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
+  subset: v.optional(v.string()),
+});
 const publishedChecklistValidator = v.object({
-  rows: v.array(
-    v.object({
-      number: v.string(),
-      players: v.array(v.string()),
-      teams: v.array(v.string()),
-      // PR 451 (D-B) — the publisher printed no number ("NNO"). The re-check
-      // below sets it from the number too, so a row sent without the flag
-      // reads the same; the matcher pairs such a row by player only.
-      noNumber: v.optional(v.boolean()),
-      // The parser's subset label (a file's "set" / "insert" column). The
-      // client chooses rows by it; the fetch never reads it and drops it in
-      // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
-      subset: v.optional(v.string()),
-    }),
-  ),
+  rows: v.array(publishedChecklistRowValidator),
 });
 type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
+
+/** The characters a publisher checklist's card number may hold. */
+const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
 
 /**
  * The server's re-check of a publisher checklist (the client's parser applies
@@ -14370,6 +14541,16 @@ type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
  * (`noNumber: true`) when the client flagged it or its number is blank or
  * "NNO", by the matcher's own test (`rowHasNoNumber`), so the client's parse
  * and this re-check always agree on which rows pair by player.
+ *
+ * NEO-489: a row is a No Team row (`noTeam: true`, `teams: []`) when the
+ * client flagged it or every team string is exactly "No Team"
+ * (`isNoTeamText`, the parser's own test), so "No Team" never reaches the
+ * fetch as a team name. A row that says No Team and also names a team
+ * contradicts itself and refuses the whole checklist. A team string that
+ * says nothing ("None", "N/A", a dash, "TBD": `isNoClaimTeamText`,
+ * the parser's own list) as the row's only team is dropped, the same as a
+ * blank cell, so a caller cannot plant a team named "None". Beside another
+ * team it is kept as sent, exactly as the parser keeps it.
  */
 export function checkPublishedChecklist(
   published: PublishedChecklist | undefined,
@@ -14385,6 +14566,12 @@ export function checkPublishedChecklist(
     const number = row.number.trim();
     if (number.length > MAX_PLAYER_NAME_LENGTH) {
       throw new ConvexError(`${where} has a card number over ${MAX_PLAYER_NAME_LENGTH} characters.`);
+    }
+    // Defence in depth (NEO-489 security audit): the client parser only ever
+    // sends letters, digits, ".", "-" (and "NNO"); "#" and spaces are what a
+    // hand-written number may still carry. Anything else is refused.
+    if (!PUBLISHED_CHECKLIST_NUMBER_CHARS.test(number)) {
+      throw new ConvexError(`${where} has a card number with characters a card number never has.`);
     }
     // The subset is dropped below, but it still crossed the wire: held to the
     // same cap as a name, so an unread field cannot carry an unbounded string.
@@ -14405,14 +14592,107 @@ export function checkPublishedChecklist(
       }
       return kept;
     };
+    // A no-claim word is dropped only as the whole cell (one string), as the
+    // parser reads it; beside a team it is left as it is, like the client.
+    const cleaned = clean(row.teams, MAX_CARD_TEAMS, "team");
+    const named = cleaned.length === 1 && isNoClaimTeamText(cleaned[0]) ? [] : cleaned;
+    const teams = named.filter((t) => !isNoTeamText(t));
+    const noTeam = row.noTeam === true || teams.length < named.length;
+    if (noTeam && teams.length > 0) {
+      throw new ConvexError(`${where} says No Team and names a team.`);
+    }
     return {
       number,
       players: clean(row.players, MAX_CARD_PLAYERS, "player"),
-      teams: clean(row.teams, MAX_CARD_TEAMS, "team"),
+      teams,
       ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
+      ...(noTeam ? { noTeam: true } : {}),
     };
   });
   return { rows };
+}
+
+/** NEO-490 — `fetchCardChecklist`'s `checklistMatch`; see its `returns`. */
+const checklistMatchSummaryValidator = v.object({
+  needsOperator: v.boolean(),
+  byNumber: v.number(),
+  byPlayerName: v.number(),
+  unusedRowIndices: v.array(v.number()),
+  leftoverCardKeys: v.array(v.string()),
+});
+export type ChecklistMatchSummary = Infer<typeof checklistMatchSummaryValidator>;
+
+/**
+ * NEO-490 — `checklistMatch.leftoverCardKeys`: the cards no checklist row
+ * paired, each keyed by its marketplace ref (BSC, else SportLots), which the
+ * Match Cards dialog's `candidateKey` / `cardRefs` answer to. Read inside the
+ * adapter boundary only to route the operator's link back to the same card.
+ *
+ * A card with neither ref is LEFT OUT, never keyed `#number` the way the
+ * dialog's last-resort `candidateKey` is: card numbers are not unique
+ * (product invariant 7), so a number key could name two cards and route a
+ * link to the wrong one. It costs nothing real: every card the fetch returns
+ * came from a marketplace side, and a fetched card always carries that
+ * side's ref. An empty ref counts as none.
+ */
+export function checklistLeftoverCardKeys(
+  cards: ReadonlyArray<{
+    platformData: { bsc?: { ref?: string }; sportlots?: { ref?: string } };
+  }>,
+  indices: ReadonlyArray<number>,
+): string[] {
+  const keys: string[] = [];
+  for (const i of indices) {
+    const card = cards[i];
+    if (!card) continue;
+    const key = card.platformData.bsc?.ref || card.platformData.sportlots?.ref;
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * PR 451 / NEO-490 — resolve the publisher checklist's team texts that carry a
+ * comma, once each, through `checklistCandidates.resolveChecklistTeamTexts`
+ * (the whole-name-first rule BSC's raw value takes), and hand back the
+ * `resolveText` that `applyChecklistRow` asks. Shared by `fetchCardChecklist`
+ * step 3c and `publishedChecklistPairs.applyPublishedChecklistPairs`, so a pair
+ * the operator links resolves exactly as a pair the matcher made.
+ *
+ * Only the first `MAX_CHECKLIST_TEAM_TEXTS` distinct texts are asked (the
+ * resolver's read bound). A text past that cap answers `null`: its cards get
+ * no checklist team and keep the per-card BSC lookup, like an unmatched card
+ * (D2). No error, no new copy. One query, or none when no text has a comma.
+ */
+export async function resolveChecklistCommaTexts(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  texts: Iterable<string>,
+): Promise<(text: string) => string[] | null> {
+  const at = new Map<string, number | null>();
+  const toResolve: Array<{ raw: string; parts: string[] }> = [];
+  for (const raw of texts) {
+    const t = raw.trim();
+    if (!checklistTeamTextNeedsResolving(t) || at.has(t)) continue;
+    if (toResolve.length >= MAX_CHECKLIST_TEAM_TEXTS) {
+      at.set(t, null);
+      continue;
+    }
+    at.set(t, toResolve.length);
+    toResolve.push({ raw: t, parts: splitMarketplaceTeamNames(t).names });
+  }
+  const resolved: Array<string[] | null> =
+    toResolve.length > 0
+      ? await ctx.runQuery(internal.checklistCandidates.resolveChecklistTeamTexts, {
+          selectorOptionId,
+          texts: toResolve,
+        })
+      : [];
+  return (text) => {
+    const i = at.get(text.trim());
+    if (i === undefined || i === null) return null;
+    return resolved[i] ?? null;
+  };
 }
 
 const previewCardFields = {
@@ -14749,6 +15029,17 @@ export const fetchCardChecklist = action({
      * Absent without a checklist.
      */
     checklistTeams: v.optional(v.object({ matched: v.number(), total: v.number() })),
+    /**
+     * NEO-490 — with a publisher checklist: how it paired, and what is left
+     * for the operator. `needsOperator` opens the checklist column in Match
+     * Cards (solo mode on a one-marketplace set); `byNumber` counts today's
+     * passes (number, prefix strip, NNO by player), `byPlayerName` the name
+     * pairs applied on equal counts; `unusedRowIndices` are the rows no pair
+     * used (positions in the rows sent); `leftoverCardKeys` are the cards no
+     * row paired, keyed as the dialog's `candidateKey` keys them. Absent
+     * without a checklist.
+     */
+    checklistMatch: v.optional(checklistMatchSummaryValidator),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -14759,6 +15050,7 @@ export const fetchCardChecklist = action({
     candidateBatchId?: string;
     readyAfterTeams?: number;
     checklistTeams?: { matched: number; total: number };
+    checklistMatch?: ChecklistMatchSummary;
   }> => {
     // NEO-202: this was the one function in this file with no identity check.
     // It is not merely a read: it performs authenticated fetches against BSC
@@ -15663,8 +15955,14 @@ export const fetchCardChecklist = action({
       //     team takes its team answer from the row: the row's teams, through
       //     the same whole-name-first resolution BSC's raw value takes. Those
       //     cards are written `ready` with `teamLookup: "checklist"` and BSC
-      //     is never asked about them. A row naming no team is no claim, so
-      //     its card keeps the BSC lookup (players still fill). A
+      //     is never asked about them. A row whose team cell is blank is no
+      //     claim, so its card keeps the BSC lookup (players still fill). A
+      //     row that says "No Team" (NEO-489, `noTeam`) IS a claim: its card
+      //     is answered by the checklist with no team (`teamLookup:
+      //     "checklist"`, `teams: []`, read back by `checklistClaimsNoTeam`),
+      //     is never looked up, and is stamped confirmed no-team at commit.
+      //     Against a card that already has a team it is a team conflict
+      //     with an empty checklist side. A
       //     player or team that disagrees with the marketplace becomes
       //     `checklistConflict` for the operator; the card keeps the
       //     marketplace's values. Players fill in where the marketplace has
@@ -15674,105 +15972,68 @@ export const fetchCardChecklist = action({
       //     The rows themselves are never written anywhere.
       const checklistAnswered = new Set<ReconciledCard>();
       let checklistTeams: { matched: number; total: number } | undefined;
+      // NEO-490 — what the operator still has to pair; see `returns`.
+      let checklistMatch: ChecklistMatchSummary | undefined;
       if (published) {
         const match = matchPublishedChecklist(
-          out.map((c) => ({ cardNumber: c.cardNumber, players: c.players, teams: c.teams })),
+          out.map((c) => ({
+            cardNumber: c.cardNumber,
+            players: c.players,
+            teams: c.teams,
+            team: c.team,
+          })),
           published.rows,
         );
-        // Only a team text with a comma can resolve to something other than
-        // itself (`chooseCandidateTeams`); ask about those, once each, and
-        // only the first MAX_CHECKLIST_TEAM_TEXTS distinct ones (the
-        // resolver's read bound). A text past that cap maps to null: its
-        // cards get no checklist team and fall back to the per-card BSC
-        // lookup, like an unmatched card (D2). No error, no new copy.
-        const commaTexts = new Map<string, number | null>();
-        const toResolve: Array<{ raw: string; parts: string[] }> = [];
-        for (const m of match.matches) {
-          for (const t of published.rows[m.rowIndex].teams) {
-            if (!t.includes(",") || commaTexts.has(t)) continue;
-            if (toResolve.length >= MAX_CHECKLIST_TEAM_TEXTS) {
-              commaTexts.set(t, null);
-              continue;
-            }
-            commaTexts.set(t, toResolve.length);
-            toResolve.push({ raw: t, parts: splitMarketplaceTeamNames(t).names });
-          }
-        }
-        const resolvedTexts: Array<string[] | null> =
-          toResolve.length > 0
-            ? await ctx.runQuery(internal.checklistCandidates.resolveChecklistTeamTexts, {
-                selectorOptionId: args.selectorOptionId,
-                texts: toResolve,
-              })
-            : [];
+        // NEO-490 — counts differ (`fallback: "operator"`): no name pair is in
+        // `match.matches`, so every numbered card keeps its BSC lookup below
+        // and the operator pairs them in Match Cards. Equal counts: the unique
+        // name pairs are in `matches` (`via: "playerName"`) and are applied
+        // exactly like number pairs (`applyChecklistRow`).
+        const resolveText = await resolveChecklistCommaTexts(
+          ctx,
+          args.selectorOptionId,
+          match.matches.flatMap((m) => published.rows[m.rowIndex].teams),
+        );
         let conflicts = 0;
         let refused = 0;
+        let noTeamFromChecklist = 0;
         for (const m of match.matches) {
           const card = out[m.cardIndex];
-          const row = published.rows[m.rowIndex];
-          if (m.fillPlayers) card.players = [...m.fillPlayers];
-          // The row's teams as the card would carry them; null = refused.
-          let teams: string[] | null = [];
-          for (const t of row.teams) {
-            const at = commaTexts.get(t);
-            const names = at === undefined ? [t] : at === null ? null : resolvedTexts[at];
-            if (!names) {
-              teams = null;
-              break;
-            }
-            teams.push(...names);
-          }
-          if (teams) {
-            teams = [...new Set(teams)];
-            if (teams.length > MAX_CARD_TEAMS) teams = null;
-          }
-          // The disagreement as the operator will settle it. Its checklist
-          // teams are the RESOLVED names (a comma text split as the card
-          // would carry it), so "Use the checklist's" writes the same names
-          // a checklist-answered card gets. Resolved, they may turn out to be
-          // the card's own teams (no disagreement at all); refused, the
-          // checklist says nothing usable about the team, so there is
-          // nothing to offer.
-          let conflict: ChecklistConflict | undefined = m.conflict
-            ? {
-                ...(m.conflict.players ? { players: m.conflict.players } : {}),
-                ...(m.conflict.teams ? { teams: m.conflict.teams } : {}),
-              }
-            : undefined;
-          if (conflict?.teams) {
-            const marketplace = conflict.teams.marketplace;
-            if (!teams || sameNames(teams, marketplace)) {
-              delete conflict.teams;
-            } else {
-              conflict.teams = { marketplace, checklist: teams };
-            }
-          }
-          if (conflict && !conflict.players && !conflict.teams) conflict = undefined;
-          if (conflict) {
-            card.checklistConflict = conflict;
+          const applied = applyChecklistRow(card, published.rows[m.rowIndex], resolveText);
+          if (applied.fillPlayers) card.players = [...applied.fillPlayers];
+          if (applied.conflict) {
+            card.checklistConflict = applied.conflict;
             conflicts++;
           }
-          if (!teams) {
-            // Not representable: the checklist says nothing usable about the
-            // team, so the card is left to the BSC lookup like an unmatched
-            // one.
-            refused++;
-            continue;
-          }
-          // A team disagreement keeps the marketplace's teams on the card
-          // until the operator picks (and the card already has a team, so it
-          // needs no lookup either way).
-          if (conflict?.teams) continue;
-          // A row that names no team makes no claim about it (wrapper rule
-          // 8): its players still fill or compare above, but the card is not
-          // checklist-answered, is not counted in `checklistTeams`, and keeps
-          // its BSC lookup like an unmatched card.
-          if (teams.length === 0) continue;
-          card.teams = teams;
+          // Refused: the checklist says nothing usable about the team, so the
+          // card is left to the BSC lookup like an unmatched one.
+          if (applied.teams === null) refused++;
+          // Not answered: refused, a team disagreement (the card keeps the
+          // marketplace's teams until the operator picks), or a row that names
+          // no team (wrapper rule 8: no claim, the card keeps its lookup and is
+          // not counted in `checklistTeams`).
+          //
+          // NEO-489: a row that says "No Team" IS a claim (the card shows no
+          // team). `applyChecklistRow` answers it with `teams: []` when the
+          // card has no team of its own (a card with one got the conflict
+          // instead), so the card is checklist-answered with no team: never
+          // looked up, counted in `checklistTeams`, and stamped confirmed
+          // no-team at commit (`checklistClaimsNoTeam`). The same holds for a
+          // pair the NEO-490 player-name fallback made.
+          if (!applied.answered || !applied.teams) continue;
+          if (applied.teams.length === 0) noTeamFromChecklist++;
+          card.teams = applied.teams;
           card.teamLookup = "checklist";
           checklistAnswered.add(card);
         }
         checklistTeams = { matched: checklistAnswered.size, total: out.length };
+        checklistMatch = {
+          needsOperator: match.needsOperator,
+          byNumber: match.matches.filter((m) => m.via !== "playerName").length,
+          byPlayerName: match.matches.filter((m) => m.via === "playerName").length,
+          unusedRowIndices: match.unusedRowIndices,
+          leftoverCardKeys: checklistLeftoverCardKeys(out, match.unmatchedCardIndices),
+        };
         // Counts only — never a name.
         console.log(
           JSON.stringify({
@@ -15781,7 +16042,14 @@ export const fetchCardChecklist = action({
             cards: out.length,
             matched: match.matches.length,
             matchedByPlayer: match.matches.filter((m) => m.via === "player").length,
+            matchedByCaseFolded: match.matches.filter((m) => m.via === "caseFolded").length,
+            matchedByPlayerName: checklistMatch.byPlayerName,
+            fallback: match.fallback,
+            needsOperator: match.needsOperator,
+            suggestions: match.suggestions.length,
+            unusedRows: match.unusedRowIndices.length,
             teamsFromChecklist: checklistAnswered.size,
+            noTeamFromChecklist,
             unmatched: match.unmatchedCardIndices.length,
             conflicts,
             refusedTeams: refused,
@@ -16068,6 +16336,7 @@ export const fetchCardChecklist = action({
         candidateBatchId,
         readyAfterTeams,
         ...(checklistTeams ? { checklistTeams } : {}),
+        ...(checklistMatch ? { checklistMatch } : {}),
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
@@ -16173,29 +16442,54 @@ export const resolveChecklistEntities = action({
     // gate resolves names in one flat pass, so the per-card association has to
     // be captured HERE, where the cards still exist, or it is gone.
     const cardTeamNamesByPlayer = new Map<string, string[]>();
+    // NEO-490 — and the reverse: which players appeared on each card printing
+    // a team, so a team name the set year cannot settle may be settled by its
+    // card's players (`addCardPlayerNames`).
+    const cardPlayerNamesByTeam: CardPlayersByTeam = new Map();
     for (const c of args.cards) {
       const teamsOnCard = cardTeamNames(c);
       for (const p of c.players ?? []) {
         additionalPlayerNames.push(p);
         addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
       }
-      for (const t of teamsOnCard) additionalTeamNames.push(t);
+      for (const t of teamsOnCard) {
+        additionalTeamNames.push(t);
+        addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? []);
+      }
       // PR 451 (NEO-478) — an unsettled checklist disagreement: the card
       // carries the marketplace's side (resolved above), and the operator may
       // pick the checklist's in the wizard. Its names are resolved and queued
       // here too, so a picked checklist player or team arrives as a decided
       // name, never a pending one. The checklist's players sit on a card with
-      // the checklist's teams when the teams disagree too.
+      // the checklist's teams when the teams disagree too. NEO-489: a team
+      // disagreement with an empty checklist side is the checklist saying
+      // "No Team", so its players sit on a card with no team, never on the
+      // marketplace's.
       const conflict = c.checklistConflict;
       if (conflict) {
         const checklistTeams = (conflict.teams?.checklist ?? []).map((t) => t.trim()).filter(Boolean);
-        const teamsForChecklistPlayers = checklistTeams.length > 0 ? checklistTeams : teamsOnCard;
+        const teamsForChecklistPlayers = conflict.teams ? checklistTeams : teamsOnCard;
         for (const p of conflict.players?.checklist ?? []) {
           if (!p.trim()) continue;
           additionalPlayerNames.push(p);
           addCardTeamNames(cardTeamNamesByPlayer, p, teamsForChecklistPlayers);
         }
         for (const t of checklistTeams) additionalTeamNames.push(t);
+        // NEO-490 — the card as the operator may settle it: the checklist's
+        // players (or, with no player disagreement, the card's own) on the
+        // checklist's teams (or the card's own). A pairing already filed
+        // above (the marketplace's players on the card's teams) is not
+        // filed twice.
+        const checklistPlayers = (conflict.players?.checklist ?? [])
+          .map((p) => p.trim())
+          .filter(Boolean);
+        if (checklistPlayers.length > 0 || checklistTeams.length > 0) {
+          const playersForChecklist =
+            checklistPlayers.length > 0 ? checklistPlayers : (c.players ?? []);
+          for (const t of teamsForChecklistPlayers) {
+            addCardPlayerNames(cardPlayerNamesByTeam, t, playersForChecklist);
+          }
+        }
       }
     }
 
@@ -16212,6 +16506,7 @@ export const resolveChecklistEntities = action({
       additionalPlayerNames,
       additionalTeamNames,
       cardTeamNamesByPlayer,
+      cardPlayerNamesByTeam,
       resolvedNames,
     });
     // NEO-335 — after the gate, from the gate's own answers.
@@ -18872,6 +19167,22 @@ export const commitCardChecklistPrelude = internalMutation({
               }),
             );
           }
+          // NEO-490 — rule 6b (the one namesake with a career stint on a team
+          // the card names) reaches the commit the same way: only for a name
+          // with no review row, the gate having made it a visible decided row
+          // otherwise. Same trace, by id, never a name.
+          if (narrowed.viaCareerTeam) {
+            console.log(
+              JSON.stringify({
+                msg: "player_narrowed_by_career_team",
+                selectorOptionId: args.selectorOptionId,
+                sportId: args.sportId,
+                setYear,
+                playerId: narrowed.playerId,
+                matchCount: existingMatches.length,
+              }),
+            );
+          }
           const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
           playerIdByName.set(name, picked._id);
           playerNameById.set(picked._id, picked.name);
@@ -19206,7 +19517,10 @@ export function commitTeamHint(
  *     admin), plus `teamCheckDoneAt`, because the lookup has nothing left to
  *     find for a card a human settled. Never when a team NAME is still pending
  *     review (that is a team, waiting), never without the operator id, and
- *     never over an existing confirmation.
+ *     never over an existing confirmation. NEO-489: a publisher checklist
+ *     that said "No Team" for the card arrives here as the same `teamNone`
+ *     (the commit prelude reads it through `checklistClaimsNoTeam`), so it
+ *     is stamped exactly like the operator's own answer.
  *  2. BSC ANSWERED at fetch — `teamCheckDoneAt` is stamped, and when the
  *     card's team string reached commit unresolved and not pending it is kept
  *     as `bscTeamName`, capped, the hint the missing-team fixer shows — never
@@ -19230,6 +19544,11 @@ function settleCardTeamAnswer(a: {
   /** The row already carries `teamCheckDoneAt`. */
   teamCheckDone: boolean;
   teamNone: boolean;
+  /**
+   * NEO-489 — `teamNone` came from the publisher checklist saying "No Team",
+   * not from the operator. Recorded as `teamCheckOutcome: "checklist"`.
+   */
+  teamNoneFromChecklist?: boolean;
   teamLookup?: "answered" | "failed" | "checklist";
   bscTeamHint?: string;
   operatorUserId?: string;
@@ -19241,7 +19560,15 @@ function settleCardTeamAnswer(a: {
       fields: {
         teamNoneConfirmedAt: a.now,
         teamNoneConfirmedByUserId: a.operatorUserId,
-        ...(a.teamCheckDone ? {} : { teamCheckDoneAt: a.now }),
+        // NEO-489 — provenance: a checklist's "No Team" records the outcome
+        // the checklist branch below would, beside the stamp it goes with
+        // (never over an earlier check's outcome).
+        ...(a.teamCheckDone
+          ? {}
+          : {
+              teamCheckDoneAt: a.now,
+              ...(a.teamNoneFromChecklist ? { teamCheckOutcome: "checklist" as const } : {}),
+            }),
       },
       enqueue: false,
     };
@@ -19249,8 +19576,10 @@ function settleCardTeamAnswer(a: {
   if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
   // PR 451 (NEO-478) — the publisher checklist answered this card at fetch:
   // it matched by number (exactly one on both sides) and its row named a team.
-  // A row naming no team is no claim and never sets "checklist" (B1); that
-  // card kept its BSC lookup. So a card here carries a checklist team that
+  // A row with a blank team cell is no claim and never sets "checklist" (B1);
+  // that card kept its BSC lookup. A row that said "No Team" (NEO-489) does
+  // set it, with no team, and is stamped as `teamNone` above. So a card here
+  // carries a checklist team that
   // did not land as an NB team on the row (still a pending name, for
   // example). BSC was never asked and is not asked now: the lookup is done,
   // its outcome is the checklist's, and no "Listed as:" hint is kept (no
@@ -19351,6 +19680,9 @@ const commitChunkCardValidator = v.object({
   // The operator answered "No team on this card". Set by the action only when
   // the card resolved to no team and no pending team name — teams win.
   teamNone: v.optional(v.literal(true)),
+  // NEO-489 — `teamNone` is the publisher checklist's "No Team", not the
+  // operator's answer. Only provenance: stamps `teamCheckOutcome: "checklist"`.
+  teamNoneFromChecklist: v.optional(v.literal(true)),
   // The card's team string that resolved to nothing and was not left pending
   // (the operator skipped it). Stored as `bscTeamName`, the hint the
   // missing-team fixer shows, on an answered card. Capped in the handler.
@@ -19850,6 +20182,7 @@ export const commitCardChecklistChunk = internalMutation({
           noneConfirmed: !!noneConfirmedAfter,
           teamCheckDone: !!existing.teamCheckDoneAt,
           teamNone: card.teamNone === true,
+          teamNoneFromChecklist: card.teamNoneFromChecklist === true,
           teamLookup: card.teamLookup,
           bscTeamHint: card.bscTeamHint,
           operatorUserId: args.operatorUserId,
@@ -19959,6 +20292,7 @@ export const commitCardChecklistChunk = internalMutation({
           noneConfirmed: false,
           teamCheckDone: false,
           teamNone: card.teamNone === true,
+          teamNoneFromChecklist: card.teamNoneFromChecklist === true,
           teamLookup: card.teamLookup,
           bscTeamHint: card.bscTeamHint,
           operatorUserId: args.operatorUserId,
@@ -22904,10 +23238,21 @@ export const commitCardChecklist = action({
       // "No team on this card" — teams win. A card carrying any team id or a
       // pending team name drops the answer here; the chunk drops it again if
       // the leaf's set-level team fills the card on insert.
+      //
+      // NEO-489 — the publisher checklist saying "No Team" is the same
+      // answer: a card whose team lookup is "checklist" and which carries no
+      // team string (`checklistClaimsNoTeam`, the helper the client reads to
+      // keep the card out of the Teams step). A checklist team the operator
+      // ruled "not a team" still carries its string, so it never reads as
+      // one. Same trust as `teamNone`: both are client claims, and teams win
+      // either way.
       const teamNone =
-        c.teamNone === true &&
+        (c.teamNone === true || checklistClaimsNoTeam(c)) &&
         teamOnCardIds.length === 0 &&
         pendingTeamNames.length === 0;
+      // Provenance only: the answer is the checklist's, not the operator's.
+      const teamNoneFromChecklist =
+        teamNone && c.teamNone !== true && checklistClaimsNoTeam(c);
       // Reconciliation markers live in `attributes` so they are visible on the
       // card itself, not only in a log. NEO-203 adds `ref-collision`: this
       // card resolved to a row another incoming card had already claimed, so
@@ -22976,6 +23321,7 @@ export const commitCardChecklist = action({
           ...(operatorTeamIds.length > 0 ? { operatorTeamIds } : {}),
           ...(c.teamLookup ? { teamLookup: c.teamLookup } : {}),
           ...(teamNone ? { teamNone: true as const } : {}),
+          ...(teamNoneFromChecklist ? { teamNoneFromChecklist: true as const } : {}),
           ...(bscTeamHint ? { bscTeamHint } : {}),
           // NEO-335 — the "Card titles" answer, for a card this commit
           // INSERTS only: a re-synced row's title is NB content the step never

@@ -123,10 +123,11 @@ permissions:
 # values in plaintext) and the screenshots, plus the sanitised axe JSON.
 # Accepted as the main red-run diagnostic: real marketplace passwords never
 # reach the browser. Artifact names:
-# pw-report-seed, pw-report-desktop-<i>, pw-report-seed-mobile,
-# pw-report-mobile-<i>, pw-report-seller-desktop, pw-report-seller-mobile,
-# pw-merged (+ convex-logs-* on the first shard of each
-# pass and each seed).
+# pw-report-seed-a<attempt>, pw-report-desktop-<i>-a<attempt>,
+# pw-report-seed-mobile-a<attempt>, pw-report-mobile-<i>-a<attempt>,
+# pw-report-seller-desktop-a<attempt>, pw-report-seller-mobile-a<attempt>,
+# pw-merged (unsuffixed; the report job keeps each name's latest attempt)
+# (+ convex-logs-*-a<attempt> on the first shard of each pass and each seed).
 
 jobs:
   setup:
@@ -364,7 +365,12 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      # NEO-491: no --with-deps. That flag runs apt, which made CI depend on
+      # Ubuntu mirror DNS (an outage failed every seed job before tests ran).
+      # Chromium's shared libraries already ship on the ubuntu-latest image;
+      # the only packages apt fetched were fonts nothing here uses (no spec
+      # compares screenshots; the app loads its own web fonts).
+      - run: npx playwright install chromium
 
       # NEO-301: capture this PR preview's Convex logs for the seed job's own
       # lifetime. Preview log HISTORY is only ~15 minutes, and every attempt to
@@ -681,7 +687,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-probe-seed-desktop
+          name: convex-probe-seed-desktop-a${{ github.run_attempt }}
           path: apps/web/convex-probe-seed-desktop.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -825,7 +831,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-seed
+          name: convex-logs-seed-a${{ github.run_attempt }}
           path: apps/web/convex-logs-seed.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -834,7 +840,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-seed
+          name: pw-report-seed-a${{ github.run_attempt }}
           # Not under a dot-directory: upload-artifact skips hidden paths by
           # default. report/ holds the blob, results.json and junit.xml;
           # results/ holds failure screenshots. The blob in report/ also embeds
@@ -902,7 +908,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
@@ -1057,7 +1063,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-probe-desktop-${{ matrix.shard }}
+          name: convex-probe-desktop-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: apps/web/convex-probe-desktop-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -1066,7 +1072,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-desktop-${{ matrix.shard }}
+          name: convex-logs-desktop-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: apps/web/convex-logs-desktop-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -1075,7 +1081,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-desktop-${{ matrix.shard }}
+          name: pw-report-desktop-${{ matrix.shard }}-a${{ github.run_attempt }}
           # Same paths and the same published-content rule as the seed report.
           path: |
             apps/web/playwright/report/
@@ -1118,7 +1124,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
       # A GitHub `concurrency` group cannot do this: with cancel-in-progress
@@ -1262,7 +1268,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-seller-desktop
+          name: convex-logs-seller-desktop-a${{ github.run_attempt }}
           path: apps/web/convex-logs-seller-desktop.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -1271,7 +1277,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-seller-desktop
+          name: pw-report-seller-desktop-a${{ github.run_attempt }}
           # Same paths and the same published-content rule as the shard reports.
           path: |
             apps/web/playwright/report/
@@ -1311,7 +1317,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       - name: Start Convex log capture (seed-mobile)
         working-directory: apps/web
@@ -1601,7 +1607,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-probe-seed-mobile
+          name: convex-probe-seed-mobile-a${{ github.run_attempt }}
           path: apps/web/convex-probe-seed-mobile.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -1710,7 +1716,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-seed-mobile
+          name: convex-logs-seed-mobile-a${{ github.run_attempt }}
           path: apps/web/convex-logs-seed-mobile.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -1719,7 +1725,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-seed-mobile
+          name: pw-report-seed-mobile-a${{ github.run_attempt }}
           # Not under a dot-directory: upload-artifact skips hidden paths by
           # default. report/ holds the blob, results.json and junit.xml;
           # results/ holds failure screenshots. The blob in report/ also embeds
@@ -1787,7 +1793,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
@@ -1942,7 +1948,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-probe-mobile-${{ matrix.shard }}
+          name: convex-probe-mobile-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: apps/web/convex-probe-mobile-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -1951,7 +1957,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-mobile-${{ matrix.shard }}
+          name: convex-logs-mobile-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: apps/web/convex-logs-mobile-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -1960,7 +1966,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-mobile-${{ matrix.shard }}
+          name: pw-report-mobile-${{ matrix.shard }}-a${{ github.run_attempt }}
           # Same paths and the same published-content rule as the seed report.
           path: |
             apps/web/playwright/report/
@@ -2002,7 +2008,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
       # A GitHub `concurrency` group cannot do this: with cancel-in-progress
@@ -2146,7 +2152,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-seller-mobile
+          name: convex-logs-seller-mobile-a${{ github.run_attempt }}
           path: apps/web/convex-logs-seller-mobile.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
@@ -2155,7 +2161,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-seller-mobile
+          name: pw-report-seller-mobile-a${{ github.run_attempt }}
           # Same paths and the same published-content rule as the shard reports.
           path: |
             apps/web/playwright/report/
@@ -2222,8 +2228,13 @@ jobs:
           path: apps/web/pw-all
 
       - name: Merge reports
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          # After "Re-run failed jobs" pw-all holds several attempts of a
+          # report; keep the newest <= this attempt per name (NEO-466).
+          node scripts/pick-report-attempts.mjs pw-all "$RUN_ATTEMPT"
           mkdir -p pw-blobs pw-merged
           # Prefix each blob with its artifact (pass) name so two passes can
           # never overwrite one another's report-*.zip.

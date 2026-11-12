@@ -2891,6 +2891,10 @@ export default defineSchema({
           v.literal("onlyNamesake"),
           v.literal("setHistory"),
           v.literal("hallOfFame"),
+          // NEO-490 rule 6b / team 2b: the card's team picked the player (or
+          // the card's player picked the team era). Comes back as the primary
+          // after Change, like the other two.
+          v.literal("careerTeam"),
         ),
       })),
       // team-only
@@ -3198,6 +3202,10 @@ export default defineSchema({
         autoLinked: v.optional(v.union(
           v.literal("setHistory"),
           v.literal("hallOfFame"),
+          // NEO-490: rule 6b (the one same-name player with a stint on the
+          // card's team) or 2b (the one team era the card's player played
+          // for). Decided row, "played for the …" / "…'s club".
+          v.literal("careerTeam"),
         )),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —
@@ -3437,6 +3445,9 @@ export default defineSchema({
     //
     // PR 451 (NEO-478): "checklist" — the team came from the operator's
     // publisher checklist (an exactly-one number match), so no BSC lookup ran.
+    // NEO-489: "checklist" with no team on the row means the checklist said
+    // "No Team" (`lib/checklists/no-team.ts`, `checklistClaimsNoTeam`); the
+    // commit stamps that card confirmed no-team. No separate field marks it.
     teamLookup: v.optional(cardTeamLookupValidator),
     // PR 451 (NEO-478) — the operator's publisher checklist disagrees with the
     // marketplace on this card's players and/or teams. Written only on a

@@ -241,12 +241,21 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `expectEbayHookedUp`, which FAILS a spec loudly, naming the missing setup,
   when the deployment has no eBay wiring; NEO-415).
 - `support/set-builder.ts`: the cascade. `setBuilderReady`, `columnHeading`,
-  `columnSearch`, `columnOption`, `columnSelection`, `pick`,
+  `columnSearch`, `columnOption`, `columnSelection`, `columnSyncError`, `pick`,
   `addCustomEntry`, `addCustomManufacturer`, `selectOrCreate`,
   `syncChecklistButton`, and the drills `drillToSet` (2024 Topps Chrome),
   `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
   `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
   options object: `drillToSet(page, env, { set: "Topps Stars of MLB Network" })`.
+- `support/column-sync-fault.ts`: `faultColumnSyncStatus(page)` (NEO-450), the one
+  WebSocket fault: installed before `signIn`, it sits on the Convex sync socket
+  and makes ONE set-builder column's status query read as a failed sync
+  (`failStatus({ level, parentId })`, the parent id from the set builder's
+  address), until that column's own forced sync is answered by the server.
+  Every other frame passes untouched. It depends on Convex's internal sync
+  protocol (the version is in its header) and throws, naming it, when it
+  finds nothing to fake. No product or Convex hook exists for this, by
+  decision; do not add one.
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
@@ -598,18 +607,62 @@ spec does with five.
 The bootstrap's optional BSC warm-up (a live sign-in through the browser service)
 runs on worker 0 only, so shards do not all sign in to BSC at the same moment.
 
-**BSC's 429 cooldown (NEO-487), as a spec meets it.** A `card-listing` 429 opens a
-deployment-wide cooldown: 15 s the first time, doubling on each further 429 to a
-120 s cap, and the streak resets on the next success (tuned to the lockouts a
-paced laptop capture measured, 15 to 45 s; SET-REGISTRY.md, "Publisher's
-checklist fixtures"). While it is open the product shows "Waiting on
-BuySportsCards" and a spec waits the measured time plus 7 s, never a flat bump.
+**BSC's 429 cooldown (NEO-487, NEO-489), as a spec meets it.** A `card-listing` 429
+opens a deployment-wide cooldown as long as the longer of our backoff (15 s the
+first time, doubling on each further 429 to a 120 s cap) and BSC's `Retry-After`,
+honoured up to 10 minutes. The streak resets on the first success asked after
+the window closes (15 minutes after the last 429 at the latest). While a window is
+open a fetch stops asking BSC per card at once: the cards it still owed are
+marked failed, held back from any guess and queued for the background lane, and
+the operator picks their team (invariant 8). The screen's "Waiting on
+BuySportsCards" line shows only while a call to BSC is outstanding (a slow or
+stalled call, a retry pause inside one); an open cooldown does not hold a call,
+so a fetch that meets one finishes at once with no such line. A spec whose live
+card meets a cooldown accepts either outcome (`bscLookupOutcome`, "Checklist
+first" below) and never waits the window out; a wait on the screen's own wait
+line is the measured time plus 7 s, never a flat bump.
 
 **The reset clears BSC's backoff state.** `e2e-baseline.sh reset` also empties
 the card-listing cooldown, the "Waiting on BuySportsCards" wait rows and the
 background team lane, and a lane item queued before the reset ends without
 asking BSC. A re-seed therefore starts with BSC open and the lane empty; a run
 that meets a cooldown it did not cause is not looking at the previous seed's.
+
+### Checklist first; live BSC only for the card under test (NEO-489, Jason 2026-11-11)
+
+BSC pushes back (429) when asked card by card, and the cooldown is shared by every
+spec on the deployment, so a spec spends a live per-card lookup only on the card it
+is about:
+
+- **Every real-set fetch uploads its publisher checklist first** (`usePublishersChecklist`,
+  or `fetchChecklistToWizard`, which does it for the default set), before Sync card
+  checklist. BSC is then asked per card only for rows left out on purpose
+  (`--omit-number` / `--omit-player` in `tools/capture-bsc-checklist-teams.mjs`) and
+  for a number that appears twice (rule 7: never keyed on a non-unique number).
+- **Count live cards as cards minus `teamsFromChecklist`** (`checklistFacts(...).matched`,
+  the N in `Teams from your checklist: N of M cards`), never as a number typed in the
+  spec. SET-REGISTRY.md's checklist table lists every file, its matched rows and the
+  specs that leave a card live; about 14 per-card lookups remain in a pass, each on
+  purpose.
+- **A card with no team reads `No Team` in its team cell.** That is the publisher's
+  claim: the card counts as answered, is never asked of BSC, and never reaches "Cards
+  with no team". A BLANK team cell makes no claim, so the card is looked up like any
+  other; never leave one blank in a file a spec uploads. The capture tool writes a card
+  BSC gives no team as a blank cell, so `No Team` is set by hand after a capture and
+  recorded in SET-REGISTRY.md; a re-capture must put it back.
+- **Numbers are read as printed, in any case** (`TBD`, `PPR-DLa`, `1a`). `checklistFacts`
+  mirrors the parser and throws on two numbers in one file that differ only by case.
+- **A 429, or a cooldown already open, on the live card is a pass, never a red and
+  never a wait.** The product holds the guess back and asks the operator (invariant 8).
+  A spec whose live card can land either way asserts ONE positive `.or()` over the
+  settled states (BSC answered, so its pre-fill or chip shows; or the lookup was
+  skipped, so the card rests on "Leave for later"), records which one with
+  `bscLookupOutcome("answered" | "cooldown", who)` (a `bsc-lookup` annotation in the
+  report), has the operator pick the team on the cooldown branch so every later step
+  converges, and says in a comment what stays unconditional. See
+  `checklist-one-marketplace-skips-match-dialog` for the pattern. Never a flat wait
+  to outlast the window, and a wait on the screen's own wait line stays the measured
+  time plus 7 s (`expectAfterMarketplace`).
 
 ### Seeding a fixture that no UI can create (`/testing/seed-credentials`)
 
@@ -707,7 +760,17 @@ The idle text is NOT a readiness signal: the first year-wide Sets sync (any
 spec that drills the year through All Brands) mints the year's `Unknown` row
 and the text disappears, so a drill that waits for "idle text OR my brand"
 hangs on any year another spec has touched (CI run 39587731096, 1996 and 2025
-Baseball). Search for the brand instead and make it on "No matches found"
+Baseball). Nor is it proof a sync ran (NEO-450): while a column's sync has
+failed the idle text is hidden and the column shows only its error,
+`Couldn't sync <column> — please try again.` (role `alert` when this
+session's own sync attempt failed, role `status` for an error the server
+already held; the column's `Sync <column>` button is the retry). Locate it
+with `columnSyncError(page, column)`, which matches either role and reads
+the sentence from the product's own builder; a wait that settles on the idle
+text or the rows also wakes on that error, then
+asserts it hidden, so a failure reds at once and by name instead of as a
+timeout (`selectOrCreate` does this and never hand-makes a row over a failed
+sync). Search for the brand instead and make it on "No matches found"
 (`selectOrCreate`); a brand's Sets column ends "done" with "SportLots
 skipped: no SportLots ids on this path."; the base picker's SportLots pane
 shows "SportLots returned no base set for <set>"; checklist fetches take the
@@ -957,7 +1020,7 @@ edited workflow cannot forge a holder), and the poll fails closed: any API error
 or truncated listing waits rather than goes. A cancelled or dead holder stops
 counting at once; the wait is capped at 60 min, then the job fails with a message
 (re-run the workflow; the message says whether the cause was a busy queue or
-API errors). Artifacts: `pw-report-seller-<pass>`, `convex-logs-seller-<pass>`.
+API errors). Artifacts: `pw-report-seller-<pass>-a<attempt>`, `convex-logs-seller-<pass>-a<attempt>`.
 **Starting clean (NEO-445).** The queue serializes the job window only: a run
 cancelled mid-spec (`cancel-in-progress` on a new push) can leave its preview
 connected to the shared sellers, or its listings up. So right after its turn comes
@@ -977,16 +1040,19 @@ sessions at once.
 
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
-2. Download the artifacts BEFORE any rerun: `pw-report-desktop-<n>` or
-   `pw-report-mobile-<n>` (the shard's screenshots and report),
-   `pw-report-seller-desktop` / `pw-report-seller-mobile` (the seller listing specs), `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
-   (both passes' merged report and results).
-   `gh run download <run-id> -n pw-merged` (and the shard).
+2. Download the artifacts: `pw-report-desktop-<n>-a<attempt>` or
+   `pw-report-mobile-<n>-a<attempt>` (the shard's screenshots and report),
+   `pw-report-seller-desktop-a<attempt>` / `pw-report-seller-mobile-a<attempt>` (the seller listing specs), `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
+   (both passes' merged report and results). Every per-job artifact carries
+   the attempt it came from, so a rerun no longer overwrites an earlier red
+   attempt's evidence (`pw-merged` is unsuffixed and is replaced by the
+   latest attempt, so download it before any rerun). `gh run download <run-id> -n pw-report-desktop-1-a1`
+   (or `-p 'pw-report-*-a1'`).
 3. Open the failure screenshot and the spec's `error-context.md` (the ARIA
    snapshot of the page at failure). The role and name you expected is
    usually visibly different from what is there.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
-   `convex-logs-*` artifacts, before deciding which branch the spec took.
+   `convex-logs-*-a<attempt>` artifacts, before deciding which branch the spec took.
 5. Reproduce that one spec locally against the PR preview (above); fix; push
    only once it passes. A full rerun (`gh run rerun`) is for suspected infra
    problems; a real failure just fails again. A rerun cannot fix a broken
@@ -1013,6 +1079,10 @@ public. Traces are only on locally (`retain-on-failure`).
       `isMobile` and ends in hard asserts.
 - [ ] Writes go to a per-worker hand-made set, or the spec is the registered
       sole writer (R7a); nothing destructive (R7).
+- [ ] A spec that fetches a real set uploads its publisher checklist first; a
+      card it leaves live is named at the call site, its team cell is never
+      blank (`No Team` when the card has none), and a 429 or open cooldown on
+      that card is a pass through `bscLookupOutcome`, not a red or a wait.
 - [ ] If the spec drives a shared helper you changed, a deliberate throw in
       the helper turns the covering specs red.
 - [ ] `npm run test:e2e:typecheck` and `npx eslint playwright` pass;

@@ -9,12 +9,24 @@
  *
  * A card number is the strongest key and still not unique (two series both
  * start at #1, a variation reuses its parent's number). So a card and a row
- * pair only when the normalised number names exactly one card AND exactly one
- * row. Anything else is left unmatched, never given to the first candidate.
+ * pair only when the number names exactly one card AND exactly one row.
+ * Anything else is left unmatched, never given to the first candidate.
  *
- * One fallback, on what the first pass left: a leading letter prefix
- * ("BCP-12", "US12") is stripped on both sides and the same exactly-one guard
- * applies again ("BCP-12" on BSC against "12" in the publisher's list).
+ * Numbers are compared as printed, case kept (NEO-489): "1a" and "1A" can be
+ * two different cards in one set. Three passes, each on what the one before
+ * left:
+ *
+ *  1. **Exact** (`exactChecklistNumber`): trimmed, a leading "#" / "No."
+ *     dropped, inner spaces removed, case KEPT. Exactly one card and one row.
+ *  2. **Case-folded** (`normalizeChecklistNumber`, the exact key upper-cased):
+ *     a leftover pairs only when its folded key belongs to exactly one card
+ *     in the WHOLE set and exactly one row in the WHOLE checklist. So "1a"
+ *     and "1A" both on the card side never fold onto a lone "1A" row; a
+ *     case-only twin on either side leaves the number unmatched.
+ *  3. **Letter prefix stripped**: a leading letter prefix ("BCP-12", "US12")
+ *     is stripped from the folded key on both sides and the same exactly-one
+ *     guard applies again ("BCP-12" on BSC against "12" in the publisher's
+ *     list).
  *
  * ## Cards with no number ("NNO") pair by player, never by a tie
  *
@@ -35,7 +47,9 @@
  *    That is a comparison only; nothing is written from it, and the card
  *    keeps the marketplace's full names (`playersAgree`).
  *  - The card already carries a team (BSC's bulk parse, or SportLots) and the
- *    row names a different one: `conflict.teams`.
+ *    row names a different one: `conflict.teams`. A row that says "No Team"
+ *    (`noTeam`) against a card with a team is a disagreement too, with an
+ *    empty checklist side.
  *  - A card left unmatched whose players appear on a row at a DIFFERENT
  *    number is a likely misread (`misreads`): reported, never paired. The
  *    list holds at most `MAX_CHECKLIST_MISREADS` pairs (a player on many
@@ -47,6 +61,31 @@
  *
  * Where the card has no players and the row has some, the row's players fill
  * them in (`fillPlayers`): a fill, not a disagreement.
+ *
+ * ## NEO-490: when no number pairs at all, the players pair (`playerName`)
+ *
+ * Some publishers number a set one way and the marketplace another (Panini's
+ * "1".."17" against BSC's "SIG-FT"; "SIG-FT" has no digit after its letters,
+ * so the prefix strip never reaches it). When the number passes paired ZERO
+ * cards and both sides hold numbered entries, the numbered cards and rows
+ * pair by players instead (`pairByPlayerName`): the same `namesKey`, the same
+ * exactly-one guard on both sides, so a player on two cards or two rows
+ * leaves them unmatched. No surname pass. One number pair anywhere and this
+ * never runs (`fallback: "none"`, today's behaviour); an all-NNO checklist
+ * never reaches it either.
+ *
+ * Whether the name pairs are APPLIED turns on the counts:
+ *  - Equal (numbered cards = numbered rows): the unique name pairs become
+ *    matches (`via: "playerName"`, `fallback: "playerName"`), exactly like
+ *    number pairs. Anything left on BOTH sides goes to the operator
+ *    (`needsOperator`).
+ *  - Different: the checklist and the fetch do not describe the same cards,
+ *    so nothing is applied (`fallback: "operator"`, `needsOperator`); the
+ *    unique name pairs come back as `suggestions` for the operator to accept.
+ *
+ * A name pair never touches the card's number (the card keeps the number it
+ * was fetched with) and is never a number disagreement; players and teams are
+ * compared as for any pair.
  */
 
 export type ChecklistRowInput = {
@@ -59,12 +98,19 @@ export type ChecklistRowInput = {
    * counts as one whether or not the flag is set.
    */
   noNumber?: boolean;
+  /**
+   * The checklist says this card shows no team ("No Team"); `teams` is then
+   * empty. Against a card that has a team it is a conflict (NEO-489).
+   */
+  noTeam?: boolean;
 };
 
 export type ChecklistCardInput = {
   cardNumber: string;
   players?: readonly string[];
   teams?: readonly string[];
+  /** A legacy single team, read only when `teams` is empty. */
+  team?: string;
 };
 
 export type ChecklistConflictSides = { marketplace: string[]; checklist: string[] };
@@ -77,10 +123,13 @@ export type ChecklistCardMatch = {
   cardIndex: number;
   rowIndex: number;
   /**
-   * How the pair was made: the number as written, the number after the
-   * letter-prefix strip, or (a no-number card and an NNO row) the players.
+   * How the pair was made: the number as printed (case kept), the number
+   * case-folded (unique on both sides), the number after the letter-prefix
+   * strip, (a no-number card and an NNO row) the players, or (NEO-490, no
+   * number paired at all and the counts agree) the players of numbered cards
+   * and rows.
    */
-  via: "number" | "prefixStripped" | "player";
+  via: "number" | "caseFolded" | "prefixStripped" | "player" | "playerName";
   /** Present only when the two disagree. */
   conflict?: ChecklistConflict;
   /** The row's players, when the card has none. */
@@ -99,21 +148,47 @@ export type ChecklistMatchResult = {
   misreads: Array<{ cardIndex: number; rowIndex: number }>;
   /** Every such pair, including those past the list's cap. */
   misreadCount: number;
+  /**
+   * NEO-490 — whether the players pass ran on numbered cards and rows, and
+   * what came of it: `"none"` (a number paired, or one side has no numbered
+   * entry: today's behaviour), `"playerName"` (equal counts: unique name
+   * pairs applied as matches), `"operator"` (counts differ: nothing applied,
+   * the name pairs are `suggestions`).
+   */
+  fallback: "none" | "playerName" | "operator";
+  /**
+   * NEO-490 — the operator must pair what is left: always under
+   * `"operator"`; under `"playerName"` only when a card AND a row are both
+   * left over. Never under `"none"`.
+   */
+  needsOperator: boolean;
+  /** NEO-490 — under `"operator"` only: the unique name pairs, in card order. */
+  suggestions: Array<{ cardIndex: number; rowIndex: number }>;
+  /** NEO-490 — rows no match used, ascending. */
+  unusedRowIndices: number[];
 };
 
 /** The most misread pairs listed; `misreadCount` counts the rest. */
 export const MAX_CHECKLIST_MISREADS = 200;
 
 /**
- * A card number as both sides compare it: trimmed, a leading "#" or "No."
- * dropped, inner whitespace removed, upper-cased. "#12" = "No. 12" = "12";
- * "bcp-12" = "BCP-12".
+ * A card number as printed, as the exact pass compares it: trimmed, a
+ * leading "#" or "No." dropped, inner whitespace removed, case KEPT.
+ * "#12" = "No. 12" = "12"; "1a" and "1A" stay two numbers.
  */
-export function normalizeChecklistNumber(raw: string): string {
+export function exactChecklistNumber(raw: string): string {
   let n = raw.normalize("NFKC").trim();
   n = n.replace(/^(?:#|no\.?(?=\s|\d|#))\s*/i, "");
   n = n.replace(/^#\s*/, "");
-  return n.replace(/\s+/g, "").toUpperCase();
+  return n.replace(/\s+/g, "");
+}
+
+/**
+ * The case-folded number: `exactChecklistNumber` upper-cased. "bcp-12" =
+ * "BCP-12". Pairs only under the whole-set guard of the case-folded pass.
+ */
+export function normalizeChecklistNumber(raw: string): string {
+  return exactChecklistNumber(raw).toUpperCase();
 }
 
 /**
@@ -198,23 +273,23 @@ function nonEmpty(names: readonly string[] | undefined): string[] {
   return (names ?? []).map((n) => n.trim()).filter(Boolean);
 }
 
+function groupByKey(keys: Map<number, string>): Map<string, number[]> {
+  const byKey = new Map<string, number[]>();
+  for (const [i, k] of keys) {
+    const list = byKey.get(k);
+    if (list) list.push(i);
+    else byKey.set(k, [i]);
+  }
+  return byKey;
+}
+
 /** Pair keys that are exactly one on each side. */
 function pairUnique(
   cardKeys: Map<number, string>,
   rowKeys: Map<number, string>,
 ): Array<{ cardIndex: number; rowIndex: number }> {
-  const cardsByKey = new Map<string, number[]>();
-  for (const [i, k] of cardKeys) {
-    const list = cardsByKey.get(k);
-    if (list) list.push(i);
-    else cardsByKey.set(k, [i]);
-  }
-  const rowsByKey = new Map<string, number[]>();
-  for (const [i, k] of rowKeys) {
-    const list = rowsByKey.get(k);
-    if (list) list.push(i);
-    else rowsByKey.set(k, [i]);
-  }
+  const cardsByKey = groupByKey(cardKeys);
+  const rowsByKey = groupByKey(rowKeys);
   const pairs: Array<{ cardIndex: number; rowIndex: number }> = [];
   for (const [k, cardList] of cardsByKey) {
     const rowList = rowsByKey.get(k);
@@ -225,31 +300,122 @@ function pairUnique(
   return pairs;
 }
 
+/**
+ * NEO-490 — pair cards and rows by their players: the same `namesKey` the
+ * NNO pass uses, exactly one card AND exactly one row per key (rule 7's guard
+ * on the only key left), in card order. A card or row with no players has no
+ * key and pairs with nothing; a tie leaves every card and row of that key
+ * unmatched, never given to the first.
+ *
+ * Pure, and indexes are positions in the lists given, so a caller may pass
+ * any subset (the Match Cards dialog passes its leftovers).
+ */
+export function pairByPlayerName(
+  cards: ReadonlyArray<{ players?: readonly string[] }>,
+  rows: ReadonlyArray<{ players: readonly string[] }>,
+): Array<{ cardIndex: number; rowIndex: number }> {
+  const cardKeys = new Map<number, string>();
+  cards.forEach((c, i) => {
+    const k = namesKey(nonEmpty(c.players));
+    if (k) cardKeys.set(i, k);
+  });
+  const rowKeys = new Map<number, string>();
+  rows.forEach((r, i) => {
+    const k = namesKey(nonEmpty(r.players));
+    if (k) rowKeys.set(i, k);
+  });
+  return pairUnique(cardKeys, rowKeys).sort((a, b) => a.cardIndex - b.cardIndex);
+}
+
+/**
+ * One pair compared: what disagrees (both sides non-empty and different) and
+ * the players the row fills in when the card has none. The row's teams are
+ * compared as written; `applyChecklistRow` (same folder) re-reads a team
+ * conflict against the RESOLVED names. Shared by the matcher and every caller
+ * that pairs a card and a row some other way (the operator's own links), so
+ * the comparison cannot differ by how the pair was made.
+ *
+ * NEO-489: the card's teams are its `teams`, else its legacy single `team`.
+ * A row that says "No Team" (`noTeam`) against a card that has a team is a
+ * team disagreement with an EMPTY checklist side, however the pair was made
+ * (number, case-folded number, prefix strip, players, or the operator's own
+ * link): the operator decides, nothing is filled.
+ */
+export function compareChecklistRow(
+  card: Pick<ChecklistCardInput, "players" | "teams" | "team">,
+  row: Pick<ChecklistRowInput, "players" | "teams" | "noTeam">,
+): { conflict?: ChecklistConflict; fillPlayers?: string[] } {
+  const cardPlayers = nonEmpty(card.players);
+  const rowPlayers = nonEmpty(row.players);
+  const listedTeams = nonEmpty(card.teams);
+  const cardTeams = listedTeams.length > 0 ? listedTeams : nonEmpty(card.team ? [card.team] : []);
+  const rowTeams = nonEmpty(row.teams);
+  const conflict: ChecklistConflict = {};
+  if (cardPlayers.length > 0 && rowPlayers.length > 0 && !playersAgree(cardPlayers, rowPlayers)) {
+    conflict.players = { marketplace: cardPlayers, checklist: rowPlayers };
+  }
+  if (cardTeams.length > 0 && rowTeams.length > 0 && namesKey(cardTeams) !== namesKey(rowTeams)) {
+    conflict.teams = { marketplace: cardTeams, checklist: rowTeams };
+  } else if (cardTeams.length > 0 && rowTeams.length === 0 && row.noTeam === true) {
+    // The checklist says No Team; the card has one. The operator decides.
+    conflict.teams = { marketplace: cardTeams, checklist: [] };
+  }
+  return {
+    ...(conflict.players || conflict.teams ? { conflict } : {}),
+    ...(cardPlayers.length === 0 && rowPlayers.length > 0 ? { fillPlayers: rowPlayers } : {}),
+  };
+}
+
 export function matchPublishedChecklist(
   cards: readonly ChecklistCardInput[],
   rows: readonly ChecklistRowInput[],
 ): ChecklistMatchResult {
   // A no-number card or row has no key here: it pairs by player below, and
   // only there. The misread check reads a missing number as "".
+  const cardExact = new Map<number, string>();
   const cardNumbers = new Map<number, string>();
   cards.forEach((c, i) => {
     if (isNoNumber(c.cardNumber)) return;
-    cardNumbers.set(i, normalizeChecklistNumber(c.cardNumber));
+    const exact = exactChecklistNumber(c.cardNumber);
+    cardExact.set(i, exact);
+    cardNumbers.set(i, exact.toUpperCase());
   });
+  const rowExact = new Map<number, string>();
   const rowNumbers = new Map<number, string>();
   rows.forEach((r, i) => {
     if (rowHasNoNumber(r)) return;
-    rowNumbers.set(i, normalizeChecklistNumber(r.number));
+    const exact = exactChecklistNumber(r.number);
+    rowExact.set(i, exact);
+    rowNumbers.set(i, exact.toUpperCase());
   });
 
   const paired = new Map<number, { rowIndex: number; via: ChecklistCardMatch["via"] }>();
   const usedRows = new Set<number>();
-  for (const p of pairUnique(cardNumbers, rowNumbers)) {
+  // Pass 1: the number as printed, case kept.
+  for (const p of pairUnique(cardExact, rowExact)) {
     paired.set(p.cardIndex, { rowIndex: p.rowIndex, via: "number" });
     usedRows.add(p.rowIndex);
   }
 
-  // The fallback, on what is left on both sides. A number with no prefix
+  // Pass 2: case-folded, for leftovers only, and only when the folded number
+  // is exactly one card in the whole set AND exactly one row in the whole
+  // checklist. Counting the whole of each side (not just the leftovers) is
+  // what keeps "1a" from folding onto a "1A" row whose own "1A" card paired
+  // in pass 1.
+  const foldedCards = groupByKey(cardNumbers);
+  const foldedRows = groupByKey(rowNumbers);
+  for (const [cardIndex, folded] of cardNumbers) {
+    if (paired.has(cardIndex)) continue;
+    const cardList = foldedCards.get(folded);
+    const rowList = foldedRows.get(folded);
+    if (cardList?.length !== 1 || rowList?.length !== 1) continue;
+    const rowIndex = rowList[0];
+    if (usedRows.has(rowIndex)) continue;
+    paired.set(cardIndex, { rowIndex, via: "caseFolded" });
+    usedRows.add(rowIndex);
+  }
+
+  // Pass 3, on what is left on both sides. A number with no prefix
   // keeps itself, so "BCP-12" (card) meets "12" (row) and the reverse.
   const strippedCards = new Map<number, string>();
   for (const [i, n] of cardNumbers) {
@@ -266,6 +432,30 @@ export function matchPublishedChecklist(
     // strip actually created is new.
     paired.set(p.cardIndex, { rowIndex: p.rowIndex, via: "prefixStripped" });
     usedRows.add(p.rowIndex);
+  }
+
+  // NEO-490 — no number paired at all, and both sides have numbered entries:
+  // the numbered cards and rows pair by players (see the header). Decided
+  // before the NNO pass, which neither side of this one takes part in.
+  let fallback: ChecklistMatchResult["fallback"] = "none";
+  let suggestions: ChecklistMatchResult["suggestions"] = [];
+  if (paired.size === 0 && cardNumbers.size > 0 && rowNumbers.size > 0) {
+    const numberedCards = [...cardNumbers.keys()];
+    const numberedRows = [...rowNumbers.keys()];
+    const namePairs = pairByPlayerName(
+      numberedCards.map((i) => cards[i]),
+      numberedRows.map((i) => rows[i]),
+    ).map((p) => ({ cardIndex: numberedCards[p.cardIndex], rowIndex: numberedRows[p.rowIndex] }));
+    if (numberedCards.length === numberedRows.length) {
+      fallback = "playerName";
+      for (const p of namePairs) {
+        paired.set(p.cardIndex, { rowIndex: p.rowIndex, via: "playerName" });
+        usedRows.add(p.rowIndex);
+      }
+    } else {
+      fallback = "operator";
+      suggestions = namePairs;
+    }
   }
 
   // No-number cards against NNO rows, by players: exactly one card and
@@ -296,26 +486,23 @@ export function matchPublishedChecklist(
       unmatchedCardIndices.push(cardIndex);
       return;
     }
-    const row = rows[pair.rowIndex];
-    const cardPlayers = nonEmpty(card.players);
-    const rowPlayers = nonEmpty(row.players);
-    const cardTeams = nonEmpty(card.teams);
-    const rowTeams = nonEmpty(row.teams);
-    const conflict: ChecklistConflict = {};
-    if (cardPlayers.length > 0 && rowPlayers.length > 0 && !playersAgree(cardPlayers, rowPlayers)) {
-      conflict.players = { marketplace: cardPlayers, checklist: rowPlayers };
-    }
-    if (cardTeams.length > 0 && rowTeams.length > 0 && namesKey(cardTeams) !== namesKey(rowTeams)) {
-      conflict.teams = { marketplace: cardTeams, checklist: rowTeams };
-    }
     matches.push({
       cardIndex,
       rowIndex: pair.rowIndex,
       via: pair.via,
-      ...(conflict.players || conflict.teams ? { conflict } : {}),
-      ...(cardPlayers.length === 0 && rowPlayers.length > 0 ? { fillPlayers: rowPlayers } : {}),
+      ...compareChecklistRow(card, rows[pair.rowIndex]),
     });
   });
+  const unusedRowIndices: number[] = [];
+  rows.forEach((_, i) => {
+    if (!usedRows.has(i)) unusedRowIndices.push(i);
+  });
+  // NEO-490 — the operator pairs what is left: always when the counts
+  // differed, and after an applied name pass only when a card AND a row are
+  // both left (nothing to pair otherwise).
+  const needsOperator =
+    fallback === "operator" ||
+    (fallback === "playerName" && unmatchedCardIndices.length > 0 && unusedRowIndices.length > 0);
 
   // Likely misreads: an unmatched card whose players a row lists under a
   // different number. Reported only. Counted per group (the group's rows
@@ -354,5 +541,14 @@ export function matchPublishedChecklist(
     }
   }
 
-  return { matches, unmatchedCardIndices, misreads, misreadCount };
+  return {
+    matches,
+    unmatchedCardIndices,
+    misreads,
+    misreadCount,
+    fallback,
+    needsOperator,
+    suggestions,
+    unusedRowIndices,
+  };
 }

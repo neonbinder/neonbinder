@@ -57,6 +57,19 @@ import {
  * printed with no number ("NNO") is a row like any other, numbered "NNO": the
  * sync pairs it by player (PR 451 D-B), so it is never listed as skipped.
  *
+ * ## No Team (NEO-489)
+ *
+ * A team cell that says exactly "No Team" (any case, any spacing) is the
+ * checklist saying the card shows no team. The row keeps `teams: []` and
+ * carries `noTeam: true`; its Teams cell reads "No team" at a team's
+ * strength. A blank cell, or one that only says "nothing here" (None, N/A,
+ * a dash; `NO_CLAIM_TEAM_CELLS`), makes no claim, so the team is looked up:
+ * its cell reads a muted "We'll look it up" (`TEAM_LOOKED_UP_CELL`). The
+ * meaning is in the words, never in the tint alone (WCAG 1.4.1). The sync
+ * takes the claim as the card's answer and never asks about it. "No Team" beside a real team is a contradiction the parser will
+ * not settle: the line is skipped with the parser's own reason
+ * (`NO_TEAM_AND_A_TEAM`), shown under Skipped lines like every other.
+ *
  * ## Subsets
  *
  * A checklist page often carries several subsets under one heading (Base Set,
@@ -130,6 +143,28 @@ export function checklistTeamsLine(matched: number, total: number): string {
   return `Teams from your checklist: ${matched.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} ${total === 1 ? "card" : "cards"}`;
 }
 
+/**
+ * NEO-490 — one checklist row as Match Cards prints it: "#17 Mike Lowell",
+ * with " · Boston Red Sox" when the row names a team. Players and teams join
+ * with " / ", as the dialog's other rosters do. A card printed with no number
+ * reads "NNO Mike Lowell": "#NNO" would claim a number the card does not have.
+ * NEO-489: a row whose checklist said "No Team" reads " · No team", the same
+ * words the preview's team cell uses (`NO_TEAM_CELL`), so the operator sees
+ * the claim before linking it.
+ */
+export function checklistRowLine(row: {
+  number: string;
+  players: readonly string[];
+  teams: readonly string[];
+  noNumber?: true;
+  noTeam?: true;
+}): string {
+  const who = row.players.join(" / ");
+  const base = `${row.noNumber ? "" : "#"}${row.number}${who ? ` ${who}` : ""}`;
+  if (row.teams.length > 0) return `${base} · ${row.teams.join(" / ")}`;
+  return row.noTeam ? `${base} · ${NO_TEAM_CELL}` : base;
+}
+
 /** The paste box holds text, but no line of it reads as a card. */
 export const NOTHING_READS =
   "Nothing reads as a card yet. Each line starts with its card number.";
@@ -139,6 +174,14 @@ export const NOTHING_TO_USE = "Nothing to use yet — paste lines that start wit
 export const SUBSET_QUESTION = "Which of these belong to this set?";
 /** Said when "Use this checklist" is pressed before any subset is ticked. */
 export const PICK_A_SUBSET = "Tick at least one subset first — then use it.";
+
+/** NEO-489 — the team cell of a row whose checklist said "No Team". */
+export const NO_TEAM_CELL = "No team";
+/**
+ * NEO-489 — the team cell of a row whose checklist named no team and made no
+ * No Team claim (blank, None, N/A, a dash): the sync looks the team up.
+ */
+export const TEAM_LOOKED_UP_CELL = "We'll look it up";
 /** How long the paste must hold still before its count is announced. */
 export const COUNT_ANNOUNCE_DEBOUNCE_MS = 1500;
 
@@ -360,7 +403,9 @@ export default function PublishedChecklistDialog({
             </h2>
             <p id={leadId} className="mt-0.5 text-sm text-ink-2">
               Paste it straight off the checklist page, or pick a file. We line it up by card
-              number and only look up teams your list leaves out.
+              number and only look up teams your list leaves out. Card with no team, like a
+              promo or a raffle card? Type “No Team” in its team spot. Leave it blank and
+              we&apos;ll look it up.
             </p>
           </header>
 
@@ -567,8 +612,15 @@ export default function PublishedChecklistDialog({
                             <td className="px-3 py-1 align-top text-ink-2">
                               {row.teams.length > 0 ? (
                                 row.teams.join(", ")
+                              ) : row.noTeam ? (
+                                // The checklist's answer, so it reads at a
+                                // team's strength, unlike a blank cell.
+                                NO_TEAM_CELL
                               ) : (
-                                <span className="text-ink-3">None</span>
+                                // No claim: the sync looks the team up. Said
+                                // in words, so the muted tint is not the
+                                // only sign it differs from "No team".
+                                <span className="text-ink-3">{TEAM_LOOKED_UP_CELL}</span>
                               )}
                             </td>
                           </tr>

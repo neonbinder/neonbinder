@@ -75,6 +75,36 @@ const guardedFetch = (async (input: unknown) => {
 
 globalThis.fetch = guardedFetch;
 
+/**
+ * NEO-466: the same guard for XMLHttpRequest. happy-dom implements XHR itself
+ * and makes REAL requests, bypassing the fetch guard above; photo uploads go
+ * over XHR (`lib/collection/xhr-transport.ts`). `send()` records the call and
+ * throws. A test that means to use XHR installs the shared fake
+ * (`lib/testing/fake-xhr.ts`); `vi.unstubAllGlobals()` then restores this guard.
+ */
+class GuardedXMLHttpRequest {
+  private target = "<unopened>";
+  readonly upload = { addEventListener() {}, removeEventListener() {} };
+  responseType = "";
+  open(_method: string, url: string | URL) {
+    this.target = String(url);
+  }
+  setRequestHeader() {}
+  addEventListener() {}
+  removeEventListener() {}
+  abort() {}
+  send() {
+    violations.push({ url: this.target, testName: currentTestName });
+    throw new Error(
+      `NEO-188: blocked a real outbound XMLHttpRequest to ${this.target}\n` +
+        `Unit tests must not touch the network. Install the fake:\n` +
+        `  import { installFakeXhr } from "@/lib/testing/fake-xhr"`,
+    );
+  }
+}
+
+globalThis.XMLHttpRequest = GuardedXMLHttpRequest as unknown as typeof XMLHttpRequest;
+
 beforeEach((ctx) => {
   currentTestName = ctx.task.name;
 });
