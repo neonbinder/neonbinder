@@ -39,6 +39,7 @@ import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
+import PublishedChecklistPanel from "./PublishedChecklistPanel";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
   ALL_SIDES,
@@ -965,6 +966,18 @@ export default function SetAttributesPanel({
               />
             ))}
           </div>
+
+          {/* NEO-496: the set's publisher checklist, one file for the whole
+              set, at the set level only. Last and full width: it is a
+              source the set's syncs read, not a fact about this row. */}
+          {leafLevel === "setName" && (
+            <PublishedChecklistPanel
+              setId={selectorOptionId}
+              setName={row.value}
+              setYear={ancestorYear ?? null}
+              onStatus={showToast}
+            />
+          )}
         </>
       )}
     </div>

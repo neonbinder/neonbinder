@@ -112,6 +112,14 @@ vi.mock("../../convex/_generated/api", () => ({
     autographFormat: {
       setAutographFormat: "autographFormat.setAutographFormat",
     },
+    // NEO-496 — the set's checklist panel, mounted at the set level.
+    publishedChecklists: {
+      getForSet: "publishedChecklists.getForSet",
+      start: "publishedChecklists.start",
+      addSections: "publishedChecklists.addSections",
+      finish: "publishedChecklists.finish",
+      remove: "publishedChecklists.remove",
+    },
     // NEO-306 — "Make insert of…", asking the server at render.
     setInsertConversion: {
       getMakeInsertEligibility: "sic.getMakeInsertEligibility",

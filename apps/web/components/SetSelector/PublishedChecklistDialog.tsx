@@ -19,11 +19,20 @@ import { Checkbox } from "../primitives/Checkbox";
 import { inertBackground } from "@/lib/dom/inert-background";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import {
+  capLeafRows,
   filterRowsBySubsets,
   parsePublishedChecklist,
+  PUBLISHED_CHECKLIST_MAX_ROWS,
   type PublishedChecklistParse,
   type PublishedChecklistRow,
 } from "@/lib/checklists/parse-published-checklist";
+import {
+  CHECKLIST_FILE_ACCEPT,
+  parseChecklistInput,
+  readChecklistFile,
+  type ChecklistFileReaders,
+  type ChecklistInput,
+} from "@/lib/checklists/read-checklist-file";
 
 /**
  * NEO-478 — "Add the publisher's checklist".
@@ -87,6 +96,19 @@ import {
  * paste has held still for 1.5 s. Why nothing reads, and why a press of "Use
  * this checklist" did nothing, go in the same status at once.
  *
+ * ## Files (NEO-496)
+ *
+ * A file goes through the shared reader (`readChecklistFile`): .csv, .tsv
+ * and .txt land in the paste box as text, as before; a spreadsheet (.xlsx)
+ * or a PDF is read in the browser into cells, which the paste box cannot
+ * show, so the box gives way to the file's name and "Paste instead". The
+ * spreadsheet and PDF readers are imported only when such a file is chosen.
+ * A file's sections (its set column, or its section headings) are the
+ * subsets ticked below, and a leaf uses at most
+ * `PUBLISHED_CHECKLIST_MAX_ROWS` of the ticked rows (`capLeafRows`), with
+ * the rest counted out loud. This dialog is the one-off override for one
+ * leaf; the set's own checklist lives in `PublishedChecklistPanel`.
+ *
  * ## State
  *
  * In-view state only. The text and the file live in this dialog while it is
@@ -115,10 +137,12 @@ export type PublishedChecklist = {
    * theirs. Kept so reopening the dialog shows the same ticks.
    */
   subsets?: string[];
+  /**
+   * NEO-496 — a spreadsheet or PDF the rows came from (`text` is then ""),
+   * kept so reopening the dialog shows the same file. Never sent anywhere.
+   */
+  file?: { name: string; input: ChecklistInput };
 };
-
-/** The largest file read, in bytes — a real checklist is a few dozen KB. */
-const MAX_FILE_BYTES = 2 * 1024 * 1024;
 /** Rows drawn in the preview table; the count above it is always the whole. */
 const PREVIEW_ROWS = 150;
 /** Skipped lines drawn; the heading's count is always the whole. */
@@ -185,6 +209,14 @@ export const TEAM_LOOKED_UP_CELL = "We'll look it up";
 /** How long the paste must hold still before its count is announced. */
 export const COUNT_ANNOUNCE_DEBOUNCE_MS = 1500;
 
+/**
+ * NEO-496 — said under the count when the ticked subsets hold more rows than
+ * one leaf takes: "Using the first 2,000 rows; 340 more left off."
+ */
+export function droppedRowsText(dropped: number): string {
+  return `Using the first ${PUBLISHED_CHECKLIST_MAX_ROWS.toLocaleString("en-US")} rows; ${dropped.toLocaleString("en-US")} more left off.`;
+}
+
 /** "3 lines skipped." — the count's second half, when any line was. */
 export function skippedLinesText(n: number): string {
   return `${n.toLocaleString("en-US")} ${n === 1 ? "line" : "lines"} skipped.`;
@@ -194,6 +226,8 @@ const FORMAT_LABEL: Record<PublishedChecklistParse["format"], string> = {
   lines: "checklist lines",
   csv: "CSV",
   tsv: "tab-separated",
+  xlsx: "a spreadsheet",
+  pdf: "a PDF",
 };
 
 /** The preview's header cell: stuck to the top of the dialog body, opaque. */
@@ -219,6 +253,7 @@ export default function PublishedChecklistDialog({
   onUse,
   onCancel,
   restoreFocusRef,
+  readers,
 }: {
   /** The checklist already in use, so reopening shows it. */
   initial?: PublishedChecklist | null;
@@ -231,6 +266,8 @@ export default function PublishedChecklistDialog({
   onCancel: () => void;
   /** Where focus goes when the dialog closes. */
   restoreFocusRef?: RefObject<HTMLElement | null>;
+  /** NEO-496 — the spreadsheet / PDF readers; a test stands in for pdf.js here. */
+  readers?: ChecklistFileReaders;
 }) {
   const titleId = useId();
   const leadId = useId();
@@ -238,6 +275,10 @@ export default function PublishedChecklistDialog({
   const countId = useId();
   const subsetBaseId = useId();
   const [text, setText] = useState(initial?.text ?? "");
+  /** NEO-496 — a spreadsheet or PDF read into cells: the rows come from it, not the box. */
+  const [fileSource, setFileSource] = useState<{ name: string; input: ChecklistInput } | null>(
+    initial?.file ?? null,
+  );
   /** The subsets ticked, in tick order; read against the parse's own list. */
   const [ticked, setTicked] = useState<string[]>(initial?.subsets ?? []);
   const [fileNote, setFileNote] = useState<{ tone: "status" | "error"; text: string } | null>(
@@ -250,16 +291,21 @@ export default function PublishedChecklistDialog({
   const [blockedFor, setBlockedFor] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const firstSubsetRef = useRef<HTMLInputElement>(null);
 
   // A 2,000-line paste re-parses off the keystroke's own render.
   const deferredText = useDeferredValue(text);
   const parsed = useMemo(
-    () => parsePublishedChecklist(deferredText, { setYear }),
-    [deferredText, setYear],
+    () =>
+      fileSource
+        ? parseChecklistInput(fileSource.input, { setYear })
+        : parsePublishedChecklist(deferredText, { setYear }),
+    [deferredText, fileSource, setYear],
   );
-  const stale = deferredText !== text;
-  const hasText = text.trim() !== "";
+  const stale = !fileSource && deferredText !== text;
+  /** Something to read: pasted text, or a spreadsheet / PDF. */
+  const hasText = fileSource !== null || text.trim() !== "";
   /** Two or more subsets: the operator says which belong before any row is used. */
   const subsets = useMemo(
     () => ((parsed.subsets?.length ?? 0) >= 2 ? (parsed.subsets ?? []) : []),
@@ -269,14 +315,18 @@ export default function PublishedChecklistDialog({
   /** Ticks that still name one of this parse's subsets, in the parse's order. */
   const chosen = useMemo(() => subsets.filter((s) => ticked.includes(s)), [subsets, ticked]);
   const subsetPending = asksSubsets && chosen.length === 0;
-  /** What the sync gets: every row, or only the ticked subsets' rows. */
-  const usedRows = useMemo(
+  /**
+   * What the sync gets: every row, or only the ticked subsets' rows, held to
+   * one leaf's limit (NEO-496: a file of many sections parses whole, and the
+   * limit applies to what is ticked).
+   */
+  const { rows: usedRows, dropped: droppedRows } = useMemo(
     () =>
       !asksSubsets
-        ? parsed.rows
+        ? { rows: parsed.rows, dropped: 0 }
         : chosen.length === 0
-          ? []
-          : filterRowsBySubsets(parsed.rows, chosen),
+          ? { rows: [], dropped: 0 }
+          : capLeafRows(filterRowsBySubsets(parsed.rows, chosen)),
     [asksSubsets, chosen, parsed.rows],
   );
   /** Rows per subset, for the count beside each tick. */
@@ -301,7 +351,8 @@ export default function PublishedChecklistDialog({
     if (!dialog) return;
     const opener = restoreFocusRef?.current ?? null;
     const release = inertBackground(dialog);
-    pasteRef.current?.focus();
+    // Reopened on a spreadsheet or PDF there is no paste box: the file picker.
+    (pasteRef.current ?? fileInputRef.current)?.focus();
     return () => {
       release();
       // After release: an inert element cannot take focus.
@@ -321,10 +372,11 @@ export default function PublishedChecklistDialog({
     }
     onUse({
       rows: usedRows,
-      text,
+      text: fileSource ? "" : text,
       format: parsed.format,
       skippedCount: parsed.skipped.length,
       ...(asksSubsets ? { subsets: chosen } : {}),
+      ...(fileSource ? { file: fileSource } : {}),
     });
   };
 
@@ -339,17 +391,32 @@ export default function PublishedChecklistDialog({
     // Cleared so picking the same file again still fires a change.
     event.target.value = "";
     if (!file) return;
-    if (file.size > MAX_FILE_BYTES) {
-      setFileNote({ tone: "error", text: `${file.name} is too big — a checklist file is under 2 MB.` });
+    setFileNote({ tone: "status", text: `Reading ${file.name}…` });
+    // NEO-496 — every format through the one reader: sniffed by its bytes,
+    // size-capped per format, and the spreadsheet / PDF reader loaded only
+    // now. Never throws; a refusal comes back in words to show as they are.
+    const read = await readChecklistFile(file, readers);
+    if (!read.ok) {
+      setFileNote({ tone: "error", text: read.message });
       return;
     }
-    try {
-      const contents = await file.text();
-      setText(contents);
-      setFileNote({ tone: "status", text: `Read ${file.name}. Check the preview, then use it.` });
-    } catch {
-      setFileNote({ tone: "error", text: `Couldn’t read ${file.name}. Try pasting it instead.` });
+    setBlockedFor(null);
+    if (read.input.kind === "text") {
+      setFileSource(null);
+      setText(read.input.text);
+    } else {
+      setFileSource({ name: file.name, input: read.input });
+      setText("");
     }
+    setFileNote({ tone: "status", text: `Read ${file.name}. Check the preview, then use it.` });
+  };
+
+  /** Back to the paste box from a spreadsheet or PDF. */
+  const pasteInstead = () => {
+    setFileSource(null);
+    setFileNote(null);
+    setBlockedFor(null);
+    requestAnimationFrame(() => pasteRef.current?.focus());
   };
 
   const onDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -417,19 +484,38 @@ export default function PublishedChecklistDialog({
             <div className="grid grid-cols-1 gap-5 p-5 md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
               {/* Left: what goes in. */}
               <div className="flex min-w-0 flex-col gap-3">
-                <label className="flex flex-col gap-1.5 text-sm font-medium text-ink-2">
-                  Paste the checklist
-                  <Textarea
-                    bare
-                    ref={pasteRef}
-                    value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    onKeyDown={onPasteKeyDown}
-                    spellCheck={false}
-                    aria-describedby={countId}
-                    className="min-h-48 w-full resize-y px-3 py-2 font-mono text-xs leading-relaxed md:min-h-72"
-                  />
-                </label>
+                {fileSource ? (
+                  // NEO-496 — a spreadsheet or PDF has no text to show: its
+                  // name stands where the paste box was, and "Paste instead"
+                  // brings the box back.
+                  <div className="flex min-h-48 flex-col items-start justify-center gap-2 rounded-md border border-dashed border-rule-strong px-4 py-6 md:min-h-72">
+                    <p className="text-xs text-ink-3">Reading from</p>
+                    <p className="max-w-full break-words text-sm font-semibold text-ink">
+                      {fileSource.name}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={pasteInstead}
+                      className="text-sm text-ink-2 underline underline-offset-2 hover:text-ink focus-outline max-sm:min-h-11"
+                    >
+                      Paste instead
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex flex-col gap-1.5 text-sm font-medium text-ink-2">
+                    Paste the checklist
+                    <Textarea
+                      bare
+                      ref={pasteRef}
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      onKeyDown={onPasteKeyDown}
+                      spellCheck={false}
+                      aria-describedby={countId}
+                      className="min-h-48 w-full resize-y px-3 py-2 font-mono text-xs leading-relaxed md:min-h-72"
+                    />
+                  </label>
+                )}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   {/* The visible label IS the control's face: the file input
                       sits inside it, visually hidden but focusable, so Tab
@@ -442,15 +528,16 @@ export default function PublishedChecklistDialog({
                     Choose a file
                     <Input
                       bare
+                      ref={fileInputRef}
                       type="file"
-                      accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain"
+                      accept={CHECKLIST_FILE_ACCEPT}
                       aria-describedby={fileHintId}
                       onChange={(e) => void onFile(e)}
                       className="sr-only"
                     />
                   </label>
                   <span id={fileHintId} className="text-xs text-ink-3">
-                    .csv, .tsv or .txt — it stays on your computer
+                    .xlsx, .pdf, .csv, .tsv or .txt — it stays on your computer
                   </span>
                 </div>
                 {/* Keyed on the tone, so the role never flips on a mounted
@@ -557,6 +644,9 @@ export default function PublishedChecklistDialog({
                     </p>
                   )}
                 </div>
+                {droppedRows > 0 && (
+                  <p className="text-xs text-ink-2">{droppedRowsText(droppedRows)}</p>
+                )}
                 {/* The one live region for the count: always mounted, after
                     the visible count (so a text locator's first match is the
                     one on screen). The count is said once the paste holds
@@ -681,7 +771,10 @@ export default function PublishedChecklistDialog({
                       <ul className="mt-1 space-y-1">
                         {shownSkipped.map((line) => (
                           <li key={line.line} className="text-xs">
-                            <span className="tabular-nums text-ink-3">Line {line.line}</span>{" "}
+                            <span className="tabular-nums text-ink-3">
+                              Line {line.line}
+                              {line.page !== undefined ? `, page ${line.page}` : ""}
+                            </span>{" "}
                             <span className="break-words text-ink-2">“{line.text.trim()}”</span>{" "}
                             <span className="text-neon-pink-text">{line.reason}</span>
                           </li>

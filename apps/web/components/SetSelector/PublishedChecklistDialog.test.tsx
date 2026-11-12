@@ -4,6 +4,8 @@
  * opener.
  */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import { NO_TEAM_AND_A_TEAM } from "../../lib/checklists/no-team";
@@ -17,6 +19,7 @@ import PublishedChecklistDialog, {
   PublishedChecklistChip,
   checklistTeamsLine,
   chipText,
+  droppedRowsText,
   rowCountText,
   skippedLinesText,
 } from "./PublishedChecklistDialog";
@@ -556,5 +559,113 @@ describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
     );
     expect(dialog.getAttribute("aria-labelledby")).toBeTruthy();
     expect(screen.getByRole("dialog", { name: "Publisher's checklist" })).toBe(dialog);
+  });
+});
+
+describe("PublishedChecklistDialog — spreadsheets and PDFs (NEO-496)", () => {
+  const FIXTURES = join(__dirname, "../../playwright/fixtures/checklists");
+  const choose = async (file: File) => {
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Choose a file"), { target: { files: [file] } });
+    });
+  };
+
+  it("offers .xlsx and .pdf in the picker", () => {
+    open();
+    expect((screen.getByLabelText("Choose a file") as HTMLInputElement).accept).toBe(
+      ".xlsx,.pdf,.csv,.tsv,.txt",
+    );
+    expect(screen.getByText(/\.xlsx, \.pdf, \.csv, \.tsv or \.txt/)).toBeTruthy();
+  });
+
+  it("reads a spreadsheet through the shared reader: its sections are the subset ticks, and the file stands in for the paste box", async () => {
+    const { onUse } = open();
+    const bytes = readFileSync(join(FIXTURES, "2026-donruss-sample.xlsx"));
+    await choose(new File([new Uint8Array(bytes)], "2026-donruss-sample.xlsx"));
+    await waitFor(() => expect(screen.getByText(/Read 2026-donruss-sample\.xlsx/)).toBeTruthy());
+    // The box gives way to the file's name.
+    expect(screen.queryByLabelText("Paste the checklist")).toBeNull();
+    expect(screen.getByText("2026-donruss-sample.xlsx")).toBeTruthy();
+    const subsets = within(screen.getByRole("group", { name: SUBSET_QUESTION }));
+    for (const name of ["Base", "Base Rated Prospects", "Bomb Squad", "Bomb Squad Red Ice"]) {
+      expect(subsets.getByRole("checkbox", { name })).toBeTruthy();
+    }
+    expect(screen.getByText(/Read as a spreadsheet/)).toBeTruthy();
+    fireEvent.click(subsets.getByRole("checkbox", { name: "Bomb Squad" }));
+    // The count Use is described by (the box is gone; the button carries it).
+    const useButton = screen.getByRole("button", { name: "Use this checklist" });
+    const countOf = () => document.getElementById(useButton.getAttribute("aria-describedby")!)!;
+    await waitFor(() => expect(countOf().textContent).toBe("3 rows. 1 line skipped."));
+    fireEvent.click(useButton);
+    const used = onUse.mock.calls[0][0];
+    expect(used.rows.map((r: { players: string[] }) => r.players[0])).toEqual([
+      "Bryce Eldridge",
+      "Ken Griffey Jr.",
+      "Roman Anthony",
+    ]);
+    expect(used.format).toBe("xlsx");
+    expect(used.text).toBe("");
+    expect(used.subsets).toEqual(["Bomb Squad"]);
+    expect(used.file.name).toBe("2026-donruss-sample.xlsx");
+  });
+
+  it("reopens on the same spreadsheet, and Paste instead brings the box back", async () => {
+    open();
+    const bytes = readFileSync(join(FIXTURES, "2026-donruss-sample.xlsx"));
+    await choose(new File([new Uint8Array(bytes)], "2026-donruss-sample.xlsx"));
+    await waitFor(() => expect(screen.getByText("2026-donruss-sample.xlsx")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Paste instead" }));
+    expect(screen.getByLabelText("Paste the checklist")).toBeTruthy();
+    expect(screen.queryByText("2026-donruss-sample.xlsx")).toBeNull();
+  });
+
+  it("reads a PDF through the PDF reader, with its page on a skipped line", async () => {
+    const readPdf = vi.fn(async () => ({
+      ok: true as const,
+      pages: 2,
+      lines: [
+        { page: 1, line: 1, cells: ["FUTURE STARS"], xs: [50] },
+        { page: 1, line: 2, cells: ["FS-1", "Jackson Holliday", "Baltimore Orioles"], xs: [50, 120, 300] },
+        { page: 2, line: 3, cells: ["Rookie"], xs: [50] },
+        { page: 2, line: 4, cells: ["RADIATING ROOKIES"], xs: [50] },
+        { page: 2, line: 5, cells: ["RR-1", "Roman Anthony", "Boston Red Sox"], xs: [50, 120, 300] },
+      ],
+    }));
+    const { onUse } = open({ readers: { readPdf } });
+    await choose(new File(["%PDF-1.7\n"], "topps.pdf"));
+    await waitFor(() => expect(screen.getByRole("group", { name: SUBSET_QUESTION })).toBeTruthy());
+    expect(readPdf).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Line 3, page 2")).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: "FUTURE STARS" }));
+    const useButton = screen.getByRole("button", { name: "Use this checklist" });
+    const countOf = () => document.getElementById(useButton.getAttribute("aria-describedby")!)!;
+    await waitFor(() => expect(countOf().textContent).toBe("1 row. 1 line skipped."));
+    fireEvent.click(useButton);
+    expect(onUse.mock.calls[0][0]).toMatchObject({
+      format: "pdf",
+      rows: [{ number: "FS-1", players: ["Jackson Holliday"], teams: ["Baltimore Orioles"] }],
+    });
+  });
+
+  it("a PDF the reader refuses is an alert in its words", async () => {
+    open({ readers: { readPdf: async () => ({ ok: false as const, reason: "password" as const }) } });
+    await choose(new File(["%PDF-1.7\n"], "locked.pdf"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/locked\.pdf is password-protected/));
+  });
+
+  it("holds one leaf to 2,000 of the ticked rows and says how many were left off", async () => {
+    const lines = ["Subset,#,Player"];
+    for (const subset of ["Alpha", "Beta"]) {
+      for (let i = 1; i <= 1500; i++) lines.push(`${subset},${i},Player ${subset} ${i}`);
+    }
+    const { onUse } = open();
+    await paste(lines.join("\n"));
+    const group = await waitFor(() => screen.getByRole("group", { name: SUBSET_QUESTION }));
+    fireEvent.click(within(group).getByRole("checkbox", { name: "Alpha" }));
+    fireEvent.click(within(group).getByRole("checkbox", { name: "Beta" }));
+    await waitFor(() => expect(screen.getByText(droppedRowsText(1000))).toBeTruthy());
+    expect(droppedRowsText(1000)).toBe("Using the first 2,000 rows; 1,000 more left off.");
+    fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+    expect(onUse.mock.calls[0][0].rows).toHaveLength(2000);
   });
 });
