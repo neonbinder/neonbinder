@@ -1,8 +1,8 @@
-// Test doubles for `gcloud` and `python3`, used to exercise
+// Test doubles for `gcloud`, `python3` and (NEO-484) `curl`, used to exercise
 // cleanup-cloudrun-revisions.sh / check-revision-images.sh without touching
 // real GCP and without depending on Linux's exec() argument-size limit being
 // present on the machine running the test (it isn't, on macOS).
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -60,24 +60,57 @@ case "\${1:-}" in
     esac
     ;;
   artifacts)
-    # gcloud artifacts docker images describe IMAGE --project=PROJECT
+    # gcloud artifacts docker images describe IMAGE --project=PROJECT [--format=json]
+    # gcloud artifacts docker images list PACKAGE --include-tags --format=json
+    VERB="\${4:-}"
     IMAGE=""
+    FORMAT_JSON=""
     for arg in "$@"; do
       case "$arg" in
-        --*|artifacts|docker|images|describe) : ;;
+        --format=json) FORMAT_JSON=1 ;;
+        --*|artifacts|docker|images|describe|list) : ;;
         *) IMAGE="$arg" ;;
       esac
     done
+    if [ "$VERB" = "list" ]; then
+      # NEO-484: canned version listing (tags, createTime, mediaType).
+      if [ -n "\${GCLOUD_STUB_VERSIONS_FILE:-}" ]; then cat "$GCLOUD_STUB_VERSIONS_FILE"; else echo "[]"; fi
+      exit 0
+    fi
     MISSING=",\${GCLOUD_STUB_MISSING_IMAGES:-},"
     case "$MISSING" in
       *",$IMAGE,"*) exit 1 ;;
-      *) exit 0 ;;
     esac
+    if [ -n "$FORMAT_JSON" ]; then
+      # The fixtures' image refs are already fully qualified.
+      printf '{"image_summary":{"fully_qualified_digest":"%s"}}\n' "$IMAGE"
+    fi
+    exit 0
+    ;;
+  auth)
+    [ "\${2:-}" = "print-access-token" ] && { echo "stub-token"; exit 0; }
     ;;
 esac
 
 echo "gcloud stub: unhandled invocation: $*" >&2
 exit 3
+`;
+
+// NEO-484: registry manifest reads. Answers GET .../manifests/<digest> from
+// $CURL_STUB_INDEX_DIR/<digest>.json, and fails (exit 22, curl -f) otherwise.
+const CURL_STUB = `#!/usr/bin/env bash
+set -eo pipefail
+cat >/dev/null   # the Authorization header arrives on stdin (-H @-)
+URL=""
+for arg in "$@"; do
+  case "$arg" in
+    https://*) URL="$arg" ;;
+  esac
+done
+DIGEST="\${URL##*/manifests/}"
+F="\${CURL_STUB_INDEX_DIR:-/nonexistent}/\${DIGEST}.json"
+[ -f "$F" ] || exit 22
+cat "$F"
 `;
 
 // Environment keys that must never reach the child: an exported shell
@@ -104,7 +137,7 @@ function withoutShellFunctionEnv(env) {
  * executables into a fresh temp bin dir, and returns everything a test needs
  * to run a script against them.
  */
-export function makeStubEnv({ service, svc, rev, missingImages = [] }) {
+export function makeStubEnv({ service, svc, rev, missingImages = [], versions, indexes = {} }) {
   const dir = mkdtempSync(join(tmpdir(), "nb-revscript-stub-"));
 
   const svcFile = join(dir, "svc.json");
@@ -115,6 +148,20 @@ export function makeStubEnv({ service, svc, rev, missingImages = [] }) {
   const gcloudPath = join(dir, "gcloud");
   writeFileSync(gcloudPath, GCLOUD_STUB);
   chmodSync(gcloudPath, 0o755);
+
+  // NEO-484: optional Artifact Registry state for check-revision-images.sh's
+  // protection pass. `versions` is the `images list` JSON; `indexes` maps an
+  // index digest to its manifest JSON.
+  const versionsFile = join(dir, "versions.json");
+  if (versions) writeFileSync(versionsFile, JSON.stringify(versions));
+  const indexDir = join(dir, "indexes");
+  mkdirSync(indexDir);
+  for (const [digest, manifest] of Object.entries(indexes)) {
+    writeFileSync(join(indexDir, `${digest}.json`), JSON.stringify(manifest));
+  }
+  const curlPath = join(dir, "curl");
+  writeFileSync(curlPath, CURL_STUB);
+  chmodSync(curlPath, 0o755);
 
   const python3Path = join(dir, "python3");
   writeFileSync(python3Path, PYTHON3_STUB);
@@ -130,6 +177,8 @@ export function makeStubEnv({ service, svc, rev, missingImages = [] }) {
       GCLOUD_STUB_SVC_FILE: svcFile,
       GCLOUD_STUB_REV_FILE: revFile,
       GCLOUD_STUB_MISSING_IMAGES: missingImages.join(","),
+      ...(versions ? { GCLOUD_STUB_VERSIONS_FILE: versionsFile } : {}),
+      CURL_STUB_INDEX_DIR: indexDir,
     }),
   };
 }

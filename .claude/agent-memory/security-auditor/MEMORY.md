@@ -97,6 +97,7 @@
 - [Signed URL scrub coverage](patterns_signed_url_scrub_coverage.md) — which pipelines scrubUrlSecrets covers; test a new shape via strip-types; PostHog replay compresses DOM events past before_send
 - [Neo475 body scrubber](patterns_neo475_body_scrubber.md) — run adversarial inputs; x-amzn-* wildcard + unredacted headers; slice-before-redact; free-text kept keys; key names; entities
 - [Neo464 dashboard aggregator](patterns_neo464_dashboard_aggregator.md) — per-read owner derivation; budget skips; demo shell; test seeds go live when the account later polls/pushes
+- [Shared cache host gate](patterns_shared_cache_host_gate.md) — Cloud Run Host gate holds against spoofing but runs in PR code; IAM is the boundary for a shared cache; sha256 envelope = integrity only (NEO-484)
 - [Playwright WebSocket route proxy](patterns_playwright_websocket_route_proxy.md) — route-group calls never reach reporters; local trace holds the JWT; close-code 1005 remap; forward before side work
 - [Neo478 operator checklist ingest](patterns_neo478_operator_checklist_ingest.md) — pasted-file ingest: bounds after the gate, quadratic \s+ split, uncapped pair list, CSV injection only with an export
 - [LLM-operated shell queue](patterns_llm_operated_shell_queue.md) — message text typed into Bash is injected before jq --arg helps; sender binding; gh pr list --head matches forks/old PRs

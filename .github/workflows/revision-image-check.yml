@@ -16,14 +16,20 @@ name: Cloud Run Revision Image Check
 # policy or tuning error caused it.
 #
 # Read-only: it never deletes or modifies anything.
+#
+# NEO-484: it also FAILS when a tagged revision's image is missing, or when a
+# serving or tagged revision pins a digest nothing protects (untagged and no
+# tagged parent index), and warns when only an aging pr- tag keeps a pin. See
+# the script header.
 
 on:
   schedule:
-    # 10:00 UTC Sunday — deliberately ONE HOUR AFTER revision-gc (09:00 UTC).
-    # Running after the sweep means this observes the post-GC state, so a GC
-    # that collects something load-bearing is caught the same morning rather
-    # than a week later.
-    - cron: "0 10 * * 0"
+    # 10:00 UTC daily (NEO-484; weekly before). Artifact Registry's cleanup
+    # policies run continuously, not on revision-gc's weekly sweep, and the
+    # untagged and stale pr- windows are 7 and 14 days, so a weekly check
+    # could see a pin only after it is gone. On Sundays this still runs one
+    # hour after revision-gc (09:00 UTC) and observes the post-GC state.
+    - cron: "0 10 * * *"
   workflow_dispatch:
   # Also runs on changes to itself or the script, so the checker cannot ship
   # broken and sit silently green until someone reads a cron summary.
@@ -39,6 +45,7 @@ on:
     paths:
       - ".github/workflows/revision-image-check.yml"
       - "scripts/check-revision-images.sh"
+      - "scripts/check-revision-images.test.mjs"
 
 concurrency:
   group: revision-image-check
@@ -51,7 +58,9 @@ jobs:
   check:
     name: Image check ${{ matrix.service }} ${{ matrix.env }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 20: dev's fast service carries 100+ revisions, one image describe each
+    # (measured ~4 min from a laptop).
+    timeout-minutes: 20
     strategy:
       # A missing image in one service/env says nothing about the others, and
       # each is independently actionable — so never let one failure mask the
@@ -79,6 +88,18 @@ jobs:
             wif: GCP_WIF_PROVIDER_PREPROCESS_DEV
             sa: GCP_SA_PREPROCESS_DEPLOYER_DEV
           - service: neonbinder-preprocess
+            env: prod
+            project: neonbinder
+            wif: GCP_WIF_PROVIDER_PREPROCESS
+            sa: GCP_SA_PREPROCESS_DEPLOYER
+          # NEO-484: the fast service runs the preprocess image too, under the
+          # same deployer SA, and had no check.
+          - service: neonbinder-preprocess-fast
+            env: dev
+            project: neonbinder-dev
+            wif: GCP_WIF_PROVIDER_PREPROCESS_DEV
+            sa: GCP_SA_PREPROCESS_DEPLOYER_DEV
+          - service: neonbinder-preprocess-fast
             env: prod
             project: neonbinder
             wif: GCP_WIF_PROVIDER_PREPROCESS

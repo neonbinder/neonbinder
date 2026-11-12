@@ -15,20 +15,26 @@ Starlette runs each sync handler inside its own copied context, so concurrent
 requests never see each other's object. With nothing bound, `measure_current`
 is a no-op, so `/process`, `/crop` and the unit tests pay nothing.
 `increment_current` is the counter twin, used by `app.orient` to record a
-Vision reconnect from inside `detect_orientation`.
+Vision reconnect from inside `detect_orientation`, and by the dev cache
+(NEO-484, `app.devcache`) to count its hits, misses and errors.
 
 `emit` writes ONE JSON line per request through the dedicated `timing`
 logger: a plain `%(message)s` handler on stdout with `propagate=False`, so the
 line reaches Cloud Logging as bare JSON (parsed into `jsonPayload`) instead of
 being prefixed by the root handler's `LEVEL name:` format. The payload is
 numbers, booleans and short machine labels only: never image content, object
-paths, user or job identifiers, or keys.
+paths, user or job identifiers, or keys. NEO-484 adds `cache_mode` (the dev
+cache policy the route bound, e.g. `on` or `off:tagged_host`), `error_code`
+(the machine label of a failed request, null on success) and `maxrss_mb` (the
+process's peak resident set when the line is written: a per-process high-water
+mark, not this request's own use).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import resource
 import sys
 import time
 from collections.abc import Iterator
@@ -55,11 +61,23 @@ MS_FIELDS: tuple[str, ...] = (
     "rotate_ms",
     "write_ms",
     "copy_photos_ms",
+    "cache_ms",
+)
+
+# The dev cache's counters (NEO-484, `app.devcache`).
+CACHE_COUNT_FIELDS: tuple[str, ...] = (
+    "vision_cache_hits",
+    "vision_cache_misses",
+    "vision_cache_errors",
+    "birefnet_cache_hits",
+    "birefnet_cache_misses",
+    "birefnet_cache_errors",
+    "cache_write_failures",
 )
 
 # Fields that count events. `increment_current` accepts only these, for the
 # same reason `measure` checks MS_FIELDS.
-COUNT_FIELDS: tuple[str, ...] = ("vision_reconnects",)
+COUNT_FIELDS: tuple[str, ...] = ("vision_reconnects", *CACHE_COUNT_FIELDS)
 
 
 def _build_timing_logger() -> logging.Logger:
@@ -81,6 +99,20 @@ def _build_timing_logger() -> logging.Logger:
 
 
 timing_logger = _build_timing_logger()
+
+
+def peak_rss_mb() -> int | None:
+    """This process's peak resident set size in whole MiB, or None if unknown.
+
+    `ru_maxrss` is KiB on Linux (Cloud Run) and bytes on macOS. It is the
+    process's high-water mark since start, so it only ever rises.
+    """
+    try:
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (OSError, ValueError):  # pragma: no cover - getrusage(SELF) does not fail
+        return None
+    per_mib = 1024 * 1024 if sys.platform == "darwin" else 1024
+    return round(peak / per_mib)
 
 
 @dataclass
@@ -113,6 +145,22 @@ class Timings:
     write_ms: float = 0.0
     # Making and storing the sizes a saved copy keeps (NEO-427).
     copy_photos_ms: float = 0.0
+    # NEO-484 dev cache: time spent reading and writing cache objects, and its
+    # outcomes per cache. All stay 0 unless the policy the route bound is on.
+    cache_ms: float = 0.0
+    vision_cache_hits: int = 0
+    vision_cache_misses: int = 0
+    vision_cache_errors: int = 0
+    birefnet_cache_hits: int = 0
+    birefnet_cache_misses: int = 0
+    birefnet_cache_errors: int = 0
+    cache_write_failures: int = 0
+    # The dev cache policy mode the route bound (`on`, `off:<reason>`).
+    cache_mode: str | None = None
+    # Machine label of the response when the request failed; None on success.
+    error_code: str | None = None
+    # Peak RSS of the process at request end; filled by `emit` when unset.
+    maxrss_mb: int | None = None
     source: str | None = None
     escalated: bool = False
     baseline_supplied: bool = False
@@ -162,6 +210,12 @@ class Timings:
         body["rotate_ms"] = round(self.rotate_ms)
         body["write_ms"] = round(self.write_ms)
         body["copy_photos_ms"] = round(self.copy_photos_ms)
+        body["cache_ms"] = round(self.cache_ms)
+        for name in CACHE_COUNT_FIELDS:
+            body[name] = getattr(self, name)
+        body["cache_mode"] = self.cache_mode
+        body["error_code"] = self.error_code
+        body["maxrss_mb"] = self.maxrss_mb if self.maxrss_mb is not None else peak_rss_mb()
         body["total_ms"] = round((time.perf_counter() - self.started) * 1000.0)
         body["source"] = self.source
         body["escalated"] = self.escalated
@@ -171,6 +225,8 @@ class Timings:
         return body
 
     def emit(self) -> None:
+        if self.maxrss_mb is None:
+            self.maxrss_mb = peak_rss_mb()
         timing_logger.info(json.dumps(self.payload(), separators=(",", ":")))
 
 

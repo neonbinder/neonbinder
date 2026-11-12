@@ -1,19 +1,20 @@
-"""Unit tests for POST /warmup (NEO-170).
+"""Unit tests for POST /warmup (NEO-170, reworked in NEO-484).
 
-/warmup forces the BiRefNet crop model resident on the instance that handles
-the request, so Convex can pre-spin a scale-to-zero container at session-start
-and keep the ~930MB load off the first real /process-entry call.
+/warmup makes the BiRefNet session resident on the instance that handles the
+request, so Convex can pre-spin a scale-to-zero container at session start.
 
-Covers: the happy path returns {"status": "warm", "was_cold": True} on a genuinely
-cold instance; the load runs the SAME path a real crop uses (`tiered.warm_up` →
-`_get_session` → `rembg.new_session` + one tiny `rembg.remove`); idempotence — a
-second call short-circuits on residency with no reload and no inference and reports
-`was_cold=False`; an already-resident session returns immediately without touching
-the loader at all; the route does NO GCS / Vision / Anthropic I/O; and auth is
-required exactly like the other internal routes.
+Since NEO-484 the session is the direct onnxruntime one in
+`app.cropper.birefnet`, and /warmup runs no inference: the model's input is
+fixed at 1024x1024, so a "tiny" warm-up pass would cost a full one.
 
-No network, no credentials, no model download — the loader is stubbed and the
-conftest guard forbids a real rembg session.
+Covers: a cold instance returns {"status": "warm", "was_cold": True} after one
+session load; a second call short-circuits on residency (`was_cold=False`, no
+reload); an already-resident session never reaches the loader; no inference
+runs; the route does no GCS / Vision / Anthropic I/O; auth is required like the
+other internal routes; and the FAST role never touches the loader.
+
+No network, no credentials, no model: `_create_session` is stubbed, and the
+unit conftest refuses a real ORT session.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import cropper
-from app.cropper import tiered
+from app.cropper import birefnet
 from app.main import app
 
 client = TestClient(app)
@@ -37,26 +38,24 @@ def _set_internal_key(monkeypatch):
 
 @pytest.fixture()
 def stub_loader(monkeypatch) -> dict[str, int]:
-    """Replace the real model loader + inference with cheap spies.
+    """Replace the session factory with a counting stub and forbid inference.
 
-    Overrides the conftest guard's refusing `rembg.new_session` for this
-    test's duration and counts each call, so a test can assert the load path
-    ran exactly once across repeat warm-ups (no reload) and the tiny inference
-    is skipped once the session is resident.
+    `birefnet.get_session` caches whatever `_create_session` returns, so the
+    real residency check (`is_session_loaded`) and the real `load_session` run
+    on top of it; only the ORT construction is faked.
     """
-    calls = {"new_session": 0, "remove": 0}
-    session_sentinel = object()
+    calls = {"create_session": 0}
+    monkeypatch.setattr(birefnet, "_session", None)
 
-    def _fake_new_session(_model_name, **_kwargs):
-        calls["new_session"] += 1
-        return session_sentinel
+    def _fake_create_session():
+        calls["create_session"] += 1
+        return object()
 
-    def _fake_remove(image, **_kwargs):
-        calls["remove"] += 1
-        return image
+    def _no_inference(*_args, **_kwargs):
+        raise AssertionError("/warmup ran an inference")
 
-    monkeypatch.setattr("rembg.new_session", _fake_new_session)
-    monkeypatch.setattr("rembg.remove", _fake_remove)
+    monkeypatch.setattr(birefnet, "_create_session", _fake_create_session)
+    monkeypatch.setattr(birefnet, "predict_alpha", _no_inference)
     return calls
 
 
@@ -75,45 +74,47 @@ class TestAuth:
     def test_auth_runs_before_any_load(self, stub_loader):
         # A rejected request must never touch the loader.
         _post_warmup(key="wrong")
-        assert stub_loader["new_session"] == 0
-        assert stub_loader["remove"] == 0
+        assert stub_loader["create_session"] == 0
+        assert not birefnet.is_session_loaded()
 
 
 class TestWarmup:
-    def test_returns_warm_and_loads_the_model(self, stub_loader):
+    def test_returns_warm_and_loads_the_session(self, stub_loader):
         response = _post_warmup()
         assert response.status_code == 200
-        # A genuinely cold instance: this call triggered the load.
+        # A genuinely cold instance: this call created the session.
         assert response.json() == {"status": "warm", "was_cold": True}
-        # The one call that forces the ~930MB session resident ran once, and
-        # the tiny in-memory inference (ORT first-run allocations) ran once.
-        assert stub_loader["new_session"] == 1
-        assert stub_loader["remove"] == 1
-        assert tiered.is_session_loaded()
+        assert stub_loader["create_session"] == 1
+        assert birefnet.is_session_loaded()
 
     def test_idempotent_second_call_does_not_reload(self, stub_loader):
         first = _post_warmup()
         second = _post_warmup()
-        assert first.status_code == 200
-        assert second.status_code == 200
-        # First call did the load (was_cold=True); the second found it resident
-        # (was_cold=False) so the caller can stay silent.
         assert first.json() == {"status": "warm", "was_cold": True}
         assert second.json() == {"status": "warm", "was_cold": False}
-        # Resident after the first call → the second neither reloads the
-        # session nor runs another inference.
-        assert stub_loader["new_session"] == 1
-        assert stub_loader["remove"] == 1
+        assert stub_loader["create_session"] == 1
 
     def test_already_resident_returns_immediately_without_loading(self, monkeypatch, stub_loader):
-        # Simulate a container already warmed (by a prior crop or warm-up):
-        # the residency check short-circuits before any loader call.
-        monkeypatch.setattr(tiered, "_session", object())
+        # Simulate a container whose startup hook already loaded the session.
+        monkeypatch.setattr(birefnet, "_session", object())
         response = _post_warmup()
         assert response.status_code == 200
         assert response.json() == {"status": "warm", "was_cold": False}
-        assert stub_loader["new_session"] == 0
-        assert stub_loader["remove"] == 0
+        assert stub_loader["create_session"] == 0
+
+    def test_uses_the_birefnet_loader(self, monkeypatch, stub_loader):
+        # The route's load path is `birefnet.load_session`, nothing else.
+        loads: list[bool] = []
+        real_load = birefnet.load_session
+
+        def _spy():
+            loads.append(True)
+            return real_load()
+
+        monkeypatch.setattr(birefnet, "load_session", _spy)
+        _post_warmup()
+        _post_warmup()
+        assert loads == [True]
 
     def test_does_no_gcs_vision_or_anthropic_io(self, monkeypatch, stub_loader):
         # Warm-up is pure model residency: no storage, no Vision orient, no
@@ -137,22 +138,15 @@ class TestWarmup:
 
 
 class TestFastRoleWarmup:
-    """PREPROCESS_ROLE=fast (NEO-175): /warmup must not load a model.
-
-    The FAST service has no local model to make resident, so /warmup reports
-    ready (was_cold=False) without ever reaching the loader — the same "never
-    constructs a model session" invariant the FAST role guarantees everywhere.
-    """
+    """PREPROCESS_ROLE=fast (NEO-175): /warmup must not load a model."""
 
     def test_fast_role_reports_ready_without_touching_the_loader(self, monkeypatch, stub_loader):
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
         response = _post_warmup()
         assert response.status_code == 200
         assert response.json() == {"status": "warm", "was_cold": False}
-        # The loader was never touched and no session became resident.
-        assert stub_loader["new_session"] == 0
-        assert stub_loader["remove"] == 0
-        assert not tiered.is_session_loaded()
+        assert stub_loader["create_session"] == 0
+        assert not birefnet.is_session_loaded()
 
     def test_fast_role_still_requires_auth(self, monkeypatch, stub_loader):
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")

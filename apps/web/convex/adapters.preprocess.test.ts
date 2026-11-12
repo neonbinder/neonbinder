@@ -32,7 +32,12 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { isNonRetryableError } from "@convex-dev/workpool";
-import { ENTRY_TOO_MANY_PIXELS, isRasterTooLargeError } from "./lib/extractRejections";
+import {
+  ENTRY_TOO_MANY_PIXELS,
+  ENTRY_UNDECODABLE,
+  isRasterTooLargeError,
+  terminalEntryErrorCode,
+} from "./lib/extractRejections";
 import { getFunctionName } from "convex/server";
 import type { ActionCtx } from "./_generated/server";
 import {
@@ -361,6 +366,39 @@ describe("NEO-446: the pixel-ceiling 413 round-trips through the real adapter", 
       callProcessEntryFast(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }),
     );
     expect(isRasterTooLargeError(String((err as Error).message))).toBe(false);
+  });
+});
+
+describe("NEO-484: the not-an-image 422 round-trips through the real adapter", () => {
+  // The service's body (services/preprocess/app/main.py) is { error_code, detail }.
+  const body = { error_code: "ENTRY_UNDECODABLE", detail: "cannot identify image file" };
+
+  test("the constant is the code the service sends", () => {
+    expect(ENTRY_UNDECODABLE).toBe(body.error_code);
+  });
+
+  test.each([
+    ["fast", callProcessEntryFast],
+    ["heavy", callProcessEntryHeavy],
+  ] as const)("the %s /process-entry error is terminal and reads as ENTRY_UNDECODABLE", async (_tier, call) => {
+    stubFetch(async () => errorResponse(422, body));
+    const err = await captureThrow(() => call(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }));
+    expect(isNonRetryableError(err)).toBe(true);
+    const message = String((err as Error).message);
+    expect(parsePreprocessErrorCode(message)).toBe(ENTRY_UNDECODABLE);
+    expect(terminalEntryErrorCode(message)).toBe(ENTRY_UNDECODABLE);
+    // As the workpool hands it to the hook: prefixed by the runtime, or enveloped.
+    expect(terminalEntryErrorCode(`Uncaught Error: ${message}`)).toBe(ENTRY_UNDECODABLE);
+    expect(
+      terminalEntryErrorCode(JSON.stringify({ __convexWorkpoolNonRetryable: true, message })),
+    ).toBe(ENTRY_UNDECODABLE);
+    expect(isRasterTooLargeError(message)).toBe(false);
+  });
+
+  test("a different 422 from the same adapter is not read as not-an-image", async () => {
+    stubFetch(async () => errorResponse(422, { error_code: "ZIP_REJECTED" }));
+    const err = await captureThrow(() => callExtract(stubCtx(), { jobId: "j", userId: "u" }));
+    expect(terminalEntryErrorCode(String((err as Error).message))).toBeUndefined();
   });
 });
 

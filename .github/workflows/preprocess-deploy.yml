@@ -58,6 +58,12 @@ env:
   PROD_HEAVY_MAX_INSTANCES: 12
   DEV_FAST_MAX_INSTANCES: 3
   PROD_FAST_MAX_INSTANCES: 20
+  # NEO-484: the dev result-cache bucket (Terraform output, dev only), read
+  # from a repo variable so its name stays out of this file. The dev lanes set
+  # it on every revision (a preview deploy removes it from the service
+  # template, and deploys merge env from the template); unset, the dev lanes
+  # leave it off and warn.
+  DEV_CACHE_BUCKET: ${{ vars.PREPROCESS_DEV_CACHE_BUCKET }}
 
 jobs:
   test:
@@ -148,9 +154,14 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          docker build -t "$DEV_IMAGE:$SHA" -t "$DEV_IMAGE:latest" .
+          # NEO-484: one plain image manifest per push, not an OCI index +
+          # attestation (see .github/scripts/image-push-report.sh).
+          docker build --provenance=false --sbom=false \
+            --label "org.opencontainers.image.revision=$SHA" \
+            -t "$DEV_IMAGE:$SHA" -t "$DEV_IMAGE:latest" .
           docker push "$DEV_IMAGE:$SHA"
           docker push "$DEV_IMAGE:latest"
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "$DEV_IMAGE:$SHA"
 
       # The prod steps below are guarded on `push` so a validation
       # `workflow_dispatch` can exercise the dev build without ever writing to
@@ -178,6 +189,7 @@ jobs:
           docker tag "$DEV_IMAGE:$SHA" "$PROD_IMAGE:latest"
           docker push "$PROD_IMAGE:$SHA"
           docker push "$PROD_IMAGE:latest"
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "$PROD_IMAGE:$SHA"
 
   deploy-dev:
     name: Deploy dev (no-traffic, sha tag)
@@ -198,6 +210,13 @@ jobs:
       tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
       prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
     steps:
+      # First, before auth: checkout cleans the workspace, which would delete
+      # the credentials file the auth action writes there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
@@ -226,9 +245,11 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder-dev/neonbinder-preprocess:${{ github.sha }}
           project_id: neonbinder-dev
-          # env_vars is REPLACE-semantics — every plain var terraform sets on
-          # the service must be repeated here or the deploy drops it (see
-          # preprocess.yml's deploy-preview for the same note).
+          # env_vars MERGES (--update-env-vars): listed vars are set and every
+          # other var on the service template carries over, including one a
+          # preview left (see preprocess.yml's deploy-preview). So this lane
+          # removes PREVIEW_SHA and sets PREPROCESS_DEV_CACHE_BUCKET (NEO-484
+          # G2) explicitly, and asserts both after the deploy.
           # GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the dev
           # placeholder-uploads bucket — must match
           # apps/web/convex/adapters/placeholderUploads.ts's Convex-side env
@@ -239,10 +260,13 @@ jobs:
             ENVIRONMENT=dev
             GOOGLE_CLOUD_PROJECT=neonbinder-dev
             GCS_PLACEHOLDER_BUCKET=neonbinder-placeholder-uploads-neonbinder-dev
+            ${{ env.DEV_CACHE_BUCKET && format('PREPROCESS_DEV_CACHE_BUCKET={0}', env.DEV_CACHE_BUCKET) || '' }}
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
-          flags: "--max-instances=${{ env.DEV_HEAVY_MAX_INSTANCES }} --no-cpu-boost"
+          # NEO-484: gen2 matches terraform's template annotation. No probe
+          # flags: the template's startup probe carries over.
+          flags: "--max-instances=${{ env.DEV_HEAVY_MAX_INSTANCES }} --no-cpu-boost --execution-environment=gen2 --remove-env-vars=PREVIEW_SHA"
 
       - id: capture-new
         name: Capture new dev revision + tagged URL
@@ -262,6 +286,22 @@ jobs:
           fi
           echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
           echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+      # NEO-484 G5: assert what landed on the new revision. This job has no
+      # checkout, so fetch only the check script.
+      - name: Assert the new revision's env
+        env:
+          NEW_REVISION: ${{ steps.capture-new.outputs.new_revision }}
+        run: |
+          set -euo pipefail
+          args=(--absent PREVIEW_SHA --exec-env gen2)
+          if [ -n "$DEV_CACHE_BUCKET" ]; then
+            args+=(--equals "PREPROCESS_DEV_CACHE_BUCKET=$DEV_CACHE_BUCKET")
+          else
+            echo "::warning::repo variable PREPROCESS_DEV_CACHE_BUCKET is unset; the dev result cache stays off on this revision unless the template still carries it."
+          fi
+          bash .github/scripts/preprocess-revision-check.sh env \
+            --project "$DEV_PROJECT" --service "$SERVICE" --revision "$NEW_REVISION" "${args[@]}"
 
   dev-smoke:
     name: Smoke dev (tagged URL)
@@ -339,6 +379,15 @@ jobs:
           SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/smoke -v
 
+      # NEO-484 G5: a tagged sha- host must report the dev cache off (G3).
+      - name: Assert /health reports the dev cache off on the tagged URL
+        env:
+          TAGGED_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/preprocess-revision-check.sh" health \
+            --url "$TAGGED_URL" --expect-prefix "off:"
+
   dev-promote:
     name: Promote dev to 100%
     needs: [build-push, deploy-dev, dev-smoke]
@@ -355,6 +404,13 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     steps:
+      # First, before auth: checkout cleans the workspace, which would delete
+      # the credentials file the auth action writes there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
@@ -377,6 +433,40 @@ jobs:
             --region="$REGION" --project="$DEV_PROJECT" \
             --to-revisions="$NEW_REVISION=100" \
             --remove-tags="$TAG"
+
+      # NEO-484 G5: after the promote the base host should report the dev
+      # cache on. Warning only: the cache is a dev cost saving, never a
+      # correctness gate, and nothing here can be undone by failing.
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
+      - name: Warn unless the dev base reports the dev cache on
+        env:
+          BASE_URL: ${{ steps.base-url.outputs.base_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          bash .github/scripts/preprocess-revision-check.sh health \
+            --url "$BASE_URL" --expect-prefix "on" --warn-only --max-time 300
 
   # NEO-315: NOTHING reaches prod until BOTH dev lanes are green. deploy-prod
   # (and deploy-prod-fast below) wait on dev-promote AND dev-promote-fast, so
@@ -409,6 +499,13 @@ jobs:
       tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
       prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
     steps:
+      # First, before auth: checkout cleans the workspace, which would delete
+      # the credentials file the auth action writes there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
@@ -433,8 +530,9 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder/neonbinder-preprocess:${{ github.sha }}
           project_id: neonbinder
-          # env_vars is REPLACE-semantics — see the same note on deploy-dev
-          # above. GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the prod
+          # env_vars MERGES — see the same note on deploy-dev above. Prod
+          # removes PREPROCESS_DEV_CACHE_BUCKET (NEO-484 G2) so no template
+          # value can ever carry it here. GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the prod
           # placeholder-uploads bucket, matching
           # apps/web/convex/adapters/placeholderUploads.ts and terraform's
           # google_storage_bucket.placeholder_uploads naming.
@@ -445,7 +543,8 @@ jobs:
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
-          flags: "--max-instances=${{ env.PROD_HEAVY_MAX_INSTANCES }} --no-cpu-boost"
+          # NEO-484: gen2, as on dev.
+          flags: "--max-instances=${{ env.PROD_HEAVY_MAX_INSTANCES }} --no-cpu-boost --execution-environment=gen2 --remove-env-vars=PREPROCESS_DEV_CACHE_BUCKET"
 
       - id: capture-new
         name: Capture new prod revision + tagged URL
@@ -465,6 +564,15 @@ jobs:
           fi
           echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
           echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+      # NEO-484 G5: prod never carries the dev cache variable, and runs gen2.
+      - name: Assert the new revision's env
+        env:
+          NEW_REVISION: ${{ steps.capture-new.outputs.new_revision }}
+        run: |
+          bash .github/scripts/preprocess-revision-check.sh env \
+            --project "$PROD_PROJECT" --service "$SERVICE" --revision "$NEW_REVISION" \
+            --absent PREPROCESS_DEV_CACHE_BUCKET --exec-env gen2
 
   prod-smoke:
     name: Smoke prod (tagged URL)
@@ -537,6 +645,15 @@ jobs:
           SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/smoke -v
 
+      # NEO-484 G5: prod must report the dev cache off.
+      - name: Assert /health reports the dev cache off
+        env:
+          TAGGED_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/preprocess-revision-check.sh" health \
+            --url "$TAGGED_URL" --expect-prefix "off:"
+
   prod-promote:
     name: Promote prod to 100%
     needs: [build-push, deploy-prod, prod-smoke]
@@ -605,12 +722,13 @@ jobs:
   #     PREPROCESS_ROLE — pointed at the fast service's smaller, classical-CV-
   #     sized container that would be slow at best and OOM at worst.
   #
-  # No env_vars input on any deploy step here: terraform owns every var on
-  # this service (PREPROCESS_ROLE=fast, ENVIRONMENT, GOOGLE_CLOUD_PROJECT, the
-  # two secret-backed vars). Omitting the input entirely means the action
-  # never passes --set-env-vars, so gcloud leaves the existing values
-  # untouched — unlike env_vars' REPLACE semantics on the heavy service above,
-  # which must repeat every var to avoid dropping one.
+  # Env: terraform owns every var on this service (PREPROCESS_ROLE=fast,
+  # ENVIRONMENT, GOOGLE_CLOUD_PROJECT, the two secret-backed vars), and every
+  # deploy MERGES env from the service template (the action passes
+  # --update-env-vars), so those carry over without being repeated. The same
+  # merge carries a preview's leftovers, so the dev lane sets the dev cache
+  # bucket and removes PREVIEW_SHA, the prod lane removes the bucket (NEO-484),
+  # and each asserts the result after the deploy.
   # ---------------------------------------------------------------------------
 
   deploy-dev-fast:
@@ -633,6 +751,13 @@ jobs:
       tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
       prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
     steps:
+      # First, before auth: checkout cleans the workspace, which would delete
+      # the credentials file the auth action writes there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
@@ -671,10 +796,13 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder-dev/neonbinder-preprocess:${{ github.sha }}
           project_id: neonbinder-dev
+          env_vars: |
+            ${{ env.DEV_CACHE_BUCKET && format('PREPROCESS_DEV_CACHE_BUCKET={0}', env.DEV_CACHE_BUCKET) || '' }}
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
-          flags: "--max-instances=${{ env.DEV_FAST_MAX_INSTANCES }}"
+          # NEO-484: gen2 (S0b passed on n=10).
+          flags: "--max-instances=${{ env.DEV_FAST_MAX_INSTANCES }} --execution-environment=gen2 --remove-env-vars=PREVIEW_SHA"
 
       - id: capture-new
         name: Capture new dev fast revision + tagged URL
@@ -695,6 +823,23 @@ jobs:
           fi
           echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
           echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+      # NEO-484 G5: assert what landed on the new revision. This job has no
+      # checkout, so fetch only the check script.
+      - name: Assert the new revision's env
+        if: steps.guard.outputs.exists == 'true'
+        env:
+          NEW_REVISION: ${{ steps.capture-new.outputs.new_revision }}
+        run: |
+          set -euo pipefail
+          args=(--absent PREVIEW_SHA --exec-env gen2)
+          if [ -n "$DEV_CACHE_BUCKET" ]; then
+            args+=(--equals "PREPROCESS_DEV_CACHE_BUCKET=$DEV_CACHE_BUCKET")
+          else
+            echo "::warning::repo variable PREPROCESS_DEV_CACHE_BUCKET is unset; the dev result cache stays off on this revision unless the template still carries it."
+          fi
+          bash .github/scripts/preprocess-revision-check.sh env \
+            --project "$DEV_PROJECT" --service "$FAST_SERVICE" --revision "$NEW_REVISION" "${args[@]}"
 
   dev-smoke-fast:
     name: Ping dev fast service (tagged URL)
@@ -778,7 +923,8 @@ jobs:
             "$TAGGED_URL/health")
           BODY=$(cat /tmp/health.json 2>/dev/null || true)
           echo "status=$STATUS body=$BODY"
-          if [ "$STATUS" = "200" ] && [ "$BODY" = '{"status":"ok"}' ]; then
+          # NEO-484: /health gained dev_cache; match the status field only.
+          if [ "$STATUS" = "200" ] && jq -e '.status == "ok"' /tmp/health.json >/dev/null 2>&1; then
             echo "passed=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::fast-service /health ping failed (status=$STATUS body=$BODY) — not blocking the deploy."
@@ -811,6 +957,16 @@ jobs:
           export SMOKE_INTERNAL_KEY="$KEY"
           pytest tests/smoke -m fast_safe -v
           echo "passed=true" >> "$GITHUB_OUTPUT"
+
+      # NEO-484 G5: a tagged sha- host must report the dev cache off. Fails
+      # the job (it is already blocking), never a silent pass.
+      - name: Assert /health reports the dev cache off on the tagged URL
+        env:
+          TAGGED_URL: ${{ needs.deploy-dev-fast.outputs.tagged_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          bash .github/scripts/preprocess-revision-check.sh health \
+            --url "$TAGGED_URL" --expect-prefix "off:"
 
       - id: verdict
         name: Combine ping + functional smoke
@@ -849,6 +1005,13 @@ jobs:
       run:
         working-directory: ${{ github.workspace }}
     steps:
+      # First, before auth: checkout cleans the workspace, which would delete
+      # the credentials file the auth action writes there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
@@ -866,6 +1029,40 @@ jobs:
             --region="$REGION" --project="$DEV_PROJECT" \
             --to-revisions="$NEW_REVISION=100" \
             --remove-tags="$TAG"
+
+      # NEO-484 G5: after the promote the base host should report the dev
+      # cache on. Warning only: the cache is a dev cost saving, never a
+      # correctness gate, and nothing here can be undone by failing.
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
+      - name: Warn unless the dev base reports the dev cache on
+        env:
+          BASE_URL: ${{ steps.base-url.outputs.base_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          bash .github/scripts/preprocess-revision-check.sh health \
+            --url "$BASE_URL" --expect-prefix "on" --warn-only --max-time 120
 
   deploy-prod-fast:
     name: Deploy prod fast service (no-traffic, sha tag) if it exists
@@ -891,6 +1088,13 @@ jobs:
       tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
       prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
     steps:
+      # First, before auth: checkout cleans the workspace, which would delete
+      # the credentials file the auth action writes there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
@@ -932,7 +1136,8 @@ jobs:
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
-          flags: "--max-instances=${{ env.PROD_FAST_MAX_INSTANCES }}"
+          # NEO-484: gen2, and never the dev cache variable.
+          flags: "--max-instances=${{ env.PROD_FAST_MAX_INSTANCES }} --execution-environment=gen2 --remove-env-vars=PREPROCESS_DEV_CACHE_BUCKET"
 
       - id: capture-new
         name: Capture new prod fast revision + tagged URL
@@ -953,6 +1158,16 @@ jobs:
           fi
           echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
           echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+      # NEO-484 G5: prod never carries the dev cache variable, and runs gen2.
+      - name: Assert the new revision's env
+        if: steps.guard.outputs.exists == 'true'
+        env:
+          NEW_REVISION: ${{ steps.capture-new.outputs.new_revision }}
+        run: |
+          bash .github/scripts/preprocess-revision-check.sh env \
+            --project "$PROD_PROJECT" --service "$FAST_SERVICE" --revision "$NEW_REVISION" \
+            --absent PREPROCESS_DEV_CACHE_BUCKET --exec-env gen2
 
   prod-smoke-fast:
     name: Ping prod fast service (tagged URL)
@@ -1032,7 +1247,8 @@ jobs:
             "$TAGGED_URL/health")
           BODY=$(cat /tmp/health.json 2>/dev/null || true)
           echo "status=$STATUS body=$BODY"
-          if [ "$STATUS" = "200" ] && [ "$BODY" = '{"status":"ok"}' ]; then
+          # NEO-484: /health gained dev_cache; match the status field only.
+          if [ "$STATUS" = "200" ] && jq -e '.status == "ok"' /tmp/health.json >/dev/null 2>&1; then
             echo "passed=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::fast-service /health ping failed (status=$STATUS body=$BODY) — not blocking the deploy."
@@ -1065,6 +1281,16 @@ jobs:
           export SMOKE_INTERNAL_KEY="$KEY"
           pytest tests/smoke -m fast_safe -v
           echo "passed=true" >> "$GITHUB_OUTPUT"
+
+      # NEO-484 G5: a tagged sha- host must report the dev cache off. Fails
+      # the job (it is already blocking), never a silent pass.
+      - name: Assert /health reports the dev cache off on the tagged URL
+        env:
+          TAGGED_URL: ${{ needs.deploy-prod-fast.outputs.tagged_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          bash .github/scripts/preprocess-revision-check.sh health \
+            --url "$TAGGED_URL" --expect-prefix "off:"
 
       - id: verdict
         name: Combine ping + functional smoke

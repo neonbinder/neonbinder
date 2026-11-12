@@ -1,10 +1,11 @@
 """Unit tests for app.cropper.tiered — the ported NEO-161 tiered pipeline.
 
 Everything runs on small synthetic numpy-drawn scenes. The BiRefNet stage
-is always faked (`tiered.birefnet_mask` stubbed, or `rembg.remove` /
-`rembg.new_session` monkeypatched) — unit tests must never download model
-weights or touch the network; `tests/unit/conftest.py` enforces that by
-refusing real session creation.
+is always faked (`tiered.birefnet_mask` stubbed, or
+`app.cropper.birefnet.predict_alpha` monkeypatched) — unit tests must never
+load model weights or touch the network; `tests/unit/conftest.py` enforces that
+by refusing real session creation. The dev cache (NEO-484 B) runs against the
+in-memory GCS fake from `test_devcache_store`.
 
 Scene conventions: BGR numpy canvases, mid-gray background, a saturated
 card fill so the LAB background-distance mask separates cleanly. A
@@ -16,28 +17,39 @@ work→full mapping.
 from __future__ import annotations
 
 import io
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 from PIL import Image, ImageOps
 
-from app.cropper import tiered
+from app.cropper import birefnet, tiered
 from app.cropper.tiered import (
     CARD_ASPECT,
     PASS_SCORE,
     _bg_distance_mask,
     _edge_mask,
-    _get_session,
     analyze,
     birefnet_mask,
     components,
     frame_echo,
     line_fit_quad,
+    pad_for_birefnet,
     passes,
     should_identity,
     tiered_crop,
     warp_rect_card,
+)
+from app.devcache import store
+from app.timing import Timings, bound
+from tests.unit.test_devcache_store import (
+    RefusingClient,
+    cache_on,
+    install_cache,
 )
 
 BG = (120, 120, 120)  # BGR mid-gray background
@@ -592,80 +604,249 @@ class TestBirefnetTiers:
         assert len(calls) == 1
 
 
-# ── BiRefNet plumbing (fake session — no downloads, no network) ─────────────
+# ── BiRefNet plumbing (fake inference — no model, no network) ──────────────
+
+
+def _card_work() -> np.ndarray:
+    work = np.full((200, 300, 3), BG, np.uint8)
+    work[60:140, 100:200] = CARD
+    return work
+
+
+def _card_alpha(padded_rgb: np.ndarray, pad: int) -> np.ndarray:
+    """A padded-frame alpha: the card at 255, a sub-threshold patch at 20."""
+    alpha = np.zeros(padded_rgb.shape[:2], np.uint8)
+    alpha[60 + pad : 140 + pad, 100 + pad : 200 + pad] = 255
+    alpha[pad : pad + 20, pad : pad + 20] = 20
+    return alpha
+
+
+@pytest.fixture
+def fake_predict(monkeypatch):
+    """Replace `birefnet.predict_alpha` with a recording fake; returns the call log."""
+    calls: list[np.ndarray] = []
+    pad = int(tiered.BIREFNET_PAD * 300)
+
+    def _predict(rgb: np.ndarray) -> np.ndarray:
+        calls.append(rgb.copy())
+        return _card_alpha(rgb, pad)
+
+    monkeypatch.setattr(birefnet, "predict_alpha", _predict)
+    return calls
+
+
+@pytest.fixture
+def weights_home(tmp_path, monkeypatch):
+    """A BIREFNET_HOME with the bake's hash file, so cache B can build keys."""
+    monkeypatch.setenv(birefnet.HOME_ENV, str(tmp_path))
+    monkeypatch.delenv(birefnet.MODEL_ENV, raising=False)
+    (tmp_path / "birefnet-general.onnx.sha256").write_text("ab" * 32)
+    return tmp_path
+
+
+def _refuse_inference(monkeypatch) -> None:
+    def _boom(*_a, **_k):
+        raise AssertionError("a cache hit must not reach the model")
+
+    monkeypatch.setattr(birefnet, "predict_alpha", _boom)
+    monkeypatch.setattr(birefnet, "get_session", _boom)
+
+
+class TestPadForBirefnet:
+    def test_pads_every_side_with_the_measured_background_in_rgb(self):
+        bg = (10, 120, 230)  # BGR, asymmetric so a channel swap shows
+        work = np.full((200, 300, 3), bg, np.uint8)
+        work[60:140, 100:200] = CARD
+
+        padded, p = pad_for_birefnet(work)
+
+        assert p == int(tiered.BIREFNET_PAD * 300) == 36
+        assert padded.shape == (200 + 2 * p, 300 + 2 * p, 3)
+        assert padded.dtype == np.uint8
+        rgb_bg = bg[::-1]
+        for y, x in [(0, 0), (0, -1), (-1, 0), (-1, -1), (p - 1, p + 5)]:
+            assert tuple(int(v) for v in padded[y, x]) == rgb_bg
+        inner = padded[p : p + 200, p : p + 300]
+        assert np.array_equal(inner, cv2.cvtColor(work, cv2.COLOR_BGR2RGB))
+
+    def test_padding_is_sized_by_the_long_edge(self):
+        _padded, p = pad_for_birefnet(np.zeros((900, 100, 3), np.uint8))
+        assert p == int(tiered.BIREFNET_PAD * 900)
+
+    def test_does_not_modify_the_input(self):
+        work = _card_work()
+        before = work.copy()
+        pad_for_birefnet(work)
+        assert np.array_equal(work, before)
 
 
 class TestBirefnetMask:
-    def test_pads_with_measured_background_and_thresholds_alpha(self, monkeypatch):
-        work = np.full((200, 300, 3), BG, np.uint8)
-        work[60:140, 100:200] = CARD
-        pad = int(tiered.BIREFNET_PAD * 300)  # 36
-        seen: dict = {}
-
-        def _fake_remove(arr, session=None):
-            seen["shape"] = arr.shape
-            seen["corner"] = tuple(int(v) for v in arr[0, 0])
-            seen["session"] = session
-            rgba = np.zeros((arr.shape[0], arr.shape[1], 4), np.uint8)
-            # The card, in padded coordinates.
-            rgba[60 + pad : 140 + pad, 100 + pad : 200 + pad, 3] = 255
-            # Sub-threshold alpha elsewhere must NOT survive.
-            rgba[pad : pad + 20, pad : pad + 20, 3] = 20
-            return rgba
-
-        fake_session = object()
-        monkeypatch.setattr(tiered, "_session", fake_session)
-        monkeypatch.setattr("rembg.remove", _fake_remove)
+    def test_feeds_the_padded_rgb_and_thresholds_the_alpha(self, fake_predict):
+        work = _card_work()
 
         mask = birefnet_mask(work)
 
-        assert seen["shape"] == (200 + 2 * pad, 300 + 2 * pad, 3)
-        # BORDER_CONSTANT padding uses the measured background color (RGB
-        # order after the BGR→RGB conversion; gray is symmetric anyway).
-        assert seen["corner"] == BG
-        assert seen["session"] is fake_session
+        (fed,) = fake_predict
+        assert np.array_equal(fed, pad_for_birefnet(work)[0])
         assert mask.shape == (200, 300)
+        assert mask.dtype == np.uint8
         assert mask[100, 150] == 255  # inside the card
-        assert mask[10, 10] == 0  # alpha 20 ≤ 25 → background
+        assert mask[10, 10] == 0  # alpha 20 <= 25 → background
         assert mask[190, 290] == 0
 
-    def test_get_session_caches_and_reads_the_model_env(self, monkeypatch):
-        created: list[str] = []
-        sentinel = object()
+    def test_inference_is_booked_to_birefnet_ms(self, fake_predict, monkeypatch):
+        def _slow(rgb):
+            import time
 
-        def _fake_new_session(model_name, **_kwargs):
-            created.append(model_name)
-            return sentinel
+            time.sleep(0.01)
+            return np.zeros(rgb.shape[:2], np.uint8)
 
-        monkeypatch.setattr("rembg.new_session", _fake_new_session)
-        monkeypatch.setenv("REMBG_MODEL", "birefnet-general-lite")
+        monkeypatch.setattr(birefnet, "predict_alpha", _slow)
+        t = Timings()
+        with bound(t):
+            birefnet_mask(_card_work())
+        assert t.birefnet_ms >= 10
 
-        assert _get_session() is sentinel
-        assert _get_session() is sentinel
-        assert created == ["birefnet-general-lite"]
+    def test_off_by_default_never_touches_storage(self, fake_predict, weights_home, monkeypatch):
+        install_cache(monkeypatch, RefusingClient())
+        birefnet_mask(_card_work())
+        birefnet_mask(_card_work())
+        assert len(fake_predict) == 2
 
-    def test_get_session_rejects_models_outside_the_allowlist(self, monkeypatch):
-        """rembg ships session classes that POST the image to third-party
-        APIs (e.g. "withoutbg") — an env typo must fail loudly, never
-        select one. The allowlist check runs before any session import."""
-        monkeypatch.setenv("REMBG_MODEL", "withoutbg")
+    def test_miss_stores_then_hit_skips_inference_with_the_same_mask(
+        self, fake_predict, weights_home, monkeypatch
+    ):
+        fake = install_cache(monkeypatch)
+        work = _card_work()
+        with cache_on():
+            first = birefnet_mask(work)
+        assert len(fake_predict) == 1
+        assert [n.split("/")[0] for n in fake.objects()] == ["birefnet"]
 
-        with pytest.raises(ValueError, match="not allowed"):
-            _get_session()
+        _refuse_inference(monkeypatch)
+        t = Timings()
+        with bound(t), cache_on():
+            second = birefnet_mask(work)
 
-    def test_get_session_defaults_to_birefnet_general(self, monkeypatch):
-        created: list[str] = []
-        monkeypatch.setattr(
-            "rembg.new_session", lambda name, **_kw: created.append(name) or object()
+        assert np.array_equal(first, second)
+        assert t.birefnet_ms == 0.0
+
+    def test_the_cached_value_is_the_whole_padded_alpha(
+        self, fake_predict, weights_home, monkeypatch
+    ):
+        from app.devcache import birefnet as db
+
+        fake = install_cache(monkeypatch)
+        work = _card_work()
+        with cache_on():
+            birefnet_mask(work)
+        padded, p = pad_for_birefnet(work)
+        ((_name, (data, _gen)),) = fake.objects().items()
+        cached = db.decode_alpha(store.decode(data), padded.shape[:2])
+        assert np.array_equal(cached, _card_alpha(padded, p))
+
+    def test_post_processing_still_runs_on_a_hit(self, fake_predict, weights_home, monkeypatch):
+        install_cache(monkeypatch)
+        work = _card_work()
+        with cache_on():
+            birefnet_mask(work)
+        _refuse_inference(monkeypatch)
+
+        # The threshold is applied after the cache: lowering it below the
+        # planted sub-threshold patch must show up on a hit.
+        monkeypatch.setattr(tiered, "BIREFNET_ALPHA_THRESHOLD", 10)
+        with cache_on():
+            mask = birefnet_mask(work)
+        assert mask[10, 10] == 255
+
+        # And the close: with a 1x1 element nothing is closed differently on
+        # this mask, but the call must still happen on a hit.
+        closes: list[int] = []
+        real_morph = cv2.morphologyEx
+
+        def _spy(src, op, kernel, *a, **k):
+            closes.append(op)
+            return real_morph(src, op, kernel, *a, **k)
+
+        monkeypatch.setattr(tiered.cv2, "morphologyEx", _spy)
+        with cache_on():
+            birefnet_mask(work)
+        assert closes == [cv2.MORPH_CLOSE]
+
+    def test_a_different_work_frame_misses(self, fake_predict, weights_home, monkeypatch):
+        install_cache(monkeypatch)
+        work = _card_work()
+        other = work.copy()
+        other[0, 0] = (0, 0, 0)
+        with cache_on():
+            birefnet_mask(work)
+            birefnet_mask(other)
+        assert len(fake_predict) == 2
+
+    def test_no_weights_hash_runs_live_every_time(self, fake_predict, weights_home, monkeypatch):
+        (weights_home / "birefnet-general.onnx.sha256").unlink()
+        install_cache(monkeypatch, RefusingClient())
+        with cache_on():
+            birefnet_mask(_card_work())
+            birefnet_mask(_card_work())
+        assert len(fake_predict) == 2
+
+    @pytest.mark.parametrize("failure", ["read", "write", "corrupt"])
+    def test_store_failures_fall_back_to_live(
+        self, fake_predict, weights_home, monkeypatch, failure
+    ):
+        from google.api_core import exceptions as gexc
+
+        from app.devcache import birefnet as db
+
+        fake = install_cache(monkeypatch)
+        work = _card_work()
+        if failure == "read":
+            fake.read_error = gexc.GatewayTimeout("slow")
+        elif failure == "write":
+            fake.write_error = gexc.Forbidden("no")
+        else:
+            fake.seed(f"birefnet/{db.cache_key(pad_for_birefnet(work)[0])}", b"junk")
+        with cache_on():
+            mask = birefnet_mask(work)
+        assert len(fake_predict) == 1
+        assert mask[100, 150] == 255
+
+    def test_a_hit_never_imports_onnxruntime(self, weights_home):
+        """In a fresh interpreter: seed the cache, hit it, and check sys.modules."""
+        code = f"""
+import sys
+import numpy as np
+from app.cropper import birefnet, tiered
+from app.devcache import birefnet as db, policy, store
+from tests.unit.test_devcache_store import BUCKET, FakeCacheClient
+
+def boom(*a, **k):
+    raise AssertionError("hit reached the model")
+
+birefnet.predict_alpha = boom
+birefnet.get_session = boom
+birefnet._new_inference_session = boom
+client = FakeCacheClient()
+store._stores[BUCKET] = store.CacheStore(BUCKET, client=client)
+work = np.full((200, 300, 3), {BG!r}, np.uint8)
+work[60:140, 100:200] = {CARD!r}
+padded, p = tiered.pad_for_birefnet(work)
+alpha = np.zeros(padded.shape[:2], np.uint8)
+alpha[60 + p : 140 + p, 100 + p : 200 + p] = 255
+client.seed("birefnet/" + db.cache_key(padded), store.encode(db.encode_alpha(alpha)))
+on = policy.CachePolicy(True, policy.MODE_ON, BUCKET)
+with policy.bound(on):
+    mask = tiered.birefnet_mask(work)
+assert mask[100, 150] == 255
+print("onnxruntime" in sys.modules, "rembg" in sys.modules)
+"""
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).resolve().parents[2],
+            env={**os.environ, birefnet.HOME_ENV: str(weights_home)},
+            capture_output=True,
+            text=True,
         )
-        monkeypatch.delenv("REMBG_MODEL", raising=False)
-
-        _get_session()
-
-        assert created == ["birefnet-general"]
-
-    def test_unit_suite_refuses_real_session_creation(self):
-        # The conftest guard: anything reaching the real loader fails loudly
-        # instead of downloading ~1GB of weights in CI.
-        with pytest.raises(AssertionError, match="must not create a real rembg session"):
-            _get_session()
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == "False False"

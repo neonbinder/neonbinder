@@ -1956,11 +1956,40 @@ describe("NEO-446: rejected summary on the job", () => {
     const a = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
     const b = await seedImage(t, JOB_A, 1, USER_A.subject, "processing");
     await t.run(async (ctx) =>
-      recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId: a }, { kind: "failed", error: "preprocess ENTRY_UNDECODABLE (HTTP 422): bad" }),
+      recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId: a }, { kind: "failed", error: "preprocess HTTP 502: x" }),
     );
     await t.run(async (ctx) => recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId: b }, { kind: "canceled" }));
     expect((await t.run(async (ctx) => ctx.db.get(a)))?.errorCode).toBe("PROCESS_ENTRY_FAILED");
     expect((await t.run(async (ctx) => ctx.db.get(b)))?.errorCode).toBe("CANCELED");
+  });
+
+  test("NEO-484: a not-an-image failure is recorded as ENTRY_UNDECODABLE", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId }, {
+        kind: "failed",
+        error: "Uncaught Error: preprocess ENTRY_UNDECODABLE (HTTP 422): cannot identify image file",
+      }),
+    );
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("failed");
+    expect(image?.errorCode).toBe("ENTRY_UNDECODABLE");
+    expect((await getJob(t, JOB_A))?.failedImages).toBe(1);
+  });
+
+  test("NEO-484: an unknown preprocess code still falls back to PROCESS_ENTRY_FAILED", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId }, {
+        kind: "failed",
+        error: "Uncaught Error: preprocess ZIP_REJECTED (HTTP 422): bad zip",
+      }),
+    );
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.errorCode).toBe("PROCESS_ENTRY_FAILED");
   });
 });
 

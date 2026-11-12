@@ -162,10 +162,18 @@ jobs:
           # `pr-`, 30d) and `delete-old-untagged` (14d) apply to ALL packages.
           IMAGE: gcr.io/neonbinder-dev/neonbinder-browser-preview
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # cwd = services/browser (job default); Dockerfile.prod + context live here.
+        #
+        # NEO-484: --provenance=false --sbom=false pushes ONE image manifest,
+        # not an OCI index + attestation (see .github/scripts/image-push-report.sh).
         run: |
-          docker build -f Dockerfile.prod -t "$IMAGE:pr-$PR_NUMBER" .
+          set -euo pipefail
+          docker build --provenance=false --sbom=false \
+            --label "org.opencontainers.image.revision=$HEAD_SHA" \
+            -f Dockerfile.prod -t "$IMAGE:pr-$PR_NUMBER" .
           docker push "$IMAGE:pr-$PR_NUMBER"
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "$IMAGE:pr-$PR_NUMBER"
 
       - name: Deploy tagged no-traffic preview to dev Cloud Run
         uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
