@@ -31,14 +31,24 @@ import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects
 // before any read of its stored credentials.
 import { isPlatformPaused } from "./marketplacePause";
 import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
 import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from "./collection";
 import { ListingGate } from "./listingGate";
 import { intakePhotoFailureValidator, listingPlatformValidator } from "./schema";
 import { DRAIN_LEASE_MS } from "./listingDrain";
-import { newToken } from "./listingOutbox";
+import { listsAnywhere, newToken } from "./listingOutbox";
 import type { ActionCtx } from "./_generated/server";
+import {
+  applySaleLinesCore,
+  eraOfVariant,
+  recordOrderCore,
+  SALE_ITEMS_PER_APPLY,
+  type ProjectedOrder,
+} from "./listingSales";
+import { TEST_SALE_ORDER_PREFIX } from "./lib/testSeedMarks";
+import { bscConditionFor, type BscEra } from "./lib/bscConditions";
+import { buildListingSku } from "./lib/listingSku";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -1402,5 +1412,176 @@ export const seedMyTestLabelScans = internalMutation({
       scans: scans.length,
       applied: result.applied,
     };
+  },
+});
+
+// ── NEO-500: a BuySportsCards order to pick, for the Pick List spec ────────
+
+/** Lines one seeded order may name, and copies one line may sell. */
+const PICK_SEED_MAX_CARDS = 20;
+const PICK_SEED_MAX_QUANTITY = 10;
+/** Boxes and box copies the seed looks through (a suite account holds a handful). */
+const PICK_SEED_SCAN = 500;
+/** The spec-minted order number: one token, so it is also a safe id suffix. */
+const PICK_SEED_ORDER_NO_RE = /^[A-Za-z0-9_-]{1,40}$/;
+
+/**
+ * NEO-500 — a BuySportsCards order on the CALLER's account, recorded and
+ * applied exactly as the order poll would, for the Pick List spec. Sales
+ * cannot be made on cue (the seller accounts are shared, and a real BSC order
+ * is a real buyer), so this builds the projected order the poll would have
+ * stored and runs the poll's own two steps (`recordOrderCore`,
+ * `applySaleLinesCore`) in this one mutation, skipping only the poll gate
+ * (whether the account's listing state polls sales).
+ *
+ * The order: status READY_TO_SHIP, `orderId` = `TEST_SALE_ORDER_PREFIX` +
+ * `orderNo` (so the poll never re-reads it from BSC), one line per
+ * `cards` entry over the caller's box named `boxName`: the card in that box
+ * with that card number (exactly one, or it refuses), its BSC card id from the
+ * card's own `platformData.bsc.ref`, the BSC condition the box copy's NB
+ * condition lists as, and the SKU NB would have pushed for (card, condition,
+ * box). `badLine` adds one line whose SKU is not NB's ("Can't find it").
+ * Seeding an `orderNo` that exists records the stored order again as it is
+ * (a retried hop applies nothing twice and does not look at the box again);
+ * `ship` re-records it as SHIPPED, which takes it off the Pick List.
+ *
+ * Safety, in the same shape as the other seeds here:
+ *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
+ *   - only the CALLER's rows: their box, their copies, their sale (no owner
+ *     argument to spoof);
+ *   - calls no marketplace, and refuses outright while the caller pushes
+ *     counts to any platform (`listsAnywhere`): the suite's accounts carry the
+ *     test marker, so the copies it lowers queue nothing for a drain.
+ */
+export const seedMyTestPickOrder = mutation({
+  args: {
+    orderNo: v.string(),
+    boxName: v.optional(v.string()),
+    cards: v.optional(v.array(v.object({ cardNumber: v.string(), quantity: v.number() }))),
+    badLine: v.optional(v.boolean()),
+    ship: v.optional(v.boolean()),
+  },
+  returns: v.object({ saleId: v.id("marketplaceSales"), lines: v.number(), applied: v.number() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The pick-order seed is not enabled on this deployment");
+    }
+    const ownerId = await getCurrentUserId(ctx);
+    if (!ownerId) throw new Error("Not authenticated");
+    if (!PICK_SEED_ORDER_NO_RE.test(args.orderNo)) throw new Error("orderNo must be one token (letters, digits, - or _)");
+    if (await listsAnywhere(ctx, ownerId)) {
+      throw new Error("The pick-order seed refuses an account that pushes to a marketplace");
+    }
+    const orderId = `${TEST_SALE_ORDER_PREFIX}${args.orderNo}`;
+    const existing = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_platform_order", (q) => q.eq("ownerId", ownerId).eq("platform", "bsc").eq("orderId", orderId))
+      .unique();
+
+    let order: ProjectedOrder;
+    if (args.ship && !existing) throw new Error(`No seeded order ${args.orderNo} to ship`);
+    if (existing) {
+      // Seeded before: record the stored order again (a retried hop, or
+      // `ship`), never re-resolved from the box, whose copies it took.
+      order = {
+        orderId,
+        orderNo: existing.orderNo,
+        orderDate: existing.orderDate,
+        status: args.ship ? "SHIPPED" : existing.status,
+        totals: existing.totals,
+        items: existing.items.map((item) => ({
+          platformCardId: item.platformCardId,
+          condition: item.condition,
+          quantity: item.quantity,
+          priceCents: item.priceCents,
+          ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
+          graded: false,
+        })),
+      };
+    } else {
+      const cards = args.cards ?? [];
+      if (cards.length === 0 || cards.length > PICK_SEED_MAX_CARDS) {
+        throw new Error(`cards must name 1-${PICK_SEED_MAX_CARDS} cards`);
+      }
+      const boxName = (args.boxName ?? "").trim();
+      const boxes = (
+        await ctx.db
+          .query("collectionContainers")
+          .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", undefined))
+          .take(PICK_SEED_SCAN)
+      ).filter((c) => c.kind === "box" && c.name.trim() === boxName);
+      if (boxes.length !== 1) throw new Error(`Expected exactly one box named "${boxName}", found ${boxes.length}`);
+      const box = boxes[0];
+      const copies = await ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", box._id))
+        .take(PICK_SEED_SCAN);
+      const eras = new Map<string, BscEra | null>();
+      const items: ProjectedOrder["items"] = [];
+      for (const want of cards) {
+        if (!Number.isInteger(want.quantity) || want.quantity < 1 || want.quantity > PICK_SEED_MAX_QUANTITY) {
+          throw new Error(`quantity must be 1-${PICK_SEED_MAX_QUANTITY}`);
+        }
+        // The box's catalog cards with this number: exactly one.
+        const matches = new Map<string, Doc<"cardChecklist">>();
+        for (const copy of copies) {
+          const cardId = ctx.db.normalizeId("cardChecklist", copy.cardId);
+          if (!cardId || matches.has(cardId)) continue;
+          const card = await ctx.db.get(cardId);
+          if (card && card.cardNumber === want.cardNumber) matches.set(cardId, card);
+        }
+        if (matches.size !== 1) {
+          throw new Error(`Expected one card #${want.cardNumber} in "${boxName}", found ${matches.size}`);
+        }
+        const card = [...matches.values()][0];
+        const ref = card.platformData?.bsc?.ref;
+        if (!ref) throw new Error(`Card #${want.cardNumber} has no BuySportsCards id`);
+        const copy = copies.find((c) => c.cardId === card._id && c.grading === undefined && c.condition !== undefined);
+        if (!copy?.condition) throw new Error(`Card #${want.cardNumber} has no raw copy with a condition in "${boxName}"`);
+        const era = await eraOfVariant(ctx, card.selectorOptionId, eras);
+        if (era === null) throw new Error(`Card #${want.cardNumber} has no year to read its BSC era from`);
+        const bscCondition = bscConditionFor(copy.condition, era);
+        items.push({
+          platformCardId: ref,
+          condition: bscCondition,
+          quantity: want.quantity,
+          priceCents: 100,
+          sellerSku: buildListingSku({ cardId: card._id, bscCondition, boxId: box._id }),
+          graded: false,
+        });
+      }
+      if (args.badLine) {
+        items.push({
+          platformCardId: "nb-test-unknown-card",
+          condition: "near_mint",
+          quantity: 1,
+          priceCents: 100,
+          sellerSku: "nb-test-not-an-nb-sku",
+          graded: false,
+        });
+      }
+      const subtotalCents = items.reduce((sum, item) => sum + item.quantity * item.priceCents, 0);
+      order = {
+        orderId,
+        orderNo: args.orderNo,
+        orderDate: Date.now(),
+        status: "READY_TO_SHIP",
+        totals: { subtotalCents, totalCents: subtotalCents },
+        items,
+      };
+    }
+
+    const recorded = await recordOrderCore(ctx, { ownerId, platform: "bsc", order }, { skipPollGate: true });
+    if (recorded.saleId === null) throw new Error("The order was not recorded");
+    let applied = 0;
+    for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
+      const r = await applySaleLinesCore(
+        ctx,
+        { ownerId, saleId: recorded.saleId, indexes: recorded.toApply.slice(i, i + SALE_ITEMS_PER_APPLY) },
+        { skipPollGate: true },
+      );
+      applied += r.applied;
+    }
+    return { saleId: recorded.saleId, lines: order.items.length, applied };
   },
 });

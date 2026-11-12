@@ -91,9 +91,12 @@ test(
     // Arriving from a side link puts the keyboard on the new page's h1.
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeFocused();
 
-    // The inventory's three tabs, plus the demo's Add cards (NEO-369).
+    // The inventory's three tabs, plus the demo's Add cards (NEO-369) and Pick List (NEO-500).
     const invTabs = page.getByRole("navigation", { name: "Inventory sections" });
-    await expect(invTabs.getByRole("link")).toHaveCount(4);
+    await expect(invTabs.getByRole("link")).toHaveCount(5);
+    for (const name of ["Inventory", "My Boxes", "Checklists", "Add cards", "Pick List"]) {
+      await expect(invTabs.getByRole("link", { name, exact: true })).toBeVisible();
+    }
     await expect(invTabs.getByRole("link", { name: "Inventory", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("navigation", { name: "Collection sections" })).toHaveCount(0);
 
