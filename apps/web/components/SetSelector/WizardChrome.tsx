@@ -1,15 +1,18 @@
 import { useState, type ReactNode } from "react";
 
 /**
- * NEO-335 — the header every "tidy up this set" screen wears: the entity
- * review wizard before a save, and the post-save attention walker after one.
+ * NEO-335 — the header every "tidy up" screen wears: the entity review
+ * wizard before a save, and the post-save attention walker after one.
  *
- * Jason, 2026-10-10: one generic title, each screen type its own subtitle, and
- * ONE "Step x of y" counter that sums every screen still to come. No per-type
- * counts anywhere.
+ * Jason, 2026-10-10: one title, each screen type its own subtitle, and ONE
+ * "Step x of y" counter that sums every screen still to come. No per-type
+ * counts anywhere. NEO-497: the title names the set it is tidying ("Tidy up
+ * 2024 Topps Chrome", `tidyUpTitleFromChain`) instead of "this set". A
+ * trailing "Base" is dropped (Jason, 2026-11-11): the Base checklist reads as
+ * the set itself.
  *
  *   ┌──────────────────────────────────────────────┐
- *   │ Tidy up this set                Step 3 of 12 │
+ *   │ Tidy up 2024 Topps Chrome       Step 3 of 12 │
  *   │ New team         2 more steps: teams for Jim │
  *   ├██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░┤  ← the rail IS the header's edge
  *
@@ -28,7 +31,11 @@ import { useState, type ReactNode } from "react";
  * ## Screen readers
  *
  * - The title is the dialog's name — the host points `aria-labelledby` at
- *   `titleId`.
+ *   `titleId`. A long set name wraps; past three lines it is clamped
+ *   visually, but the heading's text stays whole, so its accessible name is
+ *   the full title (also in its `title` attribute for a sighted hover).
+ *   Below `sm` the counter sits on its own line under the title; from `sm`
+ *   up it keeps a fixed-width column beside it.
  * - "Step x of y" is real text in a `role="status"` region, so it is read
  *   with the header and announced when it moves, as the "N of M reviewed"
  *   line it replaces was. One text node, so an E2E matcher on its visible
@@ -44,7 +51,114 @@ import { useState, type ReactNode } from "react";
  * wizard's footer already lives by.
  */
 
+/** The title while the set's names are still loading, or none is known. */
 export const WIZARD_TITLE = "Tidy up this set";
+
+/**
+ * True when `text` opens with `token` as a whole word, case-folded: "2024
+ * Topps Chrome" opens with "2024", "Unleashed Blue Ice" with "Unleashed",
+ * but "Unleashed2" does not open with "Unleashed". A pure string check on NB's
+ * own names, used only to keep the title from saying a word twice.
+ */
+function startsWithToken(text: string, token: string): boolean {
+  if (token === "") return false;
+  const haystack = text.toLowerCase();
+  const needle = token.toLowerCase();
+  if (!haystack.startsWith(needle)) return false;
+  const next = haystack.charAt(needle.length);
+  return next === "" || /\s/.test(next);
+}
+
+/**
+ * `text` without its last word when that word is `token` as a whole word,
+ * case-folded: "Topps Chrome Base" and "Topps Chrome base" lose it; "Topps
+ * Baseball" and "Base Set Gold" come back unchanged. `text` arrives trimmed.
+ */
+function withoutTrailingToken(text: string, token: string): string {
+  const lastSpace = text.search(/\s\S*$/);
+  const lastWord = text.slice(lastSpace + 1);
+  if (lastWord.toLowerCase() !== token.toLowerCase()) return text;
+  return lastSpace < 0 ? "" : text.slice(0, lastSpace).trimEnd();
+}
+
+/**
+ * NEO-497 — "Tidy up 2026 Donruss Unleashed Blue Ice": the year, the set and
+ * the variant the checklist belongs to, so the operator always knows which
+ * set the dialog is tidying. Each part is skipped when it is missing or
+ * blank, and with none known (the chain still loading) the title stays
+ * `WIZARD_TITLE`. A set whose own name already opens with the year ("2024
+ * Topps Chrome") does not get the year twice. When the joined name ends in
+ * the whole word "Base" (case-folded) that word is dropped (Jason,
+ * 2026-11-11): the Base checklist reads "Tidy up 2026 Donruss Unleashed",
+ * and a name that was only "Base" falls back to `WIZARD_TITLE`. Display only:
+ * nothing reads this string back, and no behaviour keys on it.
+ */
+export function tidyUpTitle({
+  year,
+  setName,
+  variant,
+}: {
+  year?: string | null;
+  setName?: string | null;
+  variant?: string | null;
+}): string {
+  const yearText = year?.trim() ?? "";
+  const setText = setName?.trim() ?? "";
+  const parts = [startsWithToken(setText, yearText) ? "" : yearText, setText, variant?.trim() ?? ""]
+    .filter((part) => part !== "");
+  const name = withoutTrailingToken(parts.join(" "), "Base");
+  return name !== "" ? `Tidy up ${name}` : WIZARD_TITLE;
+}
+
+/** The levels a checklist leaf can sit at below its set. */
+const VARIANT_LEVELS: ReadonlySet<string> = new Set(["variantType", "insert", "parallel"]);
+
+/**
+ * The variant words for a leaf. A `parallel`-level row only ever sits under
+ * an `insert`-level row (NEO-334: sub-variants live under Insert types; a
+ * parallel of base is itself an `insert`-level row under the "Parallel"
+ * type), and on its own "Gold" does not say WHICH insert's Gold. So a
+ * parallel leaf is named after its insert first ("Future Stars Gold"),
+ * unless its own name already opens with the insert's ("Unleashed Blue Ice"
+ * under "Unleashed"). The `variantType` row ("Insert", "Parallel") is never
+ * part of the name.
+ */
+function variantTitle(
+  chain: ReadonlyArray<{ level: string; value: string }>,
+): string | undefined {
+  const leaf = chain.at(-1);
+  if (!leaf || !VARIANT_LEVELS.has(leaf.level)) return undefined;
+  const leafText = leaf.value.trim();
+  if (leaf.level !== "parallel") return leafText;
+  let insertText = "";
+  for (let i = chain.length - 2; i >= 0; i--) {
+    if (chain[i].level === "insert") {
+      insertText = chain[i].value.trim();
+      break;
+    }
+  }
+  if (insertText === "" || startsWithToken(leafText, insertText)) return leafText;
+  return leafText === "" ? insertText : `${insertText} ${leafText}`;
+}
+
+/**
+ * `tidyUpTitle` read off a `getAncestorChain` result, which runs root first
+ * and INCLUDES the leaf itself. The year and set come from their own levels
+ * (the set is the `setName` row, not the manufacturer); the variant is the
+ * leaf's own value (`variantTitle`: a parallel carries its insert's name),
+ * and only when the leaf sits below the set, so a chain that ends at the set
+ * never names it twice. Undefined (loading) gives `WIZARD_TITLE`.
+ */
+export function tidyUpTitleFromChain(
+  chain: ReadonlyArray<{ level: string; value: string }> | null | undefined,
+): string {
+  if (!chain) return WIZARD_TITLE;
+  return tidyUpTitle({
+    year: chain.find((row) => row.level === "year")?.value,
+    setName: chain.find((row) => row.level === "setName")?.value,
+    variant: variantTitle(chain),
+  });
+}
 
 export interface WizardChromeProps {
   /** 1-based step on screen. */
@@ -53,7 +167,7 @@ export interface WizardChromeProps {
   total: number;
   /** The screen type — "New team", "Cards with no team", "Ready to save". */
   subtitle: string;
-  /** Defaults to "Tidy up this set". */
+  /** "Tidy up 2024 Topps Chrome" (`tidyUpTitle`); defaults to `WIZARD_TITLE`. Also the h2's `title` attribute. */
   title?: string;
   /** Id for the title, so the host dialog can be `aria-labelledby` it. */
   titleId?: string;
@@ -99,13 +213,32 @@ export default function WizardChrome({
   return (
     <header className="shrink-0">
       <div className="px-6 pt-4 pb-3">
-        <div className="flex items-baseline justify-between gap-4">
-          <h2 id={titleId} className="min-w-0 text-lg font-semibold text-ink">
+        {/* The title's line count depends on the title alone, so the header
+            never changes height between steps (a11y audit): below `sm` the
+            title has the whole row and the counter drops to its own line;
+            from `sm` up they share the row, and the counter's width is
+            constant (sized for "Step 99 of 99"), so "Step 9" turning into
+            "Step 10" never re-wraps the title. */}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4">
+          {/* A long set name wraps in balanced lines; `wrap-anywhere` breaks
+              a single unbroken word. Past three lines it is clamped VISUALLY
+              only: the text stays whole, so the heading's accessible name
+              (and the dialog's, through `aria-labelledby`) is the full title,
+              and `title` shows it on hover. */}
+          <h2
+            id={titleId}
+            title={title}
+            className="min-w-0 basis-full text-lg font-semibold text-ink text-balance wrap-anywhere line-clamp-3 sm:basis-auto sm:flex-1"
+          >
             {title}
           </h2>
           {/* Always mounted, so the first step is announced as reliably as
-              the rest. Empty while there is no count to give. */}
-          <p role="status" className="shrink-0 text-sm tabular-nums text-ink-2">
+              the rest. Empty while there is no count to give; `min-h-5`
+              keeps its line when it is. */}
+          <p
+            role="status"
+            className="ml-auto min-h-5 shrink-0 whitespace-nowrap text-right text-sm tabular-nums text-ink-2 sm:min-w-[6.5rem]"
+          >
             {total > 0 ? stepCounterText(step, total) : ""}
           </p>
         </div>

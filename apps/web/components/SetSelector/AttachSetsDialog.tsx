@@ -638,7 +638,7 @@ export default function AttachSetsDialog({
                 bscNoSetNote !== null && bscSetSlug === undefined ? null : (
                   <BreadcrumbButton
                     label={`Back to ${shownSetLabel}`}
-                    ariaLabel={`Back to BSC set ${shownSetLabel}`}
+                    ariaLabel={`Back to ${shownSetLabel} (BSC set)`}
                     onClick={backToVariants}
                   />
                 )
@@ -1003,7 +1003,18 @@ function BreadcrumbButton({
   onClick: () => void;
 }) {
   return (
-    <NeonButton variant="secondary" outline size="1" type="button" onClick={onClick} aria-label={ariaLabel}>
+    <NeonButton
+      variant="secondary"
+      outline
+      size="1"
+      type="button"
+      onClick={onClick}
+      aria-label={ariaLabel}
+      // NEO-499 — the label can name a BSC set; a long one wraps inside the
+      // button rather than running out of the pane. `min-h-6 py-1` is the
+      // same 24px on one line.
+      className="h-auto min-h-6 max-w-full py-1 text-left wrap-anywhere"
+    >
       ‹ {label}
     </NeonButton>
   );
