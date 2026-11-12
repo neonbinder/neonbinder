@@ -17,9 +17,13 @@ import {
   copiesLeft,
   filterRows,
   isPulled,
+  listedTitle,
+  listedVariant,
   mergeLines,
   naturalCompare,
+  NOT_IN_BOX_STOP,
   rowFacts,
+  setSections,
   sortRows,
   variantRole,
   type PickRow,
@@ -356,15 +360,94 @@ describe("NEO-509: a sale filed by its listing's words", () => {
     const s = buildSections(two, {}, { sort: null, dir: "asc", groupByOrder: false });
     expect(s.map((x) => (x.kind === "set" ? x.title : x.kind))).toEqual(["2026 Topps", "2026 Topps", "2026 Topps"]);
     expect(s[2].rows[0].card).toBeNull();
+    // Its heading reads apart from NB's two of the same text (an sr-only word); NB's never do.
+    expect(s.map((x) => (x.kind === "set" ? Boolean(x.unmatchedTwin) : null))).toEqual([false, false, true]);
     const other = buildSections([line(card({ number: "1" })), stray(listed({ setName: "Bowman" }))], {}, {
       sort: null,
       dir: "asc",
       groupByOrder: false,
     });
     expect(other.map((x) => (x.kind === "set" ? x.title : x.kind))).toEqual(["2026 Bowman", "2026 Topps"]);
+    // A title no NB divider shares needs no word.
+    expect(other.some((x) => x.kind === "set" && x.unmatchedTwin)).toBe(false);
   });
 
-  it("stays in Can't find it when it says too little, and in the last box stop either way", () => {
+  it("wears NB's sport colour on its own divider when the store resolved its sport, and black only when it did not", () => {
+    const resolved = buildSections([stray(listed({ sportId: "sp-bb", sportCode: "BB", setName: "Bowman" }))], {}, {
+      sort: null,
+      dir: "asc",
+      groupByOrder: false,
+    });
+    expect(resolved[0].kind === "set" && resolved[0].sportCode).toBe("BB");
+    expect(sportHue(resolved[0].kind === "set" ? resolved[0].sportCode : null)).toBe("baseball");
+    // A listing-only sport word is never matched to NB's colour by its name.
+    const word = buildSections([stray(listed({ setName: "Bowman" }))], {}, { sort: null, dir: "asc", groupByOrder: false });
+    expect(sportHue(word[0].kind === "set" ? word[0].sportCode : null)).toBe("other");
+  });
+
+  it("keeps every variant word the listing gives, and shows a role only when its word is one", () => {
+    const facts = (l: ListedCard) => rowFacts(mergeLines([stray(l)])[0]);
+    // Base said Base: the Base chip, and a name it gives kept.
+    expect(facts(listed({ role: "base", variantName: "Photo Variation" }))).toMatchObject({
+      role: "base",
+      variantWord: null,
+      variantName: "Photo Variation",
+    });
+    // A word NB does not file by: shown as that word, never read as Base.
+    expect(facts(listed({ role: undefined, variantWord: "Variation" }))).toMatchObject({ role: null, variantWord: "Variation", variantName: null });
+    // With a name too: both, still no role.
+    expect(facts(listed({ role: undefined, variantWord: "SP", variantName: "Image" }))).toMatchObject({ role: null, variantWord: "SP", variantName: "Image" });
+    // No variant named: no role at all (no "base" default).
+    expect(facts(listed({ role: undefined }))).toMatchObject({ role: null, variantWord: null, variantName: null });
+    // A name that only repeats the role or the word is not written twice.
+    expect(listedVariant(listed({ role: "base", variantName: "Base" }))).toEqual({ word: null, name: null });
+    expect(listedVariant(listed({ role: "insert", variantName: "Inserts" }))).toEqual({ word: null, name: null });
+    expect(listedVariant(listed({ role: undefined, variantWord: "Promo", variantName: "promo" }))).toEqual({ word: "Promo", name: null });
+  });
+
+  it("walks a row with no role after Base and before the parallels and inserts", () => {
+    const s = buildSections(
+      [
+        stray(listed({ cardNumber: "1", role: "insert", variantName: "Throwback" })),
+        stray(listed({ cardNumber: "1", role: "parallel", variantName: "Gold" })),
+        stray(listed({ cardNumber: "1", role: undefined, variantWord: "Variation" })),
+        stray(listed({ cardNumber: "1", role: undefined })),
+        stray(listed({ cardNumber: "1", role: "base" })),
+      ],
+      {},
+      { sort: null, dir: "asc", groupByOrder: false },
+    );
+    expect(s[0].rows.map((r) => [rowFacts(r)?.role, rowFacts(r)?.variantWord ?? rowFacts(r)?.variantName ?? null])).toEqual([
+      ["base", null],
+      [null, null],
+      [null, "Variation"],
+      ["parallel", "Gold"],
+      ["insert", "Throwback"],
+    ]);
+  });
+
+  it("titles a listing as a seller finds it in a box: set, insert or parallel, number, then players", () => {
+    expect(
+      listedTitle({ season: "2021", year: 2021, setName: "Score", players: "Justin Fields", cardNumber: "TB2", role: "insert", variantName: "1991 Throwback" }),
+    ).toBe("2021 Score 1991 Throwback #TB2 · Justin Fields");
+    // Base is not written, and a "Base" name never writes "Base" either.
+    expect(listedTitle({ season: "2024", setName: "Score", players: "Malik Nabers", cardNumber: "302", role: "base", variantName: "Base" })).toBe(
+      "2024 Score #302 · Malik Nabers",
+    );
+    // A word NB does not file by is written; a name that already holds it is written once.
+    expect(listedTitle({ season: "2024", setName: "Score", cardNumber: "302", variantWord: "Variation" })).toBe("2024 Score Variation #302");
+    expect(listedTitle({ season: "2024", setName: "Score", cardNumber: "302", variantWord: "Variation", variantName: "Photo Variation" })).toBe(
+      "2024 Score Photo Variation #302",
+    );
+    expect(listedTitle({ season: "2024", setName: "Score", cardNumber: "302", variantWord: "SP", variantName: "Photo" })).toBe("2024 Score SP Photo #302");
+    // An Insert with no name says Insert; a set already led by its season is not doubled.
+    expect(listedTitle({ season: "2024", setName: "2024 Topps Chrome", cardNumber: "9", role: "insert" })).toBe("2024 Topps Chrome Insert #9");
+    // Only players: just the players. Nothing: empty.
+    expect(listedTitle({ players: "Someone" })).toBe("Someone");
+    expect(listedTitle({})).toBe("");
+  });
+
+  it("stays in Can't find it when it says too little; By the Box walks the described ones as Not in a box, by set, before Can't find it", () => {
     const lines = [
       line(card({ number: "1" }), { spot: { boxId: "b1" } }),
       stray(listed({ cardNumber: undefined })),
@@ -377,9 +460,31 @@ describe("NEO-509: a sale filed by its listing's words", () => {
       ["set", 2],
     ]);
     const stops = boxStops(lines, [{ id: "b1", name: "Box 1" }]);
-    expect(stops.map((x) => [x.box.id, x.rows.length])).toEqual([
-      ["b1", 1],
-      [CANT_FIND_STOP, 3],
+    expect(stops.map((x) => [x.box.id, x.box.name, x.rows.length])).toEqual([
+      ["b1", "Box 1", 1],
+      [NOT_IN_BOX_STOP, "Not in a box", 1],
+      [CANT_FIND_STOP, "Can't find it", 2],
+    ]);
+    expect(stops[1].notInBox).toBe(true);
+    expect(stops[2].cantFind).toBe(true);
+    // Not in a box keeps the list's walking order and its set dividers (joined to NB's set here).
+    expect(setSections(stops[1].rows).map((x) => x.title)).toEqual(["2026 Topps"]);
+    // Only described sales: none of the stops comes up empty.
+    expect(boxStops([stray(listed())], []).map((x) => x.box.id)).toEqual([NOT_IN_BOX_STOP]);
+    expect(boxStops([stray(undefined)], []).map((x) => x.box.id)).toEqual([CANT_FIND_STOP]);
+  });
+
+  it("walks Not in a box by set across several sets, in the list's order", () => {
+    const lines = [
+      line(card({ number: "1" }), { spot: { boxId: "b1" } }),
+      stray(listed({ setName: "Bowman", cardNumber: "7" })),
+      stray(listed({ cardNumber: "9" })),
+      stray(listed({ setName: "Bowman", cardNumber: "2" })),
+    ];
+    const notInBox = boxStops(lines, [{ id: "b1", name: "Box 1" }]).find((x) => x.notInBox)!;
+    expect(setSections(notInBox.rows).map((x) => [x.title, x.rows.map((r) => rowFacts(r)?.cardNumber)])).toEqual([
+      ["2026 Bowman", ["2", "7"]],
+      ["2026 Topps", ["9"]],
     ]);
   });
 
@@ -387,8 +492,14 @@ describe("NEO-509: a sale filed by its listing's words", () => {
     const rows = mergeLines([line(card({ number: "1" })), stray(listed({ role: "insert", variantName: "1991 Throwback" }))]);
     expect(filterRows(rows, { variant: "insert" })).toHaveLength(1);
     expect(filterRows(rows, { text: "throwback" })).toHaveLength(1);
-    expect(filterRows(rows, { text: "unmatched" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "not in nb" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "unmatched" })).toHaveLength(0);
     expect(filterRows(rows, { sport: "baseball", year: "2026" })).toHaveLength(2);
+    // Only not in NB: every sale NB has no card for, described or not.
+    const withStray = mergeLines([line(card({ number: "1" })), stray(listed()), stray(undefined)]);
+    expect(filterRows(withStray, { notInNb: true }).map((r) => r.card)).toEqual([null, null]);
+    // Its own variant word finds it.
+    expect(filterRows(mergeLines([stray(listed({ role: undefined, variantWord: "Variation" }))]), { text: "variation" })).toHaveLength(1);
   });
 
   it("sorts transitively over any mix of cards, joined, own-divider and undescribed sales", () => {
@@ -400,6 +511,9 @@ describe("NEO-509: a sale filed by its listing's words", () => {
       stray(listed({ cardNumber: "2" })),
       stray(listed({ setName: "Bowman", cardNumber: "1" })),
       stray(listed({ setName: "Chrome", cardNumber: "1", role: "parallel", variantName: "Gold" })),
+      stray(listed({ setName: "Chrome", cardNumber: "1", role: undefined, variantWord: "SP" })),
+      stray(listed({ setName: "Chrome", cardNumber: "1", role: undefined })),
+      stray(listed({ setName: "Chrome", cardNumber: "1", role: "base", variantName: "Photo" })),
       stray(listed({ sportName: "football", year: 2024, setName: "Topps", cardNumber: "0" })),
       stray(listed({ sportName: "Hockey", year: 2023, season: "2023-24", setName: "Upper Deck", cardNumber: "9" })),
       stray(undefined),

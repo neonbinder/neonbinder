@@ -205,15 +205,19 @@ describe("the signed-in Pick List store", () => {
 });
 
 describe("NEO-509: a sale's own words for its card", () => {
-  it("titles the line set, players, number, variant; a Base variant unwritten", () => {
+  it("titles the line set, variant, number, then players; a Base variant unwritten", () => {
     const listed = toListedCard(
       { sport: "football", year: "2021", setName: "Score", players: "Justin Fields", cardNo: "TB2", variant: "Insert", variantName: "1991 Throwback" },
       undefined,
     );
-    expect(listedTitle(listed!)).toBe("2021 Score · Justin Fields · #TB2 · 1991 Throwback");
+    expect(listedTitle(listed!)).toBe("2021 Score 1991 Throwback #TB2 · Justin Fields");
     expect(listed).toMatchObject({ sportName: "football", year: 2021, role: "insert", cardNumber: "TB2" });
     expect(listedTitle(toListedCard({ year: "2024", setName: "2024 Topps Chrome", cardNo: "7", variant: "Base" }, undefined)!)).toBe(
-      "2024 Topps Chrome · #7",
+      "2024 Topps Chrome #7",
+    );
+    // A Base line whose name is "Base" never reads "Base" twice, nor at all.
+    expect(listedTitle(toListedCard({ year: "2024", setName: "Score", cardNo: "7", variant: "Base", variantName: "Base" }, undefined)!)).toBe(
+      "2024 Score #7",
     );
   });
 
@@ -225,10 +229,16 @@ describe("NEO-509: a sale's own words for its card", () => {
     expect(unresolved.sportName).toBe("football");
   });
 
-  it("reads an unknown variant word as Base, or an insert when it names one, and keeps the word for the title", () => {
-    expect(toListedCard({ variant: "Promo" }, undefined)).toMatchObject({ role: "base", variantName: "Promo" });
-    expect(toListedCard({ variant: "Short Print", variantName: "Gold" }, undefined)).toMatchObject({ role: "insert", variantName: "Gold" });
-    expect(toListedCard({ variant: "Parallels", variantName: "Gold" }, undefined)).toMatchObject({ role: "parallel" });
+  it("keeps an unknown variant word as written and never guesses a role from it", () => {
+    // "Promo", "Variation", "SP": the word is what keeps the seller off the base copy.
+    expect(toListedCard({ variant: "Promo" }, undefined)).toEqual({ variantWord: "Promo" });
+    expect(toListedCard({ variant: "Short Print", variantName: "Gold" }, undefined)).toEqual({ variantWord: "Short Print", variantName: "Gold" });
+    expect(listedTitle(toListedCard({ year: "2021", setName: "Score", cardNo: "5", variant: "Variation" }, undefined)!)).toBe("2021 Score Variation #5");
+    // A word that IS a kind is the role; the name stays whatever the role.
+    expect(toListedCard({ variant: "Parallels", variantName: "Gold" }, undefined)).toEqual({ role: "parallel", variantName: "Gold" });
+    expect(toListedCard({ variant: "Base", variantName: "Photo Variation" }, undefined)).toEqual({ role: "base", variantName: "Photo Variation" });
+    // A name with no word: kept, no role.
+    expect(toListedCard({ variantName: "1991 Throwback" }, undefined)).toEqual({ variantName: "1991 Throwback" });
   });
 
   it("files a season under its start year and refuses a year that is no year", () => {

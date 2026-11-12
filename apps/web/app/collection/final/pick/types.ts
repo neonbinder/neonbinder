@@ -81,9 +81,19 @@ export interface ListedCard {
   /** The listing's players, as written. */
   players?: string;
   cardNumber?: string;
-  /** The divider the variant's word names; absent when the line names no variant. */
+  /**
+   * The divider the variant's word names, only when the word IS one (Base,
+   * Insert(s), Parallel(s)). Absent when the line names no variant or a word
+   * NB does not file by: a guessed role is never shown.
+   */
   role?: "base" | "parallel" | "insert";
-  /** The insert or parallel's name: "1991 Throwback". */
+  /**
+   * The listing's variant word when NB does not file by it ("Variation",
+   * "SP", "Promo"). An image variation shares the base's number, so this
+   * word is what keeps the seller off the base copy: it is always shown.
+   */
+  variantWord?: string;
+  /** The insert or parallel's name as the listing gives it: "1991 Throwback". */
   variantName?: string;
 }
 

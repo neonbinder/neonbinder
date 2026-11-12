@@ -7,8 +7,12 @@ import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { toCardWithPath } from "../data/convexStore";
 import type { Card, Condition } from "../data/types";
 import { PageApiContext } from "../pageApi";
+import { listedTitle } from "./model";
 import { PickListStoreContext } from "./store";
 import type { ListedCard, PickBox, PickListData, PickListStore, PickPhoto, SaleLine } from "./types";
+
+// The title rule lives with the model, so the demo writes its titles the same way.
+export { listedTitle };
 
 /**
  * NEO-500 — the signed-in seller's Pick List, on Convex. The same
@@ -34,7 +38,7 @@ import type { ListedCard, PickBox, PickListData, PickListStore, PickPhoto, SaleL
  * NEO-509: a line NB could not tie to a card carries the sale's own words
  * for it (`listed`). The store reads its sport through `sports` (once per
  * sport, like `cards`), turns the words into a `ListedCard`, and titles the
- * line with them: "2021 Score · Justin Fields · #TB2 · 1991 Throwback".
+ * line with them (`listedTitle`): "2021 Score 1991 Throwback #TB2 · Justin Fields".
  * Only a line that says nothing is "Unmatched sale (n of m)".
  */
 
@@ -132,9 +136,10 @@ export function listedYear(season: string): number | undefined {
 /**
  * A sale's words for its card, resolved: NB's sport when the sale named one
  * NB has (`sport` loaded), else the listing's sport word; the year as a
- * number; the variant's divider from its word (Base, Insert, Parallel), an
- * unknown word reading as an insert when it names one ("1991 Throwback")
- * and as Base when it does not. Undefined when the words say nothing.
+ * number; the variant's divider only when its word IS one (Base, Insert,
+ * Parallel). A word NB does not file by ("Variation", "SP", "Promo") is kept
+ * as written (`variantWord`), never read as a role, and the listing's
+ * variant name is kept whatever the word. Undefined when the words say nothing.
  */
 export function toListedCard(raw: RawListed, sport: SportRow | null | undefined): ListedCard | undefined {
   const season = words(raw.year);
@@ -152,28 +157,12 @@ export function toListedCard(raw: RawListed, sport: SportRow | null | undefined)
     ...(words(raw.setName) ? { setName: words(raw.setName) } : {}),
     ...(words(raw.players) ? { players: words(raw.players) } : {}),
     ...(words(raw.cardNo) ? { cardNumber: words(raw.cardNo) } : {}),
-    ...(variant || variantName ? { role: kind ?? (variantName ? "insert" : "base") } : {}),
-    // A word NB does not file by ("Promo") is still how the seller finds the card: it titles the line.
-    ...(variantName || (variant && !kind) ? { variantName: variantName ?? variant } : {}),
+    ...(kind ? { role: kind } : {}),
+    // A word NB does not file by ("Variation") is how the seller tells the copy from the base: kept as written.
+    ...(variant && !kind ? { variantWord: variant } : {}),
+    ...(variantName ? { variantName } : {}),
   };
   return Object.keys(out).length ? out : undefined;
-}
-
-/**
- * A listing's title, from whatever it says, in the order a seller reads a
- * card: set, players, number, variant. "2021 Score · Justin Fields · #TB2 ·
- * 1991 Throwback". A Base variant is not written; an empty answer means the
- * listing said nothing a seller could look for.
- */
-export function listedTitle(listed: ListedCard): string {
-  const { season, setName } = listed;
-  const set = setName
-    ? season && !setName.toLowerCase().startsWith(`${season.toLowerCase()} `)
-      ? `${season} ${setName}`
-      : setName
-    : season;
-  const variant = listed.variantName ?? (listed.role && listed.role !== "base" ? (listed.role === "insert" ? "Insert" : "Parallel") : undefined);
-  return [set, listed.players, listed.cardNumber ? `#${listed.cardNumber}` : undefined, variant].filter(Boolean).join(" · ");
 }
 
 /**

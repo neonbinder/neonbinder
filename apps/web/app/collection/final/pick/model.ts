@@ -17,6 +17,7 @@
  * group and filter alike; `row.card` still means "NB matched it".
  */
 
+import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { setLabel } from "../data/labels";
 import type { Card, SetRef } from "../data/types";
 import type { ListedCard, PickBox, PickGrade, PickOrder, PickPhoto, PickSpot, SaleLine } from "./types";
@@ -50,6 +51,17 @@ export const VARIANT_ROLE_LABEL: Record<VariantRole, string> = {
 };
 
 const ROLE_RANK: Record<VariantRole, number> = { base: 0, parallel: 1, insert: 2, insertParallel: 3 };
+
+/**
+ * Where a row with no role walks: a listing whose variant word NB does not
+ * file by ("Variation", "SP") or that names none. Right after Base, since an
+ * image variation or a short print shares the base's number; never shown.
+ */
+const NO_ROLE_RANK = 0.5;
+
+function roleRank(role: VariantRole | null): number {
+  return role ? ROLE_RANK[role] : NO_ROLE_RANK;
+}
 
 /**
  * A card's divider, from NB's own variant kind: a parallel under an insert
@@ -192,11 +204,55 @@ export interface RowFacts {
   setKey: string;
   /** The divider's title: "2024 Topps Chrome". */
   setTitle: string;
-  role: VariantRole;
-  /** The insert or parallel's name; null for Base. */
+  /** NB's code for the sport ("BB"): the divider's colour. Null when NB has no sport row for it. */
+  sportCode: string | null;
+  /** The variant's divider; null when a listing names no variant NB files by (never guessed). */
+  role: VariantRole | null;
+  /** A listing's own variant word NB does not file by ("Variation", "SP"); null otherwise. */
+  variantWord: string | null;
+  /** The insert or parallel's name; null for Base (a listing's Base keeps a name it gives). */
   variantName: string | null;
   cardNumber: string;
   players: string;
+}
+
+/**
+ * The variant words a listing gives that are worth writing: its own word NB
+ * does not file by, and its variant name. A name that only repeats the word
+ * or the role ("Base" on a Base line) is dropped, so nothing reads twice.
+ */
+export function listedVariant(listed: ListedCard): { word: string | null; name: string | null } {
+  const word = listed.variantWord?.trim() || null;
+  const raw = listed.variantName?.trim() || null;
+  const repeats =
+    raw !== null &&
+    ((word !== null && fold(raw) === fold(word)) || (listed.role !== undefined && variantTypeKindFromTitle(raw) === listed.role));
+  return { word, name: repeats ? null : raw };
+}
+
+/** The variant as one phrase for a title: "1991 Throwback", "SP Photo", "Insert"; null for Base or none. */
+function listedVariantPhrase(listed: ListedCard): string | null {
+  const { word, name } = listedVariant(listed);
+  if (word && name) return fold(name).includes(fold(word)) ? name : `${word} ${name}`;
+  if (word || name) return word ?? name;
+  return listed.role === "insert" ? "Insert" : listed.role === "parallel" ? "Parallel" : null;
+}
+
+/**
+ * A listing's title, from whatever it says, in the order a seller finds a
+ * card in a box: the set, the insert or parallel, the number, then who is on
+ * it. "2021 Score 1991 Throwback #TB2 · Justin Fields". Base is not written
+ * (the chip says it); an empty answer means the listing said nothing a
+ * seller could look for.
+ */
+export function listedTitle(listed: ListedCard): string {
+  const season = listed.season?.trim();
+  const setName = listed.setName?.trim();
+  const set = setName ? (season && !fold(setName).startsWith(`${fold(season)} `) ? `${season} ${setName}` : setName) : season;
+  const card = [set, listedVariantPhrase(listed), listed.cardNumber?.trim() ? `#${listed.cardNumber.trim()}` : undefined]
+    .filter(Boolean)
+    .join(" ");
+  return [card, listed.players?.trim()].filter(Boolean).join(" · ");
 }
 
 /** One NB set on the list, with its sport's code (the divider colour). */
@@ -298,7 +354,9 @@ function factsOf(row: PickRow): RowFacts | null {
       setRank: 0,
       setKey: c.set.id,
       setTitle: setLabel(c.set),
+      sportCode: row.sportCode,
       role: variantRole(c),
+      variantWord: null,
       variantName: variantName(c),
       cardNumber: c.cardNumber,
       players: c.players.map((p) => p.name).join(" / "),
@@ -307,10 +365,12 @@ function factsOf(row: PickRow): RowFacts | null {
   const listed = row.listed;
   const place = listed ? listedPlace(listed) : null;
   if (!listed || !place) return null;
-  const role: VariantRole = listed.role ?? "base";
+  // Only the listing's own words: a role when its word is one, never a guess.
+  const { word, name } = listedVariant(listed);
   const card = {
-    role,
-    variantName: role === "base" ? null : listed.variantName?.trim() || null,
+    role: listed.role ?? null,
+    variantWord: word,
+    variantName: name,
     cardNumber: place.cardNumber,
     players: listed.players?.trim() ?? "",
   };
@@ -324,6 +384,7 @@ function factsOf(row: PickRow): RowFacts | null {
       setRank: 0,
       setKey: joined.id,
       setTitle: setLabel(joined),
+      sportCode: row.joined?.sportCode ?? null,
       ...card,
     };
   }
@@ -336,6 +397,8 @@ function factsOf(row: PickRow): RowFacts | null {
     setRank: 1,
     setKey: `listed:${sportKey}|${place.year}|${fold(place.setName)}`,
     setTitle: place.setTitle,
+    // NB's sport when the store resolved one, so its divider wears NB's colour, never the black "other".
+    sportCode: listed.sportCode ?? row.sportCode,
     ...card,
   };
 }
@@ -391,7 +454,8 @@ export function compareDefault(a: PickRow, b: PickRow): number {
     naturalCompare(fa.setName, fb.setName) ||
     fa.setRank - fb.setRank ||
     compareKeys(fa.setKey, fb.setKey) ||
-    ROLE_RANK[fa.role] - ROLE_RANK[fb.role] ||
+    roleRank(fa.role) - roleRank(fb.role) ||
+    naturalCompare(fa.variantWord ?? "", fb.variantWord ?? "") ||
     naturalCompare(fa.variantName ?? "", fb.variantName ?? "") ||
     naturalCompare(fa.cardNumber, fb.cardNumber) ||
     naturalCompare(fa.players, fb.players) ||
@@ -450,20 +514,24 @@ export interface PickFilters {
   order?: string;
   slabs?: boolean;
   numbered?: boolean;
+  /** Only the sales NB has no card for (the "Not in NB" rows and Can't find it). */
+  notInNb?: boolean;
 }
 
 export function hasFilters(f: PickFilters): boolean {
-  return Boolean(f.text || f.sport || f.year || f.variant || f.condition || f.order || f.slabs || f.numbered);
+  return Boolean(f.text || f.sport || f.year || f.variant || f.condition || f.order || f.slabs || f.numbered || f.notInNb);
 }
 
-/** The word a row with a listing but no card wears (and a search finds it by). */
-export const UNMATCHED = "Unmatched";
+/** The chip a row NB has no card for wears (and a search finds it by). */
+export const NOT_IN_NB = "Not in NB";
 
 function haystack(row: PickRow): string {
   const facts = rowFacts(row);
   const parts = [row.listingTitle, row.condition, row.serial ?? "", ...row.orders.map(orderLabel)];
-  if (facts) parts.push(`#${facts.cardNumber}`, facts.cardNumber, facts.players, facts.setTitle, facts.variantName ?? "", facts.sportName);
-  if (!row.card && row.listed) parts.push(UNMATCHED);
+  if (facts) {
+    parts.push(`#${facts.cardNumber}`, facts.cardNumber, facts.players, facts.setTitle, facts.variantWord ?? "", facts.variantName ?? "", facts.sportName);
+  }
+  if (!row.card) parts.push(NOT_IN_NB);
   if (row.grade) parts.push(row.grade.grader, row.grade.grade, row.grade.cert);
   return parts.join(" ").toLowerCase();
 }
@@ -479,6 +547,7 @@ export function filterRows(rows: readonly PickRow[], f: PickFilters): PickRow[] 
     if (f.order && !row.orders.some((o) => o.id === f.order)) return false;
     if (f.slabs && !row.grade) return false;
     if (f.numbered && !row.serial) return false;
+    if (f.notInNb && row.card) return false;
     if (words.length) {
       const text = haystack(row);
       if (!words.every((w) => text.includes(w))) return false;
@@ -498,7 +567,19 @@ export function conditionOf(row: PickRow): string {
 
 export type PickSection =
   | { kind: "cantFind"; key: string; rows: PickRow[] }
-  | { kind: "set"; key: string; sportName: string; sportCode: string | null; title: string; rows: PickRow[] }
+  | {
+      kind: "set";
+      key: string;
+      sportName: string;
+      sportCode: string | null;
+      title: string;
+      rows: PickRow[];
+      /**
+       * A listing's own divider whose title reads exactly like an NB set's on
+       * the same list: its heading says it is not matched, so the two differ.
+       */
+      unmatchedTwin?: boolean;
+    }
   | { kind: "order"; key: string; order: PickOrder; rows: PickRow[] }
   | { kind: "flat"; key: string; rows: PickRow[] }
   | { kind: "new"; key: string; rows: PickRow[] };
@@ -543,26 +624,35 @@ export function buildSections(lines: readonly SaleLine[], filters: PickFilters, 
 
   if (cantFind.length) sections.push({ kind: "cantFind", key: "cantFind", rows: cantFind });
   if (options.sort === null || options.sort === "set") {
-    for (const row of rest) {
-      const facts = rowFacts(row)!;
-      const key = `set:${facts.setKey}`;
-      const last = sections[sections.length - 1];
-      if (last?.kind === "set" && last.key === key) last.rows.push(row);
-      else
-        sections.push({
-          kind: "set",
-          key,
-          sportName: facts.sportName,
-          sportCode: row.sportCode,
-          title: facts.setTitle,
-          rows: [row],
-        });
-    }
+    sections.push(...setSections(rest));
   } else if (rest.length) {
     sections.push({ kind: "flat", key: "flat", rows: rest });
   }
   if (fresh.length) sections.push({ kind: "new", key: "new", rows: fresh });
   return sections;
+}
+
+/**
+ * Rows already in walking order, cut into one section per set divider. A
+ * listing's own divider titled exactly like an NB set's divider on the same
+ * list is marked (`unmatchedTwin`) so its heading reads apart.
+ */
+export function setSections(rows: readonly PickRow[]): Extract<PickSection, { kind: "set" }>[] {
+  const sections: Extract<PickSection, { kind: "set" }>[] = [];
+  const own: boolean[] = [];
+  for (const row of rows) {
+    const facts = rowFacts(row);
+    if (!facts) continue;
+    const key = `set:${facts.setKey}`;
+    const last = sections[sections.length - 1];
+    if (last?.key === key) last.rows.push(row);
+    else {
+      sections.push({ kind: "set", key, sportName: facts.sportName, sportCode: facts.sportCode, title: facts.setTitle, rows: [row] });
+      own.push(facts.setRank === 1);
+    }
+  }
+  const nbTitles = new Set(sections.filter((_, i) => !own[i]).map((s) => fold(s.title)));
+  return sections.map((s, i) => (own[i] && nbTitles.has(fold(s.title)) ? { ...s, unmatchedTwin: true } : s));
 }
 
 // ---------------------------------------------------------------------------
@@ -572,14 +662,22 @@ export function buildSections(lines: readonly SaleLine[], filters: PickFilters, 
 export interface BoxStop {
   box: PickBox;
   rows: PickRow[];
-  /** The walk's last stop: the sales NB could not tie to a card, after every box. */
+  /** The walk's last stop: the sales NB could not tie to a card and that say too little to file. */
   cantFind?: boolean;
+  /**
+   * The stop before it: sales NB has no card for but whose listings say what
+   * they are. No box holds them; they walk by set, as on the list.
+   */
+  notInBox?: boolean;
   /** The stop after the boxes for cards whose box NB did not note (before Can't find it). */
   unrecorded?: boolean;
 }
 
 /** The `pbox` id of the Can't find it stop; never a box's own id. */
 export const CANT_FIND_STOP = "cant-find";
+
+/** The `pbox` id of the Not in a box stop; never a box's own id. */
+export const NOT_IN_BOX_STOP = "not-in-box";
 
 /** The `pbox` id of the Box not recorded stop; never a box's own id. */
 export const BOX_NOT_RECORDED_STOP = "no-box";
@@ -628,8 +726,10 @@ export function boxWalk(lines: readonly SaleLine[], boxes: readonly PickBox[]): 
 
 /**
  * The whole By the Box walk: the boxes in order, then a stop for the cards
- * whose box NB never noted, then one last stop for the sales NB could not
- * tie to a card (the list's Can't find it), each when there are any.
+ * whose box NB never noted, then Not in a box (sales NB has no card for, but
+ * whose listings say what they are, in walking order by set), then one last
+ * stop for the sales that say too little (the list's Can't find it), each
+ * when there are any.
  */
 export function boxStops(lines: readonly SaleLine[], boxes: readonly PickBox[]): BoxStop[] {
   const stops = boxWalk(lines, boxes);
@@ -642,15 +742,16 @@ export function boxStops(lines: readonly SaleLine[], boxes: readonly PickBox[]):
       unrecorded: true,
     });
   }
-  // No box holds a sale NB could not tie to a card, even one whose listing
-  // says what it is: those wait here, the described ones in set order.
-  const lost = lines.filter((l) => !l.card);
-  if (lost.length) {
-    stops.push({
-      box: { id: CANT_FIND_STOP, name: "Can't find it" },
-      rows: sortRows(mergeLines(lost, { sets: setsOnList(lines) }), null),
-      cantFind: true,
-    });
+  // No box holds a sale NB could not tie to a card. One whose listing says
+  // what it is walks with its set; the rest wait at the very end.
+  const lost = sortRows(mergeLines(lines.filter((l) => !l.card), { sets: setsOnList(lines) }), null);
+  const described = lost.filter((r) => rowFacts(r));
+  if (described.length) {
+    stops.push({ box: { id: NOT_IN_BOX_STOP, name: "Not in a box" }, rows: described, notInBox: true });
+  }
+  const unreadable = lost.filter((r) => !rowFacts(r));
+  if (unreadable.length) {
+    stops.push({ box: { id: CANT_FIND_STOP, name: "Can't find it" }, rows: unreadable, cantFind: true });
   }
   return stops;
 }

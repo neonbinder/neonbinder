@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { playerNames } from "../data/labels";
 import { SPORT_LINE, VARIANT_STRIPE, sportHue } from "./colours";
-import { isPulled, orderLabel, rowFacts, UNMATCHED, VARIANT_ROLE_LABEL, type PickRow, type PickSection } from "./model";
+import { isPulled, NOT_IN_NB, orderLabel, rowFacts, VARIANT_ROLE_LABEL, type PickRow, type PickSection } from "./model";
 
 /**
  * NEO-500 — the printed pick sheet: the screen's rows as a dense list, one
@@ -18,7 +18,10 @@ import { isPulled, orderLabel, rowFacts, UNMATCHED, VARIANT_ROLE_LABEL, type Pic
  * sport starts. Colours are the paper roles (pick-list.css).
  *
  * NEO-509: a sale filed with its set by the listing's words alone prints
- * like a card, with "Unmatched" among its marks.
+ * like a card, with "Not in NB" among its marks, the listing's own variant
+ * word, and its next step (check the order's photo) after the variant. Every
+ * line NB has no card for wraps rather than cut that step short
+ * (`nb-pick-sheet-lost`).
  */
 
 /** True while the page is printing: the Print button, Ctrl/⌘+P and print emulation all count. */
@@ -42,16 +45,16 @@ export function usePrinting(): boolean {
   return printing;
 }
 
-/** "Parallel Gold Foil", "Insert parallel 8 Bit Ballers Red", "Base". */
+/** "Parallel Gold Foil", "Insert parallel 8 Bit Ballers Red", "Base", a listing's "Variation". */
 function variantText(row: PickRow): string {
   const facts = rowFacts(row);
   if (!facts) return "";
-  return facts.variantName ? `${VARIANT_ROLE_LABEL[facts.role]} ${facts.variantName}` : VARIANT_ROLE_LABEL[facts.role];
+  return [facts.role && VARIANT_ROLE_LABEL[facts.role], facts.variantWord, facts.variantName].filter(Boolean).join(" ");
 }
 
 function markersText(row: PickRow): string {
-  const unmatched = !row.card && rowFacts(row) !== null;
-  const marks = [unmatched && UNMATCHED, row.isNew && "New", row.lastOnes && "Last ones", row.short > 0 && `Short ${row.short}`].filter(Boolean);
+  const notInNb = !row.card && rowFacts(row) !== null;
+  const marks = [notInNb && NOT_IN_NB, row.isNew && "New", row.lastOnes && "Last ones", row.short > 0 && `Short ${row.short}`].filter(Boolean);
   return marks.length ? marks.join(", ") : "";
 }
 
@@ -125,11 +128,13 @@ export default function PrintSheet({
               const role = facts?.role ?? null;
               // Outside a set's divider the line names its set too.
               const card = facts
-                ? `${section.kind === "set" ? "" : `${facts.setTitle} `}${variantText(row)}${row.serial ? ` ${row.serial}` : ""}`
+                ? [section.kind === "set" ? "" : facts.setTitle, variantText(row), row.serial ?? ""].filter(Boolean).join(" ")
                 : (row.problem ?? "");
+              // A sale NB has no card for keeps its next step on paper too.
+              const step = facts && !c && row.problem ? row.problem : "";
               const marks = markersText(row);
               return (
-                <tr key={row.key} data-pulled={done || undefined} className={facts ? "nb-pick-sheet-row" : "nb-pick-sheet-row nb-pick-sheet-lost"}>
+                <tr key={row.key} data-pulled={done || undefined} className={c ? "nb-pick-sheet-row" : "nb-pick-sheet-row nb-pick-sheet-lost"}>
                   <td>
                     <span className="nb-pick-tick">{done ? "✓" : ""}</span>
                   </td>
@@ -152,6 +157,7 @@ export default function PrintSheet({
                   <td>
                     {role && <span aria-hidden="true" className={`nb-pick-band nb-pick-sheet-band ${VARIANT_STRIPE[role]}`} />}
                     {card}
+                    {step && <i>{card ? ` ${step}` : step}</i>}
                   </td>
                   <td>{row.grade ? `${row.grade.grader} ${row.grade.grade} #${row.grade.cert}` : row.condition}</td>
                   <td className={`nb-pick-sheet-right${row.orders.length > 1 ? " nb-pick-sheet-wrap" : ""}`}>{row.orders.map(orderLabel).join(", ")}</td>
