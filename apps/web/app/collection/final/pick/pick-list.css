@@ -1,0 +1,223 @@
+/*
+ * NEO-500 — the Pick List's own rules: a pulled row, the box heading's
+ * arrival, and the printed sheet.
+ *
+ * A pulled row stays where it was (the seller's place in the box is the
+ * row's place). Its words turn the quiet ink and are struck through; the
+ * green check is the mark, so the state is never colour alone. No opacity:
+ * ink-3 holds 4.5:1 on the page in both modes, and a faded row did not.
+ * The chips (variant, qty, markers) and the picture keep their own paint.
+ */
+.nb-pick-pulled td:not(:first-child) {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.nb-pick-pulled td:not(:first-child) :not(.nb-pick-chip, .nb-pick-chip *, .nb-pick-thumb, .nb-pick-thumb *) {
+  color: var(--ink-3);
+}
+
+/*
+ * The Undo toast floats over the bottom of the page and the column header
+ * row sticks to the top: keep the row the keyboard is on clear of both.
+ */
+html:has(.nb-pick) {
+  scroll-padding-top: calc(var(--nb-header-h, 0px) + 3rem);
+  scroll-padding-bottom: 7rem;
+}
+
+/* The thumbnail's card scales with this cell, not the page. */
+.nb-pick-thumb {
+  container-type: inline-size;
+}
+
+/* A new box's heading takes the keyboard; it lights up briefly so the eye follows. */
+.nb-pick-boxhead:focus {
+  animation: nb-pick-arrive 1.2s ease-out;
+}
+@keyframes nb-pick-arrive {
+  from {
+    background-color: var(--list-hover);
+    box-shadow: 0 0 0 4px var(--list-hover);
+  }
+  to {
+    background-color: transparent;
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+/*
+ * Print: a dense pick sheet (PrintSheet.tsx), on paper, whatever the
+ * screen's mode. One line per card at 9pt, so 40 or more fit a letter page.
+ * Everything else on the page (the demo bar, the tabs, the filters, the
+ * buttons, the screen table) stays off it. Colours are the paper roles; the
+ * sport rules and variant bands print as colour.
+ */
+.nb-pick-sheet {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 0.4in;
+  }
+  /* Out of the layout, not just out of sight, so the rest of the page adds no blank sheets. */
+  body *:not(.nb-pick, .nb-pick *, :has(.nb-pick)) {
+    display: none !important;
+  }
+  .nb-pick {
+    position: absolute;
+    inset: 0 0 auto 0;
+    padding: 0;
+    font-size: 9pt;
+    line-height: 1.2;
+    color: var(--on-paper);
+    background: var(--paper);
+    --ink: var(--on-paper);
+    --ink-2: var(--on-paper);
+    --ink-3: var(--on-paper);
+    --surface: var(--paper);
+    --raised: var(--paper);
+    --rule: var(--paper-rule-base);
+    --rule-strong: var(--on-paper);
+    --list-hover: transparent;
+    --notice-warn-ink: var(--on-paper);
+    --notice-warn-rule: var(--on-paper);
+    --notice-warn-bg: transparent;
+    --notice-info-ink: var(--on-paper);
+    --notice-info-rule: var(--on-paper);
+    --notice-info-bg: transparent;
+    --neon-blue-text: var(--on-paper);
+    --sport-other-rule: var(--paper-rule-other);
+    --variant-base-rule: var(--paper-rule-base);
+    --variant-parallel-rule: var(--paper-rule-parallel);
+    --variant-insert-rule: var(--paper-rule-insert);
+    --variant-insert-parallel-rule: var(--paper-rule-insert-parallel);
+  }
+  .nb-pick > *,
+  .nb-pick > * > * {
+    margin-block: 0 !important;
+  }
+  .nb-pick > * + *,
+  .nb-pick-sheet {
+    margin-top: 4pt !important;
+  }
+  .nb-pick h2 {
+    font-size: 12pt;
+    line-height: 1.2;
+  }
+  .nb-pick h2 + p,
+  .nb-pick p {
+    font-size: 8pt;
+  }
+  .nb-pick-boxhead {
+    font-size: 10.5pt;
+    line-height: 1.2;
+  }
+  .nb-pick-noprint,
+  .nb-pick-noprint *,
+  .nb-pick-table,
+  .nb-pick [role="status"] {
+    display: none !important;
+  }
+
+  .nb-pick-sheet {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 9pt;
+    line-height: 1.2;
+  }
+  .nb-pick-sheet col.nb-pick-sheet-tick { width: 14pt; }
+  .nb-pick-sheet col.nb-pick-sheet-slot { width: 22pt; }
+  .nb-pick-sheet col.nb-pick-sheet-qty { width: 20pt; }
+  .nb-pick-sheet col.nb-pick-sheet-no { width: 46pt; }
+  .nb-pick-sheet col.nb-pick-sheet-player { width: 28%; }
+  .nb-pick-sheet col.nb-pick-sheet-cond { width: 86pt; }
+  .nb-pick-sheet col.nb-pick-sheet-order { width: 64pt; }
+  .nb-pick-sheet th,
+  .nb-pick-sheet td {
+    padding: 1pt 3pt;
+    text-align: left;
+    vertical-align: middle;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nb-pick-sheet thead th {
+    font-size: 7pt;
+    font-weight: 600;
+    border-bottom: 0.75pt solid var(--on-paper);
+  }
+  .nb-pick-sheet .nb-pick-sheet-right {
+    text-align: right;
+  }
+  .nb-pick-sheet-row td {
+    border-bottom: 0.5pt solid var(--paper-rule-base);
+  }
+  .nb-pick-sheet-row {
+    break-inside: avoid;
+  }
+  /* The rare long cells wrap rather than lose words: a listing's own title, two orders on one line. */
+  .nb-pick-sheet-lost td,
+  .nb-pick-sheet td.nb-pick-sheet-wrap {
+    white-space: normal;
+  }
+  .nb-pick-sheet-row[data-pulled] td:not(:first-child) {
+    text-decoration: line-through;
+  }
+  .nb-pick-sheet-strong {
+    font-weight: 700;
+  }
+  .nb-pick-sheet-mark {
+    font-weight: 700;
+  }
+  /* The set's divider: a thin rule in the sport's colour, the title inline. */
+  .nb-pick-sheet-group th {
+    padding: 3pt 0 0.5pt;
+    line-height: 1.1;
+    font-weight: 400;
+    border-bottom-width: 1.25pt;
+    border-bottom-style: solid;
+    break-after: avoid;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* A set's rule takes its sport's colour from its class; every other group's is ink. */
+  .nb-pick-sheet-group th:not([class*="border-sport-"]) {
+    border-bottom-color: var(--on-paper);
+  }
+  .nb-pick-sheet-sport {
+    margin-right: 6pt;
+  }
+  .nb-pick-sheet-count {
+    margin-left: 6pt;
+    font-size: 7.5pt;
+  }
+  /* A tick box to mark with a pen; a pulled card's is already ticked. */
+  .nb-pick-tick {
+    display: inline-block;
+    width: 7.5pt;
+    height: 7.5pt;
+    border: 0.75pt solid var(--on-paper);
+    font-size: 7pt;
+    line-height: 7pt;
+    text-align: center;
+    vertical-align: middle;
+  }
+  /* The variant: a thin band in the divider's colour, then its name. */
+  .nb-pick-sheet-band {
+    display: inline-block;
+    width: 3pt;
+    height: 9pt;
+    margin-right: 3pt;
+    border-width: 0.5pt;
+    border-style: solid;
+    vertical-align: -1.5pt;
+  }
+  .nb-pick-band {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

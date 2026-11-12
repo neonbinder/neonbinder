@@ -70,6 +70,11 @@ export type TokenRole =
   | "wash-rule-pink"
   | "paper"
   | "on-paper"
+  | "paper-rule-other"
+  | "paper-rule-base"
+  | "paper-rule-parallel"
+  | "paper-rule-insert"
+  | "paper-rule-insert-parallel"
   | "pick-pink"
   | "pick-pink-rule"
   | "pick-pink-ink"
@@ -96,7 +101,27 @@ export type TokenRole =
   | "pick-red-ink"
   | "pick-emerald"
   | "pick-emerald-rule"
-  | "pick-emerald-ink";
+  | "pick-emerald-ink"
+  | "sport-football"
+  | "sport-baseball"
+  | "sport-basketball"
+  | "sport-hockey"
+  | "sport-other"
+  | "sport-other-rule"
+  | "on-sport-football"
+  | "on-sport-baseball"
+  | "on-sport-basketball"
+  | "on-sport-hockey"
+  | "on-sport-other"
+  | "variant-base"
+  | "variant-parallel"
+  | "variant-insert"
+  | "variant-insert-parallel"
+  | "variant-base-rule"
+  | "variant-parallel-rule"
+  | "variant-insert-rule"
+  | "variant-insert-parallel-rule"
+  | "on-variant";
 
 /** The surfaces a piece of text can sit on. */
 export type SurfaceRole =
@@ -248,6 +273,11 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "wash-rule-pink": "color-mix(in oklab, #ff2e9a 40%, transparent)",
     "paper": "#ffffff",
     "on-paper": "#000000",
+    "paper-rule-other": "#1e1e1e",
+    "paper-rule-base": "#767676",
+    "paper-rule-parallel": "#5e8f14",
+    "paper-rule-insert": "#2b84b5",
+    "paper-rule-insert-parallel": "#b4566f",
     "pick-pink": "oklch(40.8% 0.153 2.432)",
     "pick-pink-rule": "oklch(52.5% 0.223 3.958)",
     "pick-pink-ink": "oklch(82.3% 0.12 346.018)",
@@ -275,6 +305,26 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "pick-emerald": "oklch(37.8% 0.077 168.94)",
     "pick-emerald-rule": "oklch(50.8% 0.118 165.612)",
     "pick-emerald-ink": "oklch(84.5% 0.143 164.978)",
+    "sport-football": "#0d8652",
+    "sport-baseball": "#c2323f",
+    "sport-basketball": "#f07e1a",
+    "sport-hockey": "#1f66d6",
+    "sport-other": "#1e1e1e",
+    "sport-other-rule": "#8a8a8a",
+    "on-sport-football": "#ffffff",
+    "on-sport-baseball": "#ffffff",
+    "on-sport-basketball": "#000000",
+    "on-sport-hockey": "#ffffff",
+    "on-sport-other": "#ffffff",
+    "variant-base": "#f2f2f2",
+    "variant-parallel": "#9fd33a",
+    "variant-insert": "#7dcef5",
+    "variant-insert-parallel": "#e8a8ba",
+    "variant-base-rule": "#f2f2f2",
+    "variant-parallel-rule": "#9fd33a",
+    "variant-insert-rule": "#7dcef5",
+    "variant-insert-parallel-rule": "#e8a8ba",
+    "on-variant": "#000000",
   },
   light: {
     surface: "#f7f8fc",
@@ -328,6 +378,11 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "wash-rule-pink": "#bcb9cf",
     "paper": "#ffffff",
     "on-paper": "#000000",
+    "paper-rule-other": "#1e1e1e",
+    "paper-rule-base": "#767676",
+    "paper-rule-parallel": "#5e8f14",
+    "paper-rule-insert": "#2b84b5",
+    "paper-rule-insert-parallel": "#b4566f",
     "pick-pink": "oklch(94.8% 0.028 342.258)",
     "pick-pink-rule": "oklch(52.5% 0.223 3.958)",
     "pick-pink-ink": "oklch(45.9% 0.187 3.815)",
@@ -355,6 +410,26 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "pick-emerald": "oklch(95% 0.052 163.051)",
     "pick-emerald-rule": "oklch(50.8% 0.118 165.612)",
     "pick-emerald-ink": "oklch(43.2% 0.095 166.913)",
+    "sport-football": "#0d8652",
+    "sport-baseball": "#c2323f",
+    "sport-basketball": "#f07e1a",
+    "sport-hockey": "#1f66d6",
+    "sport-other": "#1e1e1e",
+    "sport-other-rule": "var(--paper-rule-other)",
+    "on-sport-football": "#ffffff",
+    "on-sport-baseball": "#ffffff",
+    "on-sport-basketball": "#000000",
+    "on-sport-hockey": "#ffffff",
+    "on-sport-other": "#ffffff",
+    "variant-base": "#f2f2f2",
+    "variant-parallel": "#9fd33a",
+    "variant-insert": "#7dcef5",
+    "variant-insert-parallel": "#e8a8ba",
+    "variant-base-rule": "var(--paper-rule-base)",
+    "variant-parallel-rule": "var(--paper-rule-parallel)",
+    "variant-insert-rule": "var(--paper-rule-insert)",
+    "variant-insert-parallel-rule": "var(--paper-rule-insert-parallel)",
+    "on-variant": "#000000",
   },
 };
 
@@ -365,7 +440,10 @@ export function tokenCss(role: TokenRole, mode: ThemeMode): string {
 
 /** The role's colour in a mode as `#rrggbb`, for contrast arithmetic. */
 export function tokenHex(role: TokenRole, mode: ThemeMode): string {
-  return cssColorToHex(TOKENS[mode][role]);
+  // A role that reads another (`var(--paper-rule-base)`) is that role's colour.
+  const value = TOKENS[mode][role];
+  const ref = /^var\(--([a-z0-9-]+)\)$/.exec(value);
+  return cssColorToHex(ref ? TOKENS[mode][ref[1] as TokenRole] : value);
 }
 
 /** Shorthand for the surface a piece of livery text is measured against. */

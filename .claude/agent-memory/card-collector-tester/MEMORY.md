@@ -14,3 +14,4 @@
 - [Wizard chip and title review checks](wizard-chip-and-title-review-checks.md) — livery dot reads as radio; title cut eats player names; clip meter noise; one-team legend pre-fill; playerless lines
 - [Retro cards: set year is not card year](retro-cards-set-year-is-not-card-year.md) — legends in modern sets; "same player in this set" fill is a guess; never "this set says"
 - [Pasted checklist format traps](pasted-checklist-format-traps.md) — paste/CSV shapes that break checklist parsers; a teamless row is not a 'no team' claim
+- [Pull sheet dealer checks](pull-sheet-dealer-checks.md) — sale must record which copy/box/slot it took; merge then split; server check-off; no buyer PII; colour collisions
