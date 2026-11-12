@@ -35,7 +35,6 @@ import {
   nameKey,
   itemLabelParts,
   sharedTitleLabels,
-  type MarketplaceSide,
 } from "./marketplace-item-label";
 import {
   RENAME_TIP,
@@ -65,6 +64,7 @@ import { BASE_MATCH_COPY } from "@/lib/cards/base-match";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import {
   MARKETPLACE_SOURCES,
+  SOURCES_WITH_CHECKLIST,
   SOURCE_KEYS,
   SOURCE_TOKEN,
   bySource,
@@ -82,6 +82,7 @@ import {
   type SourceKey,
   type SourceTone,
   type SourcedItem,
+  defaultTitleOf,
 } from "./reconciliation-sources";
 
 // ===== TYPES =====
@@ -138,9 +139,66 @@ export type ReconciledResult = {
     /**
      * NEO-325 — the operator made this set with "Make its own set". The store
      * matches it by identity only and otherwise inserts it; see
-     * `ReadySet.ownSet`. Absent on every other set.
+     * `ReadySet.ownSet`. Absent on every other set. NEO-496: also on a new
+     * set that holds checklist sections and no marketplace id.
      */
     identityOnly?: true;
+    /**
+     * NEO-496 — the checklist sections this set links, by key. ABSENT means
+     * "leave the row's links as they are"; present REPLACES them ([] clears).
+     * Sent for a new set that holds any, and for a saved row only when its
+     * links changed here and were known to begin with.
+     */
+    checklistSectionKeys?: string[];
+  }>;
+};
+
+/**
+ * NEO-496 (C1b) — what a checklist section was auto-matched to, as
+ * `fetchRawOptions` reports it: a saved sibling row, an auto-matched
+ * marketplace pair (by both ids), or one unmatched marketplace item.
+ */
+export type ChecklistTarget =
+  | { kind: "row"; rowId: Id<"selectorOptions"> }
+  | { kind: "pair"; bsc: string; sportlots: string }
+  | { kind: "item"; side: "bsc" | "sportlots"; platformValue: string };
+
+/** A checklist section as the dialog lists it. */
+export type ReconcileChecklistSection = {
+  sectionKey: string;
+  name: string;
+  rowCount?: number;
+  kind: "base" | "base-child" | "other";
+  parent?: string;
+};
+
+/**
+ * NEO-496 (C1b) — the set's uploaded publisher checklist as a source. Absent:
+ * the dialog is exactly the two-marketplace dialog it always was.
+ */
+export type ReconcileChecklist = {
+  /** Every section not linked to any row in the set, file order. */
+  sections: ReconcileChecklistSection[];
+  /** Server-side auto-matches. Several sections may match one target. */
+  matches: Array<{
+    sectionKey: string;
+    target: ChecklistTarget;
+    confidence: number;
+  }>;
+  /**
+   * Which sections the column lists before "Show all checklist sections":
+   * `base-child` for the Parallels dialog (the Base's coloured runs),
+   * `other` for an Inserts dialog, `all` for a type with no kind.
+   */
+  scope: "base-child" | "other" | "all";
+  /**
+   * The sections each saved row already links (rows with none are left out).
+   * ABSENT means the links are unknown: no section may join a saved row and
+   * no saved row's links are ever sent, so nothing can be lost.
+   */
+  rowLinks?: Array<{
+    rowId: Id<"selectorOptions">;
+    sections: Array<{ sectionKey: string; name: string }>;
   }>;
 };
 
@@ -259,6 +317,8 @@ type ReconciliationModalProps = {
    * dialog. Without it, the dialog is exactly what it was.
    */
   baseCheck?: { variantTypeId: Id<"selectorOptions"> };
+  /** NEO-496 (C1b) — the set's checklist, a third column. See the type. */
+  checklist?: ReconcileChecklist;
   existingRows?: Array<{
     /** The row's own `_id` — see `ReadySet.existingId`. Optional so callers
      *  that predate NEO-211 (and the tests that construct rows by hand) keep
@@ -269,6 +329,22 @@ type ReconciliationModalProps = {
     metadata?: ItemMetadata;
   }>;
 };
+
+/**
+ * NEO-496 — why a checklist section cannot join a saved set whose checklist
+ * links did not load (`ReadySet.checklistLinksUnknown`). Said beside the set
+ * and in the drag announcements.
+ */
+export function checklistRefusal(setLabel: string): string {
+  return `Checklist sections can't join ${setLabel} here: its saved sections didn't load. Close and sync again to try.`;
+}
+
+/** Same members, any order. */
+function sameKeys(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const have = new Set(a);
+  return b.every((key) => have.has(key));
+}
 
 /** "1 set change" / "2 set changes". */
 function plural(n: number, noun: string): string {
@@ -344,23 +420,12 @@ function FilterInput({
 /** Names that more than one distinct item carries, per source (NEO-325). */
 type SourceDups = BySource<ReadonlySet<string>>;
 
-/**
- * The side `itemLabel`/`itemLabelParts` are told. Their words never depend on
- * it (both read `(#id)`); it only says whose `dups` the caller read, and the
- * helper's type names its two marketplaces. Pass `dups[source]` alongside.
- */
-const LABEL_SIDE: Record<SourceKey, MarketplaceSide> = {
-  bsc: "bsc",
-  sportlots: "sl",
-  checklist: "sl",
-};
-
 /** An item's accessible name, with its id when its source shares the name. */
 const sourceItemLabel = (
   item: PlatformItem,
   source: SourceKey,
   dups: SourceDups,
-) => itemLabel(item, LABEL_SIDE[source], dups[source]);
+) => itemLabel(item, source, dups[source]);
 
 /**
  * Each tone's classes, written out for Tailwind. `badge` is a pending row's
@@ -383,6 +448,12 @@ const TONE_CLASSES: Record<
     badge: "bg-neon-purple/15 text-neon-purple-text border-neon-purple/60",
     heading: "text-neon-purple-text",
     idSuffix: "text-[11px] font-normal tabular-nums text-neon-purple-text",
+  },
+  // NEO-496 — the checklist: the Print Shop's teal, the printed sheet.
+  teal: {
+    badge: "bg-neon-teal/15 text-neon-teal-text border-neon-teal/60",
+    heading: "text-neon-teal-text",
+    idSuffix: "text-[11px] font-normal tabular-nums text-neon-teal-text",
   },
 };
 
@@ -433,6 +504,10 @@ function parseItemDndId(
 const DRAG_INSTRUCTIONS =
   "Press Space or Enter to pick up this set. Use the arrow keys to move it onto a set from the other marketplace, or onto a Ready set above, then press Space or Enter to drop it. Press Escape to put it back.";
 
+/** NEO-496 — the same, when a checklist column joins the marketplaces. */
+const DRAG_INSTRUCTIONS_WITH_CHECKLIST =
+  "Press Space or Enter to pick this up. Use the arrow keys to move it onto an item in another column, or onto a Ready set above, then press Space or Enter to drop it. Press Escape to put it back.";
+
 /**
  * An item's visible name, with the id suffix when the name is shared
  * (NEO-325, styled `TONE_CLASSES[tone].idSuffix`). The suffix is real text,
@@ -450,11 +525,7 @@ function ItemName({
   dups: SourceDups;
   suffixClassName?: string;
 }) {
-  const { name, suffix } = itemLabelParts(
-    item,
-    LABEL_SIDE[source.key],
-    dups[source.key],
-  );
+  const { name, suffix } = itemLabelParts(item, source.key, dups[source.key]);
   return (
     <>
       {name}
@@ -615,7 +686,9 @@ const CHECK_SLEEVE_TONE: Record<RunLineKind, string> = {
 const PENDING_GRID_COLS: Record<number, string> = {
   1: "grid-cols-1",
   2: "grid-cols-2",
-  3: "grid-cols-3",
+  // NEO-496: three columns only where each still fits a row and its button;
+  // two from sm, one below (the max-sm rule beside this).
+  3: "grid-cols-2 lg:grid-cols-3",
 };
 
 /** The column's sleeve strip draws at most this many; the rest are "+N". */
@@ -665,6 +738,7 @@ function ReadySetRow({
   dups,
   onDraftChange,
   clashMessageId,
+  attachRefused,
 }: {
   set: ReadySet;
   /** The dialog's sources, in column order: the order of the row's chips. */
@@ -698,6 +772,12 @@ function ReadySetRow({
    * and describes the field by that line first, then by the sentence.
    */
   clashMessageId?: string;
+  /**
+   * NEO-496 — set in place of `onAttachClick` when the selected item is a
+   * checklist section and this saved set's checklist links are unknown: the
+   * line that says why it cannot join.
+   */
+  attachRefused?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   // The row's OWN line; the footer's sentence ids are never reused here.
@@ -756,8 +836,14 @@ function ReadySetRow({
         type="button"
         onClick={() => onDetach(source.key, item.platformValue)}
         className="hit-area-24 text-neon-pink-text px-0.5 rounded"
-        title="Remove this mapping"
-        aria-label={`Remove ${sourceItemLabel(item, source.key, dups)} from ${label}`}
+        title={source.kind === "checklist" ? "Remove this section" : "Remove this mapping"}
+        aria-label={
+          // NEO-496: a checklist section can share its name with a
+          // marketplace set on the same row, so its name says what it is.
+          source.kind === "checklist"
+            ? `Remove checklist section ${sourceItemLabel(item, source.key, dups)} from ${label}`
+            : `Remove ${sourceItemLabel(item, source.key, dups)} from ${label}`
+        }
       >
         ✕
       </button>
@@ -861,7 +947,9 @@ function ReadySetRow({
                 key={`no-${source.key}`}
                 className="text-[11px] text-ink-3 italic"
               >
-                {`no ${source.badge} mapping`}
+                {source.kind === "checklist"
+                  ? "no checklist section"
+                  : `no ${source.badge} mapping`}
               </span>
             ),
         )}
@@ -881,6 +969,9 @@ function ReadySetRow({
         >
           Add “{attachHint}” to this set
         </NeonButton>
+      )}
+      {attachRefused && (
+        <p className="mt-2 text-xs text-notice-warn-ink">{attachRefused}</p>
       )}
 
       {showMetadata && expanded && onUpdateMetadata && (
@@ -970,12 +1061,14 @@ function ReconciliationDialog({
   parentPath,
   showAllSlInitially = false,
   baseCheck,
+  checklist,
   client,
 }: ReconciliationModalProps & { client: BaseMatchClient | null }) {
-  // NEO-496 (C1a): the columns this dialog lines up. Every Reconcile dialog
-  // lines up the two marketplaces today; a checklist source (C1b) joins this
-  // list with its data, and nothing below branches on which sources it holds.
-  const sources = MARKETPLACE_SOURCES;
+  // NEO-496: the columns this dialog lines up. The two marketplaces always;
+  // the set's checklist joins them when the caller hands one over. Fixed for
+  // the dialog's life (the caller decides before it opens).
+  const hasChecklist = checklist !== undefined;
+  const sources = hasChecklist ? SOURCES_WITH_CHECKLIST : MARKETPLACE_SOURCES;
   const sourceByKey = useMemo(
     () => new Map(sources.map((source) => [source.key, source])),
     [sources],
@@ -1005,12 +1098,40 @@ function ReconciliationDialog({
     const used = bySource(() => new Set<string>());
     let seq = 0;
 
-    // What the fetch handed over, per source, before any matching.
+    // What the fetch handed over, per source, before any matching. A
+    // checklist's items are its sections: key as the id, name as printed.
     const unmatched: BySource<PlatformItem[]> = {
       bsc: initialData.unmatchedBsc,
       sportlots: initialData.unmatchedSl,
-      checklist: [],
+      checklist: (checklist?.sections ?? []).map((section) => ({
+        value: section.name,
+        platformValue: section.sectionKey,
+      })),
     };
+    // NEO-496 — the sections each saved row already links, by row id. Null
+    // when the caller did not say (`rowLinks` absent): then they are unknown.
+    const rowLinkMap: Map<string, PlatformItem[]> | null =
+      checklist?.rowLinks
+        ? new Map(
+            checklist.rowLinks.map((link) => [
+              String(link.rowId),
+              link.sections.map((section) => ({
+                value: section.name,
+                platformValue: section.sectionKey,
+              })),
+            ]),
+          )
+        : null;
+    // Saved rows a checklist match points at: seeded even with no ids, so
+    // the matched section has a set to join.
+    const matchedRowIds = new Set(
+      (checklist?.matches ?? []).flatMap((m) =>
+        m.target.kind === "row" ? [String(m.target.rowId)] : [],
+      ),
+    );
+    // The checklist keys each restored set was SAVED with, by Ready key, so
+    // Save sends a row's keys only when they changed here.
+    const savedChecklistKeys = new Map<string, string[]>();
     // An auto-match is one item from each of two sources.
     const halvesOf = (m: MatchedPair): [SourcedItem, SourcedItem] => [
       { source: "bsc", item: m.bsc },
@@ -1032,14 +1153,34 @@ function ReconciliationDialog({
 
     const toIds = (v: string | string[] | undefined): string[] =>
       typeof v === "string" ? [v] : Array.isArray(v) ? v : [];
+    // A saved row's checklist links, or null when they are unknown.
+    const savedSections = (
+      row: (typeof existingRows)[number],
+    ): PlatformItem[] | null => {
+      if (!checklist) return [];
+      if (!rowLinkMap) return null;
+      return row.existingId ? (rowLinkMap.get(String(row.existingId)) ?? []) : [];
+    };
+    for (const sections of rowLinkMap?.values() ?? []) {
+      for (const section of sections) {
+        if (!byPv.checklist.has(section.platformValue)) {
+          byPv.checklist.set(section.platformValue, section);
+        }
+      }
+    }
     const savedIds = (
       row: (typeof existingRows)[number],
       key: SourceKey,
-    ): string[] => (isMarketplaceSource(key) ? toIds(row.platformData[key]) : []);
+    ): string[] =>
+      isMarketplaceSource(key)
+        ? toIds(row.platformData[key])
+        : (savedSections(row) ?? []).map((section) => section.platformValue);
 
     for (const row of existingRows) {
       const ids = bySource((key) => savedIds(row, key));
-      if (SOURCE_KEYS.every((key) => ids[key].length === 0)) {
+      const isMatchTarget =
+        row.existingId !== undefined && matchedRowIds.has(String(row.existingId));
+      if (SOURCE_KEYS.every((key) => ids[key].length === 0) && !isMatchTarget) {
         // Not seeded: a row with no marketplace ids has nothing to reconcile,
         // but it is still a set under this parent with this name.
         savedSiblings.push({ name: row.value, bsc: [], sportlots: [] });
@@ -1052,6 +1193,8 @@ function ReconciliationDialog({
         sportlots: ids.sportlots,
         seededKey: key,
       });
+      const linksUnknown = savedSections(row) === null;
+      if (!linksUnknown) savedChecklistKeys.set(key, ids.checklist);
       ready.push({
         key,
         existingId: row.existingId,
@@ -1070,6 +1213,7 @@ function ReconciliationDialog({
         metadata: row.metadata?.cardNumberPrefix
           ? { cardNumberPrefix: row.metadata.cardNumberPrefix }
           : undefined,
+        ...(linksUnknown ? { checklistLinksUnknown: true as const } : {}),
       });
       for (const source of SOURCE_KEYS) {
         for (const id of ids[source]) used[source].add(id);
@@ -1183,6 +1327,83 @@ function ReconciliationDialog({
       for (const h of halves) used[h.source].add(h.item.platformValue);
     }
 
+    // NEO-496 — the checklist's auto-matches, made server side. Each section
+    // joins the set its target is: a saved row, an auto-matched pair, or a
+    // marketplace item (which becomes a set with it, as an auto-matched pair
+    // of two marketplaces does). Several sections may join one set ("Base
+    // Red" and "Base Rated Prospects Red" both join "Red"). A target that is
+    // not there, is held, or is ambiguous leaves the section in Pending.
+    // Nothing is created that the fetch did not already pair.
+    const itemSets = new Map<string, number>();
+    for (const match of checklist?.matches ?? []) {
+      const section = byPv.checklist.get(match.sectionKey);
+      if (!section || used.checklist.has(section.platformValue)) continue;
+      const attachTo = (index: number) => {
+        const row = ready[index];
+        if (row.checklistLinksUnknown) return false;
+        if (!row.links.checklist.some((i) => i.platformValue === section.platformValue)) {
+          ready[index] = {
+            ...row,
+            links: { ...row.links, checklist: [...row.links.checklist, section] },
+          };
+        }
+        used.checklist.add(section.platformValue);
+        return true;
+      };
+      const target = match.target;
+      let placed = false;
+      if (target.kind === "row") {
+        const owners = ready
+          .map((set, index) => (set.existingId === target.rowId ? index : -1))
+          .filter((index) => index >= 0);
+        if (owners.length === 1) placed = attachTo(owners[0]);
+      } else if (target.kind === "pair") {
+        const owners = ready
+          .map((set, index) =>
+            set.links.bsc.some((i) => i.platformValue === target.bsc) &&
+            set.links.sportlots.some((i) => i.platformValue === target.sportlots)
+              ? index
+              : -1,
+          )
+          .filter((index) => index >= 0);
+        if (owners.length === 1) placed = attachTo(owners[0]);
+      } else {
+        const side = target.side;
+        const pv = target.platformValue;
+        const itemKey = `${side}\u0000${pv}`;
+        const made = itemSets.get(itemKey);
+        if (made !== undefined) {
+          placed = attachTo(made);
+        } else if (held[side].has(pv)) {
+          placed = false;
+        } else if (used[side].has(pv)) {
+          // Already on a set (restored, or an auto-matched pair): join it when
+          // exactly one set holds it.
+          const owners = ready
+            .map((set, index) =>
+              set.links[side].some((i) => i.platformValue === pv) ? index : -1,
+            )
+            .filter((index) => index >= 0);
+          if (owners.length === 1) placed = attachTo(owners[0]);
+        } else {
+          const item = byPv[side].get(pv);
+          if (item) {
+            ready.push({
+              key: `set-${seq++}`,
+              title: item.value,
+              links: linksOf({ source: side, item }, { source: "checklist", item: section }),
+              confidence: match.confidence,
+            });
+            used[side].add(pv);
+            used.checklist.add(section.platformValue);
+            itemSets.set(itemKey, ready.length - 1);
+            placed = true;
+          }
+        }
+      }
+      if (!placed) released.checklist.push(section);
+    }
+
     const pendingOf = (items: PlatformItem[], usedIds: Set<string>) => {
       const seen = new Set<string>();
       return items.filter((it) => {
@@ -1200,11 +1421,12 @@ function ReconciliationDialog({
       ),
       seq,
     };
-    return { state, savedSiblings };
+    return { state, savedSiblings, savedChecklistKeys };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const initialState = seed.state;
   const savedSiblings = seed.savedSiblings;
+  const savedChecklistKeys = seed.savedChecklistKeys;
   const [state, dispatch] = useReducer(reconcileSources, initialState);
 
   // ONE selection at a time, any source. Clicking another source's item pairs
@@ -1266,6 +1488,21 @@ function ReconciliationDialog({
     [],
   );
   const [showAllSl, setShowAllSl] = useState<boolean>(showAllSlInitially);
+  // NEO-496 — the checklist column's "Show all": off, it lists the sections
+  // this dialog's kind wants (the Base's runs for Parallels, the rest for
+  // Inserts); on, every section not already linked.
+  const [showAllChecklist, setShowAllChecklist] = useState(false);
+  const sectionKindByKey = useMemo(
+    () =>
+      new Map(
+        (checklist?.sections ?? []).map((section) => [
+          section.sectionKey,
+          section.kind,
+        ]),
+      ),
+    [checklist],
+  );
+  const checklistScope = checklist?.scope ?? "all";
   const [readyFilter, setReadyFilter] = useState<string>("");
   // Reveal items that some NB set already maps. NOT a sharing concept —
   // mapping never consumed anything, this just keeps the default list short
@@ -1316,10 +1553,24 @@ function ReconciliationDialog({
               return false;
             }
           }
+          // NEO-496 — the checklist column opens on the sections of this
+          // dialog's kind (`checklist.scope`). A section the fetch did not
+          // classify (none should be) is always listed.
+          if (source === "checklist" && !showAllChecklist && checklistScope !== "all") {
+            const kind = sectionKindByKey.get(item.platformValue);
+            if (kind !== undefined && kind !== checklistScope) return false;
+          }
           return true;
         }),
       ),
-    [state.pending, activeSlPrefixes, usedBySource],
+    [
+      state.pending,
+      activeSlPrefixes,
+      usedBySource,
+      showAllChecklist,
+      checklistScope,
+      sectionKindByKey,
+    ],
   );
 
   const queriedPending = useMemo(
@@ -1631,11 +1882,15 @@ function ReconciliationDialog({
       over: Over | null,
     ):
       | { kind: "attach"; set: ReadySet; already: boolean }
+      | { kind: "refused"; set: ReadySet }
       | { kind: "pair"; other: string }
-      | { kind: "none"; other: string | null } => {
+      | { kind: "none"; other: string | null; sameSource?: SourceKey } => {
       if (!over || over.id === active.id) return { kind: "none", other: null };
       const set = readySetOf(over.id);
       const ref = parseItemDndId(String(active.id));
+      if (set && ref && ref.source === "checklist" && set.checklistLinksUnknown) {
+        return { kind: "refused", set };
+      }
       if (set && ref) {
         return {
           kind: "attach",
@@ -1650,7 +1905,7 @@ function ReconciliationDialog({
       if (ref && overRef && other && overRef.source !== ref.source) {
         return { kind: "pair", other };
       }
-      return { kind: "none", other };
+      return { kind: "none", other, sameSource: ref?.source };
     };
     return {
       onDragStart: ({ active }) => {
@@ -1672,8 +1927,13 @@ function ReconciliationDialog({
         if (next.kind === "pair") {
           return `${label} is over ${next.other}. Drop to make them one set.`;
         }
+        if (next.kind === "refused") {
+          return `${label} is over ${readyLabelOf(next.set)}. ${checklistRefusal(readyLabelOf(next.set))}`;
+        }
         return next.other
-          ? `${label} is over ${next.other}, from the same marketplace. Dropping here changes nothing.`
+          ? `${label} is over ${next.other}, from the same ${
+              next.sameSource === "checklist" ? "checklist" : "marketplace"
+            }. Dropping here changes nothing.`
           : `${label} is not over anywhere it can be dropped.`;
       },
       onDragEnd: ({ active, over }) => {
@@ -1687,6 +1947,9 @@ function ReconciliationDialog({
         }
         if (next.kind === "pair") {
           return `Dropped ${label} on ${next.other}. They are now one set.`;
+        }
+        if (next.kind === "refused") {
+          return `Dropped ${label}. Nothing changed. ${checklistRefusal(readyLabelOf(next.set))}`;
         }
         return `Dropped ${label}. Nothing changed.`;
       },
@@ -1893,12 +2156,28 @@ function ReconciliationDialog({
         // A set whose title was cleared takes its first linked item's name.
         let fallbackTitle = "";
         for (const source of sources) {
-          const first = set.links[source.key][0]?.value;
-          if (first) {
-            fallbackTitle = first;
+          const first = set.links[source.key][0];
+          if (first?.value) {
+            fallbackTitle = defaultTitleOf(source.key, first);
             break;
           }
         }
+
+        // NEO-496 — the checklist sections, only when Save must say them: a
+        // new set holding any, or a saved row whose links were known and
+        // changed here. Absent leaves the row's links exactly as they are,
+        // which is the only safe answer for links nobody here could see.
+        const sectionKeys = set.links.checklist.map((i) => i.platformValue);
+        let checklistSectionKeys: string[] | undefined;
+        if (hasChecklist && !set.checklistLinksUnknown) {
+          if (set.existingId === undefined) {
+            if (sectionKeys.length > 0) checklistSectionKeys = sectionKeys;
+          } else {
+            const saved = savedChecklistKeys.get(set.key) ?? [];
+            if (!sameKeys(saved, sectionKeys)) checklistSectionKeys = sectionKeys;
+          }
+        }
+        const hasMarketplaceId = Object.keys(platformData).length > 0;
 
         return {
           // Undefined for a set built in this dialog, which is exactly right:
@@ -1911,7 +2190,15 @@ function ReconciliationDialog({
           // NEO-325: a set the operator made its own is matched by identity
           // only, so a SportLots twin saved after its namesake is stored as
           // its own row rather than withheld against the namesake by name.
-          ...(set.ownSet ? { identityOnly: true as const } : {}),
+          // NEO-496: a new set from the checklist alone has no id to be
+          // matched by, so it too is its own set rather than a name match.
+          ...(set.ownSet ||
+          (set.existingId === undefined &&
+            !hasMarketplaceId &&
+            checklistSectionKeys !== undefined)
+            ? { identityOnly: true as const }
+            : {}),
+          ...(checklistSectionKeys !== undefined ? { checklistSectionKeys } : {}),
         };
       });
 
@@ -1921,7 +2208,7 @@ function ReconciliationDialog({
     } finally {
       setConfirming(false);
     }
-  }, [state, onConfirm, saveBlockedByTitles, sources]);
+  }, [state, onConfirm, saveBlockedByTitles, sources, hasChecklist, savedChecklistKeys]);
 
   /**
    * NEO-220 — how much of this session a dismissal would throw away.
@@ -2059,13 +2346,21 @@ function ReconciliationDialog({
     // matches CardPairingModal's "Keep all BSC-only cards". What it does and
     // what it leaves out is its DESCRIPTION (an sr-only line), not its name.
     const keepAllShown = keepNarrowed && keepable.length > 0 ? keepable.length : null;
-    const keepAllName = BASE_MATCH_COPY.keepAllName(keepAllShown, sideName);
+    const isChecklist = source.kind === "checklist";
+    // NEO-496 — a checklist's items are sections, never "sets", and its name
+    // is a common noun ("checklist sections", not "Checklist sets").
+    const itemWord = (n: number) => `${source.noun}${n === 1 ? "" : "s"}`;
+    const keepAllName = isChecklist
+      ? keepAllShown === null
+        ? `Keep all, ${source.sentenceLabel} sections`
+        : `Keep all ${keepAllShown}, ${source.sentenceLabel} ${itemWord(keepAllShown)}`
+      : BASE_MATCH_COPY.keepAllName(keepAllShown, sideName);
     const keepAllDescription = `${
       keepNarrowed
         ? keepable.length === 1
-          ? `Make the 1 listed ${sideName} set its own NeonBinder set.`
-          : `Make each of the ${keepable.length} listed ${sideName} sets its own NeonBinder set.`
-        : `Make every pending ${sideName} set its own NeonBinder set.`
+          ? `Make the 1 listed ${source.sentenceLabel} ${source.noun} its own NeonBinder set.`
+          : `Make each of the ${keepable.length} listed ${source.sentenceLabel} ${itemWord(2)} its own NeonBinder set.`
+        : `Make every pending ${source.sentenceLabel} ${source.noun} its own NeonBinder set.`
     }${
       checksOn
         ? BASE_MATCH_COPY.keepAllLeftOut(stillChecking, columnMismatched.length)
@@ -2178,7 +2473,13 @@ function ReconciliationDialog({
               // bowman-insert-grouping-builds-parallels.yaml taps this by
               // id (Maestro id: is a full-string regex match), so a
               // unique name must stay exactly `Make its own set: <name>`.
-              aria-label={`Make its own set: ${sourceItemLabel(item, key, dups)}`}
+              // NEO-496: a section may share its name with a marketplace
+              // set in the next column, so its name says it is a section.
+              aria-label={
+                isChecklist
+                  ? `Make its own set from checklist section: ${sourceItemLabel(item, key, dups)}`
+                  : `Make its own set: ${sourceItemLabel(item, key, dups)}`
+              }
             >
               Make its own set
             </NeonButton>
@@ -2297,7 +2598,24 @@ function ReconciliationDialog({
           ariaLabel={source.filterLabel}
           inputRef={filterRefs[key]}
         />
-        {key !== "sportlots" ? (
+        {isChecklist ? (
+          // NEO-496 — the checklist's own "Show all": its column opens on
+          // the sections that fit this dialog (`checklist.scope`).
+          checklistScope === "all" ? (
+            <div className="mb-2 h-[18px]" aria-hidden="true" />
+          ) : (
+            <label className="flex items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showAllChecklist}
+                onChange={(e) => setShowAllChecklist(e.target.checked)}
+                aria-label="Show all checklist sections"
+                className="h-3.5 w-3.5 rounded border-control bg-raised text-neon-teal-text focus-outline"
+              />
+              Show all checklist sections
+            </label>
+          )
+        ) : key !== "sportlots" ? (
           // Spacer keeps the lists' tops aligned; only SL has a prefix
           // filter worth toggling.
           <div className="mb-2 h-[18px]" aria-hidden="true" />
@@ -2321,12 +2639,12 @@ function ReconciliationDialog({
               const checked = e.target.checked;
               setShowMapped((prev) => ({ ...prev, [key]: checked }));
             }}
-            aria-label={`Show ${sideName} sets already mapped`}
+            aria-label={`Show ${source.sentenceLabel} ${itemWord(2)} already mapped`}
             className={`h-3.5 w-3.5 rounded border-control bg-raised focus-outline ${
               TONE_CLASSES[source.tone].heading
             }`}
           />
-          Show sets already mapped
+          {`Show ${itemWord(2)} already mapped`}
         </label>
         {checksOn && probeSide && columnMismatched.length > 0 && (
           // NEO-325 — the sets the Base check set aside, never silently gone.
@@ -2390,14 +2708,20 @@ function ReconciliationDialog({
           ))}
           {all.length === 0 && mapped.length === 0 && (
             <p className="text-xs text-ink-3 italic py-2">
-              Nothing pending on {sideName}
+              {isChecklist
+                ? "Nothing pending on the checklist"
+                : `Nothing pending on ${sideName}`}
             </p>
           )}
           {all.length > 0 && filtered.length === 0 && columnMismatched.length === 0 && (
             <p className="text-xs text-ink-3 italic py-2">
               {query
-                ? `No ${source.badge} items contain "${query}"`
-                : key === "sportlots" && activeSlPrefixes.length > 0
+                ? isChecklist
+                  ? `No checklist sections contain "${query}"`
+                  : `No ${source.badge} items contain "${query}"`
+                : isChecklist && !showAllChecklist && checklistScope !== "all"
+                  ? "No sections fit here. Tick Show all checklist sections to see the rest."
+                  : key === "sportlots" && activeSlPrefixes.length > 0
                   ? `No SL items start with ${activeSlPrefixes
                       .map((p) => `"${p}"`)
                       .join(" or ")}`
@@ -2519,7 +2843,9 @@ function ReconciliationDialog({
           collisionDetection={keyboardAwareCollision}
           accessibility={{
             announcements,
-            screenReaderInstructions: { draggable: DRAG_INSTRUCTIONS },
+            screenReaderInstructions: {
+              draggable: hasChecklist ? DRAG_INSTRUCTIONS_WITH_CHECKLIST : DRAG_INSTRUCTIONS,
+            },
           }}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
@@ -2536,7 +2862,9 @@ function ReconciliationDialog({
               </h3>
               <p className="text-xs text-ink-3 mb-2">
                 These become NeonBinder sets. The title is ours — edit it freely.
-                Each set can map to any number of BSC and SportLots sets.
+                {hasChecklist
+                  ? " Each set can map to any number of BSC and SportLots sets and checklist sections."
+                  : " Each set can map to any number of BSC and SportLots sets."}
               </p>
               {state.ready.length > 0 && (
                 <div className="mb-2">
@@ -2567,8 +2895,16 @@ function ReconciliationDialog({
                     dups={dups}
                     attachHint={attachHint}
                     onAttachClick={
-                      attachHint !== undefined
+                      attachHint !== undefined &&
+                      !(selected?.source === "checklist" && set.checklistLinksUnknown)
                         ? () => handleAttachClick(set.key)
+                        : undefined
+                    }
+                    attachRefused={
+                      attachHint !== undefined &&
+                      selected?.source === "checklist" &&
+                      set.checklistLinksUnknown
+                        ? checklistRefusal(readyLabelOf(set))
                         : undefined
                     }
                     onRename={(title) =>

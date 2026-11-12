@@ -20,8 +20,16 @@
  * edit here.
  */
 import { SIDE_LABEL } from "./selector-sync-feedback";
+import type { SourceKey } from "./reconciliation-sources";
 
 export type MarketplaceSide = "bsc" | "sl";
+
+/**
+ * Whose `dups` a label call reads: a marketplace side as the older callers
+ * name it, or (NEO-496) any Reconcile source, the checklist included. The
+ * words never depend on it.
+ */
+export type LabelSide = MarketplaceSide | SourceKey;
 
 /** The comparison key for "same name": case-folded and trimmed. */
 export function nameKey(value: string): string {
@@ -69,7 +77,7 @@ function idText(platformValue: string): string {
  */
 export function itemLabelParts(
   item: { value: string; platformValue: string },
-  side: MarketplaceSide,
+  side: LabelSide,
   dups: ReadonlySet<string>,
 ): { name: string; suffix: string | null } {
   if (!dups.has(nameKey(item.value))) return { name: item.value, suffix: null };
@@ -79,7 +87,7 @@ export function itemLabelParts(
 /** `value`, or `value (#12345)` / `value (#bsc-slug)` when the name is shared. */
 export function itemLabel(
   item: { value: string; platformValue: string },
-  side: MarketplaceSide,
+  side: LabelSide,
   dups: ReadonlySet<string>,
 ): string {
   const { name, suffix } = itemLabelParts(item, side, dups);

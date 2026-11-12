@@ -7,7 +7,10 @@ import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import { mintWaitKey } from "@/lib/marketplace/wait-key";
-import BaseSetPicker, { type BaseRemapNotice } from "./BaseSetPicker";
+import BaseSetPicker, {
+  type BaseChecklistSection,
+  type BaseRemapNotice,
+} from "./BaseSetPicker";
 import type { PlatformItem } from "./ReconciliationModal";
 import { blockedMessageFromErrors } from "./selector-sync-feedback";
 import { ATTACH_MORE_LABEL } from "./control-labels";
@@ -25,7 +28,50 @@ type RawOptionsResult = {
    * rendering an empty list. Optional: an older result reads as "none".
    */
   pausedSides?: string[];
+  /**
+   * NEO-496 — the set's ready checklist: sections no row links (with how the
+   * publisher's names classify them) and, in `rowLinks`, the sections the
+   * Base row links now. Absent when the set has none.
+   */
+  checklist?: {
+    sections: Array<BaseChecklistSection & { sectionKey: string; name: string }>;
+    rowLinks?: Array<{
+      rowId: string;
+      sections: Array<{ sectionKey: string; name: string }>;
+    }>;
+  };
 };
+
+/**
+ * NEO-496 — the checklist the Base picker offers: the sections the Base links
+ * now first, then every section no row links. `null` when there is nothing to
+ * offer, or when the Base's own links did not come back (`rowLinks` absent):
+ * saving a pick would REPLACE links nobody here could see, so the list is
+ * left out rather than risk dropping one. Exported for its tests.
+ */
+export function baseChecklistOf(
+  checklist: RawOptionsResult["checklist"],
+  baseRowId: string,
+): { sections: BaseChecklistSection[]; linkedKeys: string[] } | null {
+  if (!checklist || !checklist.rowLinks) return null;
+  const linked =
+    checklist.rowLinks.find((r) => String(r.rowId) === baseRowId)?.sections ?? [];
+  const linkedKeys = linked.map((s) => s.sectionKey);
+  const seen = new Set(linkedKeys);
+  const sections: BaseChecklistSection[] = [
+    ...linked.map((s) => ({ sectionKey: s.sectionKey, name: s.name })),
+    ...checklist.sections.filter((s) => !seen.has(s.sectionKey)),
+  ];
+  if (sections.length === 0) return null;
+  return { sections, linkedKeys };
+}
+
+/** Same members, any order. */
+function sameKeys(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const have = new Set(a);
+  return b.every((k) => have.has(k));
+}
 
 /**
  * Lead-in for this form's fetch-failure message. Unchanged text, now a
@@ -259,11 +305,17 @@ export default function BaseMappingForm({
      * new slug (NEO-239).
      */
     bscLabel?: string,
+    /**
+     * NEO-496 — the Base's checklist sections, sent only when the pick
+     * changed them (absent leaves the Base's links alone; present replaces).
+     */
+    checklistSectionKeys?: string[],
   ) => {
     await setPlatformData({
       variantTypeId,
       platformData,
       ...(bscLabel ? { bscLabel } : {}),
+      ...(checklistSectionKeys !== undefined ? { checklistSectionKeys } : {}),
       // Sent whenever the row has loaded, in both modes. A version token can
       // only ever REFUSE a write, so carrying one on a mapping that turns out
       // to have had nothing at stake costs nothing — while omitting one on a
@@ -323,7 +375,9 @@ export default function BaseMappingForm({
       if (
         result.slOptions.length === 0 &&
         result.bscOptions.length === 0 &&
-        !setListing
+        !setListing &&
+        // NEO-496: a checklist with a section to offer is something to link.
+        !baseChecklistOf(result.checklist, String(variantTypeId))
       ) {
         // NEO-239: this used to set a message and immediately call onClose(),
         // which unmounted the form before the message could render — the
@@ -354,9 +408,15 @@ export default function BaseMappingForm({
     }
   };
 
+  const pickerChecklist = baseChecklistOf(
+    pickerData?.checklist,
+    String(variantTypeId),
+  );
+
   const handlePickerConfirm = async (selected: {
     sl?: PlatformItem;
     bsc?: PlatformItem;
+    checklistSectionKeys?: string[];
   }) => {
     // Exactly what was picked. No implicit set-slug substitution: the set
     // listing is a candidate row in the dialog now, so if it is what should be
@@ -373,12 +433,32 @@ export default function BaseMappingForm({
     if (selected.bsc) {
       platformData.bsc = selected.bsc.platformValue;
     }
-    if (!platformData.sportlots && !platformData.bsc) return;
+    // NEO-496 — the Base's checklist sections, only when the pick changed
+    // them. A list the picker never showed (`pickerChecklist` null) is never
+    // sent: its links are unknown, and replacing them could drop one.
+    const checklistSectionKeys =
+      pickerChecklist &&
+      selected.checklistSectionKeys !== undefined &&
+      !sameKeys(selected.checklistSectionKeys, pickerChecklist.linkedKeys)
+        ? selected.checklistSectionKeys
+        : undefined;
+    if (!platformData.sportlots && !platformData.bsc) {
+      if (checklistSectionKeys === undefined) {
+        // Only the sections the Base already links were picked: nothing to
+        // write, and the Base is linked.
+        if ((selected.checklistSectionKeys?.length ?? 0) > 0) {
+          setStaleNotice(null);
+          setPickerOpen(false);
+          onClose("mapped");
+        }
+        return;
+      }
+    }
 
     try {
       // `selected.bsc.value` is BSC's own name for the set the operator chose,
       // which is the only place a real label for this slot can come from.
-      await writePlatformData(platformData, selected.bsc?.value);
+      await writePlatformData(platformData, selected.bsc?.value, checklistSectionKeys);
     } catch (e) {
       if (errorCode(e) === "BASE_MAPPING_STALE") {
         // Re-open on the FRESH row: `variantTypeRow` is reactive, so the next
@@ -461,6 +541,7 @@ export default function BaseMappingForm({
           bscOptions={pickerData?.bscOptions ?? []}
           pausedSides={pickerData?.pausedSides ?? []}
           setListing={setListing}
+          checklist={pickerChecklist ?? undefined}
           setName={setNameValue || ""}
           manufacturer={manufacturerValue || ""}
           loading={loading}

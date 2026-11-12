@@ -41,6 +41,34 @@ export type BaseRemapNotice = {
   currentBscLabel?: string;
 };
 
+/**
+ * NEO-496 — a checklist section offered for the Base. `kind` is how the
+ * publisher's names classify it (`lib/checklists/classify-sections.ts`, run
+ * server side): `base` is the one section named base / base cards / base set,
+ * `base-child` its runs ("Base Rated Prospects", "Base Red").
+ */
+export type BaseChecklistSection = {
+  sectionKey: string;
+  name: string;
+  rowCount?: number;
+  kind?: "base" | "base-child" | "other";
+};
+
+/**
+ * NEO-496 — the section to pre-select for the Base: the sections the Base
+ * already links when it links any, else the ONE section classified `base`,
+ * else nothing (two named base, or none, and the operator picks). Exported so
+ * the rule is tested without rendering the dialog.
+ */
+export function preselectedChecklistKeys(
+  sections: readonly BaseChecklistSection[],
+  linkedKeys: readonly string[],
+): string[] {
+  if (linkedKeys.length > 0) return [...linkedKeys];
+  const bases = sections.filter((s) => s.kind === "base");
+  return bases.length === 1 ? [bases[0].sectionKey] : [];
+}
+
 type BaseSetPickerProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -52,6 +80,12 @@ type BaseSetPickerProps = {
   onConfirm: (selected: {
     sl?: PlatformItem;
     bsc?: PlatformItem;
+    /**
+     * NEO-496 — the checklist sections picked for the Base, by key. Present
+     * exactly when the dialog was handed a `checklist`; the caller decides
+     * whether that changed anything.
+     */
+    checklistSectionKeys?: string[];
   }) => Promise<void>;
   slOptions: PlatformItem[];
   bscOptions?: PlatformItem[];
@@ -93,6 +127,16 @@ type BaseSetPickerProps = {
    * unconditionally (the line handles its own idle state).
    */
   waitingSlot?: React.ReactNode;
+  /**
+   * NEO-496 — the set's uploaded checklist: the sections the Base may link
+   * (those it links now, then the ones no row links) and the keys it links
+   * now. A Base can be several sections ("Base" + "Base Rated Prospects"), so
+   * this list picks any number. Absent: no checklist list at all.
+   */
+  checklist?: {
+    sections: BaseChecklistSection[];
+    linkedKeys: string[];
+  };
 };
 
 /**
@@ -291,6 +335,7 @@ export default function BaseSetPicker({
   notice,
   pausedSides = [],
   waitingSlot,
+  checklist,
 }: BaseSetPickerProps) {
   const slPaused = pausedSides.includes("sportlots");
   const bscPaused = pausedSides.includes("bsc");
@@ -308,6 +353,14 @@ export default function BaseSetPicker({
   // Roving tabIndex position per list (WAI-ARIA listbox pattern).
   const [slFocusIndex, setSlFocusIndex] = useState(0);
   const [bscFocusIndex, setBscFocusIndex] = useState(0);
+  // NEO-496 — the checklist list: which sections are ticked, whether the
+  // operator has touched it (then nothing re-preselects), its roving focus,
+  // and its "Show all".
+  const [checklistKeys, setChecklistKeys] = useState<string[]>([]);
+  const [userPickedChecklist, setUserPickedChecklist] = useState(false);
+  const [checklistFocusIndex, setChecklistFocusIndex] = useState(0);
+  const [showAllSections, setShowAllSections] = useState(false);
+  const checklistRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -392,6 +445,34 @@ export default function BaseSetPicker({
     setSelectedBscKey(sole ? sole.key : null);
   }, [bscCandidates, userPickedBsc]);
 
+  // NEO-496 — pre-select the Base's sections (see `preselectedChecklistKeys`)
+  // until the operator ticks or unticks one.
+  const checklistSections = useMemo(() => checklist?.sections ?? [], [checklist]);
+  const checklistLinked = useMemo(() => checklist?.linkedKeys ?? [], [checklist]);
+  useEffect(() => {
+    if (userPickedChecklist) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- pre-selects the Base's own or sole base section; latched by userPickedChecklist
+    setChecklistKeys(preselectedChecklistKeys(checklistSections, checklistLinked));
+  }, [checklistSections, checklistLinked, userPickedChecklist]);
+  // The list opens on what can be a Base: the section named base, its runs,
+  // and whatever the Base links now. Everything else waits behind Show all,
+  // unless nothing classified as base at all.
+  const baseLikeSections = useMemo(
+    () =>
+      checklistSections.filter(
+        (s) =>
+          s.kind === "base" ||
+          s.kind === "base-child" ||
+          checklistLinked.includes(s.sectionKey),
+      ),
+    [checklistSections, checklistLinked],
+  );
+  const hiddenSectionCount = checklistSections.length - baseLikeSections.length;
+  const shownSections =
+    showAllSections || baseLikeSections.length === 0
+      ? checklistSections
+      : baseLikeSections;
+
   const filteredSlOptions = useMemo(() => {
     const q = searchFilter.trim().toLowerCase();
     if (!q) return sortedSlOptions;
@@ -429,24 +510,44 @@ export default function BaseSetPicker({
     ? undefined
     : slOptions.find((o) => o.platformValue === selectedPlatformValue);
   const selectedBsc = bscCandidates.find((c) => c.key === selectedBscKey)?.item;
-  const hasPick = !!selectedSl || !!selectedBsc;
+  const hasPick = !!selectedSl || !!selectedBsc || checklistKeys.length > 0;
 
   // `override` exists for Enter-on-an-option: that keystroke both selects and
   // confirms, and the selection setState is not visible to this call.
   const doConfirm = async (override?: {
     sl?: PlatformItem;
     bsc?: PlatformItem;
+    checklist?: string[];
   }) => {
     const sl = override && "sl" in override ? override.sl : selectedSl;
     const bsc = override && "bsc" in override ? override.bsc : selectedBsc;
-    if (!sl && !bsc) return;
+    const keys = override?.checklist ?? checklistKeys;
+    if (!sl && !bsc && keys.length === 0) return;
     if (confirming || loading) return;
     setConfirming(true);
     try {
-      await onConfirm({ sl, bsc });
+      await onConfirm({
+        sl,
+        bsc,
+        ...(checklist ? { checklistSectionKeys: keys } : {}),
+      });
     } finally {
       setConfirming(false);
     }
+  };
+
+  /** The ticked keys with `key` toggled (or forced on). */
+  const toggledKeys = (key: string, forceOn = false): string[] =>
+    checklistKeys.includes(key)
+      ? forceOn
+        ? checklistKeys
+        : checklistKeys.filter((k) => k !== key)
+      : [...checklistKeys, key];
+  const toggleSection = (key: string, forceOn = false) => {
+    const next = toggledKeys(key, forceOn);
+    setChecklistKeys(next);
+    setUserPickedChecklist(true);
+    return next;
   };
 
   const showSearch = !slPaused && slOptions.length > 8;
@@ -475,6 +576,7 @@ export default function BaseSetPicker({
       searchRef.current ??
       slRefs.current[0] ??
       bscRefs.current[0] ??
+      checklistRefs.current[0] ??
       (loading ? null : dialog);
     if (!target) return;
     target.focus();
@@ -489,12 +591,13 @@ export default function BaseSetPicker({
     };
   }, []);
 
-  const focusOption = (side: "sl" | "bsc", index: number) => {
-    const refs = side === "sl" ? slRefs : bscRefs;
+  const focusOption = (side: "sl" | "bsc" | "checklist", index: number) => {
+    const refs = side === "sl" ? slRefs : side === "bsc" ? bscRefs : checklistRefs;
     const el = refs.current[index];
     if (!el) return;
     if (side === "sl") setSlFocusIndex(index);
-    else setBscFocusIndex(index);
+    else if (side === "bsc") setBscFocusIndex(index);
+    else setChecklistFocusIndex(index);
     el.focus();
   };
 
@@ -518,11 +621,13 @@ export default function BaseSetPicker({
    */
   const onOptionKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
-    side: "sl" | "bsc",
+    side: "sl" | "bsc" | "checklist",
     index: number,
     count: number,
     onSelect: () => void,
-    confirmOverride: { sl?: PlatformItem; bsc?: PlatformItem },
+    confirmOverride:
+      | { sl?: PlatformItem; bsc?: PlatformItem; checklist?: string[] }
+      | (() => { sl?: PlatformItem; bsc?: PlatformItem; checklist?: string[] }),
   ) => {
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       event.preventDefault();
@@ -551,6 +656,10 @@ export default function BaseSetPicker({
     }
     if (event.key === "Enter") {
       event.preventDefault();
+      if (typeof confirmOverride === "function") {
+        void doConfirm(confirmOverride());
+        return;
+      }
       onSelect();
       void doConfirm(confirmOverride);
     }
@@ -664,7 +773,9 @@ export default function BaseSetPicker({
               id="base-set-picker-description"
               className="text-sm text-ink-3 mt-1"
             >
-              Choose the SportLots and BSC sets that hold{" "}
+              {checklist
+                ? "Choose the SportLots and BSC sets and the checklist sections that hold "
+                : "Choose the SportLots and BSC sets that hold "}
               <strong className="text-ink-2">{setName}</strong>&rsquo;s base
               cards. Only what you pick is linked; nothing else changes.
             </p>
@@ -794,6 +905,109 @@ export default function BaseSetPicker({
                     );
                   })}
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* NEO-496 — the checklist's sections. Several may be the Base. */}
+          {checklist && !loading && (
+            <div className="px-6 pt-3">
+              <div
+                className="text-xs text-neon-teal-text font-medium uppercase tracking-wide mb-1.5"
+                id="checklist-base-list-label"
+              >
+                Checklist base
+              </div>
+              {checklistSections.length === 0 ? (
+                <p className="text-sm text-ink-3">
+                  Every checklist section already has a home.
+                </p>
+              ) : (
+                <>
+                  <div
+                    role="listbox"
+                    aria-multiselectable="true"
+                    aria-labelledby="checklist-base-list-label"
+                    className="space-y-1 max-h-40 overflow-y-auto"
+                  >
+                    {shownSections.map((section, i) => {
+                      const ticked = checklistKeys.includes(section.sectionKey);
+                      return (
+                        <button
+                          key={section.sectionKey}
+                          type="button"
+                          role="option"
+                          aria-selected={ticked}
+                          aria-label={`Checklist base section: ${section.name}`}
+                          tabIndex={i === checklistFocusIndex ? 0 : -1}
+                          ref={(el) => {
+                            checklistRefs.current[i] = el;
+                          }}
+                          onFocus={() => setChecklistFocusIndex(i)}
+                          onClick={() => toggleSection(section.sectionKey)}
+                          onKeyDown={(e) =>
+                            onOptionKeyDown(
+                              e,
+                              "checklist",
+                              i,
+                              shownSections.length,
+                              () => toggleSection(section.sectionKey),
+                              // Enter keeps this section ticked and confirms.
+                              () => ({
+                                sl: selectedSl,
+                                bsc: selectedBsc,
+                                checklist: toggleSection(section.sectionKey, true),
+                              }),
+                            )
+                          }
+                          className={`w-full text-left px-3 py-1.5 rounded-md border transition-all text-sm focus-outline ${
+                            ticked
+                              ? "border-neon-teal-text bg-neon-teal/10 ring-1 ring-neon-teal-text"
+                              : "border-control bg-raised hover:border-ink-3"
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            {/* The tick box is the multi-select tell; the
+                                state itself is aria-selected. */}
+                            <span
+                              aria-hidden="true"
+                              className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border text-[10px] leading-none ${
+                                ticked
+                                  ? "border-neon-teal-text bg-neon-teal text-on-neon-teal"
+                                  : "border-control"
+                              }`}
+                            >
+                              {ticked ? "✓" : ""}
+                            </span>
+                            <span className="text-ink-2 min-w-0 break-words">
+                              {section.name}
+                            </span>
+                            {typeof section.rowCount === "number" && (
+                              <span className="ml-auto shrink-0 text-[11px] text-ink-3 tabular-nums">
+                                {section.rowCount === 1 ? "1 card" : `${section.rowCount} cards`}
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {hiddenSectionCount > 0 && baseLikeSections.length > 0 && (
+                    <label className="mt-1.5 flex items-center gap-2 text-xs text-ink-3 select-none cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showAllSections}
+                        onChange={(e) => {
+                          setShowAllSections(e.target.checked);
+                          setChecklistFocusIndex(0);
+                        }}
+                        aria-label="Show all checklist sections"
+                        className="h-3.5 w-3.5 rounded border-control bg-raised text-neon-teal-text focus-outline"
+                      />
+                      {`Show all checklist sections (${hiddenSectionCount} more)`}
+                    </label>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -935,7 +1149,9 @@ export default function BaseSetPicker({
                   ? "Loading marketplace options…"
                   : hasPick
                     ? ""
-                    : "Pick a SportLots or BSC set to continue."}
+                    : checklist
+                      ? "Pick a SportLots or BSC set, or a checklist section, to continue."
+                      : "Pick a SportLots or BSC set to continue."}
               </p>
               {waitingSlot}
             </div>

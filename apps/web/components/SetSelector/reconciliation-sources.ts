@@ -55,11 +55,19 @@ export const isMarketplaceSource = (
  * The colour role a source's column heading, badges and chips paint with.
  * The dialog maps each to its classes (Tailwind needs them written out).
  */
-export type SourceTone = "blue" | "purple";
+export type SourceTone = "blue" | "purple" | "teal";
 
 type SourceDescriptorBase = {
-  /** Full name, in headings and sentences: "BSC", "SportLots". */
+  /** Full name, in headings: "BSC", "SportLots", "Checklist". */
   label: string;
+  /**
+   * The name inside a sentence ("Nothing pending on BSC", "Show checklist
+   * sections already mapped"). The marketplaces are proper names and read the
+   * same; the checklist is a common noun.
+   */
+  sentenceLabel: string;
+  /** What one of its items is: "set" for a marketplace, "section" for a checklist. */
+  noun: string;
   /** The short tag on a row's badge and a Ready set's chip: "BSC", "SL". */
   badge: string;
   /** The column's search box, as its accessible name ("…" is added for the placeholder). */
@@ -76,6 +84,8 @@ export const BSC_SOURCE: SourceDescriptor = {
   key: "bsc",
   kind: "marketplace",
   label: "BSC",
+  sentenceLabel: "BSC",
+  noun: "set",
   badge: "BSC",
   filterLabel: "Filter BSC items",
   tone: "blue",
@@ -85,9 +95,30 @@ export const SPORTLOTS_SOURCE: SourceDescriptor = {
   key: "sportlots",
   kind: "marketplace",
   label: "SportLots",
+  sentenceLabel: "SportLots",
+  noun: "set",
   badge: "SL",
   filterLabel: "Search SportLots items",
   tone: "purple",
+};
+
+/**
+ * NEO-496 (C1b) — the set's uploaded publisher checklist, as a column. Its
+ * items are SECTIONS ("Future Stars", "Base Red"): `platformValue` is the
+ * section's key, `value` its name as printed. Teal, the Print Shop's hue: a
+ * checklist is the printed sheet, and teal is the one neon this dialog does
+ * not already spend (green is Ready and the keep buttons, blue BSC, violet
+ * SportLots, amber the Base check's findings, pink the errors).
+ */
+export const CHECKLIST_SOURCE: SourceDescriptor = {
+  key: "checklist",
+  kind: "checklist",
+  label: "Checklist",
+  sentenceLabel: "checklist",
+  noun: "section",
+  badge: "Checklist",
+  filterLabel: "Filter checklist sections",
+  tone: "teal",
 };
 
 /** What every Reconcile dialog lines up today. */
@@ -96,6 +127,32 @@ export const MARKETPLACE_SOURCES: readonly SourceDescriptor[] = [
   SPORTLOTS_SOURCE,
 ];
 
+/** The marketplaces plus the checklist, in column order. */
+export const SOURCES_WITH_CHECKLIST: readonly SourceDescriptor[] = [
+  BSC_SOURCE,
+  SPORTLOTS_SOURCE,
+  CHECKLIST_SOURCE,
+];
+
+/**
+ * NEO-496 — the title a set made from a checklist section starts with: the
+ * section's name, in Title Case when the publisher printed it in capitals
+ * ("TOPPS CHROME RADIATING ROOKIES" → "Topps Chrome Radiating Rookies"). A
+ * name with any lower-case letter is the publisher's own casing and is kept.
+ * Only a starting point: the title is ours, and the operator edits it.
+ */
+export function checklistSetTitle(name: string): string {
+  const trimmed = name.trim();
+  if (!/[A-Z]/.test(trimmed) || /[a-z]/.test(trimmed)) return trimmed;
+  return trimmed
+    .toLowerCase()
+    .replace(/(^|[\s\-/(])(\p{L})/gu, (_, lead: string, letter: string) => lead + letter.toUpperCase());
+}
+
+/** The title an item gives a set made from it, by its source. */
+export function defaultTitleOf(source: SourceKey, item: PlatformItem): string {
+  return source === "checklist" ? checklistSetTitle(item.value) : item.value;
+}
 /**
  * A source's word in DOM and drag ids (`bsc-<id>`, `data-own-set="sl"`).
  * SportLots keeps the `sl` it always had: E2E specs and component tests find
@@ -166,6 +223,13 @@ export type ReadySet = {
    * renames: the operator still meant it as its own set.
    */
   ownSet?: boolean;
+  /**
+   * NEO-496 — a set restored from a saved row whose checklist links were NOT
+   * handed over. Its checklist list is not "none", it is unknown: a section is
+   * never attached to it (saving would replace links we cannot see, and losing
+   * a link is a bug), and its links are never sent on Save.
+   */
+  checklistLinksUnknown?: true;
 };
 
 /** A Ready set's links with one source's list replaced. */
@@ -283,7 +347,7 @@ export function reconcileSources(
           ...state.ready,
           {
             key: `set-${state.seq}`,
-            title: titled.item.value,
+            title: defaultTitleOf(titled.source, titled.item),
             links: linksOf(a, b),
             confidence: 0,
           },
@@ -300,7 +364,7 @@ export function reconcileSources(
           ...state.ready,
           {
             key: `set-${state.seq}`,
-            title: item.value,
+            title: defaultTitleOf(source, item),
             links: linksOf({ source, item }),
             confidence: 0,
             ownSet: true,
@@ -326,7 +390,7 @@ export function reconcileSources(
       if (items.length === 0) return state;
       const created: ReadySet[] = items.map((item, n) => ({
         key: `set-${state.seq + n}`,
-        title: item.value,
+        title: defaultTitleOf(source, item),
         links: linksOf({ source, item }),
         confidence: 0,
         // NEO-325 — "Keep all" is "Make its own set" on every row, so each
@@ -347,6 +411,9 @@ export function reconcileSources(
       const { source, item } = action;
       const target = state.ready.find((s) => s.key === action.key);
       if (!target) return state;
+      // NEO-496 — never onto a set whose saved checklist links are unknown:
+      // Save would have to replace a list nobody here can see.
+      if (source === "checklist" && target.checklistLinksUnknown) return state;
       // Same marketplace id twice on ONE set would make two slots pointing at
       // the same place. Across DIFFERENT sets it is fine and expected — that is
       // the 1996 Score case, where one SportLots set legitimately backs two NB
