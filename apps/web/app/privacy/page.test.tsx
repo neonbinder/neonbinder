@@ -57,4 +57,10 @@ describe("PrivacyPage", () => {
     collect.getByText(/the file itself is never uploaded/);
     collect.getByText(/never sent to a marketplace/);
   });
+
+  it("says a set checklist stays until it is replaced or removed, and one left half-added goes after an hour", () => {
+    renderPrivacy();
+    screen.getByText(/A set.s checklist stays until an admin replaces or removes it/);
+    screen.getByText(/one left half-added for an hour is deleted too/);
+  });
 });
