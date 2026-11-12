@@ -11,6 +11,17 @@ import {
   LOOKS_LIKE_A_TITLE,
   parsePublishedChecklist,
   splitDelimited,
+  ABOVE_THE_HEADER,
+  NOT_IN_A_SECTION,
+  NOT_READ_PAST_HERE,
+  ONE_CELL_ONLY,
+  PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS,
+  TOO_MANY_COLUMNS,
+  capLeafRows,
+  headingText,
+  parsePublishedChecklistCells,
+  pastLimit,
+  type ChecklistCellRecord,
 } from "./parse-published-checklist";
 
 describe("parsePublishedChecklist — the published line format", () => {
@@ -924,5 +935,339 @@ describe("parsePublishedChecklist — NEO-489: a whole team cell that makes no c
   it("only a WHOLE cell makes no claim: a real team beside 'None' stays a team", () => {
     const out = parsePublishedChecklist("#,Player,Team\n1,Mike Trout,Angels / None");
     expect(out.rows[0].teams).toEqual(["Angels", "None"]);
+  });
+});
+
+// ── NEO-496: headers below a title, headings, spreadsheets and PDFs ─────────
+
+describe("parsePublishedChecklist — NEO-496: the header may sit under a title", () => {
+  it("finds the header within the first 20 non-blank lines and skips the lines above it", () => {
+    const out = parsePublishedChecklist(
+      [
+        "Spreadsheet made available by Checklist Insider.",
+        "",
+        "CARD SET,CARD #,ATHLETE,TEAM,SEQ",
+        "Bomb Squad,1,Bryce Eldridge,San Francisco Giants,",
+      ].join("\n"),
+    );
+    expect(out.format).toBe("csv");
+    expect(out.skipped).toEqual([
+      { line: 1, text: "Spreadsheet made available by Checklist Insider.", reason: ABOVE_THE_HEADER },
+    ]);
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Bryce Eldridge"], teams: ["San Francisco Giants"], subset: "Bomb Squad" },
+    ]);
+  });
+
+  it("does not look past the 20th non-blank line for a header", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `${i + 1} Player ${i} - Team`);
+    const out = parsePublishedChecklist([...lines, "#,Player,Team", "21,Late Guy,Team"].join("\n"));
+    expect(out.format).toBe("lines");
+    expect(out.rows).toHaveLength(20);
+  });
+});
+
+describe("parsePublishedChecklist — NEO-496: section headings", () => {
+  it("reads an ALL-CAPS line as the heading of the rows below it, and a heading with no rows as a group", () => {
+    const out = parsePublishedChecklist(
+      [
+        "BASE",
+        "BASE CARDS",
+        "1 Shohei Ohtani - Los Angeles Dodgers",
+        "INSERT",
+        "FUTURE STARS",
+        "FS-1 Munetaka Murakami - Chicago White Sox",
+      ].join("\n"),
+    );
+    expect(out.skipped).toEqual([]);
+    expect(out.subsets).toEqual(["BASE CARDS", "FUTURE STARS"]);
+    expect(out.groups).toEqual({ "BASE CARDS": "BASE", "FUTURE STARS": "INSERT" });
+    expect(out.rows.map((r) => [r.number, r.subset])).toEqual([
+      ["1", "BASE CARDS"],
+      ["FS-1", "FUTURE STARS"],
+    ]);
+  });
+
+  it("continues a section when its heading repeats with nothing between, and tells a later repeat apart", () => {
+    const out = parsePublishedChecklist(
+      [
+        "INSERT",
+        "FUTURE STARS",
+        "FS-1 A Guy - Team A",
+        "FUTURE STARS",
+        "FS-2 B Guy - Team B",
+        "AUTOGRAPH",
+        "ROOKIE AUTOGRAPHS",
+        "RA-1 C Guy - Team C",
+        "FUTURE STARS",
+        "FSA-1 D Guy - Team D",
+        "ROOKIE AUTOGRAPHS",
+        "RA-2 E Guy - Team E",
+        "FUTURE STARS",
+        "FSA-2 F Guy - Team F",
+      ].join("\n"),
+    );
+    expect(out.subsets).toEqual([
+      "FUTURE STARS",
+      "ROOKIE AUTOGRAPHS",
+      "AUTOGRAPH FUTURE STARS",
+      "AUTOGRAPH ROOKIE AUTOGRAPHS",
+      "AUTOGRAPH FUTURE STARS (2)",
+    ]);
+    expect(out.rows.map((r) => r.subset)).toEqual([
+      "FUTURE STARS",
+      "FUTURE STARS",
+      "ROOKIE AUTOGRAPHS",
+      "AUTOGRAPH FUTURE STARS",
+      "AUTOGRAPH ROOKIE AUTOGRAPHS",
+      "AUTOGRAPH FUTURE STARS (2)",
+    ]);
+  });
+
+  it("numbers a repeat with no group heading", () => {
+    const out = parsePublishedChecklist(
+      ["HELIX", "1 A - T", "SHADOW ETCH", "2 B - T", "HELIX", "3 C - T"].join("\n"),
+    );
+    expect(out.subsets).toEqual(["HELIX", "SHADOW ETCH", "HELIX (2)"]);
+    expect(out.groups).toBeUndefined();
+  });
+
+  it("reads a single-cell ALL-CAPS line in a headered CSV as a heading", () => {
+    const out = parsePublishedChecklist("#,Player,Team\nFUTURE STARS\nFS-1,A Guy,Team A");
+    expect(out.rows).toEqual([{ number: "FS-1", players: ["A Guy"], teams: ["Team A"], subset: "FUTURE STARS" }]);
+  });
+
+  it("a subset cell still wins over a heading, and a blank one falls back to the heading", () => {
+    const out = parsePublishedChecklist(
+      "Card Set,#,Player\nBONUS\nBase,1,A Guy\n,2,B Guy",
+    );
+    expect(out.rows.map((r) => r.subset)).toEqual(["Base", "BONUS"]);
+  });
+
+  it("headingText takes only a lone ALL-CAPS name, never a number, code, marker or lower-case line", () => {
+    expect(headingText(["CLASS OF 2026 COOPERSTOWN CALLS"])).toBe("CLASS OF 2026 COOPERSTOWN CALLS");
+    expect(headingText(["", "TOPPS CHROME®", ""])).toBe("TOPPS CHROME");
+    for (const not of ["NNO", "RA-MT", "RC", "200 CARDS", "Rookie", "60", "A", "Base Cards"]) {
+      expect(headingText([not])).toBeNull();
+    }
+    expect(headingText(["BASE", "CARDS"])).toBeNull();
+    expect(headingText(["X".repeat(PUBLISHED_CHECKLIST_MAX_NAME + 1)])).toBeNull();
+  });
+
+  it("set mode skips rows above the first heading with a reason", () => {
+    const out = parsePublishedChecklist("1 A Guy - Team\nHELIX\n2 B Guy - Team", { mode: "set" });
+    expect(out.rows.map((r) => r.number)).toEqual(["2"]);
+    expect(out.skipped).toEqual([{ line: 1, text: "1 A Guy - Team", reason: NOT_IN_A_SECTION }]);
+  });
+
+  it("a line-mode title is never taken for a heading", () => {
+    const out = parsePublishedChecklist("2026 TOPPS CHROME\n1 A Guy - Team", { setYear: 2026 });
+    expect(out.skipped.map((s) => s.reason)).toEqual([LOOKS_LIKE_A_TITLE]);
+    expect(out.subsets).toBeUndefined();
+  });
+});
+
+describe("parsePublishedChecklist — NEO-496: the per-leaf cap comes after the ticks", () => {
+  const twoSubsets = [
+    "Card Set,#,Player",
+    ...Array.from({ length: 2500 }, (_, i) => `Big,${i + 1},P${i}`),
+    ...Array.from({ length: 3 }, (_, i) => `Small,${i + 1},Q${i}`),
+  ].join("\n");
+
+  it("keeps every row when the file has two or more subsets, so a small one is never cut off", () => {
+    const out = parsePublishedChecklist(twoSubsets);
+    expect(out.rows).toHaveLength(2503);
+    expect(out.skipped).toEqual([]);
+    const small = capLeafRows(filterRowsBySubsets(out.rows, ["Small"]));
+    expect(small).toEqual({ rows: out.rows.slice(2500), dropped: 0 });
+  });
+
+  it("capLeafRows holds the ticked rows to 2,000 and says how many it left off", () => {
+    const out = parsePublishedChecklist(twoSubsets);
+    const big = capLeafRows(filterRowsBySubsets(out.rows, ["Big"]));
+    expect(big.rows).toHaveLength(PUBLISHED_CHECKLIST_MAX_ROWS);
+    expect(big.dropped).toBe(500);
+  });
+
+  it("set mode never applies the per-leaf cap", () => {
+    const text = Array.from({ length: 2005 }, (_, i) => `${i + 1} P${i} - T`).join("\n");
+    const out = parsePublishedChecklist(`HELIX\n${text}`, { mode: "set" });
+    expect(out.rows).toHaveLength(2005);
+  });
+
+  it("holds even a many-subset paste to the set-level total", () => {
+    expect(PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS).toBe(50_000);
+    expect(pastLimit(50_000)).toBe("Past the 50,000-row limit");
+  });
+});
+
+function pdfLine(line: number, cells: string[], xs: number[], page = 1): ChecklistCellRecord {
+  return { line, page, cells, xs };
+}
+
+const N = 53;
+const P = 132.6;
+const T = 298;
+
+describe("parsePublishedChecklistCells — a Topps-layout PDF", () => {
+  const records: ChecklistCellRecord[] = [
+    pdfLine(1, ["2026 Topps Chrome Baseball Checklist"], [53]),
+    pdfLine(2, ["Checklists provided by Topps reflect the intended configurations"], [53]),
+    pdfLine(3, ["BASE"], [53]),
+    pdfLine(4, ["BASE CARDS"], [53]),
+    pdfLine(5, ["1", "Shohei Ohtani", "Los Angeles Dodgers®"], [N, P, T]),
+    pdfLine(6, ["3", "Yordan Alvarez", "Houston Astros®"], [N, P, T]),
+    pdfLine(7, ["INSERT"], [53]),
+    pdfLine(8, ["2025 MLB COMMISSIONERS TROPHY"], [53]),
+    pdfLine(9, ["CT-1", "Los Angeles Dodgers®"], [N, T]),
+    pdfLine(10, ["DIAMOND MOMENTS"], [53]),
+    pdfLine(11, ["DM-33", "George Bush"], [N, P]),
+    pdfLine(12, ["FANATICS AUTHENTICS REDEMPTION CARDS"], [53]),
+    pdfLine(13, ["Chase Utley", "Philadelphia Phillies®"], [P, T]),
+    pdfLine(14, ["Vladimir Guerrero", "Angels®"], [P, T]),
+    pdfLine(15, ["Rookie"], [470], 2),
+    pdfLine(16, ["1", "A", "B", "C"], [N, P, T, 400], 2),
+  ];
+  const out = parsePublishedChecklistCells({ format: "pdf", records }, { setYear: 2026 });
+
+  it("reads number / player / team, drops ® and ™, and names each row's section", () => {
+    expect(out.format).toBe("pdf");
+    expect(out.rows.slice(0, 2)).toEqual([
+      { number: "1", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"], subset: "BASE CARDS" },
+      { number: "3", players: ["Yordan Alvarez"], teams: ["Houston Astros"], subset: "BASE CARDS" },
+    ]);
+    expect(out.subsets).toEqual([
+      "BASE CARDS",
+      "2025 MLB COMMISSIONERS TROPHY",
+      "DIAMOND MOMENTS",
+      "FANATICS AUTHENTICS REDEMPTION CARDS",
+    ]);
+    expect(out.groups?.["DIAMOND MOMENTS"]).toBe("INSERT");
+  });
+
+  it("reads a two-cell line by where its second cell sits: under team is a team card", () => {
+    expect(out.rows.find((r) => r.number === "CT-1")).toEqual({
+      number: "CT-1",
+      players: [],
+      teams: ["Los Angeles Dodgers"],
+      subset: "2025 MLB COMMISSIONERS TROPHY",
+    });
+    expect(out.rows.find((r) => r.number === "DM-33")).toEqual({
+      number: "DM-33",
+      players: ["George Bush"],
+      teams: [],
+      subset: "DIAMOND MOMENTS",
+    });
+  });
+
+  it("reads a two-cell line with no number as a card printed without one (NNO)", () => {
+    const nno = out.rows.filter((r) => r.noNumber);
+    expect(nno).toEqual([
+      {
+        number: "NNO",
+        players: ["Chase Utley"],
+        teams: ["Philadelphia Phillies"],
+        noNumber: true,
+        subset: "FANATICS AUTHENTICS REDEMPTION CARDS",
+      },
+      {
+        number: "NNO",
+        players: ["Vladimir Guerrero"],
+        teams: ["Angels"],
+        noNumber: true,
+        subset: "FANATICS AUTHENTICS REDEMPTION CARDS",
+      },
+    ]);
+  });
+
+  it("skips every other line with a reason, with its page", () => {
+    expect(out.skipped).toEqual([
+      { line: 1, page: 1, text: "2026 Topps Chrome Baseball Checklist", reason: LOOKS_LIKE_A_TITLE },
+      {
+        line: 2,
+        page: 1,
+        text: "Checklists provided by Topps reflect the intended configurations",
+        reason: ONE_CELL_ONLY,
+      },
+      { line: 15, page: 2, text: "Rookie", reason: ONE_CELL_ONLY },
+      { line: 16, page: 2, text: "1 | A | B | C", reason: TOO_MANY_COLUMNS },
+    ]);
+  });
+
+  it("never reads a lone line of words as a card, even one shaped like the line format", () => {
+    const lone = parsePublishedChecklistCells({
+      format: "pdf",
+      records: [pdfLine(1, ["HELIX"], [53]), pdfLine(2, ["60 Rhett Lowder - Cincinnati Reds"], [53])],
+    });
+    expect(lone.rows).toEqual([]);
+    expect(lone.skipped.map((s) => s.reason)).toEqual([ONE_CELL_ONLY]);
+  });
+
+  it("lines a PDF with a header row up by the header cells' x", () => {
+    const headed = parsePublishedChecklistCells({
+      format: "pdf",
+      records: [
+        pdfLine(1, ["Card #", "Player", "Team"], [N, P, T]),
+        pdfLine(2, ["5", "Los Angeles Angels"], [N, T]),
+        pdfLine(3, ["6", "Mike Trout", "Los Angeles Angels"], [N, P, T]),
+      ],
+    });
+    expect(headed.rows).toEqual([
+      { number: "5", players: [], teams: ["Los Angeles Angels"] },
+      { number: "6", players: ["Mike Trout"], teams: ["Los Angeles Angels"] },
+    ]);
+  });
+
+  it("says where a document too long to read was cut off", () => {
+    const cut = parsePublishedChecklistCells({
+      format: "pdf",
+      records: [pdfLine(1, ["HELIX"], [53]), pdfLine(2, ["1", "A", "B"], [N, P, T])],
+      truncatedAfterLine: 2,
+    });
+    expect(cut.skipped).toEqual([{ line: 3, text: "…", reason: NOT_READ_PAST_HERE }]);
+  });
+});
+
+describe("parsePublishedChecklistCells — a Donruss-layout spreadsheet", () => {
+  const sheet = (rows: string[][]): ChecklistCellRecord[] => rows.map((cells, i) => ({ line: i + 1, cells }));
+
+  it("finds the header under the credit line and reads the subset column, SEQ ignored", () => {
+    const out = parsePublishedChecklistCells({
+      format: "xlsx",
+      records: sheet([
+        ["Spreadsheet made available by Checklist Insider."],
+        ["CARD SET", "CARD #", "ATHLETE", "TEAM", "SEQ"],
+        ["Base", "1", "Ken Griffey Jr.", "Seattle Mariners"],
+        ["Bomb Squad Red Ice", "1", "Bryce Eldridge", "San Francisco Giants", "149"],
+        ["Base", "2", "Johnny Bench", "No Team"],
+      ]),
+    });
+    expect(out.format).toBe("xlsx");
+    expect(out.skipped).toEqual([
+      { line: 1, text: "Spreadsheet made available by Checklist Insider.", reason: ABOVE_THE_HEADER },
+    ]);
+    expect(out.subsets).toEqual(["Base", "Bomb Squad Red Ice"]);
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Ken Griffey Jr."], teams: ["Seattle Mariners"], subset: "Base" },
+      { number: "1", players: ["Bryce Eldridge"], teams: ["San Francisco Giants"], subset: "Bomb Squad Red Ice" },
+      { number: "2", players: ["Johnny Bench"], teams: [], noTeam: true, subset: "Base" },
+    ]);
+  });
+
+  it("reads a headerless sheet by column: A number, B player, C team; a lone cell is skipped", () => {
+    const out = parsePublishedChecklistCells({
+      format: "xlsx",
+      records: sheet([["2026 Donruss"], ["1", "Ken Griffey Jr.", "Seattle Mariners"], ["Rookie"]]),
+    }, { setYear: "2026" });
+    expect(out.rows).toEqual([{ number: "1", players: ["Ken Griffey Jr."], teams: ["Seattle Mariners"] }]);
+    expect(out.skipped.map((s) => s.reason)).toEqual([LOOKS_LIKE_A_TITLE, ONE_CELL_ONLY]);
+  });
+
+  it("caps a one-subset sheet at 2,000 rows in leaf mode, as a paste is", () => {
+    const rows = [["#", "Player"], ...Array.from({ length: 2002 }, (_, i) => [`${i + 1}`, `P${i}`])];
+    const out = parsePublishedChecklistCells({ format: "xlsx", records: sheet(rows) });
+    expect(out.rows).toHaveLength(PUBLISHED_CHECKLIST_MAX_ROWS);
+    expect(out.skipped.map((s) => s.line)).toEqual([2002, 2003]);
+    expect(out.skipped[0].reason).toBe(pastLimit(PUBLISHED_CHECKLIST_MAX_ROWS));
   });
 });

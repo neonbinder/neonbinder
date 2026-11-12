@@ -63,6 +63,24 @@
  * words and is not. A line in the published line format is free text, so its
  * first word is a number only when it holds a digit or is a capitals letter
  * code ("RA-MT"): "Jean-Carlos Smith - Mets" is never card "Jean-Carlos".
+ *
+ * NEO-496, whole-set checklists, spreadsheets and PDFs:
+ *  - The header row is looked for in the first `HEADER_SEARCH_LINES`
+ *    non-blank lines; lines above it are skipped as `ABOVE_THE_HEADER`
+ *    (Panini's sheets open with a credit line).
+ *  - A lone ALL-CAPS line or cell ("FUTURE STARS") is a section heading
+ *    (`headingText`) and names the subset of the rows under it, unless a
+ *    subset cell names them. A heading with no rows is a group label. A
+ *    repeated heading continues its section when nothing came between, and
+ *    is told apart ("<group> <heading>", then " (2)") when met again later.
+ *  - `parsePublishedChecklistCells` reads a spreadsheet's rows or a PDF's
+ *    lines (from `read-xlsx.ts` / `read-pdf-lines.ts`). A PDF line is never
+ *    read as free text: its cells, split by pdf.js x-gaps, are its columns.
+ *  - In the default "leaf" mode the 2,000-row cap applies only when there
+ *    are fewer than two subsets; with more, every row is returned and the
+ *    dialog caps AFTER the operator's ticks (`capLeafRows`). "set" mode
+ *    (`checklist-sections.ts`) has no per-leaf cap and skips rows outside
+ *    any section as `NOT_IN_A_SECTION`.
  */
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
@@ -83,31 +101,49 @@ export type PublishedChecklistRow = {
    */
   noTeam?: true;
   /**
-   * The subset ("card set", "set", "subset" or "insert" column) the row
-   * belongs to, when the file has such a column and the cell is not blank.
-   * Never sent to the server as data: `filterRowsBySubsets` chooses rows by
-   * it, and the fetch ignores it.
+   * The subset the row belongs to: its "card set", "set", "subset" or
+   * "insert" cell when the file has such a column and the cell is not
+   * blank, else the latest section heading above it (NEO-496: a single
+   * ALL-CAPS cell such as "FUTURE STARS"). Never sent to the server as row
+   * data: `filterRowsBySubsets` chooses rows by it, and set mode
+   * (`checklist-sections.ts`) groups rows into sections by it.
    */
   subset?: string;
 };
 
 export type SkippedLine = {
-  /** 1-based line number in the pasted text or file. */
+  /**
+   * 1-based line number in the pasted text or file: the sheet's row number
+   * for an .xlsx, the line counted across the document for a PDF.
+   */
   line: number;
+  /** For a PDF, the page the line is on. */
+  page?: number;
+  /** The line as read; a spreadsheet or PDF line's cells joined by " | ". */
   text: string;
   reason: string;
 };
 
+/** How the checklist was read: pasted or text-file lines, a delimited file, a spreadsheet, a PDF. */
+export type PublishedChecklistFormat = "lines" | "csv" | "tsv" | "xlsx" | "pdf";
+
 export type PublishedChecklistParse = {
   rows: PublishedChecklistRow[];
   skipped: SkippedLine[];
-  format: "lines" | "csv" | "tsv";
+  format: PublishedChecklistFormat;
   /**
-   * Present only when the file's header has a subset column: the distinct
-   * non-blank subsets of the kept rows, in file order. The dialog lets the
-   * operator pick which belong to this set (`filterRowsBySubsets`).
+   * Present only when some row has a subset (a subset column or a section
+   * heading): the distinct subsets of the kept rows, in file order. The
+   * dialog lets the operator pick which belong to this set
+   * (`filterRowsBySubsets`).
    */
   subsets?: string[];
+  /**
+   * For a subset named by a heading that sits under a group heading (a
+   * heading with no rows of its own, such as Topps' "AUTOGRAPH"), the group.
+   * Keyed by subset; absent when no subset has one.
+   */
+  groups?: Record<string, string>;
   /**
    * The text was over `PUBLISHED_CHECKLIST_MAX_TEXT` and was not read at all:
    * `rows` and `skipped` are empty. The dialog says so instead of a preview.
@@ -606,9 +642,10 @@ function detectPositional(lines: readonly string[], from: number): Delimited | n
 }
 
 /**
- * Rows a file with a subset column carries, narrowed to the subsets the
- * operator chose. A row with no subset (its cell was blank) is kept: nothing
- * says it belongs elsewhere. Pure; the input is not touched.
+ * Rows a file with subsets carries, narrowed to the subsets the operator
+ * chose. A row with no subset (its cell was blank and no heading came before
+ * it) is kept: nothing says it belongs elsewhere. Pure; the input is not
+ * touched.
  */
 export function filterRowsBySubsets<T extends { subset?: string }>(
   rows: readonly T[],
@@ -618,6 +655,46 @@ export function filterRowsBySubsets<T extends { subset?: string }>(
   return rows.filter((row) => row.subset === undefined || keep.has(row.subset));
 }
 
+/**
+ * The most rows one parse reads (NEO-496: the set-level limit). Past it a
+ * row is skipped with `pastLimit`. A per-leaf checklist is then held to
+ * `PUBLISHED_CHECKLIST_MAX_ROWS` AFTER the operator ticks its subsets
+ * (`capLeafRows`), so a file of many subsets can still give one leaf its
+ * 300 rows.
+ */
+export const PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS = 50_000;
+
+/** "Past the 2,000-row limit". */
+export function pastLimit(limit: number): string {
+  return `Past the ${limit.toLocaleString("en-US")}-row limit`;
+}
+
+/**
+ * The rows one leaf may use: the first `PUBLISHED_CHECKLIST_MAX_ROWS`, and
+ * how many past it were left off. The dialog runs it on the ticked subsets'
+ * rows (`filterRowsBySubsets`) and says how many were dropped.
+ */
+export function capLeafRows<T>(rows: readonly T[]): { rows: T[]; dropped: number } {
+  if (rows.length <= PUBLISHED_CHECKLIST_MAX_ROWS) return { rows: [...rows], dropped: 0 };
+  return {
+    rows: rows.slice(0, PUBLISHED_CHECKLIST_MAX_ROWS),
+    dropped: rows.length - PUBLISHED_CHECKLIST_MAX_ROWS,
+  };
+}
+
+/** Said for a line above the header row it was found under. */
+export const ABOVE_THE_HEADER = "Above the header";
+/** How many non-blank lines (or rows) are searched for the header. */
+export const HEADER_SEARCH_LINES = 20;
+/** Said for a spreadsheet row or PDF line holding one cell that is not a heading. */
+export const ONE_CELL_ONLY = "Only one column here, so it isn't a card";
+/** Said for a PDF line with more cells than number, player and team. */
+export const TOO_MANY_COLUMNS = "More columns than number, player and team";
+/** Said in set mode for a row above the first section heading or with a blank subset. */
+export const NOT_IN_A_SECTION = "Not under any section heading";
+/** Said where a spreadsheet or PDF was too long to read to the end. */
+export const NOT_READ_PAST_HERE = "The file goes on past here; the rest wasn't read";
+
 /** What the caller knows about the set the checklist is for. */
 export type PublishedChecklistOptions = {
   /**
@@ -626,142 +703,526 @@ export type PublishedChecklistOptions = {
    * with `LOOKS_LIKE_A_TITLE`.
    */
   setYear?: string | number | null;
+  /**
+   * "leaf" (the default): with fewer than two subsets, rows past
+   * `PUBLISHED_CHECKLIST_MAX_ROWS` are skipped, as the one leaf would use
+   * them all. With two or more, every row (up to
+   * `PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS`) is returned and the caller caps
+   * after the ticks (`capLeafRows`). "set": no per-leaf cap at all;
+   * `checklist-sections.ts` applies the set's own limits.
+   */
+  mode?: "leaf" | "set";
 };
 
 /**
+ * A section heading: one non-blank cell (or a whole line) in capitals, such
+ * as "FUTURE STARS" or "CLASS OF 2026 COOPERSTOWN CALLS". Not a heading: a
+ * lone card number or letter code ("RA-MT", "NNO"), markers only ("RC"), a
+ * count ("200 CARDS"), anything with a small letter, or a name over the
+ * name limit. "®" and "™" are dropped from the name.
+ */
+export function headingText(cells: readonly string[]): string | null {
+  let only: string | null = null;
+  for (const cell of cells) {
+    if (cell.trim() === "") continue;
+    if (only !== null) return null;
+    only = cell;
+  }
+  if (only === null) return null;
+  const text = dropTrademarks(only).replace(/\s+/g, " ").trim();
+  if (text.length === 0 || text.length > PUBLISHED_CHECKLIST_MAX_NAME) return null;
+  if (/\p{Ll}/u.test(text)) return null;
+  if ((text.match(/\p{Lu}/gu) ?? []).length < 2) return null;
+  if (isNno(text) || cleanNumber(text) !== null) return null;
+  if (COUNT_LINE.test(text)) return null;
+  if (cleanNamePart(text).trim() === "") return null;
+  return text;
+}
+
+/**
+ * Which section each row falls in, as the file goes.
+ *
+ * - A subset cell names its row's subset; the same name anywhere in the file
+ *   is the same subset (the file says so).
+ * - Otherwise the latest heading does. A heading followed straight by
+ *   another heading, with no rows of its own, is a group label ("BASE",
+ *   "INSERT", "AUTOGRAPH") for the headings after it.
+ * - The same heading again with no other heading between (a heading
+ *   repeated at the top of the next page) continues its section. Met again
+ *   later, it is another section: named "<group> <heading>" when that is
+ *   free, else with " (2)", " (3)"… after it.
+ */
+class SectionTracker {
+  private heading: string | null = null;
+  private assigned: string | null = null;
+  private headingRows = 0;
+  private group: string | null = null;
+  private readonly used = new Set<string>();
+  readonly groups = new Map<string, string>();
+  sawHeadingRow = false;
+
+  onHeading(name: string): void {
+    if (name === this.heading) return;
+    if (this.heading !== null && this.headingRows === 0) this.group = this.heading;
+    this.heading = name;
+    this.assigned = null;
+    this.headingRows = 0;
+  }
+
+  /** The subset of a row about to be kept; `cell` is its subset cell ("" when none). */
+  subsetFor(cell: string): string | undefined {
+    this.headingRows++;
+    if (cell !== "") {
+      this.used.add(cell);
+      return cell;
+    }
+    if (this.heading === null) return undefined;
+    if (this.assigned === null) {
+      this.assigned = this.uniqueName(this.heading);
+      this.used.add(this.assigned);
+      if (this.group !== null) this.groups.set(this.assigned, this.group);
+    }
+    this.sawHeadingRow = true;
+    return this.assigned;
+  }
+
+  private uniqueName(heading: string): string {
+    if (!this.used.has(heading)) return heading;
+    const prefixed = this.group !== null ? `${this.group} ${heading}` : heading;
+    if (prefixed.length <= PUBLISHED_CHECKLIST_MAX_NAME && !this.used.has(prefixed)) return prefixed;
+    const base = prefixed.length <= PUBLISHED_CHECKLIST_MAX_NAME - 6 ? prefixed : heading;
+    for (let n = 2; ; n++) {
+      const candidate = `${base} (${n})`;
+      if (!this.used.has(candidate)) return candidate;
+    }
+  }
+}
+
+/** A row read from cells, or why the cells gave none. */
+type CellsRead = { row: PublishedChecklistRow; subsetCell: string } | { reason: string };
+
+/**
+ * Read one row from cells already lined up with their columns. Shared by a
+ * headered CSV / TSV, a positional one, a spreadsheet and a PDF.
+ * `numberCells` "column" trusts any one-word token in the number column
+ * (NEO-489); "free" needs a digit or a capitals letter code (a PDF line has
+ * no declared column).
+ */
+function rowFromColumns(
+  columns: ReadonlyArray<Column | null>,
+  cells: readonly string[],
+  setYear: string | null,
+  numberCells: "column" | "free" = "column",
+): CellsRead {
+  let number: string | null = null;
+  let noNumber = false;
+  let numberCell = "";
+  let subset = "";
+  let notAPerson = false;
+  let noTeam = false;
+  const players: string[] = [];
+  const teams: string[] = [];
+  columns.forEach((column, c) => {
+    const cell = cells[c] ?? "";
+    if (column === "number" && numberCell === "") {
+      numberCell = cell;
+      noNumber = isNno(cell);
+      number = noNumber
+        ? NO_NUMBER
+        : numberCells === "column"
+          ? cleanColumnNumber(cell)
+          : cleanNumber(cell);
+    } else if (column === "players") {
+      const named = playersFrom(cell);
+      players.push(...named);
+      // Read only when no player column names a person (a cell that names
+      // one makes `players` non-empty, and the flag is then never read), so
+      // a long cell is not split a second time.
+      if (named.length === 0 && cell.trim() !== "" && isNotAPerson(subjectOf(cell))) {
+        notAPerson = true;
+      }
+    } else if (column === "teams") {
+      const read = teamsFrom(cell);
+      teams.push(...read.teams);
+      if (read.noTeam) noTeam = true;
+    } else if (column === "subset" && subset === "") {
+      subset = cell.replace(/\s+/g, " ").trim();
+    }
+  });
+  if (numberCell !== "" && readsAsTitle(numberCell, setYear)) return { reason: LOOKS_LIKE_A_TITLE };
+  if (!number) {
+    return { reason: numberCell ? "Card number isn't one we can read" : "No card number" };
+  }
+  // "No Team" beside a team, in one cell or across two team columns.
+  if (noTeam && teams.length > 0) return { reason: NO_TEAM_AND_A_TEAM };
+  if (players.length === 0 && teams.length === 0 && !notAPerson && !noTeam) {
+    return { reason: "No player or team on this line" };
+  }
+  return {
+    row: {
+      number,
+      players,
+      teams,
+      ...(noNumber ? { noNumber: true as const } : {}),
+      ...(noTeam ? { noTeam: true as const } : {}),
+    },
+    subsetCell: subset,
+  };
+}
+
+/**
+ * Collects rows and skipped lines for one parse, and finishes it: subsets,
+ * groups, the per-leaf cap and the skipped list in line order.
+ */
+class ParseCollector {
+  readonly rows: PublishedChecklistRow[] = [];
+  private readonly rowAt: Array<{ line: number; page?: number; text: string }> = [];
+  readonly skipped: SkippedLine[] = [];
+  readonly sections = new SectionTracker();
+
+  private readonly mode: "leaf" | "set";
+
+  constructor(mode: "leaf" | "set") {
+    this.mode = mode;
+  }
+
+  skip(line: number, text: string, reason: string, page?: number): void {
+    this.skipped.push(page === undefined ? { line, text, reason } : { line, page, text, reason });
+  }
+
+  keep(line: number, text: string, row: PublishedChecklistRow, subsetCell: string, page?: number) {
+    const tooLong = overLimit({ ...row, ...(subsetCell ? { subset: subsetCell } : {}) });
+    if (tooLong) {
+      this.skip(line, text, tooLong, page);
+      return;
+    }
+    // Set mode holds the set's row limit by whole sections
+    // (`checklist-sections.ts`), so a section is never cut part-way here.
+    if (this.mode === "leaf" && this.rows.length >= PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS) {
+      this.skip(line, text, pastLimit(PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS), page);
+      return;
+    }
+    const subset = this.sections.subsetFor(subsetCell);
+    if (subset === undefined && this.mode === "set") {
+      this.skip(line, text, NOT_IN_A_SECTION, page);
+      return;
+    }
+    this.rows.push(subset === undefined ? row : { ...row, subset });
+    this.rowAt.push(page === undefined ? { line, text } : { line, page, text });
+  }
+
+  finish(format: PublishedChecklistFormat, hasSubsetColumn: boolean): PublishedChecklistParse {
+    const mode = this.mode;
+    let rows = this.rows;
+    const withSubsets = hasSubsetColumn || this.sections.sawHeadingRow;
+    const subsets = withSubsets
+      ? [...new Set(rows.flatMap((r) => (r.subset === undefined ? [] : [r.subset])))]
+      : undefined;
+    if (mode === "leaf" && (subsets?.length ?? 0) < 2 && rows.length > PUBLISHED_CHECKLIST_MAX_ROWS) {
+      for (const at of this.rowAt.slice(PUBLISHED_CHECKLIST_MAX_ROWS)) {
+        this.skip(at.line, at.text, pastLimit(PUBLISHED_CHECKLIST_MAX_ROWS), at.page);
+      }
+      rows = rows.slice(0, PUBLISHED_CHECKLIST_MAX_ROWS);
+      this.skipped.sort((a, b) => a.line - b.line);
+    }
+    const out: PublishedChecklistParse = { rows, skipped: this.skipped, format };
+    if (subsets) out.subsets = subsets;
+    if (this.sections.groups.size > 0) {
+      const kept = new Set(subsets ?? []);
+      const groups: Record<string, string> = {};
+      for (const [subset, group] of this.sections.groups) if (kept.has(subset)) groups[subset] = group;
+      if (Object.keys(groups).length > 0) out.groups = groups;
+    }
+    return out;
+  }
+}
+
+/**
  * Read a pasted or uploaded checklist. Blank lines are not content and are
- * passed over; every other line is a row or a `skipped` entry.
+ * passed over; every other line is a row, a section heading or a `skipped`
+ * entry.
  */
 export function parsePublishedChecklist(
   text: string,
   options: PublishedChecklistOptions = {},
 ): PublishedChecklistParse {
   const setYear = fourDigitYear(options.setYear);
+  const mode = options.mode ?? "leaf";
   if (text.length > PUBLISHED_CHECKLIST_MAX_TEXT) {
     return { rows: [], skipped: [], format: "lines", tooBig: true };
   }
   const lines = text.replace(/^﻿/, "").split(/\r\n|\r|\n/);
   const firstIndex = lines.findIndex((l) => l.trim() !== "");
-  const rows: PublishedChecklistRow[] = [];
-  const skipped: SkippedLine[] = [];
-  if (firstIndex === -1) return { rows, skipped, format: "lines" };
+  const out = new ParseCollector(mode);
+  if (firstIndex === -1) return { rows: [], skipped: [], format: "lines" };
 
-  // An over-long first line is not a header; it is skipped below like any
-  // other over-long line.
-  const header =
-    (lines[firstIndex].length > PUBLISHED_CHECKLIST_MAX_LINE
-      ? null
-      : detectDelimited(lines[firstIndex])) ?? detectPositional(lines, firstIndex);
-  const format: PublishedChecklistParse["format"] = header
+  // The header is looked for in the first `HEADER_SEARCH_LINES` non-blank
+  // lines, so a title or a credit above it does not hide it. An over-long
+  // line is never a header; it is skipped below like any other.
+  let header: Delimited | null = null;
+  let headerIndex = -1;
+  for (let i = firstIndex, seen = 0; i < lines.length && seen < HEADER_SEARCH_LINES; i++) {
+    if (lines[i].trim() === "") continue;
+    seen++;
+    if (lines[i].length > PUBLISHED_CHECKLIST_MAX_LINE) continue;
+    header = detectDelimited(lines[i]);
+    if (header) {
+      headerIndex = i;
+      break;
+    }
+  }
+  if (!header) header = detectPositional(lines, firstIndex);
+  const format: PublishedChecklistFormat = header
     ? header.delimiter === "\t"
       ? "tsv"
       : "csv"
     : "lines";
 
-  const keep = (lineIndex: number, raw: string, row: PublishedChecklistRow) => {
-    const tooLong = overLimit(row);
-    if (tooLong) {
-      skipped.push({ line: lineIndex + 1, text: raw, reason: tooLong });
-    } else if (rows.length >= PUBLISHED_CHECKLIST_MAX_ROWS) {
-      skipped.push({
-        line: lineIndex + 1,
-        text: raw,
-        reason: `Past the ${PUBLISHED_CHECKLIST_MAX_ROWS.toLocaleString("en-US")}-row limit`,
-      });
-    } else {
-      rows.push(row);
-    }
-  };
-
-  for (let i = firstIndex + (header?.header ? 1 : 0); i < lines.length; i++) {
+  for (let i = firstIndex; i < lines.length; i++) {
     const raw = lines[i];
     if (raw.trim() === "") continue;
+    if (i === headerIndex) continue;
+    if (i < headerIndex) {
+      out.skip(i + 1, clip(raw), ABOVE_THE_HEADER);
+      continue;
+    }
     if (raw.length > PUBLISHED_CHECKLIST_MAX_LINE) {
-      skipped.push({
-        line: i + 1,
+      out.skip(
+        i + 1,
         // Only the start is kept for the preview; the line itself is junk.
-        text: `${raw.slice(0, 200).replace(/\s+/g, " ").trim().slice(0, 80)}…`,
-        reason: `Longer than ${PUBLISHED_CHECKLIST_MAX_LINE.toLocaleString("en-US")} characters`,
-      });
+        `${raw.slice(0, 200).replace(/\s+/g, " ").trim().slice(0, 80)}…`,
+        `Longer than ${PUBLISHED_CHECKLIST_MAX_LINE.toLocaleString("en-US")} characters`,
+      );
       continue;
     }
     if (COUNT_LINE.test(raw.trim())) {
-      skipped.push({ line: i + 1, text: raw, reason: LOOKS_LIKE_A_COUNT });
+      out.skip(i + 1, raw, LOOKS_LIKE_A_COUNT);
       continue;
     }
     const cells = header ? splitDelimited(raw, header.delimiter) : [];
     // Without a header, a line that has no second cell is read as a line
-    // (a title, or a card written the published way).
+    // (a heading, a title, or a card written the published way).
     if (!header || (!header.header && cells.length < 2)) {
       const parsed = parseLine(raw, setYear);
-      if ("reason" in parsed) skipped.push({ line: i + 1, text: raw, reason: parsed.reason });
-      else keep(i, raw, parsed);
-      continue;
-    }
-    let number: string | null = null;
-    let noNumber = false;
-    let numberCell = "";
-    let subset = "";
-    let notAPerson = false;
-    let noTeam = false;
-    const players: string[] = [];
-    const teams: string[] = [];
-    header.columns.forEach((column, c) => {
-      const cell = cells[c] ?? "";
-      if (column === "number" && numberCell === "") {
-        numberCell = cell;
-        noNumber = isNno(cell);
-        number = noNumber ? NO_NUMBER : cleanColumnNumber(cell);
-      } else if (column === "players") {
-        const named = playersFrom(cell);
-        players.push(...named);
-        // Read only when no player column names a person (a cell that names
-        // one makes `players` non-empty, and the flag is then never read), so
-        // a long cell is not split a second time.
-        if (named.length === 0 && cell.trim() !== "" && isNotAPerson(subjectOf(cell))) {
-          notAPerson = true;
-        }
-      } else if (column === "teams") {
-        const read = teamsFrom(cell);
-        teams.push(...read.teams);
-        if (read.noTeam) noTeam = true;
-      } else if (column === "subset" && subset === "") {
-        subset = cell.replace(/\s+/g, " ").trim();
+      if (!("reason" in parsed)) {
+        out.keep(i + 1, raw, parsed, "");
+        continue;
       }
-    });
-    if (numberCell !== "" && readsAsTitle(numberCell, setYear)) {
-      skipped.push({ line: i + 1, text: raw, reason: LOOKS_LIKE_A_TITLE });
+      const heading = parsed.reason === LOOKS_LIKE_A_TITLE ? null : headingText([raw]);
+      if (heading !== null) out.sections.onHeading(heading);
+      else out.skip(i + 1, raw, parsed.reason);
       continue;
     }
-    if (!number) {
-      skipped.push({
-        line: i + 1,
-        text: raw,
-        reason: numberCell ? "Card number isn't one we can read" : "No card number",
-      });
+    const heading = headingText(cells);
+    if (heading !== null) {
+      out.sections.onHeading(heading);
       continue;
     }
-    // "No Team" beside a team, in one cell or across two team columns.
-    if (noTeam && teams.length > 0) {
-      skipped.push({ line: i + 1, text: raw, reason: NO_TEAM_AND_A_TEAM });
-      continue;
-    }
-    if (players.length === 0 && teams.length === 0 && !notAPerson && !noTeam) {
-      skipped.push({ line: i + 1, text: raw, reason: "No player or team on this line" });
-      continue;
-    }
-    keep(i, raw, {
-      number,
-      players,
-      teams,
-      ...(noNumber ? { noNumber: true as const } : {}),
-      ...(noTeam ? { noTeam: true as const } : {}),
-      ...(subset ? { subset } : {}),
-    });
+    const read = rowFromColumns(header.columns, cells, setYear);
+    if ("reason" in read) out.skip(i + 1, raw, read.reason);
+    else out.keep(i + 1, raw, read.row, read.subsetCell);
   }
-  if (header?.columns.includes("subset")) {
-    const subsets = [...new Set(rows.flatMap((r) => (r.subset === undefined ? [] : [r.subset])))];
-    return { rows, skipped, format, subsets };
+  return out.finish(format, header?.columns.includes("subset") ?? false);
+}
+
+/** A skipped line's text, kept short for the preview. */
+function clip(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
+}
+
+// ── Spreadsheets and PDFs (NEO-496) ────────────────────────────────────────
+
+/** One spreadsheet row or PDF line, already split into cells. */
+export type ChecklistCellRecord = {
+  /** The sheet's row number, or the PDF line counted across the document. */
+  line: number;
+  /** A spreadsheet's cells by column (A = 0, blanks kept); a PDF line's cells left to right. */
+  cells: readonly string[];
+  /** For a PDF, the x (pt) each cell starts at; lines cells up with the columns. */
+  xs?: readonly number[];
+  /** For a PDF, the page. */
+  page?: number;
+};
+
+/** A spreadsheet's or a PDF's lines, as `read-checklist-file.ts` hands them over. */
+export type ChecklistCellsInput = {
+  format: "xlsx" | "pdf";
+  records: readonly ChecklistCellRecord[];
+  /** The reader stopped early; the line after which nothing was read. */
+  truncatedAfterLine?: number;
+};
+
+/** The header columns of a row of cells, or null when the row is not a header. */
+function headerColumns(cells: readonly string[]): Array<Column | null> | null {
+  const columns = cells.map((cell) => (cell.trim() === "" ? null : columnOf(cell)));
+  return columns.includes("number") && (columns.includes("players") || columns.includes("teams"))
+    ? columns
+    : null;
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+/** The nearest of `anchors` to `x`, by index; -1 when there are none. */
+function nearest(anchors: ReadonlyArray<number | null>, x: number): number {
+  let best = -1;
+  let distance = Infinity;
+  anchors.forEach((anchor, i) => {
+    if (anchor === null) return;
+    const d = Math.abs(anchor - x);
+    if (d < distance) {
+      best = i;
+      distance = d;
+    }
+  });
+  return best;
+}
+
+/**
+ * Where a headerless PDF's number, player and team columns start, from its
+ * three-cell lines: per page, else across the document. A two-cell line is
+ * lined up with these, so a team card ("CT-1 … Los Angeles Dodgers") reads
+ * its second cell as the team, not a player.
+ */
+function pdfColumnAnchors(records: readonly ChecklistCellRecord[]) {
+  const all: [number[], number[], number[]] = [[], [], []];
+  const byPage = new Map<number, [number[], number[], number[]]>();
+  for (const record of records) {
+    if (record.cells.length !== 3 || !record.xs || record.xs.length !== 3) continue;
+    const page = record.page ?? 0;
+    let lists = byPage.get(page);
+    if (!lists) byPage.set(page, (lists = [[], [], []]));
+    for (let c = 0; c < 3; c++) {
+      lists[c].push(record.xs[c]);
+      all[c].push(record.xs[c]);
+    }
   }
-  return { rows, skipped, format };
+  const whole = all.map(median);
+  return (page: number | undefined): Array<number | null> => {
+    const lists = byPage.get(page ?? 0);
+    return lists ? lists.map(median) : whole;
+  };
+}
+
+const POSITIONAL: ReadonlyArray<Column> = ["number", "players", "teams"];
+
+/**
+ * Read a spreadsheet's or a PDF's lines into rows. The same rules as a
+ * pasted checklist: the header is looked for in the first
+ * `HEADER_SEARCH_LINES` non-blank lines (lines above it are skipped as
+ * `ABOVE_THE_HEADER`), a subset column or the latest heading names each
+ * row's subset, and every line that gives no row is in `skipped` with the
+ * reason. A PDF line is never read as a free-text line (`parseLine`): its
+ * cells are its columns.
+ *
+ * Without a header a spreadsheet is read by position: A number, B player,
+ * C team. A PDF line without a header is read by its cell count:
+ *  - three cells: number, player, team;
+ *  - two cells led by a card number: the number and a player, or a team
+ *    when the second cell sits under the team column (a team card);
+ *  - two cells not led by a number: a card printed with no number, read as
+ *    player and team and numbered "NNO" (`noNumber`);
+ *  - one cell: a heading when it is one, else skipped (`ONE_CELL_ONLY`);
+ *  - more: skipped (`TOO_MANY_COLUMNS`).
+ */
+export function parsePublishedChecklistCells(
+  input: ChecklistCellsInput,
+  options: PublishedChecklistOptions = {},
+): PublishedChecklistParse {
+  const setYear = fourDigitYear(options.setYear);
+  const mode = options.mode ?? "leaf";
+  const out = new ParseCollector(mode);
+  const records = input.records.filter((r) => r.cells.some((c) => c.trim() !== ""));
+  const textOf = (record: ChecklistCellRecord) =>
+    clip(record.cells.filter((c) => c.trim() !== "").join(" | "));
+
+  let headerAt = -1;
+  let columns: Array<Column | null> | null = null;
+  for (let i = 0; i < Math.min(records.length, HEADER_SEARCH_LINES); i++) {
+    columns = headerColumns(records[i].cells);
+    if (columns) {
+      headerAt = i;
+      break;
+    }
+  }
+  const headerXs = headerAt >= 0 ? records[headerAt].xs : undefined;
+  const anchorsFor = input.format === "pdf" && !columns ? pdfColumnAnchors(records) : null;
+
+  records.forEach((record, i) => {
+    if (i === headerAt) return;
+    const text = textOf(record);
+    if (i < headerAt) {
+      out.skip(record.line, text, ABOVE_THE_HEADER, record.page);
+      return;
+    }
+    const heading = headingText(record.cells);
+    if (heading !== null) {
+      out.sections.onHeading(heading);
+      return;
+    }
+    let read: CellsRead;
+    if (columns) {
+      let aligned: readonly string[] = record.cells;
+      if (input.format === "pdf") {
+        // Each cell goes under the header cell it sits nearest.
+        const slots: string[] = columns.map(() => "");
+        if (headerXs && record.xs && record.xs.length === record.cells.length) {
+          record.cells.forEach((cell, c) => {
+            const at = nearest(headerXs, record.xs![c]);
+            if (at >= 0) slots[at] = slots[at] ? `${slots[at]} ${cell}` : cell;
+          });
+          aligned = slots;
+        }
+      }
+      read = rowFromColumns(columns, aligned, setYear);
+    } else if (input.format === "xlsx") {
+      const filled = record.cells.filter((c) => c.trim() !== "").length;
+      read =
+        filled < 2
+          ? { reason: oneCellReason(record.cells, setYear) }
+          : rowFromColumns(POSITIONAL, record.cells, setYear);
+    } else {
+      read = readPdfLine(record, anchorsFor!(record.page), setYear);
+    }
+    if ("reason" in read) out.skip(record.line, text, read.reason, record.page);
+    else out.keep(record.line, text, read.row, read.subsetCell, record.page);
+  });
+  if (input.truncatedAfterLine !== undefined) {
+    out.skip(input.truncatedAfterLine + 1, "…", NOT_READ_PAST_HERE);
+  }
+  return out.finish(input.format, columns?.includes("subset") ?? false);
+}
+
+/** Why a lone cell that is not a heading gives no row. */
+function oneCellReason(cells: readonly string[], setYear: string | null): string {
+  const only = cells.find((c) => c.trim() !== "") ?? "";
+  const first = /^\s*(\S+)/.exec(only)?.[1] ?? "";
+  if (COUNT_LINE.test(only.trim())) return LOOKS_LIKE_A_COUNT;
+  return readsAsTitle(first, setYear) ? LOOKS_LIKE_A_TITLE : ONE_CELL_ONLY;
+}
+
+/** A headerless PDF line, by its cell count (see `parsePublishedChecklistCells`). */
+function readPdfLine(
+  record: ChecklistCellRecord,
+  anchors: ReadonlyArray<number | null>,
+  setYear: string | null,
+): CellsRead {
+  const cells = record.cells;
+  if (cells.length === 1) return { reason: oneCellReason(cells, setYear) };
+  if (cells.length > 3) return { reason: TOO_MANY_COLUMNS };
+  if (cells.length === 3) return rowFromColumns(POSITIONAL, cells, setYear, "free");
+  const [first, second] = cells;
+  if (!isNno(first) && cleanNumber(first) === null) {
+    // No number: a card printed without one (Topps' "FANATICS AUTHENTICS").
+    return rowFromColumns(POSITIONAL, [NO_NUMBER, first, second], setYear, "free");
+  }
+  const x = record.xs?.[1];
+  const column = x === undefined ? 1 : nearest(anchors, x);
+  return column === 2
+    ? rowFromColumns(POSITIONAL, [first, "", second], setYear, "free")
+    : rowFromColumns(POSITIONAL, [first, second, ""], setYear, "free");
 }
