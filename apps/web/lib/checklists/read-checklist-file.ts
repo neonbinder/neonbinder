@@ -9,9 +9,13 @@
  * .csv / .tsv / .txt is text. The spreadsheet and PDF readers are imported
  * only when such a file is chosen, so neither weighs on the main bundle.
  *
- * Every refusal comes back as `{ ok: false, message }` in words the dialog
- * shows as they are. Nothing is uploaded: the bytes are read in the browser
- * and only the parsed rows go anywhere.
+ * Every refusal comes back as `{ ok: false, reason, message }`: `reason` is
+ * the kind of refusal, for a caller that acts on it, and `message` the words
+ * the dialog shows as they are. A file whose NAME holds a hidden direction or
+ * zero-width character is refused before a byte is read
+ * (`checklistFileNameProblem`), since the server refuses that name too.
+ * Nothing is uploaded: the bytes are read in the browser and only the parsed
+ * rows go anywhere.
  */
 
 import {
@@ -23,6 +27,7 @@ import {
   type PublishedChecklistParse,
 } from "./parse-published-checklist";
 import { checklistSections, type ChecklistSections } from "./checklist-sections";
+import { hasHiddenNameChars } from "../../convex/lib/publishedChecklistSections";
 import type { PdfRead } from "./read-pdf-lines";
 import type { XlsxRead, XlsxRefusal } from "./read-xlsx";
 
@@ -40,9 +45,41 @@ export type ChecklistInput =
   | { kind: "text"; text: string }
   | { kind: "cells"; cells: ChecklistCellsInput };
 
+/** Why a chosen file was not read. */
+export type ChecklistFileRefusal =
+  /** The file's name holds a hidden direction or zero-width character. */
+  | "hidden-name-chars"
+  | "too-big"
+  /** The browser could not hand over the bytes. */
+  | "unreadable"
+  /** An old binary .xls workbook. */
+  | "old-xls"
+  /** Not a format the reader takes. */
+  | "unknown-format"
+  | "password"
+  /** A workbook holding more than one checklist's worth of sheets. */
+  | "too-much-data"
+  | "too-many-pages"
+  /** The bytes are not the spreadsheet or PDF they claim to be. */
+  | "malformed";
+
 export type ChecklistFileRead =
   | { ok: true; input: ChecklistInput }
-  | { ok: false; message: string };
+  | { ok: false; reason: ChecklistFileRefusal; message: string };
+
+/** Said when a file's name holds a hidden direction or zero-width character. */
+export const HIDDEN_FILE_NAME_CHARS =
+  "This file's name has sneaky invisible characters. Rename the file and try again.";
+
+/**
+ * The refusal for a file name the server would refuse for hidden direction
+ * or zero-width characters (`hasHiddenNameChars`, the server's own test), or
+ * null when the name is fine. A file picker can call it the moment a file is
+ * chosen.
+ */
+export function checklistFileNameProblem(name: string): string | null {
+  return hasHiddenNameChars(name) ? HIDDEN_FILE_NAME_CHARS : null;
+}
 
 /** The readers, injectable so a test can stand in for pdf.js. */
 export type ChecklistFileReaders = {
@@ -83,58 +120,76 @@ function sizeLimit(kind: "xlsx" | "pdf" | "text"): number {
 }
 
 function tooBigMessage(name: string, kind: "xlsx" | "pdf" | "text"): string {
-  const what = kind === "xlsx" ? "a spreadsheet" : kind === "pdf" ? "a PDF" : "a text";
-  return `${name} is too big — ${what} checklist is under ${sizeLimit(kind) / MB} MB.`;
+  const mb = sizeLimit(kind) / MB;
+  return kind === "xlsx"
+    ? `${name} is too big. Spreadsheets top out at ${mb} MB; save just this set’s sheet.`
+    : kind === "pdf"
+      ? `${name} is too big. PDFs top out at ${mb} MB; save just this set’s pages.`
+      : `${name} is too big. Text files top out at ${mb} MB; save just this set’s list.`;
 }
 
-function xlsxMessage(name: string, reason: XlsxRefusal): string {
+function refuse(reason: ChecklistFileRefusal, message: string): ChecklistFileRead {
+  return { ok: false, reason, message };
+}
+
+function xlsxRefusal(name: string, reason: XlsxRefusal): ChecklistFileRead {
   switch (reason) {
     case "too-big":
-      return tooBigMessage(name, "xlsx");
+      return refuse("too-big", tooBigMessage(name, "xlsx"));
     case "encrypted":
-      return `${name} is password-protected. Save a copy without the password, then choose that.`;
+      return refuse(
+        "password",
+        `${name} is password-protected. Save a copy without the password, then choose that.`,
+      );
     case "part-too-big":
-      return `${name} holds more than one checklist’s worth of data — we read up to 32 MB of sheet.`;
+      return refuse(
+        "too-much-data",
+        `${name} packs more than one checklist. Copy this set’s sheet into its own file and upload that.`,
+      );
     default:
-      return `Couldn’t read ${name} as a spreadsheet. Save it as .xlsx, or as .csv, and try again.`;
+      return refuse(
+        "malformed",
+        `Couldn’t read ${name} as a spreadsheet. Save it as .xlsx, or as .csv, and try again.`,
+      );
   }
 }
 
 /**
- * Read a chosen file. Never throws. The first sheet of a workbook is read;
- * a PDF's every page.
+ * Read a chosen file. Never throws. Every visible sheet of a workbook is
+ * read (a row carries its sheet when more than one gives rows); a PDF's
+ * every page.
  */
 export async function readChecklistFile(
   file: ChecklistFile,
   readers: ChecklistFileReaders = {},
 ): Promise<ChecklistFileRead> {
   const name = file.name;
-  // The largest limit first, so a huge file is never read into memory.
+  // The name first: the server refuses it, so nothing is read for it.
+  const nameProblem = checklistFileNameProblem(name);
+  if (nameProblem !== null) return refuse("hidden-name-chars", nameProblem);
+  // The largest limit next, so a huge file is never read into memory.
   if (file.size > CHECKLIST_PDF_MAX_BYTES) {
     const byName = /\.pdf$/i.test(name) ? "pdf" : /\.xlsx$/i.test(name) ? "xlsx" : "text";
-    return { ok: false, message: tooBigMessage(name, byName) };
+    return refuse("too-big", tooBigMessage(name, byName));
   }
   let bytes: Uint8Array;
   try {
     bytes = new Uint8Array(await file.arrayBuffer());
   } catch {
-    return { ok: false, message: `Couldn’t read ${name}. Try choosing it again.` };
+    return refuse("unreadable", `Couldn’t read ${name}. Try choosing it again.`);
   }
   const kind = sniffChecklistFile(name, bytes.subarray(0, 1024));
   if (kind === "xls") {
-    return {
-      ok: false,
-      message: `${name} is an old .xls workbook. Save it as .xlsx, then choose that.`,
-    };
+    return refuse("old-xls", `${name} is an old .xls workbook. Save it as .xlsx, then choose that.`);
   }
   if (kind === "unknown") {
-    return {
-      ok: false,
-      message: `${name} isn’t a checklist file we can read. Choose a .xlsx, .pdf, .csv, .tsv or .txt file.`,
-    };
+    return refuse(
+      "unknown-format",
+      `${name} isn’t a checklist file we can read. Choose a .xlsx, .pdf, .csv, .tsv or .txt file.`,
+    );
   }
   if (Math.max(file.size, bytes.length) > sizeLimit(kind)) {
-    return { ok: false, message: tooBigMessage(name, kind) };
+    return refuse("too-big", tooBigMessage(name, kind));
   }
 
   if (kind === "text") {
@@ -143,15 +198,20 @@ export async function readChecklistFile(
   if (kind === "xlsx") {
     const read = readers.readXlsx ?? (await import("./read-xlsx")).readXlsx;
     const out = await read(bytes);
-    if (!out.ok) return { ok: false, message: xlsxMessage(name, out.reason) };
+    if (!out.ok) return xlsxRefusal(name, out.reason);
     return {
       ok: true,
       input: {
         kind: "cells",
         cells: {
           format: "xlsx",
-          records: out.rows.map((r) => ({ line: r.row, cells: r.cells })),
+          records: out.rows.map((r) =>
+            r.sheet === undefined
+              ? { line: r.row, cells: r.cells }
+              : { line: r.row, cells: r.cells, sheet: r.sheet },
+          ),
           ...(out.truncatedAfterRow !== undefined ? { truncatedAfterLine: out.truncatedAfterRow } : {}),
+          ...(out.truncatedInSheet !== undefined ? { truncatedInSheet: out.truncatedInSheet } : {}),
         },
       },
     };
@@ -159,15 +219,25 @@ export async function readChecklistFile(
   const read = readers.readPdf ?? (await import("./read-pdf-lines")).readPdfLines;
   const out = await read(bytes);
   if (!out.ok) {
-    const message =
-      out.reason === "too-big"
-        ? tooBigMessage(name, "pdf")
-        : out.reason === "too-many-pages"
-          ? `${name} has more than 300 pages — too long for one checklist.`
-          : out.reason === "password"
-            ? `${name} is password-protected. Save a copy without the password, then choose that.`
-            : `Couldn’t read ${name} as a PDF. Try the publisher’s spreadsheet, or paste the list.`;
-    return { ok: false, message };
+    switch (out.reason) {
+      case "too-big":
+        return refuse("too-big", tooBigMessage(name, "pdf"));
+      case "too-many-pages":
+        return refuse(
+          "too-many-pages",
+          `${name} runs over 300 pages. Save just this set’s pages and upload that.`,
+        );
+      case "password":
+        return refuse(
+          "password",
+          `${name} is password-protected. Save a copy without the password, then choose that.`,
+        );
+      default:
+        return refuse(
+          "malformed",
+          `Couldn’t read ${name} as a PDF. Try the checklist’s spreadsheet, or paste the list.`,
+        );
+    }
   }
   const last = out.lines[out.lines.length - 1];
   return {

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { sectionKeyOf } from "../../convex/lib/publishedChecklistSections";
 import {
+  GROUP_NAME_TOO_LONG,
   HIDDEN_CHARS_IN_GROUP,
   HIDDEN_CHARS_IN_NAME,
+  SECTION_NAME_TOO_LONG,
   SET_CHECKLIST_MAX_ROWS,
   SET_CHECKLIST_MAX_SECTION_ROWS,
   SET_CHECKLIST_MAX_SECTIONS,
@@ -159,6 +161,35 @@ describe("checklistSections", () => {
     ]);
   });
 
+  it("says what to do about hidden characters, in so many words", () => {
+    expect(HIDDEN_CHARS_IN_NAME).toBe("Sneaky invisible characters in this heading. Retype it in the file.");
+    expect(HIDDEN_CHARS_IN_GROUP).toBe(
+      "Sneaky invisible characters in the group heading. Retype it in the file.",
+    );
+  });
+
+  it("lists a section whose name, or whose group's, is over 120 characters, never dropping it silently", () => {
+    const long = `Tab ${"x".repeat(130)}`;
+    const out = checklistSections(
+      parseOf([...rowsIn(long, 2), ...rowsIn("Grouped", 1, 3), ...rowsIn("Base", 1, 4)], {
+        groups: { Grouped: "G".repeat(121) },
+      }),
+    );
+    expect(out.sections.map((s) => s.name)).toEqual(["Base"]);
+    expect(out.skippedSections).toEqual([
+      { name: `${long.slice(0, 120)}…`, rowCount: 2, reason: SECTION_NAME_TOO_LONG },
+      { name: "Grouped", rowCount: 1, reason: GROUP_NAME_TOO_LONG },
+    ]);
+    expect(SECTION_NAME_TOO_LONG).toBe("Section name's too long. Shorten it in the file.");
+    const atLimit = checklistSections(parseOf(rowsIn("y".repeat(120), 1)));
+    expect(atLimit.sections).toHaveLength(1);
+  });
+
+  it("words the limits as what to do", () => {
+    expect(pastSectionLimitReason()).toBe("Over 1,000 sections. Upload just this set's checklist.");
+    expect(pastRowLimitReason()).toBe("Over 50,000 cards. Upload just this set's checklist.");
+  });
+
   it("cleans control characters out of a section name", () => {
     const out = checklistSections(parseOf(rowsIn("Bomb\u0001Squad", 1)));
     expect(out.sections[0].name).toBe("Bomb Squad");
@@ -172,7 +203,7 @@ describe("checklistSections", () => {
     expect(out.skippedSections).toEqual([
       { name: "Big", rowCount: SET_CHECKLIST_MAX_SECTION_ROWS + 1, reason: sectionTooBigReason() },
     ]);
-    expect(sectionTooBigReason()).toBe("More than 2,000 cards in one section");
+    expect(sectionTooBigReason()).toBe("Over 2,000 cards in one section. Split it in the file.");
   });
 
   it("keeps the first 1,000 sections and leaves the rest out with the reason", () => {

@@ -1,6 +1,6 @@
 /**
- * NEO-496 — a publisher checklist read for a whole SET: its rows grouped into
- * the publisher's own sections ("Base", "Bomb Squad", "FUTURE STARS"), each
+ * NEO-496 — an official checklist read for a whole SET: its rows grouped into
+ * the checklist's own sections ("Base", "Bomb Squad", "FUTURE STARS"), each
  * becoming one more source the variant sync can match and a leaf's fetch can
  * use.
  *
@@ -16,12 +16,15 @@
  *    are left out whole, with the reason;
  *  - a section whose name, or whose group's name, holds a hidden direction
  *    or zero-width character (`hasHiddenNameChars`, the server's own test)
- *    is left out whole, with the reason, since the server refuses that name.
+ *    is left out whole, with the reason, since the server refuses that name;
+ *  - a section whose name, or whose group's name, is over
+ *    `PUBLISHED_CHECKLIST_MAX_NAME` characters is left out whole, with the
+ *    reason, for the same reason (never dropped without a word).
  *
  * A section's `key` is its name folded for case and spacing
  * (`checklistSectionKey`): the stable handle a variant row links to (plan
  * D2). Two names that fold alike ("Bomb Squad", "BOMB SQUAD") are one
- * section, under the first name met. The key is the publisher's own name,
+ * section, under the first name met. The key is the checklist's own name,
  * input data, never an NB title.
  *
  * Pure and browser-safe; the server re-checks every limit (plan D5).
@@ -53,7 +56,7 @@ export const SET_CHECKLIST_MAX_ROWS = MAX_CHECKLIST_ROWS;
 export type ChecklistSectionRow = Omit<PublishedChecklistRow, "subset">;
 
 export type ChecklistSection = {
-  /** The publisher's section name, as the file gives it. */
+  /** The checklist's section name, as the file gives it. */
   name: string;
   /** `checklistSectionKey(name)`: unique within the checklist. */
   key: string;
@@ -93,24 +96,29 @@ export function cleanSectionName(name: string): string {
   return name.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-/** "More than 2,000 cards in one section". */
+/** "Over 2,000 cards in one section. Split it in the file." */
 export function sectionTooBigReason(limit = SET_CHECKLIST_MAX_SECTION_ROWS): string {
-  return `More than ${limit.toLocaleString("en-US")} cards in one section`;
+  return `Over ${limit.toLocaleString("en-US")} cards in one section. Split it in the file.`;
 }
 
-/** "Past the 1,000-section limit". */
+/** "Over 1,000 sections. Upload just this set's checklist." */
 export function pastSectionLimitReason(limit = SET_CHECKLIST_MAX_SECTIONS): string {
-  return `Past the ${limit.toLocaleString("en-US")}-section limit`;
+  return `Over ${limit.toLocaleString("en-US")} sections. Upload just this set's checklist.`;
 }
 
 /** A section left out because its own name holds a hidden character. */
-export const HIDDEN_CHARS_IN_NAME = "Hidden characters in the section name";
+export const HIDDEN_CHARS_IN_NAME = "Sneaky invisible characters in this heading. Retype it in the file.";
 /** A section left out because its group heading holds a hidden character. */
-export const HIDDEN_CHARS_IN_GROUP = "Hidden characters in the section's group name";
+export const HIDDEN_CHARS_IN_GROUP =
+  "Sneaky invisible characters in the group heading. Retype it in the file.";
+/** A section left out because its name is over the name limit. */
+export const SECTION_NAME_TOO_LONG = "Section name's too long. Shorten it in the file.";
+/** A section left out because its group heading (a tab's name) is over the name limit. */
+export const GROUP_NAME_TOO_LONG = "Group heading's too long. Shorten it in the file.";
 
-/** "Past the 50,000-card limit for one checklist". */
+/** "Over 50,000 cards. Upload just this set's checklist." */
 export function pastRowLimitReason(limit = SET_CHECKLIST_MAX_ROWS): string {
-  return `Past the ${limit.toLocaleString("en-US")}-card limit for one checklist`;
+  return `Over ${limit.toLocaleString("en-US")} cards. Upload just this set's checklist.`;
 }
 
 function withoutSubset(row: PublishedChecklistRow): ChecklistSectionRow {
@@ -146,7 +154,7 @@ export function checklistSections(parse: PublishedChecklistParse): ChecklistSect
   };
   const byKey = new Map<string, Draft>();
   const order: Draft[] = [];
-  // `groups` is keyed by publisher text: read only its own keys, so a
+  // `groups` is keyed by the file's text: read only its own keys, so a
   // section named "constructor" or "__proto__" is never handed a prototype's.
   const groups = parse.groups;
   const groupOf = (subset: string): string | undefined =>
@@ -156,17 +164,22 @@ export function checklistSections(parse: PublishedChecklistParse): ChecklistSect
   for (const row of parse.rows) {
     if (row.subset === undefined) continue;
     const name = cleanSectionName(row.subset);
-    if (name === "" || name.length > PUBLISHED_CHECKLIST_MAX_NAME) continue;
+    if (name === "") continue;
     const key = checklistSectionKey(name);
     let draft = byKey.get(key);
     if (!draft) {
       const rawGroup = groupOf(row.subset);
       const group = rawGroup === undefined ? "" : cleanSectionName(rawGroup);
-      const refused = hasHiddenNameChars(name)
-        ? HIDDEN_CHARS_IN_NAME
-        : hasHiddenNameChars(group)
-          ? HIDDEN_CHARS_IN_GROUP
-          : undefined;
+      const refused =
+        name.length > PUBLISHED_CHECKLIST_MAX_NAME
+          ? SECTION_NAME_TOO_LONG
+          : hasHiddenNameChars(name)
+            ? HIDDEN_CHARS_IN_NAME
+            : group.length > PUBLISHED_CHECKLIST_MAX_NAME
+              ? GROUP_NAME_TOO_LONG
+              : hasHiddenNameChars(group)
+                ? HIDDEN_CHARS_IN_GROUP
+                : undefined;
       draft = {
         name,
         key,
@@ -186,7 +199,12 @@ export function checklistSections(parse: PublishedChecklistParse): ChecklistSect
   for (const { refused, ...draft } of order) {
     const rowsHere = draft.rows.length;
     if (refused !== undefined) {
-      skippedSections.push({ name: draft.name, rowCount: rowsHere, reason: refused });
+      // A name over the limit is shown cut, so the list stays readable.
+      const shown =
+        draft.name.length > PUBLISHED_CHECKLIST_MAX_NAME
+          ? `${draft.name.slice(0, PUBLISHED_CHECKLIST_MAX_NAME)}…`
+          : draft.name;
+      skippedSections.push({ name: shown, rowCount: rowsHere, reason: refused });
     } else if (rowsHere > SET_CHECKLIST_MAX_SECTION_ROWS) {
       skippedSections.push({ name: draft.name, rowCount: rowsHere, reason: sectionTooBigReason() });
     } else if (sections.length >= SET_CHECKLIST_MAX_SECTIONS) {

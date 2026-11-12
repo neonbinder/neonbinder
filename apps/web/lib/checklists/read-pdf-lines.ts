@@ -1,5 +1,5 @@
 /**
- * NEO-496 — read a publisher's PDF checklist into lines of cells, in the
+ * NEO-496 — read an official PDF checklist into lines of cells, in the
  * browser.
  *
  * pdf.js returns each page's text as positioned items. A checklist page sets

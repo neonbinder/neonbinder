@@ -6,6 +6,8 @@ import {
   XLSX_MAX_FILE_BYTES,
   XLSX_MAX_KEPT_CHARS,
   XLSX_MAX_PART_BYTES,
+  XLSX_MAX_ROWS,
+  XLSX_MAX_SHEETS,
   cleanCellText,
   numberText,
   readXlsx,
@@ -200,18 +202,138 @@ describe("readXlsx — cells", () => {
   });
 });
 
+/** A cell of inline text. */
+const inline = (ref: string, text: string) => `<c r="${ref}" t="inlineStr"><is><t>${text}</t></is></c>`;
+
+/**
+ * A workbook from `<sheet>` tags (each naming `r:id="rIdN"` for its part
+ * `worksheets/sheetN.xml`) and those parts' sheetData bodies.
+ */
+function tabbed(sheetTags: string, parts: Record<number, string>, types: Record<number, string> = {}) {
+  const files: Zippable = {
+    "xl/workbook.xml": strToU8(`<workbook ${NS} xmlns:r="${REL}"><sheets>${sheetTags}</sheets></workbook>`),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      `<Relationships>${Object.keys(parts)
+        .map(
+          (n) =>
+            `<Relationship Id="rId${n}" Type="${REL}/${types[Number(n)] ?? "worksheet"}" Target="worksheets/sheet${n}.xml"/>`,
+        )
+        .join("")}</Relationships>`,
+    ),
+  };
+  for (const [n, body] of Object.entries(parts)) {
+    files[`xl/worksheets/sheet${n}.xml`] = strToU8(`<worksheet ${NS}><sheetData>${body}</sheetData></worksheet>`);
+  }
+  return zipSync(files);
+}
+
 describe("readXlsx — which sheet", () => {
-  it("reads only the workbook's first sheet", () => {
-    const rows = rowsOf(
-      workbook([
-        '<row r="1"><c r="A1" t="inlineStr"><is><t>first</t></is></c></row>',
-        '<row r="1"><c r="A1" t="inlineStr"><is><t>second</t></is></c></row>',
-      ]),
+  it("reads every sheet in tab order, each row carrying its sheet's name", () => {
+    const read = readXlsx(
+      tabbed('<sheet name="Base" sheetId="1" r:id="rId1"/><sheet name="Bomb &amp; Squad" sheetId="2" r:id="rId2"/>', {
+        1: `<row r="1">${inline("A1", "first")}</row><row r="2">${inline("A2", "again")}</row>`,
+        2: `<row r="1">${inline("A1", "second")}</row>`,
+      }),
     );
-    expect(rows).toEqual([{ row: 1, cells: ["first"] }]);
+    expect(read).toEqual({
+      ok: true,
+      sheets: ["Base", "Bomb & Squad"],
+      rows: [
+        { row: 1, cells: ["first"], sheet: "Base" },
+        { row: 2, cells: ["again"], sheet: "Base" },
+        { row: 1, cells: ["second"], sheet: "Bomb & Squad" },
+      ],
+    });
   });
 
-  it("follows the workbook's own pointer when the first sheet is not sheet1.xml", () => {
+  it("names no sheet when only one sheet gives rows, so a one-sheet checklist reads as it always has", () => {
+    const read = readXlsx(
+      workbook([
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>first</t></is></c></row>',
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>  </t></is></c></row>',
+        "",
+      ]),
+    );
+    expect(read).toEqual({ ok: true, sheets: ["S1", "S2", "S3"], rows: [{ row: 1, cells: ["first"] }] });
+  });
+
+  it("passes over a hidden sheet, a chart sheet and a second pointer at a part already read", () => {
+    const read = readXlsx(
+      tabbed(
+        '<sheet name="Lookups" sheetId="1" state="hidden" r:id="rId1"/>' +
+          '<sheet name="Base" sheetId="2" r:id="rId2"/>' +
+          '<sheet name="Scratch" sheetId="3" state="veryHidden" r:id="rId3"/>' +
+          '<sheet name="Chart" sheetId="4" r:id="rId4"/>' +
+          '<sheet name="Again" sheetId="5" r:id="rId2"/>' +
+          '<sheet name="Inserts" sheetId="6" r:id="rId6"/>',
+        {
+          1: `<row r="1">${inline("A1", "hidden")}</row>`,
+          2: `<row r="1">${inline("A1", "base")}</row>`,
+          3: `<row r="1">${inline("A1", "very hidden")}</row>`,
+          4: `<row r="1">${inline("A1", "chart")}</row>`,
+          6: `<row r="1">${inline("A1", "insert")}</row>`,
+        },
+        { 4: "chartsheet" },
+      ),
+    );
+    expect(read).toEqual({
+      ok: true,
+      sheets: ["Base", "Inserts"],
+      rows: [
+        { row: 1, cells: ["base"], sheet: "Base" },
+        { row: 1, cells: ["insert"], sheet: "Inserts" },
+      ],
+    });
+  });
+
+  it("refuses a workbook of more visible sheets than one checklist needs", () => {
+    const count = XLSX_MAX_SHEETS + 1;
+    const tags = Array.from({ length: count }, (_, i) => `<sheet name="T${i + 1}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("");
+    const parts = Object.fromEntries(Array.from({ length: count }, (_, i) => [i + 1, `<row r="1">${inline("A1", "x")}</row>`]));
+    expect(readXlsx(tabbed(tags, parts))).toEqual({ ok: false, reason: "part-too-big" });
+    const atCap = tabbed(
+      Array.from({ length: XLSX_MAX_SHEETS }, (_, i) => `<sheet name="T${i + 1}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join(""),
+      Object.fromEntries(Array.from({ length: XLSX_MAX_SHEETS }, (_, i) => [i + 1, `<row r="1">${inline("A1", "x")}</row>`])),
+    );
+    const read = readXlsx(atCap);
+    expect(read.ok && read.rows).toHaveLength(XLSX_MAX_SHEETS);
+  });
+
+  it("holds the sheet XML cap across the whole workbook, not per sheet", () => {
+    const zip = workbook([
+      `<row r="1">${inline("A1", "first")}</row>`,
+      `<row r="1">${inline("A1", "second")}</row>`,
+    ]);
+    // The second sheet declares just under the cap: alone it would pass, but
+    // the first sheet's XML already counts against the same budget.
+    const second = centralEntry(zip, "xl/worksheets/sheet2.xml");
+    setU32(zip, second + 24, XLSX_MAX_PART_BYTES - 10);
+    expect(readXlsx(zip)).toEqual({ ok: false, reason: "part-too-big" });
+  });
+
+  it("holds the kept-characters cap across the whole workbook", () => {
+    // Each sheet alone stays under the cap; together they pass it.
+    const perSheet = Math.ceil(XLSX_MAX_KEPT_CHARS / 2 / (50 * XLSX_MAX_CELL_CHARS)) + 10;
+    const row = '<c t="s"><v>0</v></c>'.repeat(50);
+    const body = Array.from({ length: perSheet }, (_, i) => `<row r="${i + 1}">${row}</row>`).join("");
+    const big = [`<t>${"A B ".repeat(1_000)}</t>`];
+    expect(readXlsx(workbook([body], big)).ok).toBe(true);
+    expect(readXlsx(workbook([body, body], big))).toEqual({ ok: false, reason: "part-too-big" });
+  });
+
+  it("stops at the row cap across sheets and says which sheet it stopped in", () => {
+    const half = XLSX_MAX_ROWS / 2 + 10;
+    const body = Array.from({ length: half }, (_, i) => `<row r="${i + 1}"><c r="A${i + 1}"><v>1</v></c></row>`).join("");
+    const read = readXlsx(
+      tabbed('<sheet name="One" sheetId="1" r:id="rId1"/><sheet name="Two" sheetId="2" r:id="rId2"/>', { 1: body, 2: body }),
+    );
+    if (!read.ok) throw new Error(`refused: ${read.reason}`);
+    expect(read.rows).toHaveLength(XLSX_MAX_ROWS);
+    expect(read.truncatedInSheet).toBe("Two");
+    expect(read.truncatedAfterRow).toBe(XLSX_MAX_ROWS - half);
+  });
+
+  it("follows the workbook's own pointers when the first tab is not sheet1.xml", () => {
     const zip = zipSync({
       "xl/workbook.xml": strToU8(
         `<workbook ${NS} xmlns:r="${REL}"><sheets><sheet name="B" sheetId="2" r:id="rId9"/><sheet name="A" sheetId="1" r:id="rId1"/></sheets></workbook>`,
@@ -220,13 +342,17 @@ describe("readXlsx — which sheet", () => {
         `<Relationships><Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId9" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`,
       ),
       "xl/worksheets/sheet1.xml": strToU8(
-        '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>not me</t></is></c></row></sheetData></worksheet>',
+        '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>tab A</t></is></c></row></sheetData></worksheet>',
       ),
       "xl/worksheets/sheet2.xml": strToU8(
-        '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>me</t></is></c></row></sheetData></worksheet>',
+        '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>tab B</t></is></c></row></sheetData></worksheet>',
       ),
     });
-    expect(rowsOf(zip)).toEqual([{ row: 1, cells: ["me"] }]);
+    // Both sheets are read, in TAB order (B first), whatever their part names.
+    expect(rowsOf(zip)).toEqual([
+      { row: 1, cells: ["tab B"], sheet: "B" },
+      { row: 1, cells: ["tab A"], sheet: "A" },
+    ]);
   });
 });
 
@@ -380,7 +506,7 @@ describe("readXlsx — hostile shapes stay bounded", () => {
       `<c r="A1" t="inlineStr"><is>${"<t>".repeat(UNCLOSED)}</is></c>`,
     ]) {
       const { ms, read } = timed(workbook([`<row r="1">${body}<c r="B1"><v>7</v></c></row>`]));
-      expect(read).toEqual({ ok: true, rows: [{ row: 1, cells: ["", "7"] }] });
+      expect(read).toEqual({ ok: true, sheets: ["S1"], rows: [{ row: 1, cells: ["", "7"] }] });
       expect(ms).toBeLessThan(1_500);
     }
   });

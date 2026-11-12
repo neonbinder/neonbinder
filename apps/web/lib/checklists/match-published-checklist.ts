@@ -1,5 +1,5 @@
 /**
- * PR 451 (NEO-478) — pair the operator's publisher checklist with the cards a
+ * PR 451 (NEO-478) — pair the operator's official checklist with the cards a
  * checklist fetch reconciled, by card number, under product rule 7.
  *
  * Pure: no Convex, no DOM. `fetchCardChecklist` runs it on the server; the
@@ -25,12 +25,12 @@
  *     case-only twin on either side leaves the number unmatched.
  *  3. **Letter prefix stripped**: a leading letter prefix ("BCP-12", "US12")
  *     is stripped from the folded key on both sides and the same exactly-one
- *     guard applies again ("BCP-12" on BSC against "12" in the publisher's
- *     list).
+ *     guard applies again ("BCP-12" on BSC against "12" in the
+ *     checklist).
  *
  * ## Cards with no number ("NNO") pair by player, never by a tie
  *
- * A row the publisher printed as "NNO" (`noNumber`) never takes part in the
+ * A row the checklist prints as "NNO" (`noNumber`) never takes part in the
  * number passes, and neither does a card whose number is blank or "NNO". Such
  * a row pairs with such a card only when the players (`namesKey`, the same
  * key the misread check uses) name exactly one no-number card AND exactly one
@@ -67,7 +67,7 @@
  *
  * Some publishers number a set one way and the marketplace another (Panini's
  * "1".."17" against BSC's "SIG-FT"; "SIG-FT" has no digit after its letters,
- * so the prefix strip never reaches it), and a publisher's list can carry a
+ * so the prefix strip never reaches it), and an official checklist can carry a
  * misprinted number or a misspelled name. So after the number passes and the
  * NNO pass, the cards and rows still LEFT over pair by their players, in two
  * passes, each within its kind (a numbered card with a numbered row, a
@@ -102,7 +102,7 @@ export type ChecklistRowInput = {
   players: readonly string[];
   teams: readonly string[];
   /**
-   * The publisher printed no number for this card ("NNO"). Such a row pairs
+   * The checklist prints no number for this card ("NNO"). Such a row pairs
    * by player only (see the header). A row whose number is blank or "NNO"
    * counts as one whether or not the flag is set.
    */

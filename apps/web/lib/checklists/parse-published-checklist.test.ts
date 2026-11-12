@@ -20,6 +20,7 @@ import {
   capLeafRows,
   headingText,
   parsePublishedChecklistCells,
+  pastFileLimit,
   pastLimit,
   type ChecklistCellRecord,
 } from "./parse-published-checklist";
@@ -589,6 +590,42 @@ describe("parsePublishedChecklist — collector review S1: hobby markers", () =>
     const out = parsePublishedChecklist("#,Player,Team\n1,Mike Trout SP /99,Los Angeles Angels");
     expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] });
   });
+
+  it("drops EXCH, Exchange, UER, FBC and a lone 1/1 as whole tokens", () => {
+    const out = parsePublishedChecklist(
+      [
+        "1 Mike Trout EXCH - Los Angeles Angels",
+        "2 Shohei Ohtani Exchange - Los Angeles Dodgers",
+        "3 Aaron Judge EXCHANGE - New York Yankees",
+        "4 Ken Griffey Jr. UER - Seattle Mariners",
+        "5 Jackson Holliday FBC - Baltimore Orioles",
+        "6 Paul Skenes 1/1 - Pittsburgh Pirates",
+        "7 Bobby Witt Jr. RC 1/1 EXCH - Kansas City Royals",
+      ].join("\n"),
+    );
+    expect(out.rows.map((r) => [r.players, r.teams])).toEqual([
+      [["Mike Trout"], ["Los Angeles Angels"]],
+      [["Shohei Ohtani"], ["Los Angeles Dodgers"]],
+      [["Aaron Judge"], ["New York Yankees"]],
+      [["Ken Griffey Jr."], ["Seattle Mariners"]],
+      [["Jackson Holliday"], ["Baltimore Orioles"]],
+      [["Paul Skenes"], ["Pittsburgh Pirates"]],
+      [["Bobby Witt Jr."], ["Kansas City Royals"]],
+    ]);
+  });
+
+  it("keeps a name that merely holds those letters", () => {
+    const out = parsePublishedChecklist(
+      ["1 Exchanger Uerta - Fbc Club", "3 Joe exch Smith - Boston Red Sox"].join("\n"),
+    );
+    expect(out.rows.map((r) => r.players)).toEqual([["Exchanger Uerta"], ["Joe exch Smith"]]);
+    expect(out.rows[0].teams).toEqual(["Fbc Club"]);
+  });
+
+  it("drops the new markers in a CSV's team cell too", () => {
+    const out = parsePublishedChecklist("#,Player,Team\n1,Mike Trout UER,Los Angeles Angels EXCH");
+    expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: ["Los Angeles Angels"] });
+  });
 });
 
 describe("parsePublishedChecklist — collector review S2: insert codes and NNO", () => {
@@ -1097,7 +1134,9 @@ describe("parsePublishedChecklist — NEO-496: the per-leaf cap comes after the 
 
   it("holds even a many-subset paste to the set-level total", () => {
     expect(PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS).toBe(50_000);
-    expect(pastLimit(50_000)).toBe("Past the 50,000-row limit");
+    expect(pastLimit(2_000)).toBe("Over 2,000 cards. Untick a section to make room.");
+    expect(pastLimit(2_000, false)).toBe("Over 2,000 cards. Trim the file down to this list.");
+    expect(pastFileLimit(50_000)).toBe("Over 50,000 cards. Upload just this set's checklist.");
   });
 });
 
@@ -1268,6 +1307,130 @@ describe("parsePublishedChecklistCells — a Donruss-layout spreadsheet", () => 
     const out = parsePublishedChecklistCells({ format: "xlsx", records: sheet(rows) });
     expect(out.rows).toHaveLength(PUBLISHED_CHECKLIST_MAX_ROWS);
     expect(out.skipped.map((s) => s.line)).toEqual([2002, 2003]);
-    expect(out.skipped[0].reason).toBe(pastLimit(PUBLISHED_CHECKLIST_MAX_ROWS));
+    // One subset: there is nothing to untick, so the file is the way forward.
+    expect(out.skipped[0].reason).toBe(pastLimit(PUBLISHED_CHECKLIST_MAX_ROWS, false));
+  });
+});
+
+describe("parsePublishedChecklistCells — a workbook of several tabs", () => {
+  const tab = (sheet: string, rows: string[][]): ChecklistCellRecord[] =>
+    rows.map((cells, i) => ({ line: i + 1, cells, sheet }));
+
+  it("reads each tab on its own: its own header, and the tab's name as its section", () => {
+    const out = parsePublishedChecklistCells(
+      {
+        format: "xlsx",
+        records: [
+          ...tab("Base", [["2026 Donruss"], ["#", "Player", "Team"], ["1", "Ken Griffey Jr.", "Seattle Mariners"]]),
+          ...tab("Bomb Squad", [["Player", "Card", "Team"], ["Aaron Judge", "BS-1", "New York Yankees"]]),
+        ],
+      },
+      { mode: "set" },
+    );
+    expect(out.rows).toEqual([
+      { number: "1", players: ["Ken Griffey Jr."], teams: ["Seattle Mariners"], subset: "Base" },
+      { number: "BS-1", players: ["Aaron Judge"], teams: ["New York Yankees"], subset: "Bomb Squad" },
+    ]);
+    expect(out.subsets).toEqual(["Base", "Bomb Squad"]);
+    expect(out.groups).toBeUndefined();
+    expect(out.skipped).toEqual([
+      { line: 1, sheet: "Base", text: "2026 Donruss", reason: ABOVE_THE_HEADER },
+    ]);
+  });
+
+  it("groups a tab's headings under the tab, and a set column's sections under the tab", () => {
+    const out = parsePublishedChecklistCells(
+      {
+        format: "xlsx",
+        records: [
+          ...tab("Inserts", [
+            ["#", "Player", "Team"],
+            ["FUTURE STARS"],
+            ["FS-1", "Jackson Holliday", "Baltimore Orioles"],
+            ["HELIX"],
+            ["HX-1", "Paul Skenes", "Pittsburgh Pirates"],
+          ]),
+          ...tab("Parallels", [
+            ["Card Set", "#", "Player", "Team"],
+            ["Base Red", "1", "Ken Griffey Jr.", "Seattle Mariners"],
+          ]),
+        ],
+      },
+      { mode: "set" },
+    );
+    expect(out.subsets).toEqual(["FUTURE STARS", "HELIX", "Base Red"]);
+    expect(out.groups).toEqual({ "FUTURE STARS": "Inserts", HELIX: "Inserts", "Base Red": "Parallels" });
+  });
+
+  it("starts each tab afresh: a heading never carries into the next tab", () => {
+    const out = parsePublishedChecklistCells(
+      {
+        format: "xlsx",
+        records: [
+          ...tab("One", [["#", "Player"], ["HELIX"], ["1", "A"]]),
+          ...tab("Two", [["#", "Player"], ["2", "B"]]),
+        ],
+      },
+      { mode: "set" },
+    );
+    expect(out.rows.map((r) => r.subset)).toEqual(["HELIX", "Two"]);
+  });
+
+  it("tells a tab named like an earlier section apart, as a repeated heading is", () => {
+    const out = parsePublishedChecklistCells(
+      {
+        format: "xlsx",
+        records: [
+          ...tab("Base", [["Card Set", "#", "Player"], ["Base", "1", "A"]]),
+          ...tab("base", [["#", "Player"], ["2", "B"]]),
+        ],
+      },
+      { mode: "set" },
+    );
+    // Told apart here; the set's sections then fold the two into one
+    // ("Base" and "base" share a key), as two such subset cells would.
+    expect(out.subsets).toEqual(["Base", "base"]);
+    const tabNamedAgain = parsePublishedChecklistCells(
+      {
+        format: "xlsx",
+        records: [
+          ...tab("One", [["#", "Player"], ["HELIX"], ["1", "A"]]),
+          ...tab("HELIX", [["#", "Player"], ["2", "B"]]),
+        ],
+      },
+      { mode: "set" },
+    );
+    expect(tabNamedAgain.subsets).toEqual(["HELIX", "HELIX (2)"]);
+  });
+
+  it("says which tab a skipped line and a cut-off are on", () => {
+    const out = parsePublishedChecklistCells({
+      format: "xlsx",
+      records: [...tab("One", [["#", "Player"], ["1", "A"]]), ...tab("Two", [["#", "Player"], ["x y", "B"]])],
+      truncatedAfterLine: 2,
+      truncatedInSheet: "Two",
+    });
+    expect(out.skipped).toEqual([
+      { line: 2, sheet: "Two", text: "x y | B", reason: "Card number isn't one we can read" },
+      { line: 3, sheet: "Two", text: "…", reason: NOT_READ_PAST_HERE },
+    ]);
+  });
+
+  it("keeps the leaf cap's skipped list in tab order, then line order", () => {
+    const rows = (from: number, n: number) =>
+      [["#", "Player"], ...Array.from({ length: n }, (_, i) => [`${from + i}`, `P${from + i}`])];
+    // Two tabs under one subset column value: one subset, so the leaf cap applies.
+    const out = parsePublishedChecklistCells({
+      format: "xlsx",
+      records: [
+        ...tab("A", [["Card Set", "#", "Player"], ...rows(1, 1500).slice(1).map((r) => ["Base", ...r])]),
+        ...tab("B", [["Card Set", "#", "Player"], ...rows(1501, 600).slice(1).map((r) => ["Base", ...r])]),
+      ],
+    });
+    expect(out.rows).toHaveLength(PUBLISHED_CHECKLIST_MAX_ROWS);
+    expect(out.skipped).toHaveLength(100);
+    expect(out.skipped[0]).toMatchObject({ sheet: "B", line: 502 });
+    expect(out.skipped.every((s) => s.sheet === "B")).toBe(true);
+    expect(out.skipped.map((s) => s.line)).toEqual(Array.from({ length: 100 }, (_, i) => 502 + i));
   });
 });

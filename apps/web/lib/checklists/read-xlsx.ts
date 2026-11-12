@@ -1,6 +1,6 @@
 /**
- * NEO-496 — read the first sheet of an .xlsx publisher checklist into rows of
- * cell text, in the browser, without a spreadsheet library.
+ * NEO-496 — read every sheet of an .xlsx checklist into rows of cell text, in
+ * the browser, without a spreadsheet library.
  *
  * An .xlsx is a zip of XML parts. This reader:
  *
@@ -8,7 +8,9 @@
  *     written with a trailing data descriptor is found too), and refuses an
  *     encrypted, Zip64 or unknown-compression part;
  *  2. inflates only the parts it needs (the workbook, its relationships, the
- *     shared strings and the FIRST sheet) with fflate's streaming `Inflate`,
+ *     shared strings and each visible worksheet, in tab order; a hidden
+ *     sheet, a chart sheet and a second pointer at a part already read are
+ *     passed over) with fflate's streaming `Inflate`,
  *     counting the real output and stopping at the cap. A part's declared
  *     size is checked first and its real size is never trusted to match: a
  *     part that inflates past its cap is stopped by the count, not by the
@@ -27,7 +29,16 @@
  * refuses anything over 120 characters anyway, so a cut cell is still
  * refused, never shortened into a real-looking name), and the characters
  * kept across all rows are capped at `XLSX_MAX_KEPT_CHARS`; past it the file
- * is refused as `part-too-big`.
+ * is refused as `part-too-big`. Every cap holds across the WHOLE workbook,
+ * not per sheet: the sheets' XML together may inflate to
+ * `XLSX_MAX_PART_BYTES`, the rows kept together stop at `XLSX_MAX_ROWS`, and
+ * a workbook of more than `XLSX_MAX_SHEETS` visible sheets is refused as
+ * `part-too-big`.
+ *
+ * When more than one sheet gives rows, each row carries its sheet's name
+ * (`sheet`), so the parser can read each tab on its own. A workbook whose
+ * rows all come from one sheet reads exactly as a one-sheet workbook: no
+ * row carries a sheet.
  *
  * Cells are returned as trimmed text by column: shared strings (`t="s"`),
  * inline strings (`t="inlineStr"`, rich-text runs joined), formula strings
@@ -41,14 +52,19 @@ import { Inflate } from "fflate";
 
 /** The largest .xlsx file read, in bytes. */
 export const XLSX_MAX_FILE_BYTES = 10 * 1024 * 1024;
-/** The most XML one sheet (or the shared strings) may inflate to, in bytes. */
+/**
+ * The most XML the shared strings may inflate to, in bytes, and the most the
+ * workbook's sheets may inflate to together.
+ */
 export const XLSX_MAX_PART_BYTES = 32 * 1024 * 1024;
+/** The most visible sheets one workbook may hold; more is refused as `part-too-big`. */
+export const XLSX_MAX_SHEETS = 100;
 /** The most XML the workbook and its relationships may inflate to. */
 const XLSX_MAX_SMALL_PART_BYTES = 1024 * 1024;
 /**
- * The most rows kept from the sheet. Past it the sheet is not read further
- * and `truncatedAfterRow` says where it stopped. Well past the set-level
- * 50,000-row limit, so a real checklist is never cut.
+ * The most rows kept across the workbook. Past it nothing more is read and
+ * `truncatedAfterRow` (with `truncatedInSheet`) says where it stopped. Well
+ * past the set-level 50,000-row limit, so a real checklist is never cut.
  */
 export const XLSX_MAX_ROWS = 100_000;
 /** Columns past this one are ignored: a checklist uses a handful. */
@@ -67,8 +83,11 @@ export const XLSX_MAX_KEPT_CHARS = 64 * 1024 * 1024;
 /** Compressed bytes handed to the inflater at a time, so a bomb is caught early. */
 const INFLATE_SLICE = 16 * 1024;
 
-/** One sheet row: its 1-based row number in the sheet and its cells by column (A = 0). */
-export type XlsxRow = { row: number; cells: string[] };
+/**
+ * One sheet row: its 1-based row number in its sheet, its cells by column
+ * (A = 0), and, when more than one sheet gave rows, the sheet's name.
+ */
+export type XlsxRow = { row: number; cells: string[]; sheet?: string };
 
 /** Why a file could not be read at all. The dialog words each one. */
 export type XlsxRefusal =
@@ -84,10 +103,14 @@ export type XlsxRefusal =
 export type XlsxRead =
   | {
       ok: true;
-      /** Rows with at least one non-blank cell, in sheet order. */
+      /** Rows with at least one non-blank cell, sheet by sheet in tab order. */
       rows: XlsxRow[];
-      /** Set when the sheet went past `XLSX_MAX_ROWS`; the last row kept. */
+      /** The visible worksheets read, in tab order (a blank name when the workbook names none). */
+      sheets: string[];
+      /** Set when the workbook went past `XLSX_MAX_ROWS`; the last row kept. */
       truncatedAfterRow?: number;
+      /** With `truncatedAfterRow`, that row's sheet, when rows carry one. */
+      truncatedInSheet?: string;
     }
   | { ok: false; reason: XlsxRefusal };
 
@@ -179,7 +202,7 @@ function streamEntry(
   entry: ZipEntry,
   cap: number,
   onText: (text: string) => void,
-): void {
+): number {
   if (entry.declaredSize > cap) throw new XlsxError("part-too-big");
   const data = bytes.subarray(entry.dataStart, entry.dataStart + entry.compressedSize);
   const decoder = new TextDecoder("utf-8");
@@ -195,7 +218,7 @@ function streamEntry(
       take(data.subarray(i, i + INFLATE_SLICE), i + INFLATE_SLICE >= data.length);
     }
     if (data.length === 0) take(new Uint8Array(0), true);
-    return;
+    return total;
   }
   if (entry.method !== 8) throw new XlsxError("unsupported-zip");
   const inflate = new Inflate((chunk, final) => take(chunk, final));
@@ -208,6 +231,7 @@ function streamEntry(
     if (error instanceof XlsxError) throw error;
     throw new XlsxError("malformed");
   }
+  return total;
 }
 
 /** Inflate a small part whole (the workbook, a relationships file). */
@@ -418,7 +442,7 @@ function elementStream(name: string, onElement: (xml: string) => boolean | void)
   };
 }
 
-// ── Workbook: which part is the first sheet ───────────────────────────────
+// ── Workbook: which parts are the sheets ──────────────────────────────────
 
 /** "worksheets/sheet1.xml" relative to "xl/workbook.xml" → "xl/worksheets/sheet1.xml". */
 function resolvePart(base: string, target: string): string {
@@ -452,10 +476,13 @@ function relationships(xml: string): Relationship[] {
   return out;
 }
 
+/** A worksheet to read: its tab name and its part. */
+type SheetPart = { name: string; part: string };
+
 function locateParts(
   bytes: Uint8Array,
   entries: Map<string, ZipEntry>,
-): { sheet: string; sharedStrings: string | null } {
+): { sheets: SheetPart[]; sharedStrings: string | null } {
   let workbook = "xl/workbook.xml";
   const rootRels = entries.get("_rels/.rels");
   if (rootRels) {
@@ -470,24 +497,36 @@ function locateParts(
   const relsEntry = entries.get(relsPathOf(workbook));
   const rels = relsEntry ? relationships(readSmallEntry(bytes, relsEntry)) : [];
 
-  let sheet: string | null = null;
-  const firstSheet = /<(?:\w+:)?sheet\b[^<>]*>/.exec(workbookXml);
-  if (firstSheet) {
-    const id = /\s(?:\w+:)?id\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(firstSheet[0]);
+  // Every visible worksheet, in tab order. A hidden tab is the file's
+  // own scratch (lookup lists), a chart sheet holds no cells, and a part
+  // named twice is read once.
+  const sheets: SheetPart[] = [];
+  const seen = new Set<string>();
+  const sheetTag = /<(?:\w+:)?sheet\b[^<>]*>/g;
+  for (let m = sheetTag.exec(workbookXml); m; m = sheetTag.exec(workbookXml)) {
+    const state = attr(m[0], "state");
+    if (state === "hidden" || state === "veryHidden") continue;
+    const id = /\s(?:\w+:)?id\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(m[0]);
     const relId = id ? decodeXml(id[1] ?? id[2] ?? "") : null;
     const rel = rels.find((r) => r.id === relId);
-    if (rel) sheet = resolvePart(workbook, rel.target);
+    if (!rel || (rel.type !== "" && !rel.type.endsWith("/worksheet"))) continue;
+    const part = resolvePart(workbook, rel.target);
+    if (!entries.has(part) || seen.has(part)) continue;
+    seen.add(part);
+    sheets.push({ name: cleanCellText(attr(m[0], "name") ?? ""), part });
+    if (sheets.length > XLSX_MAX_SHEETS) throw new XlsxError("part-too-big");
   }
-  if (!sheet || !entries.has(sheet)) {
+  if (sheets.length === 0) {
     // No usable pointer: the conventional first sheet.
-    sheet = resolvePart(workbook, "worksheets/sheet1.xml");
+    const sheet = resolvePart(workbook, "worksheets/sheet1.xml");
     if (!entries.has(sheet)) throw new XlsxError("not-a-workbook");
+    sheets.push({ name: "", part: sheet });
   }
   const sharedRel = rels.find((r) => r.type.endsWith("/sharedStrings"));
   const shared = sharedRel
     ? resolvePart(workbook, sharedRel.target)
     : resolvePart(workbook, "sharedStrings.xml");
-  return { sheet, sharedStrings: entries.has(shared) ? shared : null };
+  return { sheets, sharedStrings: entries.has(shared) ? shared : null };
 }
 
 // ── Cells ──────────────────────────────────────────────────────────────────
@@ -598,8 +637,8 @@ function parseRow(
 // ── Entry point ────────────────────────────────────────────────────────────
 
 /**
- * Read the first sheet of an .xlsx. Never throws: a file it cannot read
- * comes back `{ ok: false, reason }`.
+ * Read every visible sheet of an .xlsx, in tab order. Never throws: a file it
+ * cannot read comes back `{ ok: false, reason }`.
  */
 export function readXlsx(input: Uint8Array | ArrayBuffer): XlsxRead {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
@@ -618,26 +657,48 @@ export function readXlsx(input: Uint8Array | ArrayBuffer): XlsxRead {
       );
     }
 
-    const rows: XlsxRow[] = [];
-    let truncatedAfterRow: number | undefined;
-    let lastRow = 0;
+    // Rows with the index of the sheet they came from; the names are added
+    // at the end, only when more than one sheet gave rows.
+    const rows: Array<XlsxRow & { sheetIndex: number }> = [];
+    let truncated = false;
     let keptChars = 0;
-    const sheetRows = elementStream("row", (xml) => {
-      const row = parseRow(xml, lastRow + 1, shared);
-      lastRow = row.row;
-      if (!row.cells.some((c) => c !== "")) return;
-      if (rows.length >= XLSX_MAX_ROWS) {
-        truncatedAfterRow = rows[rows.length - 1].row;
-        return false;
-      }
-      for (const cell of row.cells) keptChars += cell.length;
-      if (keptChars > XLSX_MAX_KEPT_CHARS) throw new XlsxError("part-too-big");
-      rows.push(row);
-    });
-    streamEntry(bytes, entries.get(parts.sheet)!, XLSX_MAX_PART_BYTES, (text) =>
-      sheetRows.push(text),
+    let sheetBytes = 0;
+    for (let index = 0; index < parts.sheets.length && !truncated; index++) {
+      let lastRow = 0;
+      const sheetRows = elementStream("row", (xml) => {
+        const row = parseRow(xml, lastRow + 1, shared);
+        lastRow = row.row;
+        if (!row.cells.some((c) => c !== "")) return;
+        if (rows.length >= XLSX_MAX_ROWS) {
+          truncated = true;
+          return false;
+        }
+        for (const cell of row.cells) keptChars += cell.length;
+        if (keptChars > XLSX_MAX_KEPT_CHARS) throw new XlsxError("part-too-big");
+        rows.push({ ...row, sheetIndex: index });
+      });
+      sheetBytes += streamEntry(
+        bytes,
+        entries.get(parts.sheets[index].part)!,
+        XLSX_MAX_PART_BYTES - sheetBytes,
+        (text) => sheetRows.push(text),
+      );
+    }
+
+    const named = new Set(rows.map((r) => r.sheetIndex)).size > 1;
+    const out: XlsxRow[] = rows.map(({ sheetIndex, ...row }) =>
+      named ? { ...row, sheet: parts.sheets[sheetIndex].name } : row,
     );
-    return truncatedAfterRow === undefined ? { ok: true, rows } : { ok: true, rows, truncatedAfterRow };
+    const sheets = parts.sheets.map((s) => s.name);
+    if (!truncated) return { ok: true, rows: out, sheets };
+    const last = out[out.length - 1];
+    return {
+      ok: true,
+      rows: out,
+      sheets,
+      truncatedAfterRow: last.row,
+      ...(last.sheet !== undefined ? { truncatedInSheet: last.sheet } : {}),
+    };
   } catch (error) {
     if (error instanceof XlsxError) return { ok: false, reason: error.reason };
     return { ok: false, reason: "malformed" };

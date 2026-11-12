@@ -17,7 +17,7 @@ describe("isNoTeamText", () => {
   );
 
   it("exports the skip reason", () => {
-    expect(NO_TEAM_AND_A_TEAM).toBe("Says No Team and names a team — pick one.");
+    expect(NO_TEAM_AND_A_TEAM).toBe('Says "No Team" and names a team. Fix one in the file.');
   });
 });
 
