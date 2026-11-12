@@ -126,6 +126,13 @@ Things that look like failures during the apps/web fast gates but are not.
    with a fake `{ mutation, watchQuery }` client) + headless Chrome over the
    built CSS.
 
+12. **A unit test near vitest's 5 s default reds only in the full run.** NEO-496:
+   a `planChecklistBatches` case ran 3.7 s alone and timed out at 5 s in two
+   consecutive full `npm run test:unit` runs on the pinned Node (green once on a
+   newer Node). Time it alone with `--reporter=verbose -t <name>` before calling
+   it a flake; a file you did not touch that reds this way is pre-existing, so
+   report it with the timing rather than editing it.
+
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
 
