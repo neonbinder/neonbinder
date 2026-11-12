@@ -34,4 +34,12 @@ Fix for a probe or spec run while other builders work in the same worktree:
 It serves HEAD, not the builders' uncommitted code: right for probing today's
 product, wrong for testing their change.
 
+Planted breaks in the snapshot (prove-it-can-fail runs): seed and run setup
+with CLEAN code first, then plant, restart Vite (hmr is off) and run only the
+specs. A break on a shared path (a throw in Match Cards' checklist branch) also
+reds `setup.spec.ts`, and then nothing tests the spec. Restore with
+`git -C <snapshot> checkout -- apps/web/components` and check that `status`
+lists only `vite.config.ts`. A spec's `finally` cleanup shows in the failure PNG
+(the screenshot comes after `finally`), which proves cleanup-on-red for free.
+
 Related: [[local-vite-serves-one-worktree]]

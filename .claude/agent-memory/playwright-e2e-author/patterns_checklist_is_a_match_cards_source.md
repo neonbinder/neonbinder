@@ -66,3 +66,15 @@ Parser gotcha for per-attempt sections in a built checklist: a heading is an
 ALL-CAPS line of two or more words; a single word containing a digit reads as
 a card number, so a token heading is `E2E <TOKEN uppercased>`, and Reconcile
 titles it with `checklistSetTitle` ("E2e Pw8d...").
+
+A PASTED checklist is stricter: `E2E <TOKEN>` still has digits and the paste
+dialog shows "No sections found." with Save aria-disabled. Paste a plain
+ALL-CAPS heading with no digit ("ROOKIE DEBUT").
+
+Dead no-checklist branches: since NEO-489 every fetch helper caller and every
+set-history insert uploads a checklist, so a `facts === undefined` /
+`published === undefined` branch never runs, and an assertion added there
+passes against any break. The solo line "Kept all N cards from BSC. Nothing to
+match, no other marketplace attached." has no live E2E coverage (only
+CardChecklist.test.tsx). Before adding an assert to a branch, plant a break on
+it and watch it go RED; a pass means the branch is dead.

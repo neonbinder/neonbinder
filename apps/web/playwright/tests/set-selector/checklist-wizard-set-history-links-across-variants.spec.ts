@@ -76,7 +76,6 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
-import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
 import {
   answerPlayerAsNew,
@@ -151,8 +150,9 @@ const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
  * BSC/SportLots round trip on data that is not pre-synced": a fetch of an
  * insert never fetched before, and the column's first sync. Only those waits
  * carry it; the wizard opening afterwards is our own backend at the 7 s default.
- * The fetch itself (the bulk checklist, one BSC round trip) is waited on with
- * `expectAfterMarketplace` (NEO-487): 7 s plus the seconds BSC is visibly holding it.
+ * The fetch itself (the bulk checklist, one BSC round trip) is waited on inside
+ * `confirmChecklistMatchCards` with `expectAfterMarketplace` (NEO-487): 7 s plus the
+ * seconds BSC is visibly holding it.
  */
 const LIVE_BSC_FETCH = 60_000;
 
@@ -325,39 +325,16 @@ async function fetchInsertToWizard(
   // The empty-checklist assert makes the saved cards below THIS fetch's (fresh-only guard).
   await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
   const checklist = CHECKLIST_OF[name];
-  const published = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
+  // Every insert this spec fetches has its captured checklist (NEO-489, checklists first), so
+  // no fetch here takes the no-checklist path; a name without one is a spec error.
+  if (checklist === undefined) throw new Error(`${name} has no captured checklist in CHECKLIST_OF`);
+  const published = await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 
-  if (published !== undefined) {
-    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
-    // with SportLots paused or live. The helper waits on it (7 s of ours plus BSC's), proves the
-    // teams line while it is open, keeps any card the file leaves out, and confirms.
-    await confirmChecklistMatchCards(page, { facts: published, what: `${name}'s fetch` });
-  } else {
-    // No checklist: a SportLots set paired with the insert opens "Match Cards"; one source takes
-    // the one-marketplace path. NEO-287: paused, the dialog is the bug.
-    const matchCards = page.getByText(/Match Cards/).first();
-    const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-    await expectAfterMarketplace(page, matchCards.or(kept).or(wizard).first(), {
-      platform: "BuySportsCards",
-      what: `${name}'s fetch landing`,
-    });
-    if (env.SL_PAUSED) {
-      // The gate above admits three landings; paused, it must be this one, said in full: BSC is
-      // the one source, so every card is kept and nothing is matched. Then (R2, a positive first)
-      // no Match Cards.
-      await expect(
-        page.getByText(/^Kept all [0-9]+ cards? from BSC\. Nothing to match, no other marketplace attached\.$/),
-      ).toBeVisible();
-      await expect(matchCards).toBeHidden();
-    }
-    if (await matchCards.isVisible()) {
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: LIVE_BSC_FETCH });
-      await confirm.click();
-      await expect(page.getByText(/Match Cards/)).toBeHidden();
-    }
-  }
+  // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
+  // with SportLots paused or live. The helper waits on it (7 s of ours plus BSC's), proves the
+  // teams line while it is open, keeps any card the file leaves out, and confirms.
+  await confirmChecklistMatchCards(page, { facts: published, what: `${name}'s fetch` });
   // Our own backend after the live fetch: the 7 s default.
   await expect(wizard, `${name}'s sync opens the tidy-up wizard`).toBeVisible();
 }
