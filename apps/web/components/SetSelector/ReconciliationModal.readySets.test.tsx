@@ -1102,3 +1102,50 @@ describe("ReconciliationModal — mouse drag activation", () => {
     expect(draggedRow.style.opacity).toBe("0.4");
   });
 });
+
+describe("ReconciliationModal — the subtitle's pending count jumps to the work", () => {
+  /** A phone (below sm): the Pending columns stack, BSC first. */
+  function onAPhone() {
+    return vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches: query === "(max-width: 39.99rem)",
+          media: query,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+  }
+
+  test("side by side it lands on the Pending heading, even over an empty first column", () => {
+    renderModal({ autoMatched: [], unmatchedBsc: [], unmatchedSl: [SL_COMBINED], slCandidates: [] });
+    fireEvent.click(screen.getByRole("button", { name: "1 pending, go to Pending" }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pending (1)" }));
+  });
+
+  test("on a phone it skips the empty BSC column and lands on SportLots", () => {
+    const media = onAPhone();
+    try {
+      renderModal({ autoMatched: [], unmatchedBsc: [], unmatchedSl: [SL_COMBINED], slCandidates: [] });
+      fireEvent.click(screen.getByRole("button", { name: "1 pending, go to Pending" }));
+      expect(document.activeElement?.textContent).toMatch(/^SportLots \(1\)/);
+    } finally {
+      media.mockRestore();
+    }
+  });
+
+  test("on a phone with work in the first column it lands on that column", () => {
+    const media = onAPhone();
+    try {
+      renderModal(allPending());
+      fireEvent.click(screen.getByRole("button", { name: "3 pending, go to Pending" }));
+      expect(document.activeElement?.textContent).toMatch(/^BSC \(2\)/);
+    } finally {
+      media.mockRestore();
+    }
+  });
+});

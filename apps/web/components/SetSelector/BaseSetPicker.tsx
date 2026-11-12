@@ -5,6 +5,7 @@ import NeonButton from "../modules/NeonButton";
 import type { PlatformItem } from "./ReconciliationModal";
 import { Input } from "../primitives/Input";
 import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
+import { unaskedSideCopy } from "@/lib/marketplace/unasked-side";
 import {
   duplicateNames,
   itemLabel,
@@ -159,14 +160,6 @@ type BaseSetPickerProps = {
  * pre-selects from — see `preselectScore`.
  */
 export const EXACT_SET_NAME_SCORE = 1000;
-
-/**
- * A pane whose side the fetch never asked: "returned no base set" would claim
- * an answer nobody got. `side` is the pane's own short name.
- */
-export function unaskedBaseCopy(side: "BSC" | "SportLots", setName: string): string {
-  return `${side} wasn't asked: ${setName} has no ${side} link.`;
-}
 export const PREFIX_STRIPPED_SCORE = 950;
 
 /**
@@ -876,7 +869,7 @@ export default function BaseSetPicker({
                   {/* gray-500 measured ~3.7:1 against this dialog's bg-gray-900 —
                       under WCAG 1.4.3's 4.5:1 for normal text. */}
                   {bscUnasked
-                    ? unaskedBaseCopy("BSC", setName)
+                    ? unaskedSideCopy("BSC", setName)
                     : `BSC returned no base set for ${setName}`}
                 </p>
               ) : (
@@ -1096,7 +1089,7 @@ export default function BaseSetPicker({
             ) : slOptions.length === 0 ? (
               <p className="text-sm text-ink-3 py-4">
                 {slUnasked
-                  ? unaskedBaseCopy("SportLots", setName)
+                  ? unaskedSideCopy("SportLots", setName)
                   : `SportLots returned no base set for ${setName}`}
               </p>
             ) : (

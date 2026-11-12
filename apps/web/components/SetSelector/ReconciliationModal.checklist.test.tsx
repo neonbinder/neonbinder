@@ -207,6 +207,46 @@ describe("ReconciliationModal — checklist column", () => {
     expect(screen.getByLabelText("Filter checklist sections")).toBeTruthy();
     expect(screen.getByLabelText("Make its own set: Bomb Squad")).toBeTruthy();
   });
+
+  test("a SportLots column the fetch never asked says so in place of its search, toggles and empty line", () => {
+    renderModal(pending([BSC_BOMB]), {
+      checklist: checklistOf([FUTURE]),
+      setName: "2026 Donruss",
+      skippedSides: ["sportlots"],
+    });
+    expect(
+      screen.getByText("SportLots wasn't asked: 2026 Donruss has no SportLots link."),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("Search SportLots items")).toBeNull();
+    expect(screen.queryByLabelText("Show all SportLots items")).toBeNull();
+    expect(screen.queryByLabelText("Show SportLots sets already mapped")).toBeNull();
+    expect(screen.queryByText("Nothing pending on SportLots")).toBeNull();
+    // BSC was asked: its column is whole.
+    expect(screen.getByLabelText("Filter BSC items")).toBeTruthy();
+    expect(screen.getByLabelText("Make its own set: Bomb Squad")).toBeTruthy();
+  });
+
+  test("a skipped BSC column says BSC wasn't asked", () => {
+    renderModal(pending([], [SL_RED]), {
+      checklist: checklistOf([FUTURE]),
+      setName: "2026 Donruss",
+      skippedSides: ["bsc"],
+    });
+    expect(screen.getByText("BSC wasn't asked: 2026 Donruss has no BSC link.")).toBeTruthy();
+    expect(screen.queryByLabelText("Filter BSC items")).toBeNull();
+    expect(screen.getByLabelText("Search SportLots items")).toBeTruthy();
+  });
+
+  test("a side both paused and skipped shows the pause sentence, not the wasn't-asked line", () => {
+    renderModal(pending([BSC_BOMB]), {
+      checklist: checklistOf([FUTURE]),
+      setName: "2026 Donruss",
+      pausedSides: ["sportlots"],
+      skippedSides: ["sportlots"],
+    });
+    expect(screen.getByText(/^SportLots is on pause/)).toBeTruthy();
+    expect(screen.queryByText(/wasn't asked/)).toBeNull();
+  });
 });
 
 describe("ReconciliationModal — placing a section", () => {

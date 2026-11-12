@@ -892,6 +892,7 @@ export default function VariantForm({
               reconciliationData.slOptions.length === 0)
           }
           pausedSides={reconciliationData.pausedSides ?? []}
+          skippedSides={skippedSidesOf(reconciliationData)}
           checklist={
             reconciliationData.checklist
               ? {

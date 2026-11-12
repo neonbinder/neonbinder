@@ -62,6 +62,7 @@ import {
 } from "./base-match-probe";
 import { BASE_MATCH_COPY } from "@/lib/cards/base-match";
 import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
+import { unaskedSideCopy, unaskedSideName } from "@/lib/marketplace/unasked-side";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import {
   MARKETPLACE_SOURCES,
@@ -327,6 +328,13 @@ type ReconciliationModalProps = {
    * search box, the toggles and "Nothing pending".
    */
   pausedSides?: readonly string[];
+  /**
+   * Slot sides the fetch never asked (the result's `skippedSides`: no
+   * marketplace id on the set's path, or paused). A skipped column says it
+   * wasn't asked in place of its search, toggles, list and "Nothing pending";
+   * a paused one keeps the pause sentence instead.
+   */
+  skippedSides?: readonly string[];
   existingRows?: Array<{
     /** The row's own `_id` — see `ReadySet.existingId`. Optional so callers
      *  that predate NEO-211 (and the tests that construct rows by hand) keep
@@ -1074,6 +1082,7 @@ function ReconciliationDialog({
   baseCheck,
   checklist,
   pausedSides = [],
+  skippedSides = [],
   client,
 }: ReconciliationModalProps & { client: BaseMatchClient | null }) {
   // NEO-496: the columns this dialog lines up. The two marketplaces always;
@@ -1465,20 +1474,33 @@ function ReconciliationDialog({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   /** The Pending heading: the subtitle's "N pending" lands here. */
   const pendingHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  /** Each Pending column's label ("SportLots (3)"), by source. */
+  const columnLabelRefs = useRef<Partial<Record<SourceKey, HTMLDivElement | null>>>({});
   /**
-   * The subtitle's "N pending": scroll the Pending heading into view and put
-   * focus on it, so the next Tab is the first column's search box. An in-view
-   * move, so nothing goes in history.
+   * The subtitle's "N pending": scroll to the pending work and put focus on
+   * it. An in-view move, so nothing goes in history.
+   *
+   * Side by side (sm and up) that is the Pending heading, with every column
+   * just below it. On a phone the columns stack, so the heading can sit over
+   * an empty column with the work two columns down: there it lands on the
+   * first column that holds anything.
    */
   const jumpToPending = useCallback(() => {
-    const heading = pendingHeadingRef.current;
-    if (!heading) return;
-    const reduceMotion =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    heading.focus({ preventScroll: true });
-    heading.scrollIntoView?.({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
-  }, []);
+    const media = (query: string) =>
+      typeof window.matchMedia === "function" && window.matchMedia(query).matches;
+    let target: HTMLElement | null = pendingHeadingRef.current;
+    // Tailwind's `max-sm` (under 40rem), where PENDING's grid is one column.
+    if (media("(max-width: 39.99rem)")) {
+      const first = sources.find((source) => state.pending[source.key].length > 0);
+      target = (first && columnLabelRefs.current[first.key]) || target;
+    }
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView?.({
+      block: "start",
+      behavior: media("(prefers-reduced-motion: reduce)") ? "auto" : "smooth",
+    });
+  }, [sources, state.pending]);
   /** What had focus before this opened, so it can go back there on close
    *  rather than falling to `<body>` (WCAG 2.4.3) — matches CardPairingModal. */
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -2344,6 +2366,8 @@ function ReconciliationDialog({
     // column never has a verdict, so none of it renders there.
     const probeSide = isMarketplaceSource(key) ? key : null;
     const paused = probeSide !== null && pausedSides.includes(probeSide);
+    // Skipped for want of a link; a pause has its own sentence and wins.
+    const unasked = probeSide !== null && !paused && skippedSides.includes(probeSide);
     const narrowed = filtered.length !== all.length;
     // NEO-325 — the Base check's view of this column. `scoped` is what the
     // check reaches (the counter and the sleeves); `mismatched` is what the
@@ -2552,7 +2576,12 @@ function ReconciliationDialog({
       >
         <div className="flex items-center justify-between gap-2 mb-2">
           <div
-            className={`text-xs font-medium uppercase tracking-wide ${
+            ref={(el) => {
+              columnLabelRefs.current[key] = el;
+            }}
+            // The phone jump's landing spot (see `jumpToPending`).
+            tabIndex={-1}
+            className={`scroll-mt-2 rounded-sm text-xs font-medium uppercase tracking-wide focus-outline ${
               TONE_CLASSES[source.tone].heading
             }`}
           >
@@ -2588,6 +2617,12 @@ function ReconciliationDialog({
           // house "nothing broke" colour, as Map Base Set's pane.
           <p className="text-sm text-notice-warn-ink py-2">
             {PAUSE_NOTICE_COPY.pane(sideLabel(key))}
+          </p>
+        ) : unasked && probeSide !== null ? (
+          // Never asked: no list to search or toggle, and "Nothing pending"
+          // would claim an answer nobody got (Map Base Set's line).
+          <p className="text-sm text-ink-3 py-2">
+            {unaskedSideCopy(unaskedSideName(probeSide), setName)}
           </p>
         ) : (
         <>
