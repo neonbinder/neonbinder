@@ -67,8 +67,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
-import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import { CHECKLISTS, confirmChecklistMatchCards, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
 import {
   advanceToSave,
   confirmSaveButton,
@@ -83,7 +82,7 @@ const FOOTBALL_2014 = { sport: "Football", year: "2014", manufacturer: "Topps" }
 const CHECKLIST_FETCH = 120_000;
 /** The wizard opens behind the entity check's batch (live lookups). */
 const WIZARD_OPENS = 60_000;
-/** The bulk skip while the batch can still grow (checklist-one-marketplace-skips-match-dialog's ceiling). */
+/** The bulk skip while the batch can still grow (checklist-one-marketplace-match-cards-keeps-every-card's ceiling). */
 const BATCH_GROWS = 60_000;
 
 /** A row's name with its `#<number> ` prefix and any ` · <variation>` tail dropped. */
@@ -111,8 +110,8 @@ test(
       await expectAccessible(page, { label: "2014 Topps Football Base, SportLots on pause" });
 
       // ── NEO-489, SportLots on pause: a checklist that says "No Team" on a card BSC gives a team ──
-      // With SportLots paused the fetch is BSC alone: no Match Cards dialog, the review wizard
-      // opens. This set is the one place the marketplace's OWN bulk answer carries a team (a
+      // With SportLots paused the fetch is BSC plus the checklist: Match Cards, then the review
+      // wizard. This set is the one place the marketplace's OWN bulk answer carries a team (a
       // team-leader card, "New England Patriots TL", is its team: no other registered set has
       // one, see SET-REGISTRY.md), so it is where a No Team claim can disagree with a card that
       // already has a team. The publisher's file is the set's own captured one with ONE change:
@@ -124,16 +123,17 @@ test(
       await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
       const claimed = await usePublishersChecklist(page, CHECKLISTS.topps2014FootballBase, { noTeamOn: "6a" });
       await syncChecklistButton(page).click();
-      await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
-        platform: "BuySportsCards",
-        what: "the one-marketplace fetch's kept-cards line",
+      // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
+      // here too. The helper waits on it (7 s of ours plus BSC's), proves the teams line while it is
+      // open (one less than the file answers: #6a's disagreement is the operator's to settle, so the
+      // checklist has not answered it yet), keeps any BSC-only card and confirms.
+      await confirmChecklistMatchCards(page, {
+        facts: { ...claimed, matched: claimed.matched - 1 },
+        what: "the paused 2014 Topps Football fetch",
       });
       const pausedWizard = reviewWizard(page);
       // The wizard opens behind the entity check's batch (live lookups), like the unpaused path's.
       await expect(pausedWizard).toBeVisible({ timeout: WIZARD_OPENS });
-      // One less than the file answers: #6a's disagreement is the operator's to settle, so the
-      // checklist has not answered it yet.
-      await expectTeamsFromChecklist(page, { ...claimed, matched: claimed.matched - 1 });
 
       // The step that asks comes first, with exactly one group: #6a. Marketplace first, then the
       // checklist, each side's team: the card's own, and the checklist's claim in words.
@@ -255,7 +255,7 @@ test(
     // row's label). Its name is read off the row before it is selected
     // (selecting renames the row).
     await dialog.getByRole("textbox", { name: "Filter BSC cards" }).fill("#442");
-    const bscRow = dialog.getByRole("button", { name: /^Select BSC card #442 / });
+    const bscRow = dialog.getByRole("radio", { name: /^Select BSC card #442 / });
     await expect(bscRow).toBeVisible();
     const bscName = nameFromLabel(((await bscRow.getAttribute("aria-label")) ?? "").replace(/^Select BSC card /, ""));
 
@@ -274,7 +274,7 @@ test(
 
     // Link. The SportLots rows are disabled until a BSC row is selected.
     await bscRow.click();
-    await expect(dialog.getByRole("button", { name: /^#442 .*, selected\. Press to deselect\.$/ })).toBeVisible();
+    await expect(dialog.getByRole("radio", { name: /^#442 .*, selected\. Press to deselect\.$/ })).toBeVisible();
     await dialog.getByRole("button", { name: `Link selected BSC card to ${slLabel}`, exact: true }).click();
 
     // The conflict is raised on #442, and the link reopened Matched to show it.

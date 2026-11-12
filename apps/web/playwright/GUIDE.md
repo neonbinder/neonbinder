@@ -589,7 +589,7 @@ set `WORKER_INDEX` and run the `bootstrap` project for it.
 **The seed's Base fetch uploads a publisher's checklist (NEO-478/482).** Before
 its Base Sync, `setup.spec.ts` uploads `fixtures/checklists/2024-topps-chrome-base.csv`
 (BSC's own per-card answers for 2024 Topps Chrome Base, with card #300's row
-left out) through "Add the publisher's checklist", asserts the result line
+left out) through "Add the official checklist", asserts the result line
 `Teams from your checklist: N of M cards` (N read off the file by
 `checklistFacts`), and fails by name if the wizard opens on "Checklist says
 otherwise". So the seed asks BSC for the bulk checklist and for ONE card, and
@@ -660,7 +660,7 @@ is about:
   `bscLookupOutcome("answered" | "cooldown", who)` (a `bsc-lookup` annotation in the
   report), has the operator pick the team on the cooldown branch so every later step
   converges, and says in a comment what stays unconditional. See
-  `checklist-one-marketplace-skips-match-dialog` for the pattern. Never a flat wait
+  `checklist-one-marketplace-match-cards-keeps-every-card` for the pattern. Never a flat wait
   to outlast the window, and a wait on the screen's own wait line stays the measured
   time plus 7 s (`expectAfterMarketplace`).
 
@@ -775,7 +775,9 @@ sync). Search for the brand instead and make it on "No matches found"
 skipped: no SportLots ids on this path."; the base picker's SportLots pane
 shows "SportLots returned no base set for <set>"; checklist fetches take the
 one-marketplace path ("Kept all N cards from BSC. Nothing to match, no other
-marketplace attached.").
+marketplace attached.") unless a publisher's checklist is in play (pasted, or
+the set's stored one): BSC plus the checklist are two sources, so Match Cards
+opens even paused (NEO-496; `confirmChecklistMatchCards`).
 Paused branches below Years assert THAT state, never the paused sentence.
 Consequences for drills: the Manufacturers column holds only the pinned "All
 Brands" view entry on a fresh deployment (see `SET-REGISTRY.md` -> "When

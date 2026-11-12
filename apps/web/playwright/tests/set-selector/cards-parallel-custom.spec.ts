@@ -23,7 +23,8 @@ test(
     // It is a real, selectable entry: selecting it opens its (empty) checklist.
     // `row` is scoped to the Parallels listbox: "Parallel" is a Parallel type by
     // its title (NEO-334), so the Base-parallels section under the columns lists
-    // this row too ("Prizm Gold - skipped: not linked to a marketplace yet").
+    // this row too (NEO-496 NQ2: a parallel with no marketplace ids builds an
+    // unlinked copy like any other, so it is no longer listed as skipped).
     await row.click();
     // NEO-334: a row under a Parallel type is a parallel of the BASE set, so the
     // empty checklist's Sync slot is the build-from-Base stand-in ("Can't build

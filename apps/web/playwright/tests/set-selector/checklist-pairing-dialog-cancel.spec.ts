@@ -105,7 +105,7 @@ test(
     // number leaves the value its pill will show. Read BEFORE the BSC row is
     // selected: selecting renames it to `#FS-1 …, selected. Press to deselect.`.
     // No live value is hardcoded.
-    const bscRow = dialog.getByRole("button", { name: /^Select BSC card #FS-1 / });
+    const bscRow = dialog.getByRole("radio", { name: /^Select BSC card #FS-1 / });
     const slRow = dialog.getByRole("button", { name: /^Link selected BSC card to #FS-2 / });
     const nameOf = async (row: typeof bscRow, prefix: string) =>
       ((await row.getAttribute("aria-label")) ?? "").replace(prefix, "").replace(/ · .*$/, "").trim();
@@ -120,7 +120,7 @@ test(
 
     // Cross-link BSC's #FS-1 to SportLots' #FS-2.
     await bscRow.click();
-    await expect(dialog.getByRole("button", { name: /^#FS-1 .*, selected\. Press to deselect\.$/ })).toBeVisible();
+    await expect(dialog.getByRole("radio", { name: /^#FS-1 .*, selected\. Press to deselect\.$/ })).toBeVisible();
     await slRow.click();
 
     // The warning is surfaced AND the section opened itself to show it.

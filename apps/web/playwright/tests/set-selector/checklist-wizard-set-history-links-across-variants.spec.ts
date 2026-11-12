@@ -77,7 +77,7 @@ import {
 } from "../../support/set-builder";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
 import {
   answerPlayerAsNew,
   advanceToSave,
@@ -328,24 +328,30 @@ async function fetchInsertToWizard(
   const published = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 
-  // A SportLots set paired with the insert opens "Match Cards"; one source takes
-  // the one-marketplace path. NEO-287: paused, the dialog is the bug.
-  const matchCards = page.getByText(/Match Cards/).first();
-  const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-  await expectAfterMarketplace(page, matchCards.or(kept).or(wizard).first(), {
-    platform: "BuySportsCards",
-    what: `${name}'s fetch landing`,
-  });
-  if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-  if (await matchCards.isVisible()) {
-    const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-    await expect(confirm).toBeVisible({ timeout: LIVE_BSC_FETCH });
-    await confirm.click();
-    await expect(page.getByText(/Match Cards/)).toBeHidden();
+  if (published !== undefined) {
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
+    // with SportLots paused or live. The helper waits on it (7 s of ours plus BSC's), proves the
+    // teams line while it is open, keeps any card the file leaves out, and confirms.
+    await confirmChecklistMatchCards(page, { facts: published, what: `${name}'s fetch` });
+  } else {
+    // No checklist: a SportLots set paired with the insert opens "Match Cards"; one source takes
+    // the one-marketplace path. NEO-287: paused, the dialog is the bug.
+    const matchCards = page.getByText(/Match Cards/).first();
+    const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
+    await expectAfterMarketplace(page, matchCards.or(kept).or(wizard).first(), {
+      platform: "BuySportsCards",
+      what: `${name}'s fetch landing`,
+    });
+    if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
+    if (await matchCards.isVisible()) {
+      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
+      await expect(confirm).toBeVisible({ timeout: LIVE_BSC_FETCH });
+      await confirm.click();
+      await expect(page.getByText(/Match Cards/)).toBeHidden();
+    }
   }
   // Our own backend after the live fetch: the 7 s default.
   await expect(wizard, `${name}'s sync opens Tidy up this set`).toBeVisible();
-  if (published !== undefined) await expectTeamsFromChecklist(page, published);
 }
 
 test(

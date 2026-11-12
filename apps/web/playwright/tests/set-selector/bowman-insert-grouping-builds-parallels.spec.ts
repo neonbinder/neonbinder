@@ -10,7 +10,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
@@ -156,18 +156,15 @@ test(
     await syncChecklistButton(page).click();
 
     // The cards come from BSC (and SportLots, paired, when it is live): the flow's 120 s.
-    const matchCards = page.getByText(/Match Cards/).first();
-    const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-    await expect(matchCards.or(kept)).toBeVisible({ timeout: 120_000 });
-    if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-    if (await matchCards.isVisible()) {
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: 120_000 });
-      await expect(page.getByText(/Match Cards — Anime/)).toBeVisible();
-      await expectAccessible(page, { within: page.getByRole("dialog", { name: /^Match Cards/ }), label: "Match Cards dialog" });
-      await confirm.click();
-      await expect(page.getByText(/Match Cards/)).toBeHidden();
-    }
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
+    // with SportLots paused or live.
+    const matchCards = matchCardsDialog(page);
+    await expect(matchCards).toBeVisible({ timeout: 120_000 });
+    await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible({ timeout: 120_000 });
+    await expect(matchCards.getByRole("heading", { name: "Match Cards — Anime" })).toBeVisible();
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog" });
+    // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.
+    await confirmChecklistMatchCards(page, { facts, what: "the Anime fetch" });
 
     // Either new names need review, or the cards save straight away. Since
     // NEO-335 the wizard ("Tidy up this set") has THREE shapes: names to decide
@@ -178,7 +175,6 @@ test(
     const wizard = reviewWizard(page);
     const saved = page.getByText(/Saved [0-9]+ cards/);
     await expect(wizard.or(saved)).toBeVisible({ timeout: 60_000 });
-    await expectTeamsFromChecklist(page, facts);
     if (await wizard.isVisible()) {
       await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard" });
       // The footer's first action says which shape opened (it paints with the batch).

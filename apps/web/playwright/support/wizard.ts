@@ -31,7 +31,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
 import { expectAfterMarketplace } from "./marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistName } from "./published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "./published-checklist";
 import {
   columnHeading,
   columnOption,
@@ -245,8 +245,12 @@ export async function walkToAutographStep(page: Page): Promise<void> {
  * marketplaces answered, and land in the entity-review wizard.
  *
  * Contract: EXIT the "Tidy up this set" dialog is open and axe-clean, every
- * row undecided ("Step 1 of N"; callers assert that themselves). Live, the
- * pairing session is PARKED behind it ("Back to Match Cards" is offered);
+ * row undecided ("Step 1 of N"; callers assert that themselves). With a
+ * checklist (the default set always has one), the checklist is a source of
+ * its own (NEO-496, NQ1), so Match Cards opens on both branches and is
+ * confirmed keeping every marketplace card (`confirmChecklistMatchCards`); the
+ * pairing session is then PARKED behind the wizard ("Back to Match Cards" is
+ * offered). With no checklist: live, the two marketplaces pair the same way;
  * with SportLots paused it is the one-marketplace solo path and there is no
  * parked session. NEO-475: on the default set the live branch is UNMEASURED
  * (retargeted while SportLots was paused, so neither the seed's SportLots base
@@ -269,7 +273,11 @@ export async function fetchChecklistToWizard(
   await syncChecklistButton(page).click();
 
   const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
-  if (!env.SL_PAUSED) {
+  if (facts !== undefined) {
+    // NEO-496 (D10, NQ1): BSC plus the checklist are two sources, so Match Cards opens even with
+    // SportLots paused. The teams line is asserted while it is open (the only time before the save).
+    await confirmChecklistMatchCards(page, { facts, what: "the fetch of the Base checklist" });
+  } else if (!env.SL_PAUSED) {
     await expect(page.getByText(/Match Cards/).first()).toBeVisible({ timeout: FETCH });
     // The button reads "Loading…" (aria-disabled) while cards still stream in;
     // wait for the usable one (the flow's "^Confirm$" text).
@@ -288,7 +296,6 @@ export async function fetchChecklistToWizard(
     await expect(confirmMatches).toBeHidden();
   }
   await expect(reviewWizard(page)).toBeVisible({ timeout: FETCH });
-  if (facts !== undefined) await expectTeamsFromChecklist(page, facts);
   // The helper's product is this screen, so it checks it (GUIDE "Accessibility checks").
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
@@ -369,7 +376,10 @@ export async function openOneMarketplaceSetBase(
  * one-marketplace twin of `fetchChecklistToWizard`. Opens the set's Base
  * (`openOneMarketplaceSetBase`), syncs the never-fetched checklist and lands
  * in the entity-review wizard with nothing decided ("Step 1 of N"). There is
- * no parked pairing session behind it ("Back to Match Cards" is not offered).
+ * no parked pairing session behind it ("Back to Match Cards" is not offered)
+ * unless a checklist was uploaded: then BSC and the checklist are two sources
+ * (NEO-496, NQ1), Match Cards opens and is confirmed keeping every BSC card
+ * (`confirmChecklistMatchCards`), and that session is parked behind the wizard.
  * The caller owns the exit: Cancel -> Discard for a reader, Confirm & Save
  * (after `advanceToSave`) for the set's sole writer (SET-REGISTRY.md).
  *
@@ -394,20 +404,26 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   const facts = target.checklist === undefined ? undefined : await usePublishersChecklist(page, target.checklist);
   await syncChecklistButton(page).click();
 
-  // One live BSC round trip, waited on with `expectAfterMarketplace` (NEO-487).
-  // `soloKeptMessage` prints only on the NEO-255
-  // branch, once the streamed batch has arrived in full, and names the one side
-  // it asked: both the sync point and the proof that one marketplace was attached.
-  await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
-    platform: "BuySportsCards",
-    what: "the solo fetch's kept-cards line",
-  });
+  if (facts !== undefined) {
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens.
+    // One live BSC round trip, waited on inside with `expectAfterMarketplace` (NEO-487). The
+    // picker above already proved exactly one marketplace is attached.
+    await confirmChecklistMatchCards(page, { facts, what: `the fetch of ${target.set}` });
+  } else {
+    // One live BSC round trip, waited on with `expectAfterMarketplace` (NEO-487).
+    // `soloKeptMessage` prints only on the NEO-255
+    // branch, once the streamed batch has arrived in full, and names the one side
+    // it asked: both the sync point and the proof that one marketplace was attached.
+    await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
+      platform: "BuySportsCards",
+      what: "the solo fetch's kept-cards line",
+    });
+  }
 
   // Every fetched name the deployment does not hold is queued, each behind a
   // lookup (measured ~0.8 s to open on a 25-card set; the flow's 60 s). Gated
   // on the wizard's title, "Tidy up this set" since NEO-335.
   await expect(reviewWizard(page)).toBeVisible({ timeout: 60_000 });
-  if (facts !== undefined) await expectTeamsFromChecklist(page, facts);
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
 

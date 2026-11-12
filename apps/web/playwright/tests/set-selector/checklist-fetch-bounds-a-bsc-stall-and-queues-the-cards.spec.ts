@@ -28,7 +28,9 @@
 
 // WHAT IT PROVES, IN ORDER:
 //   1. The fetch lands within 7 s of our own time plus any seconds the screen
-//      says it is "Waiting on BuySportsCards..." (`expectAfterMarketplace`). A
+//      says it is "Waiting on BuySportsCards..." (`expectAfterMarketplace`); with
+//      the checklist uploaded it lands in Match Cards (NEO-496), where the five
+//      BSC-only cards are kept and confirmed. A
 //      stall that were retried card by card would blow the 7 s; a stall is
 //      instant, so the only time left is ours. The result line then says the
 //      checklist supplied the teams of 21 cards ("Teams from your checklist").
@@ -59,8 +61,8 @@
 // yet." by name. Every name is skipped: no player and no team is minted.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
-import { bscLookupOutcome, expectAfterMarketplace } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { bscLookupOutcome } from "../../support/marketplace-wait";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   advanceToSave,
@@ -88,11 +90,10 @@ test(
     // ── 1. The fetch, with the trimmed checklist: BSC is asked per card for five only ──
     const facts = await usePublishersChecklist(page, CHECKLISTS.halifaxMooseheads1995FiveLive);
     await syncChecklistButton(page).click();
-    await expectAfterMarketplace(page, page.getByText(new RegExp(`Kept all ${CARDS} cards from BSC`)), {
-      platform: "BuySportsCards",
-      what: "the fetch's kept-cards line",
-    });
-    await expectTeamsFromChecklist(page, facts);
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens.
+    // The helper waits on it with `expectAfterMarketplace` (7 s of ours plus BSC's), proves the
+    // teams line, keeps the five BSC cards the file leaves out and confirms: all 26 go on.
+    await confirmChecklistMatchCards(page, { facts, what: "the Halifax fetch" });
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
 

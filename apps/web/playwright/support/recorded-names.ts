@@ -218,7 +218,7 @@ export const RECORDED_NO_MATCH_NAMES = {
       "Ballyboden",
     ],
   },
-  "checklist-one-marketplace-skips-match-dialog": {
+  "checklist-one-marketplace-match-cards-keeps-every-card": {
     kind: "team",
     sportQid: HOCKEY,
     names: [

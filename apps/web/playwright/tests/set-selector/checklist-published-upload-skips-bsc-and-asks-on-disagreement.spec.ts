@@ -12,8 +12,9 @@
 //      number written twice with a team nobody else uses (card #6), and one line
 //      that is no card at all. The preview reads "19 rows" (18 cards plus the
 //      repeated number) and lists the junk line under "Skipped lines".
-//   2. Use it and Sync. The result line reads "Teams from your checklist: 17 of
-//      18 cards": every card but #6 took its answer from the checklist (#2 and #4
+//   2. Use it and Sync. BSC and the checklist are two sources, so Match Cards
+//      opens (NEO-496); while it is open the result line reads "Teams from your
+//      checklist: 17 of 18 cards": every card but #6 took its answer from the checklist (#2 and #4
 //      pair by number and only their players disagree), and #6's number is on two
 //      rows, so the checklist cannot say which row is the card (rule 7).
 //   3. The review wizard OPENS on "Checklist says otherwise" (it comes before any
@@ -70,6 +71,8 @@ import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
   checklistRows,
+  confirmChecklistMatchCards,
+  matchCardsDialog,
   previewRowCount,
   publishersChecklistButton,
   publishersChecklistChip,
@@ -226,7 +229,7 @@ test(
     await expect(previewTable.getByRole("row").filter({ hasText: both.player })).toHaveCount(0);
     const contradiction = dialog.getByRole("listitem").filter({ hasText: both.player });
     await expect(contradiction).toBeVisible();
-    await expect(contradiction).toContainText("Says No Team and names a team — pick one.");
+    await expect(contradiction).toContainText('Says "No Team" and names a team. Fix one in the file.');
     await expectAccessible(page, { within: dialog, label: "Publisher's checklist dialog, preview with No Team, a blank team and a contradiction" });
 
     // The real paste: the published line format, no subsets.
@@ -245,7 +248,7 @@ test(
     await dialog.getByRole("button", { name: "Use this checklist" }).click();
     await expect(dialog).toBeHidden();
     await expect(publishersChecklistChip(page, rowCount)).toBeVisible();
-    const removeChecklist = page.getByRole("button", { name: "Remove the publisher's checklist" });
+    const removeChecklist = page.getByRole("button", { name: "Remove the official checklist" });
     await expect(removeChecklist).toBeVisible();
 
     // ── 1b. Remove: the chip goes and the button to add one is back ──
@@ -264,16 +267,24 @@ test(
 
     // ── 2. Sync: BSC is asked for the bulk checklist, and for no card one by one ──
     await syncChecklistButton(page).click();
-    await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
+    // NEO-496 (D10, NQ1): BSC plus the pasted checklist are two sources, so Match Cards opens.
+    // One live BSC round trip: 7 s of our own time plus BSC's (NEO-487).
+    const matchCards = matchCardsDialog(page);
+    await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards after the fetch" });
+    await expectAfterMarketplace(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), {
       platform: "BuySportsCards",
-      what: "the solo fetch's kept-cards line",
+      what: "Confirm unlocked after the fetch",
     });
-    const wizard = reviewWizard(page);
-    await expect(wizard).toBeVisible();
     // 17 of 18: every card but #6 took its answer from the checklist. #2 and #4 count
     // (their numbers pair; only their players disagree), #6 does not (its number is on
-    // two rows, so the checklist cannot say which row is the card: rule 7).
+    // two rows, so the checklist cannot say which row is the card: rule 7). Said while
+    // Match Cards is open: once the wizard takes over, only the saved line repeats it.
     await expect(page.getByText("Teams from your checklist: 17 of 18 cards").first()).toBeVisible();
+    await expectAccessible(page, { within: matchCards, label: "Match Cards with BSC and a pasted checklist" });
+    // Keeps any card no row could pin down (#6 among them, if it is BSC-only) and confirms.
+    await confirmChecklistMatchCards(page, { what: "the Oklahoma City Blazers fetch" });
+    const wizard = reviewWizard(page);
+    await expect(wizard).toBeVisible();
 
     // ── 3. The step that asks comes first, one group per disagreement ──
     await expectChecklistDisagreementFirst(page);
