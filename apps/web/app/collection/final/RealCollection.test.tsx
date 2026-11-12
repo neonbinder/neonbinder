@@ -900,11 +900,15 @@ describe("the card drawer on the real collection", () => {
       fireEvent.click(within(form).getByRole("button", { name: "Add to collection" }));
       const busy = await within(form).findByRole("button", { name: "Adding…" });
       expect(busy.getAttribute("aria-disabled")).toBe("true");
-      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
+      // NEO-466: front and back go up side by side, both against the answered id.
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
       expect(actions.addLineItem.mock.calls[0]).toEqual([JUDGE, expect.objectContaining({ quantity: 1 }), { keepsOwnLine: true }]);
-      const [copy, side] = photos.addPhoto.mock.calls[0] as unknown as [Copy, string, File];
-      expect(copy.id).toBe("new-line");
-      expect(side).toBe("front");
+      const sent = photos.addPhoto.mock.calls as unknown as [Copy, string, File, { addLineItemMs?: number }][];
+      expect(sent.map(([copy, side]) => [copy.id, side])).toEqual([
+        ["new-line", "front"],
+        ["new-line", "back"],
+      ]);
+      expect(sent.every(([, , , context]) => typeof context?.addLineItemMs === "number")).toBe(true);
       expect(within(box).getByRole("status").textContent).toBe("Saving your photos…");
 
       // A second press and Cancel both wait; nothing is sent twice.
@@ -915,9 +919,10 @@ describe("the card drawer on the real collection", () => {
       expect(actions.addLineItem).toHaveBeenCalledTimes(1);
       expect(within(drawer).getByRole("form", { name: "Add a copy" })).toBe(form);
 
+      // The back has landed; the add still waits on the front.
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.startsWith("Added #2"))).toBe(false);
       await act(async () => finish());
-      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
-      expect((photos.addPhoto.mock.calls[1] as unknown as [Copy, string, File])[1]).toBe("back");
+      expect(photos.addPhoto).toHaveBeenCalledTimes(2);
       await waitFor(() =>
         expect(within(drawer).getAllByRole("status").some((s) => /^Added #2 Aaron Judge, .*, with its front and back photos\.$/.test(s.textContent ?? ""))).toBe(true),
       );
@@ -1016,6 +1021,65 @@ describe("the card drawer on the real collection", () => {
       expect(
         within(drawer).getAllByRole("status").some((s) => /\. Its front and back photos didn't save\. Try again under Edit\.$/.test(s.textContent ?? "")),
       ).toBe(true);
+    });
+
+    describe("a held photo starts its resize when picked (NEO-466)", () => {
+      const preparing = () => ({ ...photosExt(), preparePhoto: vi.fn((_file: File) => {}) });
+      const sentFiles = (photos: ReturnType<typeof preparing>) =>
+        (photos.addPhoto.mock.calls as unknown as [Copy, string, File][]).map(([, side, file]) => [side, file]);
+
+      it("prepares each side as it is picked, before Add, and the save gets those same files", async () => {
+        const photos = preparing();
+        const { actions, form, pick } = openAnotherCopy(photos);
+        const front = jpeg("front.jpg");
+        const back = jpeg("back.jpg");
+        await pick("front", front);
+        expect(photos.preparePhoto).toHaveBeenCalledWith(front);
+        await pick("back", back);
+        expect(photos.preparePhoto).toHaveBeenCalledWith(back);
+        expect(actions.addLineItem).not.toHaveBeenCalled();
+        fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+        await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+        expect(sentFiles(photos)).toEqual([
+          ["front", front],
+          ["back", back],
+        ]);
+      });
+
+      it("a photo replaced before Add was prepared but is never saved; its replacement is", async () => {
+        const photos = preparing();
+        const { form, pick } = openAnotherCopy(photos);
+        const first = jpeg("first.jpg");
+        const second = jpeg("second.jpg");
+        await pick("front", first);
+        await pick("front", second);
+        expect(photos.preparePhoto).toHaveBeenCalledWith(first);
+        expect(photos.preparePhoto).toHaveBeenCalledWith(second);
+        fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+        await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
+        expect(sentFiles(photos)).toEqual([["front", second]]);
+      });
+    });
+
+    it("both fail, the back first: the notice still reads front first (NEO-466)", async () => {
+      const photos = photosExt();
+      let failFront = (_e: Error) => {};
+      photos.addPhoto.mockImplementation((_c, side) =>
+        side === "front"
+          ? new Promise<void>((_, reject) => (failFront = reject))
+          : Promise.reject(new Error("The back is too big.")),
+      );
+      const { form, drawer, pick } = openAnotherCopy(photos);
+      await pick("front");
+      await pick("back");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      await act(async () => failFront(new Error("The front is blurry.")));
+      const editForm = await within(drawer).findByRole("form", { name: /edit/i });
+      const alertText = within(editForm).getByRole("alert").textContent ?? "";
+      expect(alertText).toContain("front and back photos didn't save");
+      expect(alertText.indexOf("The front is blurry.")).toBeLessThan(alertText.indexOf("The back is too big."));
+      expect(alertText.indexOf("The front is blurry.")).toBeGreaterThanOrEqual(0);
     });
 
     describe("a photo fails while another line's Edit form is open", () => {

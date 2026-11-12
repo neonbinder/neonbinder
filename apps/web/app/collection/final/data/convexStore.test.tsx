@@ -8,6 +8,7 @@ import {
   collectionCopiesOfCards,
   ScopeProvider,
   useCapabilities,
+  useCopyPhotos,
   useCollectionActions,
   useContainerCopies,
   useContainers,
@@ -27,6 +28,7 @@ import {
   useWants,
   writeErrorMessage,
 } from "./store";
+import { installFakeXhr } from "@/lib/testing/fake-xhr";
 import { REAL_CAPABILITIES, type Card, type Copy } from "./types";
 
 /**
@@ -36,6 +38,8 @@ import { REAL_CAPABILITIES, type Card, type Copy } from "./types";
  * No test here reaches a server.
  */
 const calls = vi.hoisted(() => ({ list: [] as { name: string; args: unknown }[], answers: new Map<string, unknown>() }));
+/** What a public action answers, by function name: a value, or a function of the args. */
+const actionAnswers = vi.hoisted(() => new Map<string, unknown>());
 const queried = vi.hoisted(() => [] as { name: string; args: unknown }[]);
 /** What a query answers once loaded, by function name: a value, or a function of the args. */
 const loaded = vi.hoisted(() => new Map<string, unknown>());
@@ -119,8 +123,11 @@ vi.mock("convex/react", async () => {
       },
     }),
     // NEO-377: the copy-photo actions; no test here reaches them.
-    useAction: (ref: Parameters<typeof nameOf>[0]) => async () => {
-      throw new Error(`unexpected action ${nameOf(ref)}`);
+    useAction: (ref: Parameters<typeof nameOf>[0]) => async (args: unknown) => {
+      const name = nameOf(ref);
+      if (!actionAnswers.has(name)) throw new Error(`unexpected action ${name}`);
+      const answer = actionAnswers.get(name);
+      return typeof answer === "function" ? answer(args) : answer;
     },
     useMutation: (ref: Parameters<typeof nameOf>[0]) => {
       const name = nameOf(ref);
@@ -201,7 +208,17 @@ const GATE = {
     "Show box sells on your marketplaces, so cards going in need a price first. Set a common price for the checklist, or give the card a price of its own.",
 };
 
+vi.mock("@/lib/collection/copy-photo-resize", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resizeCopyPhoto: vi.fn(async () => ({
+    contentType: "image/jpeg",
+    image: new Blob(["image"], { type: "image/jpeg" }),
+    thumb: new Blob(["thumb"], { type: "image/jpeg" }),
+  })),
+}));
+
 beforeEach(() => {
+  actionAnswers.clear();
   calls.list.length = 0;
   calls.answers.clear();
   queried.length = 0;
@@ -210,7 +227,10 @@ beforeEach(() => {
   paged.loadMore.length = 0;
   local.clear();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("the server's variant rows, in the view's terms", () => {
   it("reads Base from its variant type", () => {
@@ -611,7 +631,7 @@ describe("every write's undo is the inverse write", () => {
     expect(writes()[0].args).not.toHaveProperty("keepsOwnLine");
     const result = await a.addLineItem(CARD, { quantity: 1, acquiredAt: "2026-11-01", notes: "" }, { keepsOwnLine: true });
     expect(writes()[1].args).toMatchObject({ cardId: "card1", keepsOwnLine: true });
-    // The answer's id, never a placeholder: `addPhoto` refuses those.
+    // The answer's id, never a placeholder.
     expect(result.copyId).toBe("new1");
     await act(result.undo);
     expect(writes()[2]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
@@ -767,6 +787,151 @@ describe("a write on a line drawn ahead of the server waits for its real id", ()
     await expect(first).rejects.toThrow("refused");
     await expect(trade).rejects.toThrow(UNSAVED_LINE_MESSAGE);
     expect(writes().map((w) => w.name)).toEqual(["collection:moveCopy"]);
+  });
+
+  describe("a copy photo on a line drawn by an add (NEO-466)", () => {
+    const STARTED = {
+      photoId: "photo1",
+      imageUploadUrl: "https://r2.example/image?sig=a",
+      thumbUploadUrl: "https://r2.example/thumb?sig=b",
+    };
+    /** Presses addHave with its answer held, and reads the row it drew. */
+    function addDrawn() {
+      local.set("collection:copiesOf", { cardId: "card1" }, []);
+      let land!: (r: unknown) => void;
+      let refuse!: (e: Error) => void;
+      const answer = new Promise((resolve, reject) => {
+        land = resolve;
+        refuse = reject;
+      });
+      calls.answers.set("collection:addHave", () => answer);
+      const { result } = renderHook(() => ({ actions: useCollectionActions(), photos: useCopyPhotos()! }), { wrapper });
+      const pressed = result.current.actions.addHave(CARD);
+      const rows = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof RAW)[];
+      expect(rows).toHaveLength(1);
+      expect(isOptimisticId(rows[0]._id)).toBe(true);
+      const line: Copy = { ...COPY, id: rows[0]._id, quantity: 1 };
+      return { photos: result.current.photos, pressed, line, land, refuse };
+    }
+    const file = () => new File(["x"], "card.jpg", { type: "image/jpeg" });
+    const sent = (name: string) => calls.list.filter((c) => c.name === name);
+    const startCalls = () => {
+      const seen: unknown[] = [];
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => {
+        seen.push(a);
+        return STARTED;
+      });
+      actionAnswers.set("copyPhotos:finishUpload", () => null);
+      return seen;
+    };
+
+    it("holds startUpload until the add answers, then sends the real id; no placeholder reaches an action", async () => {
+      const seen = startCalls();
+      const xhrs = installFakeXhr();
+      const { photos, pressed, line, land } = addDrawn();
+      const saving = photos.addPhoto(line, "front", file());
+      await act(async () => {});
+      expect(seen).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+      });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(seen).toEqual([expect.objectContaining({ copyId: "new1", side: "front" })]);
+      expect(seen.some((a) => isOptimisticId(String((a as { copyId: string }).copyId)))).toBe(false);
+    });
+
+    it("when the add is refused, the save fails with the unsaved-line message, sends nothing, and leaves no unhandled rejection", async () => {
+      const seen = startCalls();
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { photos, pressed, line, refuse } = addDrawn();
+        const saving = photos.addPhoto(line, "front", file());
+        const failed = saving.catch((e: unknown) => e);
+        const refused = pressed.catch((e: unknown) => e);
+        refuse(new Error("refused"));
+        expect(await refused).toMatchObject({ message: "refused" });
+        expect(await failed).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(seen).toEqual([]);
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        warn.mockRestore();
+      }
+    });
+
+    it("starts the resize at once, beside the add's write, and the save reuses that one resize", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      const seen = startCalls();
+      const xhrs = installFakeXhr();
+      const { photos, pressed, line, land } = addDrawn();
+      const held = file();
+      photos.preparePhoto!(held);
+      const saving = photos.addPhoto(line, "front", held);
+      await act(async () => {});
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+      });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+    });
+
+    it("starts the resize before the add answers even when nothing prepared it", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      startCalls();
+      const { photos, pressed, line, refuse } = addDrawn();
+      const failed = photos.addPhoto(line, "front", file()).catch((e: unknown) => e);
+      await act(async () => {});
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      refuse(new Error("refused"));
+      await pressed.catch(() => {});
+      await failed;
+    });
+
+    it("removePhoto and swapPhotos wait for the add, then send the real id", async () => {
+      const { photos, pressed, line, land } = addDrawn();
+      const removing = photos.removePhoto!(line, "front");
+      const swapping = photos.swapPhotos!(line);
+      await act(async () => {});
+      expect(sent("copyPhotos:remove")).toEqual([]);
+      expect(sent("copyPhotos:swap")).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+        await removing;
+        await swapping;
+      });
+      expect(sent("copyPhotos:remove")).toEqual([{ name: "copyPhotos:remove", args: { copyId: "new1", side: "front" } }]);
+      expect(sent("copyPhotos:swap")).toEqual([{ name: "copyPhotos:swap", args: { copyId: "new1" } }]);
+    });
+
+    it("removePhoto and swapPhotos on an add that was refused send nothing and say so", async () => {
+      const { photos, pressed, line, refuse } = addDrawn();
+      const removing = photos.removePhoto!(line, "front").catch((e: unknown) => e);
+      const swapping = photos.swapPhotos!(line).catch((e: unknown) => e);
+      refuse(new Error("refused"));
+      await pressed.catch(() => {});
+      expect(await removing).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+      expect(await swapping).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+      expect(sent("copyPhotos:remove")).toEqual([]);
+      expect(sent("copyPhotos:swap")).toEqual([]);
+    });
   });
 
   it("gives a write's drawn line the same placeholder every time Convex replays its optimistic update", () => {
@@ -2129,3 +2294,246 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
     });
   });
 });
+
+describe("addPhoto uploads both files side by side (NEO-466)", () => {
+  const PRIMARY = { image: "https://r2.example/image?sig=a", thumb: "https://r2.example/thumb?sig=b" };
+  const RETRY = { image: "https://bucket.r2.example/image?sig=c", thumb: "https://bucket.r2.example/thumb?sig=d" };
+
+  const begin = (withRetry = true) => {
+    actionAnswers.set("copyPhotos:startUpload", {
+      photoId: "photo1",
+      imageUploadUrl: PRIMARY.image,
+      thumbUploadUrl: PRIMARY.thumb,
+      ...(withRetry ? { imageRetryUploadUrl: RETRY.image, thumbRetryUploadUrl: RETRY.thumb } : {}),
+    });
+    const finishCalls: unknown[] = [];
+    actionAnswers.set("copyPhotos:finishUpload", (args: unknown) => {
+      finishCalls.push(args);
+      return null;
+    });
+    const xhrs = installFakeXhr();
+    const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+    const saving = result.current!.addPhoto(COPY, "front", new File(["x"], "card.jpg", { type: "image/jpeg" }));
+    return { xhrs, saving, finishCalls };
+  };
+  const byUrl = (xhrs: ReturnType<typeof installFakeXhr>, part: string) => xhrs.all.find((x) => x.url?.includes(part))!;
+
+  it("starts the image and the thumb before either has answered, then finishes once both have", async () => {
+    const { xhrs, saving, finishCalls } = begin();
+    await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+    expect(xhrs.all.map((x) => x.url).sort()).toEqual([PRIMARY.image, PRIMARY.thumb].sort());
+    expect(finishCalls).toEqual([]);
+    byUrl(xhrs, "/image").respond(200);
+    await Promise.resolve();
+    expect(finishCalls).toEqual([]);
+    byUrl(xhrs, "/thumb").respond(200);
+    await saving;
+    expect(finishCalls).toEqual([{ photoId: "photo1" }]);
+  });
+
+  it("works without retry URLs when the server sent none", async () => {
+    const { xhrs, saving } = begin(false);
+    await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+    xhrs.all.forEach((x) => x.respond(200));
+    await expect(saving).resolves.toBeUndefined();
+  });
+
+  it("when the image is refused, aborts the thumb, never finishes, and shows the image's error", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { xhrs, saving, finishCalls } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      const thumb = byUrl(xhrs, "/thumb");
+      byUrl(xhrs, "/image").respond(403);
+      const error = await failing;
+      expect(thumb.aborted).toBe(true);
+      expect(finishCalls).toEqual([]);
+      expect(error).toMatchObject({ name: "PhotoUploadError", status: 403 });
+      // Only the file that gave up logs; the aborted one is not a failure.
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.filter((l) => l.includes("copy_photo_put_failed"))).toHaveLength(1);
+      expect(lines.join("\n")).not.toContain("r2.example");
+      const timing = lines.find((l) => l.includes("copy_photo_save_timing"))!;
+      expect(JSON.parse(timing)).toMatchObject({ outcome: "failed", failedAt: "put", errorName: "PhotoUploadError", errorStatus: 403 });
+      expect(JSON.parse(timing).puts).toHaveLength(2);
+      expect(timing).not.toContain("r2.example");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  describe("failures and timing", () => {
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+      vi.useRealTimers();
+    });
+    const timingLines = () =>
+      warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("copy_photo_save_timing")).map((l) => JSON.parse(l));
+
+    it("when the thumb is refused first, aborts the image and shows the thumb's error", async () => {
+      const { xhrs, saving, finishCalls } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      const image = byUrl(xhrs, "/image");
+      byUrl(xhrs, "/thumb").respond(403);
+      const error = await failing;
+      expect(image.aborted).toBe(true);
+      expect(error).toMatchObject({ name: "PhotoUploadError", status: 403 });
+      expect(finishCalls).toEqual([]);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "put", errorStatus: 403 })]);
+    });
+
+    it("when both files give up, the first one's error is the one shown", async () => {
+      const { xhrs, saving } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      byUrl(xhrs, "/image").respond(403);
+      byUrl(xhrs, "/thumb").respond(400);
+      expect(await failing).toMatchObject({ name: "PhotoUploadError", status: 403 });
+    });
+
+    it("when finishUpload rejects, the save fails at finishUpload and logs one timing line", async () => {
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:finishUpload", () => {
+        throw new Error("finish refused");
+      });
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      expect(await failing).toMatchObject({ message: "finish refused" });
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "finishUpload", errorName: "Error" })]);
+    });
+
+    it("when startUpload rejects, nothing is uploaded and the save fails at startUpload", async () => {
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:startUpload", () => {
+        throw new Error("start refused");
+      });
+      await expect(saving).rejects.toThrow("start refused");
+      expect(xhrs.all).toHaveLength(0);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "startUpload" })]);
+    });
+
+    it("when the resize fails, nothing is asked of the server and the save fails at resize", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockRejectedValueOnce(new Error("bad image"));
+      const startCalls: unknown[] = [];
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => startCalls.push(a));
+      await expect(saving).rejects.toThrow("bad image");
+      expect(startCalls).toEqual([]);
+      expect(xhrs.all).toHaveLength(0);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "resize" })]);
+    });
+
+    it("reuses a resize preparePhoto started, once, and carries the add's write in the timing line", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      actionAnswers.set("copyPhotos:startUpload", {
+        photoId: "photo1",
+        imageUploadUrl: PRIMARY.image,
+        thumbUploadUrl: PRIMARY.thumb,
+      });
+      actionAnswers.set("copyPhotos:finishUpload", () => null);
+      const xhrs = installFakeXhr();
+      const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+      const file = new File(["x"], "held.jpg", { type: "image/jpeg" });
+      result.current!.preparePhoto!(file);
+      result.current!.preparePhoto!(file);
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      const saving = result.current!.addPhoto(COPY, "front", file, { addLineItemMs: 5000 });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      // Slow only because of the add's write: still reported, with it named.
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "saved", addLineItemMs: 5000 })]);
+      // Used once: a later save of the same file resizes afresh.
+      const again = result.current!.addPhoto(COPY, "front", file);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(4));
+      xhrs.all.slice(2).forEach((x) => x.respond(200));
+      await again;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(2);
+    });
+
+    it("a photo replaced before its save: the save uses the replacement's resize, never the first one's", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      const made = new Map<string, Blob>();
+      vi.mocked(resizeCopyPhoto).mockClear();
+      vi.mocked(resizeCopyPhoto).mockImplementation(async (file: File) => {
+        const image = new Blob([`image of ${file.name}`], { type: "image/jpeg" });
+        made.set(file.name, image);
+        return { contentType: "image/jpeg", image, thumb: new Blob(["thumb"], { type: "image/jpeg" }) };
+      });
+      try {
+        actionAnswers.set("copyPhotos:startUpload", {
+          photoId: "photo1",
+          imageUploadUrl: PRIMARY.image,
+          thumbUploadUrl: PRIMARY.thumb,
+        });
+        actionAnswers.set("copyPhotos:finishUpload", () => null);
+        const xhrs = installFakeXhr();
+        const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+        const first = new File(["a"], "first.jpg", { type: "image/jpeg" });
+        const second = new File(["b"], "second.jpg", { type: "image/jpeg" });
+        result.current!.preparePhoto!(first);
+        result.current!.preparePhoto!(second);
+        const saving = result.current!.addPhoto(COPY, "front", second);
+        await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+        expect(byUrl(xhrs, "/image").sentBody).toBe(made.get("second.jpg"));
+        xhrs.all.forEach((x) => x.respond(200));
+        await saving;
+        // One resize each, at prepare time; the save made none of its own.
+        expect(vi.mocked(resizeCopyPhoto).mock.calls.map(([f]) => f.name)).toEqual(["first.jpg", "second.jpg"]);
+      } finally {
+        vi.mocked(resizeCopyPhoto).mockReset();
+        vi.mocked(resizeCopyPhoto).mockImplementation(async () => ({
+          contentType: "image/jpeg",
+          image: new Blob(["image"], { type: "image/jpeg" }),
+          thumb: new Blob(["thumb"], { type: "image/jpeg" }),
+        }));
+      }
+    });
+
+    it("a prepared resize that fails surfaces at the save, with its own message, failing at resize", async () => {
+      // No unhandled-rejection check here: vitest's spy observes every promise
+      // a mock returns, so a mocked rejection is never unhandled either way.
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockRejectedValueOnce(new Error("That file isn't a photo this browser can open."));
+      const startCalls: unknown[] = [];
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => startCalls.push(a));
+      const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+      const file = new File(["x"], "bad.heic", { type: "image/heic" });
+      result.current!.preparePhoto!(file);
+      // The rejection lands before anything awaits it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await expect(result.current!.addPhoto(COPY, "front", file)).rejects.toThrow("That file isn't a photo this browser can open.");
+      expect(startCalls).toEqual([]);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "resize" })]);
+    });
+
+    it("a save that needed a retry and then succeeded logs exactly one timing line, outcome saved", async () => {
+      vi.useFakeTimers();
+      const { xhrs, saving } = begin();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(xhrs.all).toHaveLength(2);
+      byUrl(xhrs, "/image").respond(503);
+      byUrl(xhrs, "/thumb").respond(200);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(xhrs.all).toHaveLength(3);
+      xhrs.last.respond(200);
+      await saving;
+      const lines = timingLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ outcome: "saved" });
+      expect(lines[0].puts.find((p: { file: string }) => p.file === "image").tries).toHaveLength(2);
+      expect(JSON.stringify(lines)).not.toContain("r2.example");
+    });
+  });
+});
+

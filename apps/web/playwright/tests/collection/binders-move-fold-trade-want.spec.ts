@@ -424,11 +424,16 @@ test(
     await expect(heading(binderA)).toBeVisible();
     const hunt = page.getByRole("searchbox", { name: "Hunt for one of your cards" });
     await hunt.fill(`${three.player} ${three.number}`);
+    // The hunt finds the base card and its parallels. A parallel puts its name
+    // after the team, or in the team's place when the copy has none, so its button
+    // can read like the base card's. The base card is the one whose caption is the
+    // plain checklist, "2024 Topps Chrome".
     await page
+      .getByRole("region", { name: "Card hunt" })
+      .getByRole("listitem")
+      .filter({ has: page.getByText("2024 Topps Chrome", { exact: true }) })
       .getByRole("button", {
-        // The hunt finds the base card and its parallels ("..., Orioles, Gold Wave
-        // Refractors"): the base card's name stops at the team.
-        name: new RegExp(`^Slot in 2024 Topps Chrome #${escapeRegExp(three.number)} ${escapeRegExp(three.player)}, [^,]+$`),
+        name: new RegExp(`^Slot in 2024 Topps Chrome #${escapeRegExp(three.number)} ${escapeRegExp(three.player)}(,|$)`),
       })
       .click();
     await page
