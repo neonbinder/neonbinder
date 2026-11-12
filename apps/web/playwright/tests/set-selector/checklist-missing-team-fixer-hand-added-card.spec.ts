@@ -50,6 +50,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
+import { TIDY_UP_NAME } from "../../support/wizard";
 
 test(
   "Missing-team fixer — a hand-added card offers its player's whole career with nothing picked, and the team the operator picks lands on the card",
@@ -110,7 +111,7 @@ test(
 
     // ── STEP 3: open the walker on this card (R2b) ──
     await pill.click();
-    const walker = page.getByRole("dialog", { name: "Tidy up this set" });
+    const walker = page.getByRole("dialog", { name: TIDY_UP_NAME });
     await expect(walker).toBeVisible();
     // The walker is on THIS card (its Skip control names the number; the wizard
     // shares the title), its counter agrees with the pill (one card), the
@@ -146,7 +147,7 @@ test(
     await expectAccessible(page, { within: walker, label: "Missing-team fixer, team picked" });
 
     // Close the picker's popover (a click outside it), then Save & Next.
-    await walker.getByRole("heading", { name: "Tidy up this set" }).click();
+    await walker.getByRole("heading", { name: TIDY_UP_NAME }).click();
     await expect(search).toBeHidden();
     await walker.getByRole("button", { name: /Save & Next/ }).click();
 

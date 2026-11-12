@@ -1100,7 +1100,10 @@ function ReadySetRow({
           variant="secondary"
           size="1"
           onClick={onAttachClick}
-          className="mt-2"
+          // NEO-499 — the label quotes a marketplace name; a long one wraps
+          // inside the button rather than running out of the row. `min-h-6
+          // py-1` is the same 24px on one line.
+          className="mt-2 h-auto min-h-6 max-w-full py-1 text-left wrap-anywhere"
           // WCAG 2.5.3: the name begins with the visible words, then names
           // the set — every Ready row offers this button at once, so "this
           // set" alone would be the same name a dozen times.

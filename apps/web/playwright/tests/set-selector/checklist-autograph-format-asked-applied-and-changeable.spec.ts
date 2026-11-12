@@ -1,6 +1,6 @@
 // NEO-345: a synced part's AUTOGRAPH FORMAT is the operator's answer, never a
 // marketplace's. Proved on live data through the operator's own path: Sync card
-// checklist -> the "Tidy up this set" wizard's required "Autographed cards"
+// checklist -> the "Tidy up" wizard's required "Autographed cards"
 // step -> Confirm & Save, then the card's drawer, Set details and the checklist
 // header's prompt.
 //   (a) the step is asked (BSC tags every card of this insert AU, and the part
@@ -106,7 +106,7 @@ const PILL = {
 };
 
 test(
-  "Checklist — a synced part's autograph format is asked in Tidy up this set, applied to its AU cards, changeable in Set details and asked again from the header (NEO-345)",
+  "Checklist — a synced part's autograph format is asked in the tidy-up wizard, applied to its AU cards, changeable in Set details and asked again from the header (NEO-345)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const wizard = reviewWizard(page);
@@ -188,7 +188,7 @@ test(
     // format, so the save is never direct. The wizard opens behind the entity
     // check's batch (a live round trip). A fetch that saved without it did not
     // see AU, and fails here by name.
-    await expect(wizard, "the sync opens Tidy up this set for AU cards on a part with no autograph format").toBeVisible({
+    await expect(wizard, "the sync opens the tidy-up wizard for AU cards on a part with no autograph format").toBeVisible({
       timeout: WIZARD_OPENS,
     });
     await expectTeamsFromChecklist(page, facts);
@@ -245,7 +245,7 @@ test(
       await control.scrollIntoViewIfNeeded();
       await expect(control).toBeInViewport();
     }
-    await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard, Autographed cards step" });
+    await expectAccessible(page, { within: wizard, label: "Tidy-up wizard, Autographed cards step" });
 
     // Pressing the held Next does nothing but explain: the line appears and
     // focus goes to a tile. By keyboard (Enter on the focused control): the

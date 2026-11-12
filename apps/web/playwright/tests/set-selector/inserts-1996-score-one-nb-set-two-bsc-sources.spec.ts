@@ -124,7 +124,7 @@ test(
     // ── 4. Entity review: decide one row, back out of the discard, then add the rest ──
     await expect(wizard).toBeVisible({ timeout: FETCH });
     await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: 180_000 });
-    await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard" });
+    await expectAccessible(page, { within: wizard, label: "Tidy-up wizard" });
     // NEO-331: a New League step's primary is held until a Level is pressed
     // (none is pre-pressed), so read which kind settled first. "Other" claims
     // nothing (the batch is discarded or bulk-added anyway).

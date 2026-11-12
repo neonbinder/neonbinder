@@ -648,7 +648,13 @@ export default function SetAttributesPanel({
               deepest current selection at ANY level, so this one control
               renames sports, years, manufacturers, sets and variants alike. */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <h3 className="text-sm font-semibold text-ink">
+            {/* NEO-499: `min-w-0 wrap-anywhere` (WizardChrome's h2 pattern). A
+                set name can be one unbroken token up to the 200-character
+                cap; as a flex item the heading's minimum width was that whole
+                token, so past about 100 characters it ran off a phone's right
+                edge, widened the page and put the page under the reader's
+                taps. Now the name breaks wherever it has to. */}
+            <h3 className="min-w-0 wrap-anywhere text-sm font-semibold text-ink">
               {headerTitle}
             </h3>
             {/* NEO-239: every level renames, variantType included.
@@ -842,17 +848,24 @@ export default function SetAttributesPanel({
           change on a mounted node is. The box is drawn only while there is a
           message. The status region is the panel's one `status`; a failure
           is the separate `alert`, in the negative colour. */}
-      <div className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50">
-        <div role="status" aria-live="polite" aria-atomic="true">
+      {/* NEO-499: the wrapper spans the viewport less a 1rem gutter each side
+          (`inset-x-4`) and centres the box in that band, so the box can grow
+          to the band's full width and a toast quoting a long unbroken set
+          name breaks anywhere inside it on a phone. (A fixed box at
+          `left-1/2 -translate-x-1/2` shrink-wraps to half the viewport, so a
+          width cap on it never binds.) EntityColumn's toast copies this
+          wrapper verbatim; change both together. */}
+      <div className="pointer-events-none fixed inset-x-4 top-20 z-50 flex flex-col items-center">
+        <div role="status" aria-live="polite" aria-atomic="true" className="max-w-full">
           {toast && (
-            <div className="px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
+            <div className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
               {toast}
             </div>
           )}
         </div>
-        <div role="alert" aria-atomic="true">
+        <div role="alert" aria-atomic="true" className="max-w-full">
           {failure && (
-            <div className="px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
+            <div className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
               {failure}
             </div>
           )}

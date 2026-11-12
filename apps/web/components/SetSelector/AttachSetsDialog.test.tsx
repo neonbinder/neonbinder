@@ -940,7 +940,7 @@ describe("AttachSetsDialog — no BSC set on the path (NEO-252)", () => {
       expect(within(bscPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy(),
     );
     expect(
-      within(bscPane()).queryByLabelText(/^Back to BSC set/),
+      within(bscPane()).queryByRole("button", { name: /^Back to / }),
     ).toBeNull();
     // Only the two calls the hop itself makes — nothing extra fired because
     // there was no breadcrumb button to click.
