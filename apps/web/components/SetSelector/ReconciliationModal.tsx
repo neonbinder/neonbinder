@@ -206,6 +206,10 @@ export type ReconcileChecklist = {
 
 // ===== PROPS =====
 
+/** The no-sides default, one array for the dialog's life (a fresh `[]` per
+ *  render would re-run every memo keyed on it). */
+const NO_SIDES: readonly string[] = [];
+
 type ReconciliationModalProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -755,6 +759,7 @@ function ReadySetRow({
   onDraftChange,
   clashMessageId,
   attachRefused,
+  unaskedSources = [],
 }: {
   set: ReadySet;
   /** The dialog's sources, in column order: the order of the row's chips. */
@@ -794,6 +799,12 @@ function ReadySetRow({
    * line that says why it cannot join.
    */
   attachRefused?: string;
+  /**
+   * Marketplace sides this fetch never asked (paused or skipped). A row says
+   * "no SL mapping" only when SportLots was asked and this set has none of
+   * its items; for a side nobody asked, that note would be noise.
+   */
+  unaskedSources?: readonly SourceKey[];
 }) {
   const [expanded, setExpanded] = useState(false);
   // The row's OWN line; the footer's sentence ids are never reused here.
@@ -879,7 +890,9 @@ function ReadySetRow({
         isOver ? "bg-neon-blue/10 ring-1 ring-selection" : "bg-raised/50"
       }`}
     >
-      <div className="flex items-center gap-3">
+      {/* On a phone the name takes the whole first line, so a long set name
+          reads in full; the percent, toggle and remove wrap beneath it. */}
+      <div className="flex items-center gap-3 max-sm:flex-wrap max-sm:gap-y-1">
         {/* The title is OUR set name, so it is an input, not a label. */}
         <Input
           bare
@@ -916,7 +929,7 @@ function ReadySetRow({
           aria-describedby={
             clashMessageId ? `${clashLineId} ${clashMessageId}` : undefined
           }
-          className={`flex-1 min-w-0 px-2 py-1 text-sm font-medium text-ink bg-raised-deep/60 border rounded focus:border-selection ${
+          className={`flex-1 min-w-0 max-sm:basis-full px-2 py-1 text-sm font-medium text-ink bg-raised-deep/60 border rounded focus:border-selection ${
             clashMessageId ? "border-neon-pink-text" : "border-rule-strong"
           }`}
         />
@@ -938,7 +951,7 @@ function ReadySetRow({
         )}
         <button
           onClick={onDisband}
-          className="hit-area-24 text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0"
+          className="hit-area-24 text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0 max-sm:ml-auto"
           title="Remove this set (its mappings return to Pending)"
           aria-label={`Remove set ${label}`}
         >
@@ -963,6 +976,7 @@ function ReadySetRow({
         {sources.map(
           (source) =>
             source.kind !== "checklist" &&
+            !unaskedSources.includes(source.key) &&
             set.links[source.key].length === 0 && (
               <span
                 key={`no-${source.key}`}
@@ -1081,8 +1095,8 @@ function ReconciliationDialog({
   showAllSlInitially = false,
   baseCheck,
   checklist,
-  pausedSides = [],
-  skippedSides = [],
+  pausedSides = NO_SIDES,
+  skippedSides = NO_SIDES,
   client,
 }: ReconciliationModalProps & { client: BaseMatchClient | null }) {
   // NEO-496: the columns this dialog lines up. The two marketplaces always;
@@ -1474,6 +1488,20 @@ function ReconciliationDialog({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   /** The Pending heading: the subtitle's "N pending" lands here. */
   const pendingHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  /** Marketplace sides this fetch never asked: paused, or skipped. */
+  const unaskedSources = useMemo(
+    () =>
+      sources
+        .map((source) => source.key)
+        .filter(
+          (key) =>
+            isMarketplaceSource(key) &&
+            (pausedSides.includes(key) || skippedSides.includes(key)),
+        ),
+    [sources, pausedSides, skippedSides],
+  );
+  /** The Pending columns' grid: the desktop jump's first row is in here. */
+  const pendingGridRef = useRef<HTMLDivElement | null>(null);
   /** Each Pending column's label ("SportLots (3)"), by source. */
   const columnLabelRefs = useRef<Partial<Record<SourceKey, HTMLDivElement | null>>>({});
   /**
@@ -1488,18 +1516,27 @@ function ReconciliationDialog({
   const jumpToPending = useCallback(() => {
     const media = (query: string) =>
       typeof window.matchMedia === "function" && window.matchMedia(query).matches;
-    let target: HTMLElement | null = pendingHeadingRef.current;
+    const behavior: ScrollBehavior = media("(prefers-reduced-motion: reduce)") ? "auto" : "smooth";
     // Tailwind's `max-sm` (under 40rem), where PENDING's grid is one column.
     if (media("(max-width: 39.99rem)")) {
       const first = sources.find((source) => state.pending[source.key].length > 0);
-      target = (first && columnLabelRefs.current[first.key]) || target;
+      const target = (first && columnLabelRefs.current[first.key]) || pendingHeadingRef.current;
+      if (!target) return;
+      target.focus({ preventScroll: true });
+      target.scrollIntoView?.({ block: "start", behavior });
+      return;
     }
-    if (!target) return;
-    target.focus({ preventScroll: true });
-    target.scrollIntoView?.({
-      block: "start",
-      behavior: media("(prefers-reduced-motion: reduce)") ? "auto" : "smooth",
-    });
+    const heading = pendingHeadingRef.current;
+    if (!heading) return;
+    heading.focus({ preventScroll: true });
+    // The heading to the top, then the first pending row up from under the
+    // footer: below the heading's intro, search and toggles it can sit past
+    // the body's bottom edge. Focus stays on the heading.
+    heading.scrollIntoView?.({ block: "start", behavior: "auto" });
+    // Every pending row (and no mapped one) carries "Make its own set".
+    pendingGridRef.current
+      ?.querySelector<HTMLElement>("[data-own-set]")
+      ?.scrollIntoView?.({ block: "nearest", behavior });
   }, [sources, state.pending]);
   /** What had focus before this opened, so it can go back there on close
    *  rather than falling to `<body>` (WCAG 2.4.3) — matches CardPairingModal. */
@@ -2590,7 +2627,11 @@ function ReconciliationDialog({
           </div>
           {/* aria-disabled, never `disabled`: a Base verdict that sets aside
               the column's last keepable row must not take focus with it (a
-              disabled button drops focus to <body>). `keepAll` guards. */}
+              disabled button drops focus to <body>). `keepAll` guards.
+              A side never asked (paused or skipped) has nothing to keep, so
+              it has no Keep all at all. */}
+          {!paused && !unasked && (
+          <>
           <NeonButton
             type="button"
             variant="primary"
@@ -2610,6 +2651,8 @@ function ReconciliationDialog({
           <span id={keepAllDescId} className="sr-only">
             {keepAllDescription}
           </span>
+          </>
+          )}
         </div>
         {paused ? (
           // NEO-287: the side was never asked. Not the empty copy (it did not
@@ -2981,6 +3024,7 @@ function ReconciliationDialog({
                     key={set.key}
                     set={set}
                     sources={sources}
+                    unaskedSources={unaskedSources}
                     label={readyLabelOf(set)}
                     showMetadata={showMetadata}
                     dups={dups}
@@ -3048,7 +3092,10 @@ function ReconciliationDialog({
               {/* NEO-341: one column below sm. Side by side in a phone-width
                   dialog each column was ~170px, and a row's "Make its own
                   set" button left the item name one letter wide. */}
-              <div className={`grid ${PENDING_GRID_COLS[sources.length] ?? "grid-cols-2"} max-sm:grid-cols-1 gap-4`}>
+              <div
+                ref={pendingGridRef}
+                className={`grid ${PENDING_GRID_COLS[sources.length] ?? "grid-cols-2"} max-sm:grid-cols-1 gap-4`}
+              >
                 {sources.map((source) => renderPendingColumn(source))}
               </div>
             </div>

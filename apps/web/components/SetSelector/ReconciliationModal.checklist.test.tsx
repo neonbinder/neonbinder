@@ -224,6 +224,41 @@ describe("ReconciliationModal — checklist column", () => {
     // BSC was asked: its column is whole.
     expect(screen.getByLabelText("Filter BSC items")).toBeTruthy();
     expect(screen.getByLabelText("Make its own set: Bomb Squad")).toBeTruthy();
+    // Nothing to keep on a side nobody asked: no Keep all there.
+    expect(screen.queryByRole("button", { name: /^Keep all.*, SportLots/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Keep all.*, BSC sets?$/ })).toBeTruthy();
+    // A Ready row says nothing about the side nobody asked.
+    fireEvent.click(screen.getByLabelText("Make its own set: Bomb Squad"));
+    // The row's links line: the BSC chip, and no note for SportLots.
+    const links = screen.getByRole("button", { name: /^Remove Bomb Squad from / }).parentElement
+      ?.parentElement as HTMLElement;
+    expect(links.textContent).toContain("Bomb Squad");
+    expect(links.textContent).not.toMatch(/mapping/);
+  });
+
+  test("a paused side has no Keep all and no 'no mapping' note on a Ready row", () => {
+    renderModal(pending([BSC_BOMB]), {
+      checklist: checklistOf([FUTURE]),
+      pausedSides: ["sportlots"],
+    });
+    expect(screen.queryByRole("button", { name: /^Keep all.*, SportLots/ })).toBeNull();
+    fireEvent.click(screen.getByLabelText("Make its own set: Bomb Squad"));
+    expect(within(readyRegion()).queryByText("no SL mapping")).toBeNull();
+  });
+
+  test("an asked side with nothing mapped keeps its note and its Keep all", () => {
+    renderModal(pending([BSC_BOMB], [SL_RED]), { checklist: checklistOf([FUTURE]) });
+    expect(screen.getByRole("button", { name: /^Keep all.*, SportLots/ })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Make its own set: Bomb Squad"));
+    expect(within(readyRegion()).getByText("no SL mapping")).toBeTruthy();
+  });
+
+  test("on a phone a Ready set's name takes its whole line, so a long name reads in full", () => {
+    renderModal(pending([BSC_BOMB]), { checklist: checklistOf([FUTURE]) });
+    fireEvent.click(screen.getByLabelText("Make its own set: Bomb Squad"));
+    const name = screen.getByLabelText("NeonBinder set name for Bomb Squad");
+    expect(name.className).toContain("max-sm:basis-full");
+    expect(name.parentElement?.className).toContain("max-sm:flex-wrap");
   });
 
   test("a skipped BSC column says BSC wasn't asked", () => {

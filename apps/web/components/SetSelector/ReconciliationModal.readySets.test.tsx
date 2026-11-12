@@ -1127,6 +1127,29 @@ describe("ReconciliationModal — the subtitle's pending count jumps to the work
     expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pending (1)" }));
   });
 
+  test("side by side it also brings the first pending row up from under the footer", () => {
+    const scrolled: Array<{ el: Element; opts: unknown }> = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: Element, opts?: unknown) {
+      scrolled.push({ el: this, opts });
+    } as typeof HTMLElement.prototype.scrollIntoView;
+    try {
+      renderModal(allPending());
+      fireEvent.click(screen.getByRole("button", { name: "3 pending, go to Pending" }));
+      const heading = screen.getByRole("heading", { name: "Pending (3)" });
+      // Focus stays on the heading; the heading goes up, then the first row in.
+      expect(document.activeElement).toBe(heading);
+      expect(scrolled[0]?.el).toBe(heading);
+      const firstRow = screen.getAllByRole("button", { name: /^Make its own set: / })[0];
+      expect(scrolled[1]).toEqual({
+        el: firstRow,
+        opts: expect.objectContaining({ block: "nearest" }),
+      });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  });
+
   test("on a phone it skips the empty BSC column and lands on SportLots", () => {
     const media = onAPhone();
     try {
