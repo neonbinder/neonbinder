@@ -638,7 +638,7 @@ export default function AttachSetsDialog({
                 bscNoSetNote !== null && bscSetSlug === undefined ? null : (
                   <BreadcrumbButton
                     label={`Back to ${shownSetLabel}`}
-                    ariaLabel={`Back to BSC set ${shownSetLabel}`}
+                    ariaLabel={`Back to ${shownSetLabel} (BSC set)`}
                     onClick={backToVariants}
                   />
                 )
