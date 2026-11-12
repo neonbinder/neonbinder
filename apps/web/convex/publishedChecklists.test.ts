@@ -1003,6 +1003,73 @@ describe("setRowChecklistSections, the one link writer", () => {
     await settle(t);
   });
 
+  test("D2: a key the row already holds passes through after a replace; only new keys must exist", async () => {
+    const t = convexTest(schema, modules);
+    const f = await seedTree(t);
+    await upload(t, f.set, [
+      { name: "Base", rows: rows(1) },
+      { name: "Future Stars", rows: rows(1) },
+    ]);
+    await link(t, f.insA, f.set, ["Future Stars"]);
+    const [stale] = await allLinks(t);
+
+    // The new file drops Future Stars and adds Bomb Squad.
+    await upload(t, f.set, [
+      { name: "Base", rows: rows(1) },
+      { name: "Bomb Squad", rows: rows(1) },
+    ]);
+
+    // The dialog echoes the row's full key set (the stale one included) and
+    // adds a valid new key: saved, and the stale link is the same document.
+    expect(await link(t, f.insA, f.set, ["Future Stars", "Bomb Squad"])).toEqual({
+      added: 1,
+      removed: 0,
+    });
+    const after = await allLinks(t);
+    expect(after.map((l) => l.sectionKey).sort()).toEqual(["bomb squad", "future stars"]);
+    expect(after.find((l) => l.sectionKey === "future stars")).toEqual(stale);
+
+    // A brand-new key the checklist lacks is still refused, and nothing changes.
+    await expect(link(t, f.insA, f.set, ["Future Stars", "Bomb Squad", "Nope"])).rejects.toThrow(
+      /no section named “nope”/,
+    );
+    expect(await allLinks(t)).toEqual(after);
+
+    // Dropping a valid key while echoing the stale one also saves.
+    expect(await link(t, f.insA, f.set, ["Future Stars"])).toEqual({ added: 0, removed: 1 });
+    expect(await allLinks(t)).toEqual([stale]);
+
+    // With the checklist removed, echoing the stale key alone is a no-op, not a refusal.
+    await t.withIdentity(ADMIN).mutation(api.publishedChecklists.remove, { setId: f.set });
+    expect(await link(t, f.insA, f.set, ["Future Stars"])).toEqual({ added: 0, removed: 0 });
+    // Adding anything without a checklist still refuses.
+    await expect(link(t, f.insA, f.set, ["Future Stars", "Base"])).rejects.toThrow(/no checklist/);
+    expect(await allLinks(t)).toEqual([stale]);
+    await settle(t);
+  });
+
+  test("kept stale keys still count toward the per-row cap", async () => {
+    const t = convexTest(schema, modules);
+    const f = await seedTree(t);
+    await upload(t, f.set, [{ name: "Base", rows: rows(1) }]);
+    // 50 stale links already on the row (their sections are gone).
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 50; i += 1) {
+        await ctx.db.insert("publishedChecklistLinks", {
+          setId: f.set,
+          selectorOptionId: f.insA,
+          sectionKey: `old ${i}`,
+          createdAt: NOW,
+          createdByUserId: "x",
+        });
+      }
+    });
+    const echoed = Array.from({ length: 50 }, (_, i) => `old ${i}`);
+    expect(await link(t, f.insA, f.set, echoed)).toEqual({ added: 0, removed: 0 });
+    await expect(link(t, f.insA, f.set, [...echoed, "Base"])).rejects.toThrow(/at most 50/);
+    await settle(t);
+  });
+
   test("a write drops the row's links left under another set", async () => {
     const t = convexTest(schema, modules);
     const f = await seedTree(t);

@@ -269,8 +269,11 @@ async function rowIsUnderSet(
  * invalidation). Refuses (ConvexError, nothing written) when:
  * - the row is not a variantType / insert / parallel under `setId`;
  * - more than `MAX_LINKS_PER_ROW` keys;
- * - a key is not a section of the set's current READY checklist (also when
- *   the set has none and `keys` is non-empty);
+ * - a NEWLY added key is not a section of the set's current READY checklist
+ *   (also when the set has none). A key the row ALREADY holds in this set
+ *   passes through even when a replaced or removed checklist no longer has
+ *   it (D2, rule 5: a link stays until the operator changes it), so a dialog
+ *   that echoes the row's full key set, stale keys included, saves cleanly;
  * - the set would hold more than `MAX_LINKS_PER_SET` links.
  * `keys: []` clears the row's links, with or without a checklist.
  *
@@ -329,6 +332,7 @@ export async function setRowChecklistSections(
     if (!ready) {
       throw new ConvexError("This set has no checklist to use sections from.");
     }
+    // Only the keys this write adds: kept keys may be stale (see above).
     const missing = await missingChecklistSectionKeys(db, ready._id, toAdd);
     if (missing.length > 0) {
       throw new ConvexError(
