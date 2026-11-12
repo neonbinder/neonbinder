@@ -425,7 +425,7 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     await waitFor(() => {
       expect(
         screen.getByText(
-          "Nothing to link yet — this set isn't on a marketplace. Attach one from Attach more… when it is.",
+          "Nothing to link yet — this set isn't on a marketplace. Attach one with Attach more… under Edit attributes when it is.",
         ),
       ).toBeTruthy();
     });

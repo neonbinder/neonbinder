@@ -560,6 +560,21 @@ export async function drillToCustomSet(
 }
 
 /**
+ * NEO-496 — open the selected row's attributes panel when it is closed. Below
+ * the set level it starts closed, and the row's "Multi-source sets" panel
+ * (its attached BSC and SportLots sets, "Attach more…", each source's Remove)
+ * lives inside it, so a spec reaching those opens the panel first. The panel
+ * settles its open state as it draws a row, so the branch is on app state.
+ */
+export async function openAttributesPanel(page: Page): Promise<void> {
+  const edit = page.getByRole("button", { name: "Edit attributes" });
+  const hide = page.getByRole("button", { name: "Hide attributes" });
+  await expect(edit.or(hide)).toBeVisible();
+  if (await edit.isVisible()) await edit.click();
+  await expect(hide).toBeVisible();
+}
+
+/**
  * util-attach-pane-sportlots-twin-ids.yaml (NEO-325): open a saved insert
  * row's "Attach more source sets" pane and read which SportLots twin it
  * holds. The twin it holds is excluded from the candidates (so searching its
@@ -583,6 +598,7 @@ export async function readAttachedTwinId(
   await columnSearch(page, "Inserts").fill(insertQuery);
   await columnOption(page, "Inserts", insertRow).click();
 
+  await openAttributesPanel(page);
   await expect(page.getByText("Multi-source sets")).toBeVisible();
   await page.getByRole("button", { name: "Attach more source sets" }).click();
   const search = page.getByRole("textbox", { name: "Search SportLots sets" });

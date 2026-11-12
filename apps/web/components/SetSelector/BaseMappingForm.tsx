@@ -13,7 +13,7 @@ import BaseSetPicker, {
 } from "./BaseSetPicker";
 import type { PlatformItem } from "./ReconciliationModal";
 import { blockedMessageFromErrors } from "./selector-sync-feedback";
-import { ATTACH_MORE_LABEL } from "./control-labels";
+import { ATTACH_MORE_LABEL, EDIT_ATTRIBUTES_LABEL } from "./control-labels";
 
 type RawOptionsResult = {
   success: boolean;
@@ -111,7 +111,8 @@ const WRITE_FAILED_MESSAGE =
   "Couldn't link that set. Nothing changed — try again.";
 
 /** There is nothing to pick FROM, so Retry would re-run the same empty fetch. */
-const NOTHING_TO_LINK_MESSAGE = `Nothing to link yet — this set isn't on a marketplace. Attach one from ${ATTACH_MORE_LABEL} when it is.`;
+// NEO-496: Attach more… is inside Base's attributes panel, behind Edit attributes.
+const NOTHING_TO_LINK_MESSAGE = `Nothing to link yet — this set isn't on a marketplace. Attach one with ${ATTACH_MORE_LABEL} under ${EDIT_ATTRIBUTES_LABEL} when it is.`;
 
 const STALE_MESSAGE =
   "This Base mapping changed somewhere else while you were picking. Nothing was written — the choices below have been refreshed, so pick again.";

@@ -14,6 +14,7 @@ import {
 import {
   ATTACH_MORE_LABEL,
   CUSTOM_BUTTON_LABEL,
+  EDIT_ATTRIBUTES_LABEL,
   MULTI_SOURCE_HEADING,
 } from "./control-labels";
 
@@ -454,12 +455,13 @@ export const LINKED_FIX =
  * A retry hits the same bound, so the fix is the manual attach, named by its
  * visible labels: the column's "+ Custom" (EntityColumn) makes the row, and
  * the selected row's "Multi-source sets" panel has "Attach more…"
- * (MultiSourcePanel). The labels come from `control-labels`, the same
+ * (MultiSourcePanel), inside its attributes panel since NEO-496, so the
+ * line says to open it first. The labels come from `control-labels`, the same
  * constants those components render, so a rename cannot leave this stale.
  * `attachPlatformIds` does not walk the set, so it works on a set past the
  * bound.
  */
-export const UNCHECKED_FIX = `You can still add it by hand: pick its row, or make one with ${CUSTOM_BUTTON_LABEL}, then use ${ATTACH_MORE_LABEL} under ${MULTI_SOURCE_HEADING}.`;
+export const UNCHECKED_FIX = `You can still add it by hand: pick its row, or make one with ${CUSTOM_BUTTON_LABEL}, then open ${EDIT_ATTRIBUTES_LABEL} and use ${ATTACH_MORE_LABEL} under ${MULTI_SOURCE_HEADING}.`;
 
 /** DRAFT. The line under each withheld item, before the rows it names. */
 export function reasonLine(reason: WithheldElsewhereEntry["reason"]): string {

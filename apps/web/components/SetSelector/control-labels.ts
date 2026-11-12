@@ -24,3 +24,10 @@ export const MULTI_SOURCE_HEADING = "Multi-source sets";
 
 /** MultiSourcePanel's button that opens AttachSetsDialog. */
 export const ATTACH_MORE_LABEL = "Attach more…";
+
+/**
+ * NEO-496 — SetAttributesPanel's toggle that opens it. Below the set level
+ * the panel starts closed, and the Multi-source sets panel lives inside it,
+ * so copy that sends the operator to "Attach more…" names this first.
+ */
+export const EDIT_ATTRIBUTES_LABEL = "Edit attributes";

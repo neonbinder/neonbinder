@@ -6129,7 +6129,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     };
   }
 
-  it("NEO-487: a single build's wait line stands down while a run of parallels shows its own — one line, never two", async () => {
+  it("NEO-487: a single build's wait line stays while another insert's run goes elsewhere — one line, never two (NEO-496)", async () => {
     state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
     // An empty parallel: its button builds at once, no rebuild confirm.
     state.cards = [];
@@ -6156,8 +6156,9 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         timeout: 3000,
       });
       // A run of another insert's parallels starts while that build is still
-      // in flight (the operator saved the insert, then came back here). Its
-      // panel carries the run's own wait line; the build's line stands down.
+      // in flight (the operator saved the insert, then came back here).
+      // NEO-496: that run's ledger belongs to its insert, not this row, so it
+      // is not drawn here, and this row's own wait line stays the one line.
       const running = hostedRunner({
         startedFrom: "some-other-insert" as unknown as Id<"selectorOptions">,
         sourceId: "some-other-insert" as unknown as Id<"selectorOptions">,
@@ -6176,9 +6177,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
         timeout: 3000,
       });
-      // And it is the panel's line, not the build's.
+      // And it is the build's line: no ledger for the other insert's run.
       const line = screen.getByText("Waiting on BuySportsCards…");
-      expect(line.closest("section")?.textContent ?? "").toContain("Other Insert");
+      expect(line.closest("section")?.textContent ?? "").not.toContain("Other Insert");
+      expect(document.getElementById(PARALLEL_BUILD_HEADING_ID)).toBeNull();
     } finally {
       state.marketplaceWait = undefined;
     }
@@ -6235,6 +6237,64 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     const addCard = screen.getByLabelText("Open add card form");
     expect(addCard.getAttribute("aria-disabled")).toBe("true");
     expect(addCard.getAttribute("aria-describedby")).toBe(parallelLineId(VARIANT_ID));
+    // NEO-496: the line it is described by is on screen, in the run's ledger.
+    expect(document.getElementById(parallelLineId(VARIANT_ID))).not.toBeNull();
+  });
+
+  /**
+   * NEO-496 (Jason, 2026-11-12) — the ledger belongs to the row whose save
+   * started it: on that row, and on one of its parallels only while the run
+   * holds it. A finished run is not drawn on its parallels, and no run is
+   * drawn on an unrelated row.
+   */
+  describe("the ledger shows only on its own row (NEO-496)", () => {
+    const PARALLEL_ID = "parallel-row-9" as unknown as Id<"selectorOptions">;
+    const runOf = (phase: "running" | "finished") => ({
+      startedFrom: VARIANT_ID,
+      sourceId: VARIANT_ID,
+      sourceValue: "Anime",
+      sourceKind: "insert" as const,
+      entries: [
+        {
+          id: PARALLEL_ID,
+          value: "Anime Kanji",
+          line: phase === "running" ? { kind: "waiting" as const } : { kind: "failed" as const, message: "BSC had no cards" },
+        },
+      ],
+      truncated: false,
+      phase,
+      atIndex: 0,
+      announcement: "",
+    });
+    const at = (variantId: Id<"selectorOptions">, phase: "running" | "finished") => (
+      <CardChecklist
+        variantId={variantId}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelRun={hostedRunner(runOf(phase) as never)}
+      />
+    );
+    const ledger = () => document.getElementById(PARALLEL_BUILD_HEADING_ID);
+
+    it("a finished run is on the row it started from", () => {
+      render(at(VARIANT_ID, "finished"));
+      expect(ledger()).not.toBeNull();
+    });
+
+    it("a finished run is not carried onto one of its parallels", () => {
+      render(at(PARALLEL_ID, "finished"));
+      expect(ledger()).toBeNull();
+    });
+
+    it("a running run is on its parallel while it holds that row", () => {
+      render(at(PARALLEL_ID, "running"));
+      expect(ledger()).not.toBeNull();
+    });
+
+    it("a running run is not drawn on an unrelated row", () => {
+      render(at("unrelated-row" as unknown as Id<"selectorOptions">, "running"));
+      expect(ledger()).toBeNull();
+    });
   });
 });
 
@@ -6281,6 +6341,61 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     renderChecklist();
     await driveZeroCandidateCommit();
     expect(mockGetParallelsForBuild).not.toHaveBeenCalled();
+  });
+
+  it("NEO-496: \"Saved N cards.\" goes the moment another row is picked, and does not come back", async () => {
+    mockGetParallelsForBuild.mockResolvedValue({ parallels: [], truncated: false });
+    const { rerender } = renderInsertRow();
+    await driveZeroCandidateCommit();
+    await waitFor(() => expect(screen.getByText(/^Saved 2 cards\./)).toBeTruthy());
+
+    const OTHER_ID = "variant-2" as unknown as Id<"selectorOptions">;
+    const at = (variantId: Id<"selectorOptions">) => (
+      <CardChecklist
+        variantId={variantId}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "insert" }}
+      />
+    );
+    await act(async () => {
+      rerender(at(OTHER_ID));
+    });
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
+    // The new row is on screen, with its own Sync.
+    expect(screen.getByLabelText("Sync card checklist")).toBeTruthy();
+
+    await act(async () => {
+      rerender(at(VARIANT_ID));
+    });
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
+  });
+
+  it("NEO-496: a parallels list that fails after the operator moved on says nothing on the new row", async () => {
+    let failList!: (error: Error) => void;
+    mockGetParallelsForBuild.mockImplementation(
+      () => new Promise((_resolve, reject) => (failList = reject)),
+    );
+    const { rerender } = renderInsertRow();
+    await driveZeroCandidateCommit();
+    await waitFor(() => expect(mockGetParallelsForBuild).toHaveBeenCalled());
+
+    const OTHER_ID = "variant-2" as unknown as Id<"selectorOptions">;
+    await act(async () => {
+      rerender(
+        <CardChecklist
+          variantId={OTHER_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelBuild={{ role: "insert" }}
+        />,
+      );
+    });
+    await act(async () => {
+      failList(new Error("list unreadable"));
+    });
+    expect(screen.queryByText(/Parallels not built/)).toBeNull();
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
   });
 });
 

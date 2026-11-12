@@ -4016,3 +4016,56 @@ describe("SetAttributesPanel — opens itself at the set level, checklist first 
     expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
   });
 });
+
+/**
+ * NEO-496 (Jason, 2026-11-12) — the row's marketplace sources ("Multi-source
+ * sets") live inside the panel's open body: hidden while it is collapsed,
+ * which it is by default below the set level, and above the attributes when
+ * it is open.
+ */
+describe("SetAttributesPanel — the sources sit inside the open panel (NEO-496)", () => {
+  const SOURCES = (
+    <section aria-label="Stand-in sources">
+      <h4>Multi-source sets</h4>
+    </section>
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+  });
+
+  it("is hidden while the panel is collapsed, and shown once it is opened", () => {
+    currentRow = makeRow({ level: "insert", value: "Anime" });
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed sources={SOURCES} />,
+    );
+    expect(screen.queryByRole("heading", { name: "Multi-source sets" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
+    expect(screen.getByRole("heading", { name: "Multi-source sets" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+    expect(screen.queryByRole("heading", { name: "Multi-source sets" })).toBeNull();
+  });
+
+  it("sits above the attributes, inside the panel's region", () => {
+    currentRow = makeRow({ level: "parallel", value: "Anime Kanji" });
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} sources={SOURCES} />,
+    );
+    const region = screen.getByRole("region", { name: "Set attributes panel" });
+    const sources = within(region).getByRole("region", { name: "Stand-in sources" });
+    expect(
+      sources.compareDocumentPosition(within(region).getByText("Set attributes")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("draws nothing extra when the owner has no sources to show", () => {
+    currentRow = makeRow({ level: "insert", value: "Anime" });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
+    expect(screen.queryByRole("heading", { name: "Multi-source sets" })).toBeNull();
+    expect(screen.getByText("Set attributes")).toBeTruthy();
+  });
+});

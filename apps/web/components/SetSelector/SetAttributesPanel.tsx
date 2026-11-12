@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useConvex, useMutation, useQuery } from "convex/react";
@@ -23,6 +23,7 @@ import {
   isBrandUnknownRow,
 } from "../../convex/selectorSyncMatch";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import { EDIT_ATTRIBUTES_LABEL } from "./control-labels";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
@@ -255,6 +256,7 @@ export default function SetAttributesPanel({
   onDeleted,
   onMoved,
   onReshaped,
+  sources,
 }: {
   selectorOptionId: Id<"selectorOptions">;
   /** Start collapsed (cards present) so the panel doesn't push them off-screen. */
@@ -284,6 +286,16 @@ export default function SetAttributesPanel({
    * division as `onDeleted` and `onMoved`.
    */
   onReshaped?: (path: ReshapeStep[]) => void;
+  /**
+   * NEO-496 — the row's marketplace sources (the set builder's
+   * `MultiSourcePanel`), drawn inside the open panel only. Attaching a second
+   * BSC or SportLots set happens, but it is the exception (Jason, 2026-11-12),
+   * so it no longer takes its own card above the panel: it sits behind
+   * "Edit attributes" with the rest of the row's settings. The owner decides
+   * whether there is one (it has the row the cards are read from); the source
+   * panel itself decides which levels it shows on.
+   */
+  sources?: ReactNode;
 }) {
   const row = useQuery(api.selectorOptions.getSelectorOptionById, {
     id: selectorOptionId,
@@ -317,6 +329,23 @@ export default function SetAttributesPanel({
   const [expanded, setExpanded] = useState(() =>
     opensByDefault(rowLevel, selectorOptionId, defaultCollapsed),
   );
+  // Re-evaluate the default whenever the source intent flips (cards
+  // appear/disappear or the selected node changes). Without this, drilling
+  // from a card-less set into a node with cards would keep the panel
+  // expanded (pushing the list down) because state initializes once. The
+  // level is in the key too: it is unknown until the row loads (NEO-496).
+  //
+  // Settled DURING render (the previous-value pattern), not in an effect:
+  // an effect lets the first paint of a newly picked row wear the previous
+  // row's open state, so for a frame the set's open panel (NEO-496) sat on
+  // the variant picked below it, and a reader checking which toggle is
+  // showing could act on the wrong one.
+  const openKey = `${selectorOptionId}|${rowLevel ?? ""}|${defaultCollapsed ? 1 : 0}`;
+  const [openSettledFor, setOpenSettledFor] = useState(openKey);
+  if (openSettledFor !== openKey) {
+    setOpenSettledFor(openKey);
+    setExpanded(opensByDefault(rowLevel, selectorOptionId, defaultCollapsed));
+  }
   // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
   // progress line (`toast`, the polite status region) and a failure
   // (`failure`, the alert region). Raising either clears the other.
@@ -332,16 +361,6 @@ export default function SetAttributesPanel({
     },
     [],
   );
-
-  // Re-evaluate the default whenever the source intent flips (cards
-  // appear/disappear or the selected node changes). Without this, drilling
-  // from a card-less set into a node with cards would keep the panel
-  // expanded (pushing the list down) because state initializes once. The
-  // level is in the key too: it is unknown until the row loads (NEO-496).
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-evaluates the collapse default when the source intent flips; useState only initialises once
-    setExpanded(opensByDefault(rowLevel, selectorOptionId, defaultCollapsed));
-  }, [defaultCollapsed, selectorOptionId, rowLevel]);
 
   // Derive the sport from the ancestor chain so we can drop features that
   // don't apply (e.g. "League" hidden for Pokemon).
@@ -800,10 +819,10 @@ export default function SetAttributesPanel({
               type="button"
               onClick={() => setOpen(true)}
               onKeyDown={(e) => activateOnEnter(e, () => setOpen(true))}
-              aria-label="Edit attributes"
+              aria-label={EDIT_ATTRIBUTES_LABEL}
               className={ATTRIBUTES_TOGGLE_CLASS}
             >
-              Edit attributes ▾
+              {EDIT_ATTRIBUTES_LABEL} ▾
             </button>
           </div>
         )}
@@ -937,6 +956,13 @@ export default function SetAttributesPanel({
               onStatus={showToast}
             />
           )}
+
+          {/* NEO-496: where this row's cards come from, when it draws on
+              marketplace sets (insert, parallel, a terminal variant). Above
+              the attributes for the same reason as the checklist: a source,
+              not a fact about the row. The two never meet, since the
+              checklist lives on the set and the sources below it. */}
+          {sources}
 
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide">

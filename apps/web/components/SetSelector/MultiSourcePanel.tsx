@@ -326,10 +326,14 @@ export default function MultiSourcePanel({
   const parkFocusOnHeading = () => headingRef.current?.focus();
 
   return (
-    <div className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4">
+    // NEO-496: drawn inside the open attributes panel (SetAttributesPanel's
+    // `sources`), so it takes the nested block's frame, the same as the
+    // set's official checklist there, and its heading sits under the
+    // panel's h3.
+    <div className="rounded-md border border-rule p-3">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h3
+          <h4
             ref={headingRef}
             // a11y: -1 keeps the heading out of the tab order while still
             // being a valid programmatic focus target for the park above.
@@ -338,7 +342,7 @@ export default function MultiSourcePanel({
           >
             {/* NEO-312: shared with copy that points the operator here. */}
             {MULTI_SOURCE_HEADING}
-          </h3>
+          </h4>
           <p className="text-xs text-ink-3 mt-0.5">
             Cards fetched for this variant come from every attached BSC and
             SportLots set. Users can filter the checklist by source.

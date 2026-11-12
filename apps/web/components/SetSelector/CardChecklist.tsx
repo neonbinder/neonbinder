@@ -998,11 +998,43 @@ export default function CardChecklist({
     [],
   );
   const [noticeDetailOpen, setNoticeDetailOpen] = useState(false);
+  /**
+   * NEO-255 — the variant the operator is looking at NOW, for the same
+   * staleness check one field up.
+   *
+   * A run is abandoned when the operator moves to another variant, and the
+   * generation counter cannot say so on its own: `variantId` is a PROP, so
+   * nothing in an event handler bumps the counter when it changes, and the
+   * reset effect that clears the rest of the per-variant state is not allowed
+   * to (`react-hooks/immutability` — a ref mutated inside an effect may not be
+   * mutated anywhere else, and this one is, from `handleSync` and the pairing
+   * dialog's Cancel).
+   *
+   * It matters most on the one-marketplace path, which is the one that commits
+   * without an operator: `awaitStreamedBatch` polls a subscription keyed on the
+   * CURRENT variant while `handlePairingConfirm` writes to the `variantId` the
+   * run captured. Switch variants mid-await and those are two different sets —
+   * one variant's cards committed onto another. Read through a ref because the
+   * check runs inside an async closure holding its own render's values, which
+   * is exactly where a prop read would be stale.
+   */
+  const currentVariantIdRef = useRef(variantId);
+  useEffect(() => {
+    currentVariantIdRef.current = variantId;
+  }, [variantId]);
+  /**
+   * NEO-496 (Jason, 2026-11-12) — the notice belongs to the row it was said
+   * on. A run that ends after the operator has picked another row (a fetch
+   * with no dialog, a commit, the parallel build's plan) says nothing on the
+   * row they moved to: `variantId` here is the render that started it, and
+   * the ref is the row on screen now. Clearing always goes through.
+   */
   const setSyncMessage = useCallback(
     (text: string | null, tone: "status" | "error" = "status") => {
+      if (text !== null && currentVariantIdRef.current !== variantId) return;
       setSyncNotice(text === null ? null : { text, tone });
     },
-    [setSyncNotice],
+    [setSyncNotice, variantId],
   );
   /** NEO-358 — a row's delete or unlink the server refused, said here. */
   const onRowDeleteFailed = useCallback(
@@ -1348,7 +1380,12 @@ export default function CardChecklist({
     // NEO-203: a diff computed against one variant's rows is meaningless
     // against another's.
     setPendingReview(null);
-  }, [variantId]);
+    // NEO-496 (Jason, 2026-11-12): "Saved N cards." and every other notice
+    // in this section go the moment another row is picked.
+    setSyncNotice(null);
+    setNoticeDetailOpen(false);
+    setBuildWaitKey(null);
+  }, [variantId, setSyncNotice]);
 
   // Virtuoso scroll handle + a one-shot flag so when the user adds a card
   // via the form, the just-added row is scrolled into view. New cards sort
@@ -1419,30 +1456,6 @@ export default function CardChecklist({
   // A ref, not state: the check runs inside an async closure that captured its
   // own render's values, which is exactly where a state read would be stale.
   const syncGenerationRef = useRef(0);
-  /**
-   * NEO-255 — the variant the operator is looking at NOW, for the same
-   * staleness check one field up.
-   *
-   * A run is abandoned when the operator moves to another variant, and the
-   * generation counter cannot say so on its own: `variantId` is a PROP, so
-   * nothing in an event handler bumps the counter when it changes, and the
-   * reset effect that clears the rest of the per-variant state is not allowed
-   * to (`react-hooks/immutability` — a ref mutated inside an effect may not be
-   * mutated anywhere else, and this one is, from `handleSync` and the pairing
-   * dialog's Cancel).
-   *
-   * It matters most on the one-marketplace path, which is the one that commits
-   * without an operator: `awaitStreamedBatch` polls a subscription keyed on the
-   * CURRENT variant while `handlePairingConfirm` writes to the `variantId` the
-   * run captured. Switch variants mid-await and those are two different sets —
-   * one variant's cards committed onto another. Read through a ref because the
-   * check runs inside an async closure holding its own render's values, which
-   * is exactly where a prop read would be stale.
-   */
-  const currentVariantIdRef = useRef(variantId);
-  useEffect(() => {
-    currentVariantIdRef.current = variantId;
-  }, [variantId]);
 
   /**
    * NEO-221 — end the pairing session for good and bin what it was reviewing.
@@ -2784,19 +2797,19 @@ export default function CardChecklist({
       result,
     }: ParallelBuildReport) => {
       // The build may land after the operator has moved to another checklist
-      // (this component is reused across the move). The notice names the
-      // parallel either way; only the parallel's OWN checklist reads a
-      // landed build as routine status, and gets the focus park.
-      const here = currentVariantIdRef.current === parallelId;
+      // (this component is reused across the move). NEO-496: then it says
+      // nothing here, since this section only speaks about the row on
+      // screen; the parallel's own checklist shows its cards when visited.
+      if (currentVariantIdRef.current !== parallelId) return;
       const parallelResult =
         committed && result ? { result, sourceValue } : undefined;
       setSyncNotice({
         text,
-        tone: committed && here ? "status" : tone,
+        tone: committed ? "status" : tone,
         parallelResult,
       });
       setNoticeDetailOpen(false);
-      if (here) parallelParkRef.current = true;
+      parallelParkRef.current = true;
     },
     [setSyncNotice],
   );
@@ -3249,14 +3262,20 @@ export default function CardChecklist({
   };
 
   /**
-   * NEO-312 — the insert run, as it bears on the checklist on screen. The run
-   * is shown on its insert and on any of its parallels, and anywhere at all
-   * while it is still building (so Stop is never out of reach); a finished
-   * run is not carried onto an unrelated checklist.
+   * NEO-312 — the insert run, as it bears on the checklist on screen.
+   * NEO-496 (Jason, 2026-11-12): the ledger is part of the save that started
+   * it, so it shows on the row that save was on (`startedFrom`) and nowhere
+   * else, except on one of its parallels while the run still holds that
+   * row's controls (they are described by its line in the ledger). Picking
+   * any other row leaves it behind: the run carries on, a running one is
+   * there again (Stop included) back on its row, and a finished one the
+   * set builder retires once the operator has moved on (`runShownOn`).
    */
   const run = buildRun;
   const showParallelPanel =
-    !!run && !parallelPanelElsewhere && (parallelRun.active || runTouchesThis);
+    !!run &&
+    !parallelPanelElsewhere &&
+    (variantId === run.startedFrom || heldByRun);
   // While the source's parallels are building, neither the source's Sync (a
   // new save would start a second run over a checklist being copied, or
   // change the Base mid-copy) nor a parallel's own build button (a second
@@ -3656,11 +3675,16 @@ export default function CardChecklist({
             parallel can still be in flight when the operator saves an
             insert and a run of parallels starts. That run's panel (here or
             in the Base section) carries its own wait line, so this one
-            stands down while a run is going: one wait line on the page,
-            never two copies of the sentence. */}
+            stands down while that panel is on screen: one wait line on the
+            page, never two copies of the sentence. NEO-496: the run's panel
+            shows only on its own rows now, so on any other row this line
+            stays, and it is cleared with the rest when the row changes. */}
         <WaitingOnMarketplaceRun
           runKey={buildWaitKey}
-          active={buildWaitKey !== null && !parallelRun.active}
+          active={
+            buildWaitKey !== null &&
+            !(parallelRun.active && (showParallelPanel || parallelPanelElsewhere))
+          }
           marketplace="BuySportsCards"
           className="mb-3"
         />

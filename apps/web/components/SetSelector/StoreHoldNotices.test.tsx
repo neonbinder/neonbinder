@@ -27,6 +27,7 @@ import type { SiblingWithholdReason } from "../../convex/selectorSyncMatch";
 import {
   ATTACH_MORE_LABEL,
   CUSTOM_BUTTON_LABEL,
+  EDIT_ATTRIBUTES_LABEL,
   MULTI_SOURCE_HEADING,
 } from "./control-labels";
 
@@ -160,7 +161,7 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
       "Hold up: 1 not added. This set is too big to check new links automatically.",
     ).closest('[role="status"]') as HTMLElement;
     expect(live.textContent).toContain(
-      "You can still add it by hand: pick its row, or make one with + Custom, then use Attach more… under Multi-source sets.",
+      "You can still add it by hand: pick its row, or make one with + Custom, then open Edit attributes and use Attach more… under Multi-source sets.",
     );
     // Nothing clashes, so the clash fix is not offered. And no retry: past
     // the set bound a retry hits the same bound (security audit N2).
@@ -189,7 +190,7 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
       '[role="status"]',
     ) as HTMLElement;
     expect(live.textContent).toContain("Delete or ungroup the extra row, then sync again.");
-    expect(live.textContent).toContain("You can still add it by hand: pick its row, or make one with + Custom, then use Attach more… under Multi-source sets.");
+    expect(live.textContent).toContain("You can still add it by hand: pick its row, or make one with + Custom, then open Edit attributes and use Attach more… under Multi-source sets.");
   });
 
   test("clashes alone keep the clash summary and fix, wherever the holder is", () => {
@@ -299,6 +300,10 @@ describe("StoreHoldNotices — the by-hand fix names real controls (NEO-312)", (
     expect(UNCHECKED_FIX).toContain(CUSTOM_BUTTON_LABEL);
     expect(UNCHECKED_FIX).toContain(ATTACH_MORE_LABEL);
     expect(UNCHECKED_FIX).toContain(MULTI_SOURCE_HEADING);
+    // NEO-496: the sources panel is inside the attributes panel, so the line
+    // names the toggle that opens it first.
+    expect(UNCHECKED_FIX).toContain(EDIT_ATTRIBUTES_LABEL);
+    expect(EDIT_ATTRIBUTES_LABEL).toBe("Edit attributes");
     // And the labels are the ones the operator sees today, byte for byte.
     expect([CUSTOM_BUTTON_LABEL, ATTACH_MORE_LABEL, MULTI_SOURCE_HEADING]).toEqual([
       "+ Custom",

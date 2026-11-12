@@ -7,6 +7,7 @@ import {
   columnOption,
   columnSearch,
   drillToSet,
+  openAttributesPanel,
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
@@ -212,6 +213,14 @@ test(
     // to BSC's slug: that is what the operator sees, so that is the handle.
     const chip = env.SL_PAUSED ? "anime-kanji" : "Anime Kanji";
     await columnOption(page, "Parallels", "Anime Kanji").click();
+    // NEO-496 (Jason): the Cards section speaks only about the row on screen. Kanji's own
+    // slot is up (its cards were built, so it offers a rebuild), and Anime's "Saved N cards."
+    // and its parallels ledger went with the pick.
+    await expect(page.getByRole("button", { name: "Rebuild from Anime" })).toBeVisible();
+    await expect(page.getByText(/Saved [0-9]+ cards?/)).toBeHidden();
+    await expect(page.getByRole("heading", { name: /^Anime parallels — / })).toBeHidden();
+    // NEO-496: the sources live inside the attributes panel, closed below the set.
+    await openAttributesPanel(page);
     await expect(page.getByText("Multi-source sets")).toBeVisible();
     const remove = page.getByRole("button", { name: `Remove ${chip}`, exact: true });
     await expect(remove).toBeVisible();

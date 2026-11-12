@@ -247,6 +247,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
   `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
   options object: `drillToSet(page, env, { set: "Topps Stars of MLB Network" })`.
+  `openAttributesPanel(page)` opens the selected row's attributes panel when it
+  is closed (NEO-496): it opens itself at the set level only, and a row's
+  "Multi-source sets" panel lives inside it, so open it before reaching those.
 - `support/column-sync-fault.ts`: `faultColumnSyncStatus(page)` (NEO-450), the one
   WebSocket fault: installed before `signIn`, it sits on the Convex sync socket
   and makes ONE set-builder column's status query read as a failed sync

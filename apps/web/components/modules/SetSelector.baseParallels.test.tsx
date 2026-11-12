@@ -15,10 +15,10 @@
  * props the set builder gave it.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const BASE_ROW = {
   _id: "vt-base",
@@ -188,8 +188,17 @@ vi.mock("../SetSelector/SetForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetVariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/VariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/ParallelGroupingModal", () => ({ default: () => null }));
-vi.mock("../SetSelector/MultiSourcePanel", () => ({ default: () => null }));
-vi.mock("../SetSelector/SetAttributesPanel", () => ({ default: () => null }));
+/** NEO-496: the sources are handed to the attributes panel, which draws them. */
+vi.mock("../SetSelector/MultiSourcePanel", () => ({
+  default: ({ selectorOptionId }: { selectorOptionId: string }) => (
+    <p>{`sources of ${selectorOptionId}`}</p>
+  ),
+}));
+vi.mock("../SetSelector/SetAttributesPanel", () => ({
+  default: ({ sources }: { sources?: React.ReactNode }) => (
+    <section aria-label="Set attributes panel">{sources}</section>
+  ),
+}));
 vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
 
 import SetSelector from "./SetSelector";
@@ -422,5 +431,67 @@ describe("SetSelector — a base-parallel row builds from Base (NEO-321 D3)", ()
     render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-base");
     expect(checklistProps().parallelBuild).toBeNull();
+  });
+});
+
+/**
+ * NEO-496 (Jason, 2026-11-12) — a finished run's ledger goes the moment the
+ * operator picks another row, and does not come back; a run still going
+ * keeps its ledger (Stop included) on its own row.
+ */
+describe("SetSelector — a finished run retires once the selection moves (NEO-496)", () => {
+  const ledgers = () => document.querySelectorAll(`#${PARALLEL_BUILD_HEADING_ID}`);
+
+  // `clearAllMocks` keeps an implementation: put back the file's never-ending build.
+  afterEach(() => {
+    mockConvex.action.mockImplementation(() => new Promise(() => {}));
+  });
+
+  async function buildFromSection() {
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Build 1 parallel from Base/ }));
+    });
+    await waitFor(() => expect(mockConvex.action).toHaveBeenCalled());
+  }
+
+  it("hides a finished run's ledger on the next pick, and keeps it hidden back on its row", async () => {
+    mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
+    await buildFromSection();
+    // Finished on its own row: the ledger says so.
+    await waitFor(() => expect(ledgers()).toHaveLength(1));
+
+    fireEvent.click(screen.getByText("select-row"));
+    expect(checklistProps().variantId).toBe("row-gold-wave");
+    expect(ledgers()).toHaveLength(0);
+
+    selectType("vt-inserts");
+    selectType("vt-parallel");
+    expect(sectionHeading()).toBeTruthy();
+    expect(ledgers()).toHaveLength(0);
+  });
+
+  it("keeps a running run's ledger on its row when a row below it is picked", async () => {
+    await buildFromSection();
+    await waitFor(() => expect(ledgers()).toHaveLength(1));
+
+    fireEvent.click(screen.getByText("select-row"));
+    expect(checklistProps().variantId).toBe("row-gold-wave");
+    expect(ledgers()).toHaveLength(1);
+  });
+});
+
+describe("SetSelector — the sources ride in the attributes panel (NEO-496)", () => {
+  it("hands the selected card row's sources to the attributes panel, not a card of their own", () => {
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    // A Parallel type is not a row with cards: no sources at all.
+    expect(screen.queryByText(/^sources of /)).toBeNull();
+
+    fireEvent.click(screen.getByText("select-row"));
+    const panel = screen.getByRole("region", { name: "Set attributes panel" });
+    expect(within(panel).getByText("sources of row-gold-wave")).toBeTruthy();
+    expect(screen.getAllByText(/^sources of /)).toHaveLength(1);
   });
 });
