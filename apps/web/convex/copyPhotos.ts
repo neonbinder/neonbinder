@@ -62,7 +62,7 @@ import { internal } from "./_generated/api";
 import { getCurrentUserId, requireSignedIn } from "./auth";
 import { COLLECTION_ERRORS, refuse } from "./collection";
 import { enqueueListingCards, listsOnMarketplaces } from "./listingOutbox";
-import { deleteObject, headObject, r2Config, signedGetUrl, signedPutUrl } from "./lib/r2";
+import { deleteObject, headObject, r2Config, signedGetUrl, signedPutUrl, type R2HostStyle } from "./lib/r2";
 import { copyPhotoScanValidator, photoEditCropValidator } from "./schema";
 import { MAX_COPY_PHOTO_EDITS_PER_HOUR, PHOTO_EDIT_RENDER_STALE_MS } from "./lib/photoEdit";
 
@@ -349,6 +349,12 @@ export const reserveUpload = internalMutation({
  * Start putting a photo on one side of a copy line. Returns two upload URLs
  * (PUT, exactly `imageBytes` / `thumbBytes` of `contentType`); then call
  * `finishUpload`.
+ *
+ * NEO-466: also two retry URLs for the same objects, signed on the bucket's
+ * virtual-hosted host, so a browser retrying a stalled PUT opens a fresh
+ * connection instead of reusing a pooled socket that swallowed the first try.
+ * Optional: absent when the bucket has no virtual-hosted address (and an older
+ * client ignores them; Convex deploys before the SPA).
  */
 export const startUpload = action({
   args: {
@@ -362,11 +368,19 @@ export const startUpload = action({
     photoId: v.id("collectionCopyPhotos"),
     imageUploadUrl: v.string(),
     thumbUploadUrl: v.string(),
+    imageRetryUploadUrl: v.optional(v.string()),
+    thumbRetryUploadUrl: v.optional(v.string()),
   }),
   handler: async (
     ctx,
     args,
-  ): Promise<{ photoId: Id<"collectionCopyPhotos">; imageUploadUrl: string; thumbUploadUrl: string }> => {
+  ): Promise<{
+    photoId: Id<"collectionCopyPhotos">;
+    imageUploadUrl: string;
+    thumbUploadUrl: string;
+    imageRetryUploadUrl?: string;
+    thumbRetryUploadUrl?: string;
+  }> => {
     const ownerId = await requireSignedIn(ctx);
     const config = r2Config();
     if (!config) refuse(COLLECTION_ERRORS.invalid, NOT_SET_UP);
@@ -374,13 +388,25 @@ export const startUpload = action({
       internal.copyPhotos.reserveUpload,
       { ownerId, ...args },
     );
-    const put = (size: Size, bytes: number) =>
-      signedPutUrl(config, copyPhotoObjectKey(token, size, args.contentType), args.contentType, bytes, UPLOAD_URL_TTL_SECONDS);
-    return {
-      photoId,
-      imageUploadUrl: await put("image", args.imageBytes),
-      thumbUploadUrl: await put("thumb", args.thumbBytes),
-    };
+    const put = (size: Size, bytes: number, hostStyle: R2HostStyle) =>
+      signedPutUrl(
+        config,
+        copyPhotoObjectKey(token, size, args.contentType),
+        args.contentType,
+        bytes,
+        UPLOAD_URL_TTL_SECONDS,
+        hostStyle,
+      );
+    const [imageUploadUrl, thumbUploadUrl] = await Promise.all([
+      put("image", args.imageBytes, "path"),
+      put("thumb", args.thumbBytes, "path"),
+    ]);
+    if (!config.virtualBase) return { photoId, imageUploadUrl, thumbUploadUrl };
+    const [imageRetryUploadUrl, thumbRetryUploadUrl] = await Promise.all([
+      put("image", args.imageBytes, "virtual"),
+      put("thumb", args.thumbBytes, "virtual"),
+    ]);
+    return { photoId, imageUploadUrl, thumbUploadUrl, imageRetryUploadUrl, thumbRetryUploadUrl };
   },
 });
 
@@ -461,15 +487,21 @@ export const finishUpload = action({
       photoId: args.photoId,
     });
     if (!pending) refuse(COLLECTION_ERRORS.notFound, "That photo upload ran out of time. Add it again.");
-    for (const [size, bytes] of [
+    // Both HEADs at once (NEO-466): they are independent, and this wait sits
+    // inside the collector's "Saving..." budget.
+    const files = [
       ["image", pending.imageBytes],
       ["thumb", pending.thumbBytes],
-    ] as const) {
-      const head = await headObject(config, copyPhotoObjectKey(pending.token, size, pending.contentType));
+    ] as const;
+    const heads = await Promise.all(
+      files.map(([size]) => headObject(config, copyPhotoObjectKey(pending.token, size, pending.contentType))),
+    );
+    files.forEach(([, bytes], i) => {
+      const head = heads[i];
       if (!head || head.bytes !== bytes || head.contentType !== pending.contentType) {
         refuse(COLLECTION_ERRORS.invalid, "That photo didn't finish uploading. Try adding it again.");
       }
-    }
+    });
     await ctx.runMutation(internal.copyPhotos.commitUpload, { ownerId, photoId: args.photoId });
     return null;
   },

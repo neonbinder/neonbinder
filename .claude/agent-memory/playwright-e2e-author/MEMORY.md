@@ -99,11 +99,13 @@
 - [Binder page names and async radio](patterns_binder_page_names_and_async_radio.md) — `Page 2, A fresh page`; gate a key on Next enabled; check() vs a save-moved radio; image load without evaluate; bootstrap after a red
 - [Custom sport hosts minted players](patterns_custom_sport_player_specs_skip_lookups.md) — minted player names in customSport(env): no lookup, no clashes; count rows by exact name; goBack restores the drill
 - [Finally cleanup without an isVisible branch](patterns_finally_cleanup_without_an_isvisible_branch.md) — flag after the Done click, tidy() collects errors, body failure not masked; lane overflow axe signature
+- [Route only one of two concurrent PUTs](patterns_route_only_one_of_two_concurrent_puts.md) — match by pathname, host compare as booleans, event-based console waits, clock jumps
 - [Custom-sport player fixture makes no lookup](patterns_custom_sport_player_fixture_makes_no_lookup.md) — NEO-462: minted players in the custom sport, no_match log is a refusal, birth-year forks, Back is an exit
 - [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
 - [Card photo viewer specs](patterns_card_photo_viewer_specs.md) — NEO-481: viewer/tile names, served-file orientation, crop-box drag geometry, More steps, restart a frozen Vite after resync
 - [aria-disabled refusal by keyboard](patterns_aria_disabled_refusal_by_keyboard.md) — focus()+Enter to prove a refusal; blur (Tab) a field before clicking the control its value enables
+- [Route key is the object name, not the path](patterns_route_key_is_the_object_name_not_the_path.md) — retry PUT has another pathname; key by the 32-hex; prove red on a git-archive HEAD copy
 - [Column sync failed hides the empty line](patterns_column_sync_failed_hides_the_empty_line.md) — NEO-450: wake on columnSyncError, empty line hidden is no proof; marker-split regex from the builder
 - [Fake a Convex query value over the WebSocket](patterns_fake_a_convex_query_value_over_the_websocket.md) — NEO-450: routeWebSocket, key udfPath+args, no-op-version Transition inject, end on the retry's ActionResponse
 - [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic, measured-wait credit, blocked Next via Enter, radiogroup per card

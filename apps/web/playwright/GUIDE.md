@@ -1026,7 +1026,7 @@ edited workflow cannot forge a holder), and the poll fails closed: any API error
 or truncated listing waits rather than goes. A cancelled or dead holder stops
 counting at once; the wait is capped at 60 min, then the job fails with a message
 (re-run the workflow; the message says whether the cause was a busy queue or
-API errors). Artifacts: `pw-report-seller-<pass>`, `convex-logs-seller-<pass>`.
+API errors). Artifacts: `pw-report-seller-<pass>-a<attempt>`, `convex-logs-seller-<pass>-a<attempt>`.
 **Starting clean (NEO-445).** The queue serializes the job window only: a run
 cancelled mid-spec (`cancel-in-progress` on a new push) can leave its preview
 connected to the shared sellers, or its listings up. So right after its turn comes
@@ -1046,16 +1046,19 @@ sessions at once.
 
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
-2. Download the artifacts BEFORE any rerun: `pw-report-desktop-<n>` or
-   `pw-report-mobile-<n>` (the shard's screenshots and report),
-   `pw-report-seller-desktop` / `pw-report-seller-mobile` (the seller listing specs), `pw-report-seed` / `pw-report-seed-mobile` (a pass's seed), and `pw-merged`
-   (both passes' merged report and results).
-   `gh run download <run-id> -n pw-merged` (and the shard).
+2. Download the artifacts: `pw-report-desktop-<n>-a<attempt>` or
+   `pw-report-mobile-<n>-a<attempt>` (the shard's screenshots and report),
+   `pw-report-seller-desktop-a<attempt>` / `pw-report-seller-mobile-a<attempt>` (the seller listing specs), `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
+   (both passes' merged report and results). Every per-job artifact carries
+   the attempt it came from, so a rerun no longer overwrites an earlier red
+   attempt's evidence (`pw-merged` is unsuffixed and is replaced by the
+   latest attempt, so download it before any rerun). `gh run download <run-id> -n pw-report-desktop-1-a1`
+   (or `-p 'pw-report-*-a1'`).
 3. Open the failure screenshot and the spec's `error-context.md` (the ARIA
    snapshot of the page at failure). The role and name you expected is
    usually visibly different from what is there.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
-   `convex-logs-*` artifacts, before deciding which branch the spec took.
+   `convex-logs-*-a<attempt>` artifacts, before deciding which branch the spec took.
 5. Reproduce that one spec locally against the PR preview (above); fix; push
    only once it passes. A full rerun (`gh run rerun`) is for suspected infra
    problems; a real failure just fails again. A rerun cannot fix a broken

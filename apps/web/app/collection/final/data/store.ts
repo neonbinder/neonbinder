@@ -488,6 +488,12 @@ export interface SharingExtension {
   setShelfVisibility(shelf: PublicShelf, isPublic: boolean): Promise<void>;
 }
 
+/** NEO-466 — what an add tells `addPhoto` about the write before it. */
+export interface AddPhotoContext {
+  /** On an add's photo: ms from the Add press until the new line's write answered. */
+  addLineItemMs?: number;
+}
+
 /**
  * NEO-377 — photos of the collector's own copies (capability `copyPhotos`).
  * The demo keeps them on the page; the real store uploads to R2 through
@@ -496,8 +502,18 @@ export interface SharingExtension {
 export interface CopyPhotosExtension {
   /** The photos of those lines that have any (`Copy.hasPhotos`); `undefined` while loading. */
   usePhotos(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos> | undefined;
-  /** Put a photo on one side of a line, replacing the one there. `file` is the original; it is never kept. */
-  addPhoto(copy: Copy, side: PhotoSide, file: File): Promise<void>;
+  /**
+   * NEO-466 — start the work on a held photo that needs no copy yet (the
+   * resize), so the add's own write and that work overlap. `addPhoto` with the
+   * same `file` picks it up; a failure here shows only there. Optional: the
+   * demo has nothing to prepare.
+   */
+  preparePhoto?(file: File): void;
+  /**
+   * Put a photo on one side of a line, replacing the one there. `file` is the
+   * original; it is never kept. `context` is for the save's timing line only.
+   */
+  addPhoto(copy: Copy, side: PhotoSide, file: File, context?: AddPhotoContext): Promise<void>;
   /** Take the photo off one side of a line. */
   removePhoto(copy: Copy, side: PhotoSide): Promise<void>;
   /** Trade a line's front and back photos. */

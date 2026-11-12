@@ -20,6 +20,11 @@ describe("E2E diagnostics (NEO-392)", () => {
     expect(keepDiagnosticEvent(null)).toBeNull();
   });
 
+  it("keeps the copy photo timing event (NEO-466), by name, so a slow save reaches the E2E report", () => {
+    expect(E2E_DIAGNOSTIC_EVENTS.has("copy_photo_save_timing")).toBe(true);
+    expect(keepDiagnosticEvent(event("copy_photo_save_timing"))).not.toBeNull();
+  });
+
   it("reads only known tags with primitive values, and caps their length", () => {
     const tags = readE2ETags({
       run_id: "123",
