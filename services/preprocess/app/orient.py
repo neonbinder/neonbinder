@@ -21,15 +21,33 @@ import threading
 from collections import Counter
 from dataclasses import dataclass
 from io import BytesIO
+from types import ModuleType
+from typing import TYPE_CHECKING
 
-from google.api_core.exceptions import ServiceUnavailable
-from google.cloud import vision
 from PIL import Image
 
+from app.devcache import vision as devcache_vision
 from app.exif import EXIF_ORIENTATION_TAG
 from app.timing import increment_current
 
+if TYPE_CHECKING:
+    from google.cloud import vision
+
 logger = logging.getLogger(__name__)
+
+
+def vision_sdk() -> ModuleType:
+    """`google.cloud.vision`, imported on first use (NEO-484 C6).
+
+    The Vision SDK (and the gRPC stack under it) is a large part of a cold
+    `import app.main` on gen2, where image layers are read lazily, and nothing
+    at boot needs it. `app.prewarm` imports it in the background after the
+    startup hook, so a request usually finds it already loaded.
+    """
+    from google.cloud import vision
+
+    return vision
+
 
 # Vision documents a 20 MB image limit and a 10 MB JSON request limit, while an
 # entry here can reach 32 MiB, so a large photo is shrunk before it is sent.
@@ -76,7 +94,7 @@ def get_vision_client() -> vision.ImageAnnotatorClient:
     if _client is None:
         with _client_lock:
             if _client is None:
-                _client = vision.ImageAnnotatorClient()
+                _client = vision_sdk().ImageAnnotatorClient()
     return _client
 
 
@@ -94,7 +112,7 @@ def _replace_vision_client(stale: vision.ImageAnnotatorClient) -> vision.ImageAn
     global _client
     with _client_lock:
         if _client is stale or _client is None:
-            _client = vision.ImageAnnotatorClient()
+            _client = vision_sdk().ImageAnnotatorClient()
         return _client
 
 
@@ -165,7 +183,9 @@ def _shrink_for_vision(image_bytes: bytes) -> bytes:
 
 def _text_detection(image_bytes: bytes, client: vision.ImageAnnotatorClient | None):
     """The one Vision RPC, with the shared-client reconnect (module note)."""
-    image = vision.Image(content=image_bytes)
+    from google.api_core.exceptions import ServiceUnavailable
+
+    image = vision_sdk().Image(content=image_bytes)
     if client is not None:
         return client.text_detection(image=image)
 
@@ -198,8 +218,19 @@ def detect_orientation(
     note. The `client` kwarg is injected in tests; an injected client is
     called exactly once and never rebuilt or retried, so a test that injects
     one sees every exception as raised.
+
+    The dev cache (`app.devcache.vision`) sits in front of the RPC on whatever
+    client is used. It is on only inside a `/process-entry` request on the dev
+    base service; on a hit no RPC is made.
     """
-    response = _text_detection(_shrink_for_vision(image_bytes), client)
+    sent = _shrink_for_vision(image_bytes)
+    # Dev cache A (NEO-484): on the dev base only, an answer already stored for
+    # these exact bytes is reused. Off everywhere else, so this is a no-op.
+    # Only an answer without an error is ever stored.
+    response, slot = devcache_vision.lookup(sent)
+    if response is None:
+        response = _text_detection(sent, client)
+        devcache_vision.remember(slot, response)
 
     if response.error.message:
         raise RuntimeError(f"vision api error: {response.error.message}")

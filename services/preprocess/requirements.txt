@@ -21,11 +21,11 @@ accelerate==1.2.1
 opencv-python-headless==4.10.0.84
 numpy==2.5.4
 # Tiered crop's BiRefNet model (NEO-161) — hot path, not a rare fallback:
-# tiered runs BiRefNet on virtually every image (fallback on classical QC
-# failure, verification on classical success). rembg wraps the BiRefNet ONNX
-# model; onnxruntime is its CPU inference backend (rembg's base package
-# deliberately omits it — that's what the rembg[cpu] extra would pin, but we
-# pin it explicitly to match this file's style). Weights are baked into the
-# image at build time via U2NET_HOME, same rationale as SAM above.
-rembg==2.0.78
+# tiered runs BiRefNet on virtually every image that reaches the heavy
+# service. app/cropper/birefnet.py runs the ONNX model through onnxruntime
+# directly (NEO-484: rembg and its pymatting/numba/scipy/scikit-image stack
+# are gone; the parity job in pr-pipeline.yml proves the masks still equal
+# rembg 2.0.78's). The model is baked into the image at build time by
+# scripts/bake_birefnet.py, same rationale as SAM above. An onnxruntime bump
+# changes the baked model's provenance, so it rides with the parity job.
 onnxruntime==1.31.0

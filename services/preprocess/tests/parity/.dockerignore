@@ -1,0 +1,5 @@
+# The parity images need only the pinned requirement files from this
+# directory; keep the goldens and tests out of the build context.
+*
+!requirements-check.txt
+!requirements-oracle.txt
