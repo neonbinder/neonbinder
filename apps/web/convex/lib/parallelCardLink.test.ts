@@ -8,6 +8,7 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  cardKey,
   linkCardsToSide,
   type FetchedParallelCard,
   type LinkableNbCard,
@@ -367,5 +368,73 @@ describe("linkCardsToSide — the guard (invariant 7)", () => {
     expect([...result.outcomes.keys()]).toEqual(["linked", "none"]);
     expect(result.linked).toBe(1);
     expect(result.none).toBe(1);
+  });
+});
+
+describe("linkCardsToSide — numbers read as printed (NEO-489)", () => {
+  const who = (name: string) => ({ cardName: name, namesOnCard: [name] });
+  const theirs = (name: string) => ({ cardName: name, players: [name] });
+
+  test("1a and 1A on both sides each link to their own exact card", () => {
+    const nbCards = [
+      nb({ id: "lo", cardNumber: "1a", ...who("Low Player") }),
+      nb({ id: "up", cardNumber: "1A", ...who("Up Player") }),
+    ];
+    const parallelCards = [
+      fetched({ ref: "pLo", cardNumber: "1a", ...theirs("Low Player") }),
+      fetched({ ref: "pUp", cardNumber: "1A", ...theirs("Up Player") }),
+    ];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("lo")).toMatchObject({ kind: "linked", card: parallelCards[0] });
+    expect(r.outcomes.get("up")).toMatchObject({ kind: "linked", card: parallelCards[1] });
+  });
+
+  test("with a case-only twin on the NB side, 1A links to 1A and 1a is left unlinked, not folded onto 1A", () => {
+    const nbCards = [nb({ id: "up", cardNumber: "1A" }), nb({ id: "lo", cardNumber: "1a" })];
+    const parallelCards = [fetched({ ref: "pUp", cardNumber: "1A" })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("up")).toMatchObject({ kind: "linked", card: parallelCards[0] });
+    expect(r.outcomes.get("lo")).toEqual({ kind: "none" });
+  });
+
+  test("with a case-only twin on the fetched side, a differently-cased NB number does not fold onto either", () => {
+    const nbCards = [nb({ id: "n", cardNumber: "x1a" })];
+    const parallelCards = [
+      fetched({ ref: "p1", cardNumber: "X1A" }),
+      fetched({ ref: "p2", cardNumber: "X1a" }),
+    ];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n")).toEqual({ kind: "none" });
+  });
+
+  test("a twin also blocks the variation stem tier for that number", () => {
+    const nbCards = [
+      nb({ id: "a", cardNumber: "11B", isVariation: true }),
+      nb({ id: "b", cardNumber: "11b", isVariation: true }),
+    ];
+    const parallelCards = [fetched({ ref: "p", cardNumber: "11" })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("a")).toEqual({ kind: "none" });
+    expect(r.outcomes.get("b")).toEqual({ kind: "none" });
+  });
+
+  test("with no twin, a case-only difference still links through the folded tier", () => {
+    const nbCards = [nb({ id: "n", cardNumber: "ppr-dla" })];
+    const parallelCards = [fetched({ ref: "p", cardNumber: "PPR-DLA" })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n")).toMatchObject({ kind: "linked", card: parallelCards[0] });
+  });
+
+  test("a prefix strip keeps case: RC-10a links to 10a before any folding", () => {
+    const nbCards = [nb({ id: "n", cardNumber: "RC-10a" })];
+    const parallelCards = [fetched({ ref: "p", cardNumber: "10a" })];
+    const r = linkCardsToSide(nbCards, parallelCards, { nb: "RC-" });
+    expect(r.outcomes.get("n")).toMatchObject({ kind: "linked", card: parallelCards[0] });
+  });
+
+  test("cardKey keeps number case: 1a and 1A are different keys, spacing is still trimmed", () => {
+    const base = { cardName: "P", namesOnCard: ["P"], isTeamCard: false, isVariation: false };
+    expect(cardKey({ ...base, cardNumber: "1a" })).not.toBe(cardKey({ ...base, cardNumber: "1A" }));
+    expect(cardKey({ ...base, cardNumber: " 1a " })).toBe(cardKey({ ...base, cardNumber: "1a" }));
   });
 });

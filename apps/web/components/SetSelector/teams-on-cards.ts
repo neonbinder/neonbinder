@@ -12,6 +12,7 @@ import {
   type TeamPreferenceRank,
 } from "../../convex/lib/teamFill";
 import { teamFullName } from "../../lib/teams/team-name";
+import { checklistClaimsNoTeam } from "../../lib/checklists/no-team";
 import type { TeamLookupOutcome } from "./checklist-conflict";
 
 export { MAX_CARD_TEAMS };
@@ -34,7 +35,18 @@ export { MAX_CARD_TEAMS };
  * of this set (the set's skip records, `StoredPeople.skippedTeamNames`). Any
  * other string with no review row resolved before the wizard opened
  * (`resolveChecklistEntities` only queues unknowns, and drops a skipped name
- * before it asks), so it counts as a team. Membership is computed from the cards and the
+ * before it asks), so it counts as a team.
+ *
+ * Never in the section: a card whose publisher checklist said "No Team"
+ * (NEO-489, `checklistClaimsNoTeam`: `teamLookup: "checklist"` with no team
+ * strings). That is the checklist's answer, not a gap: the commit saves it
+ * as a confirmed no-team card, so asking would put an answered question back
+ * to the operator. Being outside the section it gets no line, so no pre-fill
+ * and no "Fill" can reach it (invariant 8: the claim holds every guess back),
+ * and it gives no batch evidence to a sibling with the same player, because
+ * it prints no team to give.
+ *
+ * Membership is computed from the cards and the
  * Names-phase decisions ONLY — never from this section's own answers, so a
  * line does not vanish under the operator's cursor the moment they answer it.
  *
@@ -118,7 +130,9 @@ export interface PreviewCardForTeams {
    * listing's answer never arrived, so no rule may guess a team for it
    * (invariant 8): the operator picks. NEO-478 "checklist" means the
    * operator's published checklist settled the team — a data claim on the
-   * same terms: no rule may fill a different team over it.
+   * same terms: no rule may fill a different team over it. With no team
+   * strings, "checklist" means the checklist said "No Team" (NEO-489,
+   * `checklistClaimsNoTeam`).
    */
   teamLookup?: TeamLookupOutcome;
 }
@@ -452,7 +466,8 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
  * carries a team (or an operator's "no team"): the commit keeps a stored
  * row's team, so those cards will not save teamless whatever they print, and
  * asking about them again on every re-sync would be asking an answered
- * question.
+ * question. A card whose checklist said "No Team" is left out for the same
+ * reason: the checklist answered it (NEO-489).
  */
 export function teamlessCardIndexes(
   cards: readonly PreviewCardForTeams[],
@@ -464,6 +479,8 @@ export function teamlessCardIndexes(
   const out: number[] = [];
   cards.forEach((card, index) => {
     if (settled?.has(index)) return;
+    // NEO-489 — the checklist said No Team: answered, never asked.
+    if (checklistClaimsNoTeam(card)) return;
     if (!cardTeamStrings(card).some((t) => teamStringResolves(t, view))) out.push(index);
   });
   return out;
@@ -741,7 +758,9 @@ export function buildTeamsGroups(input: {
     // NEO-478 — a team the operator's published checklist settled is a data
     // claim exactly like a failed lookup's: the card's team is the one its
     // checklist row named, so no inference may fill another over it. A row
-    // that names no team makes no claim and never sets "checklist" (B1).
+    // whose team cell is blank makes no claim and never sets "checklist"
+    // (B1); one that says "No Team" never reaches this loop (NEO-489,
+    // `teamlessCardIndexes`).
     const checklistClaim = card.teamLookup === "checklist";
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +

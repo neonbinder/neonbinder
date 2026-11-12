@@ -21,6 +21,12 @@
  *       what a checklist-answered card would get) and the card keeps the
  *       marketplace's teams until the operator picks;
  *     - the row names no team: no claim, the card keeps its lookup;
+ *       EXCEPT a row that says "No Team" (NEO-489, `noTeam`), which IS a
+ *       claim: the card is answered with `teams: []` (`teamLookup:
+ *       "checklist"` and no team, read back by `checklistClaimsNoTeam`) when
+ *       it has no team of its own, and is a team conflict with an empty
+ *       checklist side when it has one. That holds however the pair was made
+ *       (number, name fallback, the operator's own link);
  *     - a text cannot be resolved, or the resolved list passes
  *       `MAX_CARD_TEAMS` (`teams: null`): the checklist says nothing usable
  *       about the team, the card keeps its lookup, and nothing is offered.
@@ -66,8 +72,8 @@ function sameNames(a: readonly string[], b: readonly string[]): boolean {
  * over-length part, or past the resolver's bound).
  */
 export function applyChecklistRow(
-  card: Pick<ChecklistCardInput, "players" | "teams">,
-  row: Pick<ChecklistRowInput, "players" | "teams">,
+  card: Pick<ChecklistCardInput, "players" | "teams" | "team">,
+  row: Pick<ChecklistRowInput, "players" | "teams" | "noTeam">,
   resolveText: (text: string) => readonly string[] | null,
 ): AppliedChecklistRow {
   const compared = compareChecklistRow(card, row);
@@ -108,8 +114,10 @@ export function applyChecklistRow(
   if (conflict && !conflict.players && !conflict.teams) conflict = undefined;
 
   // A team disagreement keeps the marketplace's teams; a row naming no team
-  // makes no claim; a refused list says nothing usable.
-  const answered = teams !== null && teams.length > 0 && !conflict?.teams;
+  // makes no claim unless it says "No Team" (NEO-489: answered with `[]`); a
+  // refused list says nothing usable.
+  const answered =
+    teams !== null && (teams.length > 0 || row.noTeam === true) && !conflict?.teams;
 
   return {
     ...(compared.fillPlayers ? { fillPlayers: compared.fillPlayers } : {}),

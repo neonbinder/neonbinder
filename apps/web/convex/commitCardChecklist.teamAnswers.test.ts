@@ -128,7 +128,7 @@ function card(opts: {
   bscRef?: string;
   slRef?: string;
   teams?: string[];
-  teamLookup?: "answered" | "failed";
+  teamLookup?: "answered" | "failed" | "checklist";
   rawTeamName?: string;
   teamIds?: Array<Id<"teams">>;
   teamsAnswered?: true;
@@ -1539,5 +1539,197 @@ describe("commitTeamHint (NEO-330 × NEO-335)", () => {
 
   test("every part ruled out: no hint", () => {
     expect(commitTeamHint(`${CLE}, ${WSH}`, [CLE, WSH], keys(CLE, WSH))).toBeUndefined();
+  });
+});
+
+describe("commitCardChecklist — a checklist's No Team answer (NEO-489)", () => {
+  const commit = (
+    t: T,
+    sportId: Id<"selectorOptions">,
+    leafId: Id<"selectorOptions">,
+    cards: ReturnType<typeof card>[],
+    extra: { batchId?: string } = {},
+  ) =>
+    t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards,
+      ...extra,
+    });
+
+  test("a card the checklist answered with no team is stamped confirmed no-team plus the team check, and never queued", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+
+    await commit(t, sportId, leafId, [card({ cardNumber: "1", bscRef: "B1", teamLookup: "checklist" })]);
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
+    expect(row.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
+    expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+    // Provenance (security audit): the answer was the checklist's.
+    expect(row.teamCheckOutcome).toBe("checklist");
+    expect(row.teamOnCardIds).toBeUndefined();
+    expect((await settle(t)).has(row._id)).toBe(false);
+  });
+
+  test("an operator's own No team on a checklist card records no checklist outcome", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+
+    await commit(t, sportId, leafId, [
+      card({ cardNumber: "1", bscRef: "B1", teamLookup: "checklist", teamNone: true }),
+      card({ cardNumber: "2", bscRef: "B2", teamNone: true }),
+    ]);
+
+    const rows = await rowsByNumber(t, leafId);
+    for (const n of ["1", "2"]) {
+      const row = rows.get(n)!;
+      expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
+      expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+      expect(row.teamCheckOutcome).toBeUndefined();
+    }
+    await settle(t);
+  });
+
+  test("a checklist card whose only team string was ruled not a team is not stamped: it still named a team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await skipTeamName(t, { selectorOptionId: leafId, sportId, batchId: "batch-1", name: "Checklist" });
+
+    await commit(
+      t,
+      sportId,
+      leafId,
+      [card({ cardNumber: "1", bscRef: "B1", teams: ["Checklist"], teamLookup: "checklist" })],
+      { batchId: "batch-1" },
+    );
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamNoneConfirmedAt).toBeUndefined();
+    expect(row.teamNoneConfirmedByUserId).toBeUndefined();
+    await settle(t);
+  });
+
+  test("an operator's pick still wins over the checklist's No Team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+
+    await commit(t, sportId, leafId, [
+      card({ cardNumber: "1", bscRef: "B1", teamLookup: "checklist", teamIds: [reds] }),
+    ]);
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds).toEqual([reds]);
+    expect(row.teamNoneConfirmedAt).toBeUndefined();
+    await settle(t);
+  });
+
+  test("the set's own team wins on insert over a checklist No Team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await t.run(async (ctx) => ctx.db.patch(leafId, { teamIds: [reds] }));
+
+    await commit(t, sportId, leafId, [card({ cardNumber: "1", bscRef: "B1", teamLookup: "checklist" })]);
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds).toEqual([reds]);
+    expect(row.teamNoneConfirmedAt).toBeUndefined();
+    expect(row.teamNoneConfirmedByUserId).toBeUndefined();
+    await settle(t);
+  });
+
+  test("a re-sync leaves an existing teamed row's team alone", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await commit(t, sportId, leafId, [card({ cardNumber: "1", bscRef: "B1", teamIds: [reds] })]);
+    await settle(t);
+
+    await commit(t, sportId, leafId, [card({ cardNumber: "1", bscRef: "B1", teamLookup: "checklist" })]);
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds).toEqual([reds]);
+    expect(row.teamNoneConfirmedAt).toBeUndefined();
+    await settle(t);
+  });
+
+  test("a re-sync stamps an existing teamless row the checklist answered with No Team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await commit(t, sportId, leafId, [card({ cardNumber: "1", bscRef: "B1" })]);
+    await settle(t);
+    const first = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(first.teamCheckDoneAt).toBeUndefined();
+
+    await commit(t, sportId, leafId, [card({ cardNumber: "1", bscRef: "B1", teamLookup: "checklist" })]);
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row._id).toBe(first._id);
+    expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
+    expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
+    await settle(t);
+  });
+});
+
+describe("commitCardChecklist: a dual-team BSC value stays two teams (NEO-489)", () => {
+  const BOS = "Boston Red Sox";
+  const DET = "Detroit Tigers";
+
+  test("both clubs held: the card links both, in BSC's order, and no combined team is made", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const det = await seedTeam(t, sportId, DET);
+    const bos = await seedTeam(t, sportId, BOS);
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({
+          cardNumber: "PDA-WW",
+          bscRef: "B1",
+          teams: [DET, BOS],
+          rawTeamName: `${DET}, ${BOS}`,
+          teamLookup: "answered",
+        }),
+      ],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("PDA-WW")!;
+    expect(row.teamOnCardIds).toEqual([det, bos]);
+    expect(row.pendingTeamNames).toBeUndefined();
+    const teamRows = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teamRows.map((r) => r.name).sort()).toEqual([BOS, DET]);
+    await settle(t);
+  });
+
+  test("neither club held: the pending names are the two clubs, never the comma-joined string", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+
+    const result = await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({
+          cardNumber: "PDA-WW",
+          bscRef: "B1",
+          teams: [DET, BOS],
+          rawTeamName: `${DET}, ${BOS}`,
+          teamLookup: "answered",
+        }),
+      ],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("PDA-WW")!;
+    expect([...(row.pendingTeamNames ?? [])].sort()).toEqual([BOS, DET]);
+    expect(row.pendingTeamNames).not.toContain(`${DET}, ${BOS}`);
+    expect(JSON.stringify(result)).not.toContain(`${DET}, ${BOS}`);
+    const teamRows = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teamRows).toHaveLength(0);
+    await settle(t);
   });
 });

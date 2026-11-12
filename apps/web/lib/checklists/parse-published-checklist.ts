@@ -47,9 +47,26 @@
  * A line whose leading "number" is a season ("1995-96 Fort Worth Fire team
  * set") or the set's own year (`options.setYear`) is the checklist's title,
  * not a card, and is skipped as `LOOKS_LIKE_A_TITLE`.
+ *
+ * NEO-489, "No Team": a team cell (or a line's team part) that says exactly
+ * "No Team", any case or spacing (`isNoTeamText`), is a claim that the card
+ * shows no team. The row carries `noTeam: true` with `teams: []`; "No Team"
+ * never travels as a team name. "None", "N/A", "-" and a blank cell make no
+ * claim. "No Team" beside a real team, in one cell or across two team
+ * columns, contradicts itself and the row is skipped as
+ * `NO_TEAM_AND_A_TEAM`. A row with a number and a No Team claim but no
+ * player is kept.
+ *
+ * Card numbers are read as printed, case kept. In a number column (a header
+ * file, or a positional CSV / TSV) any one-word token of letters, digits,
+ * "." and "-" is a number ("a", "PPR-DLa", "TBD", "1a"); "BDC 12" is two
+ * words and is not. A line in the published line format is free text, so its
+ * first word is a number only when it holds a digit or is a capitals letter
+ * code ("RA-MT"): "Jean-Carlos Smith - Mets" is never card "Jean-Carlos".
  */
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
+import { isNoClaimTeamText, isNoTeamText, NO_TEAM_AND_A_TEAM } from "./no-team";
 
 export type PublishedChecklistRow = {
   number: string;
@@ -60,6 +77,11 @@ export type PublishedChecklistRow = {
    * The matcher pairs such a row by player only.
    */
   noNumber?: true;
+  /**
+   * The checklist says this card shows no team ("No Team" in its team
+   * cell). `teams` is then empty. A claim, never a team name (NEO-489).
+   */
+  noTeam?: true;
   /**
    * The subset ("card set", "set", "subset" or "insert" column) the row
    * belongs to, when the file has such a column and the cell is not blank.
@@ -328,9 +350,28 @@ function playersFrom(cell: string): string[] {
   return splitNames(cleanNamePart(cell), true, (name) => !isNotAPerson(name), MAX_CARD_PLAYERS);
 }
 
-/** At most one past `MAX_CARD_TEAMS`: enough for `overLimit` to skip the row. */
-function teamsFrom(cell: string): string[] {
-  return splitNames(cleanNamePart(cell), false, () => true, MAX_CARD_TEAMS);
+/**
+ * What one team cell or line part says. `teams` holds at most one past
+ * `MAX_CARD_TEAMS` (enough for `overLimit` to skip the row) and never holds
+ * "No Team": that is reported as `noTeam` instead.
+ */
+type TeamsRead = { teams: string[]; noTeam: boolean };
+
+function teamsFrom(cell: string): TeamsRead {
+  // "None", "N/A", "No team listed", "-": no claim, the same as blank (D2).
+  if (isNoClaimTeamText(cell)) return { teams: [], noTeam: false };
+  let noTeam = false;
+  const teams = splitNames(
+    cleanNamePart(cell),
+    false,
+    (name) => {
+      if (!isNoTeamText(name)) return true;
+      noTeam = true;
+      return false;
+    },
+    MAX_CARD_TEAMS,
+  );
+  return { teams, noTeam };
 }
 
 /** The subject of a player cell or part, for the "not a person" test. */
@@ -347,10 +388,25 @@ const NUMBER_TOKEN = /^#?([A-Za-z0-9][A-Za-z0-9.-]*)$/;
  */
 const LETTER_CODE = /^[A-Z]{1,6}(?:-[A-Z]{1,6})+$/;
 
+/**
+ * A free-text line's leading number: one token that holds a digit or is a
+ * capitals letter code, so a name leading a line is never read as one.
+ */
 function cleanNumber(raw: string): string | null {
+  const token = cleanColumnNumber(raw);
+  if (!token) return null;
+  if (!/\d/.test(token) && !LETTER_CODE.test(token)) return null;
+  return token;
+}
+
+/**
+ * A number column's cell: the column says it is a card number, so any one
+ * token of letters, digits, "." and "-" is read as printed, case kept ("a",
+ * "PPR-DLa", "TBD", "1a"). Two words ("BDC 12") are not a number.
+ */
+function cleanColumnNumber(raw: string): string | null {
   const token = numberToken(raw);
   if (!token || !NUMBER_TOKEN.test(token)) return null;
-  if (!/\d/.test(token) && !LETTER_CODE.test(token)) return null;
   return token;
 }
 
@@ -483,13 +539,32 @@ function parseLine(
   const noNumber = match !== null && isNno(match[1]);
   const number = noNumber ? NO_NUMBER : match ? cleanNumber(match[1]) : null;
   if (!match || !number) return { reason: "No card number at the start" };
-  const { playerPart, teamPart } = splitPlayerAndTeam(match[2]);
+  const split = splitPlayerAndTeam(match[2]);
+  let { playerPart, teamPart } = split;
+  // "88 No Team": the only words after the number are the claim, so they are
+  // the team part, never a player called "No Team".
+  if (teamPart === "" && isNoTeamText(cleanNamePart(playerPart))) {
+    teamPart = playerPart;
+    playerPart = "";
+  }
   const players = playersFrom(playerPart);
-  const teams = teamsFrom(teamPart);
-  if (players.length === 0 && teams.length === 0 && !isNotAPerson(subjectOf(playerPart))) {
+  const { teams, noTeam } = teamsFrom(teamPart);
+  if (noTeam && teams.length > 0) return { reason: NO_TEAM_AND_A_TEAM };
+  if (
+    players.length === 0 &&
+    teams.length === 0 &&
+    !noTeam &&
+    !isNotAPerson(subjectOf(playerPart))
+  ) {
     return { reason: "No player or team after the number" };
   }
-  return { number, players, teams, ...(noNumber ? { noNumber: true as const } : {}) };
+  return {
+    number,
+    players,
+    teams,
+    ...(noNumber ? { noNumber: true as const } : {}),
+    ...(noTeam ? { noTeam: true as const } : {}),
+  };
 }
 
 type Delimited = { delimiter: "," | "\t"; columns: Array<Column | null>; header: boolean };
@@ -628,6 +703,7 @@ export function parsePublishedChecklist(
     let numberCell = "";
     let subset = "";
     let notAPerson = false;
+    let noTeam = false;
     const players: string[] = [];
     const teams: string[] = [];
     header.columns.forEach((column, c) => {
@@ -635,7 +711,7 @@ export function parsePublishedChecklist(
       if (column === "number" && numberCell === "") {
         numberCell = cell;
         noNumber = isNno(cell);
-        number = noNumber ? NO_NUMBER : cleanNumber(cell);
+        number = noNumber ? NO_NUMBER : cleanColumnNumber(cell);
       } else if (column === "players") {
         const named = playersFrom(cell);
         players.push(...named);
@@ -646,7 +722,9 @@ export function parsePublishedChecklist(
           notAPerson = true;
         }
       } else if (column === "teams") {
-        teams.push(...teamsFrom(cell));
+        const read = teamsFrom(cell);
+        teams.push(...read.teams);
+        if (read.noTeam) noTeam = true;
       } else if (column === "subset" && subset === "") {
         subset = cell.replace(/\s+/g, " ").trim();
       }
@@ -663,7 +741,12 @@ export function parsePublishedChecklist(
       });
       continue;
     }
-    if (players.length === 0 && teams.length === 0 && !notAPerson) {
+    // "No Team" beside a team, in one cell or across two team columns.
+    if (noTeam && teams.length > 0) {
+      skipped.push({ line: i + 1, text: raw, reason: NO_TEAM_AND_A_TEAM });
+      continue;
+    }
+    if (players.length === 0 && teams.length === 0 && !notAPerson && !noTeam) {
       skipped.push({ line: i + 1, text: raw, reason: "No player or team on this line" });
       continue;
     }
@@ -672,6 +755,7 @@ export function parsePublishedChecklist(
       players,
       teams,
       ...(noNumber ? { noNumber: true as const } : {}),
+      ...(noTeam ? { noTeam: true as const } : {}),
       ...(subset ? { subset } : {}),
     });
   }

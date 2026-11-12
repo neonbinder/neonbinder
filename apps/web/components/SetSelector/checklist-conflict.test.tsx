@@ -12,6 +12,7 @@ import {
   sideText,
   type ChecklistConflictCard,
 } from "./checklist-conflict";
+import { checklistClaimsNoTeam } from "../../lib/checklists/no-team";
 
 const norm = (n: string) => n.trim().toLowerCase();
 
@@ -120,6 +121,28 @@ describe("applyChecklistChoice", () => {
     );
     expect(out.teams).toEqual([]);
     expect(out.teamLookup).toBe("checklist");
+  });
+
+  it("picking the checklist's empty team side is the No Team answer: no teams, stamped checklist, which the claim helper reads", () => {
+    const out = applyChecklistChoice(
+      base({
+        teamLookup: "answered",
+        checklistConflict: { teams: { marketplace: ["Reds"], checklist: [] } },
+      }),
+      "checklist",
+    );
+    expect(out.teams).toEqual([]);
+    expect(out.teamLookup).toBe("checklist");
+    expect(checklistClaimsNoTeam(out)).toBe(true);
+  });
+
+  it("keeping the marketplace's team against a No Team row is not a No Team claim", () => {
+    const out = applyChecklistChoice(
+      base({ checklistConflict: { teams: { marketplace: ["Reds"], checklist: [] } } }),
+      "marketplace",
+    );
+    expect(out.teams).toEqual(["Reds"]);
+    expect(checklistClaimsNoTeam(out)).toBe(false);
   });
 
   it("a card with nothing to settle comes back as it is", () => {
