@@ -31,7 +31,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
@@ -3212,5 +3212,42 @@ describe("NEO-500: the Pick List is the signed-in seller's own", () => {
   test.each(CALLS)("%s answers a signed-in non-admin", async (_name, call) => {
     const t = convexTest(schema, modules);
     await expect(call(t.withIdentity(SIGNED_IN))).resolves.not.toThrow();
+  });
+});
+
+/**
+ * NEO-500 — `testing.seedMyTestPickOrder`, the Pick List spec's seed hop. A
+ * public mutation by necessity (the page calls it as the signed-in suite
+ * account), so it carries the testing seeds' two locks: it refuses an
+ * anonymous caller, and it throws (writing nothing) on a deployment without
+ * `TESTING_RESET_SECRET`, which is every production deployment. Its
+ * behaviour is pinned in `testing.pickOrder.test.ts`.
+ */
+describe("NEO-500: the pick-order seed is locked like the other testing seeds", () => {
+  const args = { orderNo: "P1", boxName: "Box", cards: [{ cardNumber: "1", quantity: 1 }] };
+  const written = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => (await ctx.db.query("marketplaceSales").collect()).length);
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test("refuses an anonymous caller", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.seedMyTestPickOrder, args)).rejects.toThrow(/Not authenticated/);
+    expect(await written(t)).toBe(0);
+  });
+
+  test("throws and writes nothing when TESTING_RESET_SECRET is unset", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    const t = convexTest(schema, modules);
+    await expect(t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestPickOrder, args)).rejects.toThrow(
+      /not enabled on this deployment/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestPickOrder, { orderNo: "P1", ship: true }),
+    ).rejects.toThrow(/not enabled on this deployment/);
+    expect(await written(t)).toBe(0);
   });
 });
