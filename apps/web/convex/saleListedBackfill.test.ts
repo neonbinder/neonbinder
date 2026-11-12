@@ -16,19 +16,24 @@ import { saleLineKeys } from "./lib/pickLines";
 import { TEST_SALE_ORDER_PREFIX } from "./lib/testSeedMarks";
 import {
   ENV_FLAG,
+  MAX_CONSECUTIVE_UNAVAILABLE,
+  MAX_OPENS_PER_CALL,
   MAX_ORDERS_CAP,
   ORDER_SPACING_MS,
+  OWNERS_PER_PAGE,
+  READ_DEADLINE_MS,
   clampMaxOrders,
   fillMissingImpl,
   type BackfillArgs,
   type BackfillCtx,
+  type BackfillDeps,
 } from "./saleListedBackfill";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
 
-const tokenReads = vi.hoisted(() => ({ count: 0 }));
+const tokenReads = vi.hoisted(() => ({ count: 0, fail: false }));
 
 vi.mock("./credentials", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./credentials")>();
@@ -41,7 +46,7 @@ vi.mock("./credentials", async (importOriginal) => {
       returns: v.any(),
       handler: async () => {
         tokenReads.count += 1;
-        return { token: "tok-1" };
+        return tokenReads.fail ? null : { token: "tok-1" };
       },
     }),
     refreshSiteTokenForUser: internalAction({
@@ -65,6 +70,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   tokenReads.count = 0;
+  tokenReads.fail = false;
 });
 
 function stubCtx(t: T): BackfillCtx {
@@ -76,7 +82,8 @@ function stubCtx(t: T): BackfillCtx {
 }
 
 const pauses: number[] = [];
-const run = (t: T, args: BackfillArgs) => fillMissingImpl(stubCtx(t), args, { pause: async (ms) => void pauses.push(ms) });
+const run = (t: T, args: BackfillArgs, deps: BackfillDeps = {}) =>
+  fillMissingImpl(stubCtx(t), args, { pause: async (ms) => void pauses.push(ms), ...deps });
 
 /** The stored lines of an 80-line-style order before NEO-509: no `listed`, a mix of states. */
 function storedItems(): SaleItem[] {
@@ -410,6 +417,155 @@ describe("armed run", () => {
     expect(calls).toEqual(["GET seller/order/o-0"]);
     expect(report).toMatchObject({ ordersRead: 1, ordersLeft: 1, complete: false });
     expect(report.byOwner[0].stopped).toBe("signed_out");
+  });
+});
+
+/** Listing states (BSC, listing) and one candidate order each for `ownerIds`. */
+async function seedOwners(t: T, ownerIds: string[]): Promise<void> {
+  await t.run(async (ctx) => {
+    for (const ownerId of ownerIds) {
+      await ctx.db.insert("marketplaceListingStates", { ownerId, platform: "bsc", listingStartedAt: NOW, lastUpdated: NOW });
+    }
+  });
+  for (const ownerId of ownerIds) await seed(t, { ownerId, orderId: `order-${ownerId}` });
+}
+
+describe("bounded BSC contact (security audit)", () => {
+  test("every session open attempt is charged, a failed one too: no open past the budget", async () => {
+    const t = convexTest(schema, modules);
+    const owners = ["owner_a", "owner_b", "owner_c"];
+    await seedOwners(t, owners);
+    const calls = stubBsc((id) => Response.json(detail(id)));
+    tokenReads.fail = true; // every open fails (no token)
+    arm();
+
+    const report = await run(t, { confirm: "BACKFILL" }, { maxOpens: 2 });
+    expect(tokenReads.count).toBe(2);
+    expect(report).toMatchObject({ sessionOpens: 2, ordersRead: 0, ordersLeft: 3, complete: false });
+    expect(report.byOwner.map((r) => r.stopped)).toEqual(["no_token", "no_token", undefined]);
+    expect(calls).toEqual([]);
+  });
+
+  test("a walk page never needs more opens than a call has, so failing opens still move the walk on", async () => {
+    expect(OWNERS_PER_PAGE).toBeLessThanOrEqual(MAX_OPENS_PER_CALL);
+    const t = convexTest(schema, modules);
+    const owners = Array.from({ length: MAX_OPENS_PER_CALL + 2 }, (_, i) => `owner_${String(i).padStart(2, "0")}`);
+    await seedOwners(t, owners);
+    stubBsc((id) => Response.json(detail(id)));
+    tokenReads.fail = true;
+    arm();
+
+    const first = await run(t, { confirm: "BACKFILL" });
+    expect(first.sessionOpens).toBe(MAX_OPENS_PER_CALL);
+    expect(tokenReads.count).toBe(MAX_OPENS_PER_CALL);
+    expect(first.complete).toBe(false);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await run(t, { confirm: "BACKFILL", cursor: first.nextCursor! });
+    expect(second.sessionOpens).toBe(2);
+    expect(tokenReads.count).toBe(MAX_OPENS_PER_CALL + 2);
+    expect(second).toMatchObject({ complete: true, nextCursor: null });
+  });
+
+  test(`an owner stops after ${MAX_CONSECUTIVE_UNAVAILABLE} timeout/network/5xx reads in a row; a good read resets the run`, async () => {
+    const t = convexTest(schema, modules);
+    await seedWorld(t);
+    for (let i = 0; i < 5; i += 1) await seed(t, { orderId: `o-${i}`, orderDate: NOW + i });
+    // o-0 503, o-1 fine, o-2 network error, o-3 503: stop; o-4 is never read.
+    const calls = stubBsc((id) =>
+      id === "o-1" ? Response.json(detail(id)) : id === "o-2" ? null : new Response("busy", { status: 503 }),
+    );
+    arm();
+
+    const report = await run(t, { confirm: "BACKFILL", ownerId: OWNER });
+    expect(calls).toEqual(["GET seller/order/o-0", "GET seller/order/o-1", "GET seller/order/o-2", "GET seller/order/o-3"]);
+    expect(report).toMatchObject({ ordersRead: 4, linesFilled: 4, ordersLeft: 1, complete: false });
+    expect(report.byOwner[0]).toMatchObject({ stopped: "unavailable", ordersFailed: 3 });
+  });
+
+  test("no read starts and no session opens once the deadline has passed; the rest is left for the next call", async () => {
+    const t = convexTest(schema, modules);
+    await seedWorld(t);
+    for (let i = 0; i < 3; i += 1) await seed(t, { orderId: `o-${i}`, orderDate: NOW + i });
+    await seed(t, { ownerId: OTHER, orderId: "theirs" });
+    const calls = stubBsc((id) => Response.json(detail(id)));
+    arm();
+    const clock = { t: NOW };
+    const step = Math.ceil(READ_DEADLINE_MS * 0.6);
+
+    // Each spacing pause moves the clock on: o-0 at 0, o-1 at 0.6, o-2 would start at 1.2 deadlines.
+    const report = await run(t, { confirm: "BACKFILL" }, {
+      now: () => clock.t,
+      pause: async () => {
+        clock.t += step;
+      },
+    });
+    expect(calls).toEqual(["GET seller/order/o-0", "GET seller/order/o-1"]);
+    expect(tokenReads.count).toBe(1); // the other owner's session is never opened
+    expect(report).toMatchObject({ sessionOpens: 1, ordersRead: 2, ordersLeft: 2, complete: false, nextCursor: null });
+    expect(report.byOwner.every((r) => r.stopped === undefined)).toBe(true);
+  });
+
+  test("a session open that runs past the deadline starts no read", async () => {
+    const t = convexTest(schema, modules);
+    await seedWorld(t);
+    for (let i = 0; i < 2; i += 1) await seed(t, { orderId: `o-${i}`, orderDate: NOW + i });
+    const calls = stubBsc((id) => Response.json(detail(id)));
+    arm();
+
+    // The token read (a BSC sign-in at worst) is what moves the clock past the deadline.
+    const report = await run(t, { confirm: "BACKFILL", ownerId: OWNER }, {
+      now: () => NOW + (tokenReads.count > 0 ? READ_DEADLINE_MS : 0),
+    });
+    expect(tokenReads.count).toBe(1);
+    expect(calls).toEqual([]);
+    expect(report).toMatchObject({ sessionOpens: 1, ordersRead: 0, ordersLeft: 2, complete: false });
+  });
+});
+
+describe("the poll's owner gate (listingOutbox.pollsSales)", () => {
+  const notPolled: Array<[string, Record<string, unknown> | null]> = [
+    ["dormant (no credentials)", { listingStartedAt: NOW, dormant: "noCredentials" }],
+    ["dormant (seller conflict)", { listingStartedAt: NOW, dormant: "sellerConflict" }],
+    ["held off by the E2E marker", { listingStartedAt: NOW, testListingOff: true }],
+    ["never started", {}],
+    ["no BSC listing state", null],
+  ];
+
+  test.each(notPolled)("ownerId path: an owner %s is neither counted nor read, dry run or armed", async (_label, state) => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      if (state !== null) {
+        await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", lastUpdated: NOW, ...state } as never);
+      }
+      // An eBay state that does list never opens the BSC gate.
+      await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "ebay", listingStartedAt: NOW, lastUpdated: NOW });
+    });
+    const saleId = await seed(t);
+    const before = await getSale(t, saleId);
+    const calls = stubBsc((id) => Response.json(detail(id)));
+    arm();
+
+    const dry = await run(t, { ownerId: OWNER });
+    expect(dry).toMatchObject({ owners: 0, ownersNotPolled: 1, orders: 0, linesMissing: 0 });
+    const armed = await run(t, { confirm: "BACKFILL", ownerId: OWNER });
+    expect(armed).toMatchObject({ owners: 0, ownersNotPolled: 1, orders: 0, sessionOpens: 0, ordersRead: 0 });
+    expect(calls).toEqual([]);
+    expect(tokenReads.count).toBe(0);
+    expect(await getSale(t, saleId)).toEqual(before);
+  });
+
+  test("the walk lists only owners the poll polls on BSC", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", { ownerId: "a_listing", platform: "bsc", listingStartedAt: NOW, lastUpdated: NOW });
+      await ctx.db.insert("marketplaceListingStates", { ownerId: "b_dormant", platform: "bsc", listingStartedAt: NOW, dormant: "noCredentials", lastUpdated: NOW });
+      await ctx.db.insert("marketplaceListingStates", { ownerId: "c_e2e", platform: "bsc", listingStartedAt: NOW, testListingOff: true, lastUpdated: NOW });
+      await ctx.db.insert("marketplaceListingStates", { ownerId: "d_unstarted", platform: "bsc", lastUpdated: NOW });
+      await ctx.db.insert("marketplaceListingStates", { ownerId: "e_ebay", platform: "ebay", listingStartedAt: NOW, lastUpdated: NOW });
+    });
+    const page = await t.query(internal.saleListedBackfill.ownersPage, { cursor: null });
+    expect(page.ownerIds).toEqual(["a_listing"]);
   });
 });
 

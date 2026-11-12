@@ -33,11 +33,26 @@
  * never thrown. `fillListed` re-checks the flag itself, so it is not a write
  * primitive on an unarmed deployment.
  *
- * Armed: one BSC session per owner (`openBscSellerSession`, op
- * "saleListedBackfill", always closed), one `readBscOrder` at a time about a
- * second apart, at most `maxOrders` (default 5, cap 20) per call. An owner
- * BSC has signed out is skipped; a 429 (BSC limits by volume) stops the whole
- * call. Safe to re-run: a filled line is never a candidate again.
+ * Owners: only those the sales poll itself polls (`listingOutbox.pollsSales`
+ * on the owner's BSC listing state: a saved sign-in, not dormant, not held
+ * off by the E2E marker), on the walk and for an `ownerId` alike. Any other
+ * owner is counted in `ownersNotPolled` and never read, dry run included.
+ *
+ * Armed, a call's BSC contact is bounded three ways:
+ *   - Session opens: every open attempt (`openBscSellerSession`, op
+ *     "saleListedBackfill", always closed), success or failure, is charged to
+ *     `MAX_OPENS_PER_CALL` (5). A walk page holds at most that many listing
+ *     states, so the walk never stalls on it.
+ *   - Order reads: one `readBscOrder` at a time about a second apart, at most
+ *     `maxOrders` (default 5, cap 20) per call.
+ *   - Time: no session is opened and no read started once `READ_DEADLINE_MS`
+ *     (8 minutes) has passed since the call began, so Convex's 10-minute
+ *     action limit never cuts the `finally` that closes a session.
+ * An owner BSC has signed out is skipped, and so is one whose reads fail
+ * `MAX_CONSECUTIVE_UNAVAILABLE` (2) times running on a timeout, a network
+ * error or a 5xx (`stopped: "unavailable"`); a 429 (BSC limits by volume)
+ * stops the whole call. Safe to re-run: a filled line is never a candidate
+ * again.
  */
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
@@ -56,7 +71,13 @@ import {
   sportResolver,
   storedListed,
 } from "./listingSales";
-import { closeBscSellerSession, openBscSellerSession, readBscOrder } from "./adapters/bscSeller";
+import { pollsSales } from "./listingOutbox";
+import {
+  closeBscSellerSession,
+  openBscSellerSession,
+  readBscOrder,
+  type BscSellerFailure,
+} from "./adapters/bscSeller";
 
 type Sale = Doc<"marketplaceSales">;
 type SaleItem = Sale["items"][number];
@@ -70,8 +91,23 @@ export const DEFAULT_MAX_ORDERS = 5;
 export const MAX_ORDERS_CAP = 20;
 /** Spacing between two BSC order reads in one call. */
 export const ORDER_SPACING_MS = 1000;
-/** Listing-state rows one call reads when it walks every owner. */
-export const OWNERS_PER_PAGE = 25;
+/** BSC session open attempts (success or failure) one armed call may make. */
+export const MAX_OPENS_PER_CALL = 5;
+/**
+ * Listing-state rows one call reads when it walks every owner. No more than
+ * the open budget, so a page never needs more opens than a call has and the
+ * walk always moves on to the next page.
+ */
+export const OWNERS_PER_PAGE = MAX_OPENS_PER_CALL;
+/** Timeout, network or 5xx read failures in a row that stop an owner. */
+export const MAX_CONSECUTIVE_UNAVAILABLE = 2;
+/**
+ * No session is opened and no order read started after this long from the
+ * call's start. One read in flight then takes at most its 30 s timeout (or,
+ * once per session, a re-auth and a retry), well inside Convex's 10-minute
+ * action limit, so the `finally` that closes the session always runs.
+ */
+export const READ_DEADLINE_MS = 8 * 60_000;
 /** The session name on the BSC call summary (NEO-475). */
 export const SESSION_OP = "saleListedBackfill";
 
@@ -112,11 +148,20 @@ function isCandidate(sale: Sale, ownerId: string): boolean {
  * One owner's candidate sales, oldest first (the Pick List's order). Reads
  * what `pickList.open` reads: the `pullOpen` index, plus the newest by date
  * for orders stored before `pullOpen` existed.
+ *
+ * `null` when the sales poll does not poll this owner on BSC (no BSC listing
+ * state, or one failing `pollsSales`: dormant, never started, or held off by
+ * the E2E marker). Such an owner's orders are neither counted nor read.
  */
 export const ownerCandidates = internalQuery({
   args: { ownerId: v.string() },
-  returns: v.array(candidateValidator),
+  returns: v.union(v.null(), v.array(candidateValidator)),
   handler: async (ctx, args) => {
+    const state = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId).eq("platform", "bsc"))
+      .unique();
+    if (!state || !pollsSales(state)) return null;
     const openSales = await ctx.db
       .query("marketplaceSales")
       .withIndex("by_owner_pull_open", (q) => q.eq("ownerId", args.ownerId).eq("pullOpen", true))
@@ -142,8 +187,9 @@ export const ownerCandidates = internalQuery({
 });
 
 /**
- * One page of the owners holding a BSC listing state, by owner id (an index
- * the poll does not rewrite while the walk is under way).
+ * One page of the owners the sales poll polls on BSC (a BSC listing state
+ * passing `pollsSales`), by owner id (an index the poll does not rewrite
+ * while the walk is under way).
  */
 export const ownersPage = internalQuery({
   args: { cursor: v.union(v.string(), v.null()) },
@@ -153,7 +199,9 @@ export const ownersPage = internalQuery({
       .query("marketplaceListingStates")
       .withIndex("by_owner_platform")
       .paginate({ numItems: OWNERS_PER_PAGE, cursor: args.cursor });
-    const ownerIds = [...new Set(page.page.filter((row) => row.platform === "bsc").map((row) => row.ownerId))];
+    const ownerIds = [
+      ...new Set(page.page.filter((row) => row.platform === "bsc" && pollsSales(row)).map((row) => row.ownerId)),
+    ];
     return { ownerIds, continueCursor: page.continueCursor, isDone: page.isDone };
   },
 });
@@ -256,7 +304,12 @@ const ownerReportValidator = v.object({
   linesFilled: v.number(),
   linesStillMissing: v.number(),
   ordersFailed: v.number(),
-  /** Why this owner stopped early: a BSC failure kind ("signed_out", "no_token", "rate_limited", ...). */
+  /**
+   * Why this owner stopped early: a BSC failure kind ("signed_out",
+   * "no_token", "paused"), "rate_limited" (a 429), "unavailable"
+   * (`MAX_CONSECUTIVE_UNAVAILABLE` timeout/network/5xx reads in a row) or
+   * "not_armed".
+   */
   stopped: v.optional(v.string()),
 });
 
@@ -265,15 +318,19 @@ const reportValidator = v.object({
   message: v.string(),
   /** Owners with at least one candidate order. */
   owners: v.number(),
+  /** Owners the sales poll does not poll on BSC (`pollsSales`): never counted or read. */
+  ownersNotPolled: v.number(),
   /** Candidate orders found (BSC, on the Pick List, a line without a description). */
   orders: v.number(),
   /** Lines without a description on those orders. */
   linesMissing: v.number(),
+  /** Armed only: BSC session open attempts, success or failure (at most `MAX_OPENS_PER_CALL`). */
+  sessionOpens: v.number(),
   /** Armed only: BSC order reads made, lines filled, lines BSC gave nothing for (or past the budget). */
   ordersRead: v.number(),
   linesFilled: v.number(),
   linesStillMissing: v.number(),
-  /** Armed only: candidate orders this call did not reach (`maxOrders`, a stop). */
+  /** Armed only: candidate orders this call did not reach (`maxOrders`, the open budget, the deadline, a stop). */
   ordersLeft: v.number(),
   byOwner: v.array(ownerReportValidator),
   /** True when the walk is finished; otherwise re-run with `nextCursor` (omitted when null). */
@@ -301,14 +358,31 @@ export function clampMaxOrders(value: number | undefined): number {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** A read failure that says BSC is not answering: a timeout, a network error or a 5xx. */
+function unavailable(f: BscSellerFailure): boolean {
+  return f.kind === "timeout" || f.kind === "network" || (f.kind === "http" && (f.httpStatus ?? 0) >= 500);
+}
+
+export interface BackfillDeps {
+  /** The spacing pause (tests pass an instant one). */
+  pause?: (ms: number) => Promise<void>;
+  /** The clock the deadline reads (tests advance a fake one). */
+  now?: () => number;
+  /** Test seam only: a smaller open budget than `MAX_OPENS_PER_CALL`. */
+  maxOpens?: number;
+}
+
 /** The backfill as a plain function, so a test drives it with a stub ctx and an instant pause. */
 export async function fillMissingImpl(
   ctx: BackfillCtx,
   args: BackfillArgs,
-  deps: { pause?: (ms: number) => Promise<void> } = {},
+  deps: BackfillDeps = {},
 ): Promise<BackfillReport> {
-  const startedAt = Date.now();
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
   const pause = deps.pause ?? sleep;
+  const maxOpens = Math.min(MAX_OPENS_PER_CALL, deps.maxOpens ?? MAX_OPENS_PER_CALL);
+  const pastDeadline = () => now() - startedAt >= READ_DEADLINE_MS;
   const confirmed = args.confirm === CONFIRM_TOKEN;
   const armed = confirmed && deploymentIsArmed();
   const mode: BackfillReport["mode"] = armed ? "armed" : confirmed ? "refused" : "dry_run";
@@ -330,8 +404,10 @@ export async function fillMissingImpl(
     mode,
     message: armed ? ARMED_MESSAGE : confirmed ? NOT_ARMED_MESSAGE : DRY_RUN_MESSAGE,
     owners: 0,
+    ownersNotPolled: 0,
     orders: 0,
     linesMissing: 0,
+    sessionOpens: 0,
     ordersRead: 0,
     linesFilled: 0,
     linesStillMissing: 0,
@@ -348,6 +424,10 @@ export async function fillMissingImpl(
 
   for (const ownerId of ownerIds) {
     const candidates = await ctx.runQuery(internal.saleListedBackfill.ownerCandidates, { ownerId });
+    if (candidates === null) {
+      report.ownersNotPolled += 1;
+      continue;
+    }
     if (candidates.length === 0) continue;
     const row: OwnerReport = {
       ownerId,
@@ -364,11 +444,14 @@ export async function fillMissingImpl(
     report.linesMissing += row.linesMissing;
     if (!armed) continue;
 
-    if (halted || budget <= 0) {
+    if (halted || budget <= 0 || report.sessionOpens >= maxOpens || pastDeadline()) {
       report.ordersLeft += candidates.length;
       cutShort = true;
       continue;
     }
+    // Charged before the attempt: a failed open (a token read, perhaps a BSC
+    // sign-in) spends the budget as much as a good one.
+    report.sessionOpens += 1;
     const opened = await openBscSellerSession(ctx, ownerId, { op: SESSION_OP });
     if (!opened.ok) {
       row.stopped = opened.failure.kind;
@@ -380,15 +463,27 @@ export async function fillMissingImpl(
       continue;
     }
     const session = opened.value;
+    // Timeout/network/5xx reads in a row for this owner.
+    let unavailableRun = 0;
     try {
       for (let i = 0; i < candidates.length; i += 1) {
-        if (halted || budget <= 0 || row.stopped !== undefined) {
+        const leaveRest = () => {
           report.ordersLeft += candidates.length - i;
           if (row.stopped === undefined) cutShort = true;
+        };
+        if (halted || budget <= 0 || row.stopped !== undefined) {
+          leaveRest();
           break;
         }
         const candidate = candidates[i];
         if (reads > 0) await pause(ORDER_SPACING_MS);
+        // The deadline is checked here, after the pause (which can carry the
+        // call past it) and before a session's first read (after an open
+        // that may have).
+        if (pastDeadline()) {
+          leaveRest();
+          break;
+        }
         reads += 1;
         budget -= 1;
         const detail = await readBscOrder(ctx, session, candidate.orderId);
@@ -397,15 +492,19 @@ export async function fillMissingImpl(
         if (!detail.ok) {
           const f = detail.failure;
           row.ordersFailed += 1;
+          unavailableRun = unavailable(f) ? unavailableRun + 1 : 0;
           if (f.kind === "signed_out") {
             row.stopped = "signed_out";
           } else if (f.kind === "http" && f.httpStatus === 429) {
             row.stopped = "rate_limited";
             halted = true;
             cutShort = true;
+          } else if (unavailableRun >= MAX_CONSECUTIVE_UNAVAILABLE) {
+            row.stopped = "unavailable";
           }
           continue;
         }
+        unavailableRun = 0;
         if (detail.value.items.length > MAX_SALE_ITEMS) {
           row.ordersFailed += 1;
           continue;
@@ -458,12 +557,15 @@ export async function fillMissingImpl(
       operation: SESSION_OP,
       mode,
       owners: report.owners,
+      ownersNotPolled: report.ownersNotPolled,
       orders: report.orders,
+      sessionOpens: report.sessionOpens,
       ordersRead: report.ordersRead,
       linesFilled: report.linesFilled,
       ordersLeft: report.ordersLeft,
       halted,
-      durationMs: Date.now() - startedAt,
+      pastDeadline: pastDeadline(),
+      durationMs: now() - startedAt,
     }),
   );
   return report;
