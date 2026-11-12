@@ -126,7 +126,7 @@
 - [Agent Bash skips load-nvmrc](reference_agent_bash_skips_load_nvmrc.md) — the agent's Bash tool does not run the load-nvmrc function; prepend the pinned node version's bin to PATH for every gate
 - [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel
 - [Container's own cqw resolves upward](reference_container_own_cqw_resolves_upward.md) — size the container itself in %, cqw only on children; a cqw radius on the root made a pill (NEO-350)
-- [Convex-free page harness](reference_convex_free_page_harness.md) — screenshot a page behind ProtectedLayout: temp harness + MemoryRouter, spare-port Vite, Playwright; out-of-tree scratchpad variant + main/ baseline
+- [Convex-free page harness](reference_convex_free_page_harness.md) — screenshot a page behind ProtectedLayout: temp harness + MemoryRouter, spare-port Vite, Playwright; out-of-tree scratchpad variant + main/ baseline; measure the real column (side nav gutter at lg)
 - [Print-only region needs the :has() prefix](reference_print_only_region_has_specificity.md) — visible rule must match hide rule weight; fullPage print-emulated shots go blank
 - [Parallel builders share the scratchpad](reference_parallel_builders_share_the_scratchpad.md) — per-agent subdir for scripts/shots; own Vite port; check root for stray folders
 - [Wrapped select name includes its option](reference_wrapping_label_select_name_includes_option.md) — label-wrapped <select> name = "Binder All"; aria-label the select, aria-hide the word

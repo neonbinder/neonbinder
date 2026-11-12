@@ -232,8 +232,8 @@ test(
       const nameB = nameCell(rowB, "Owen White", `Base #${CARD_B.no}`);
       await expect(nameB).toHaveCount(1);
       if (!isMobile) await expect(nameB).toHaveAccessibleName("Owen White");
-      // A sold two: a phone's one cell leads with the ×2 chip.
-      await expect(nameCell(rowA, "Shea Langeliers", `×2 copies Base #${CARD_A.no}`)).toContainText("Last ones");
+      // A sold two but the box held one: one to pull (no ×2 chip), so a phone's one cell leads with the tag.
+      await expect(nameCell(rowA, "Shea Langeliers", `Base #${CARD_A.no}`)).toContainText("Last ones");
       // I: its tag is the insert's own name, the kind read out first.
       const rowI = pickRow(table, CARD_I.short);
       await expect(variantTag(rowI, "Future Stars", "Insert")).toHaveText("Insert: Future Stars");

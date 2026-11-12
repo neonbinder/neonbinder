@@ -44,3 +44,15 @@ A second config rooted at `main/apps/web` (its own node_modules symlink, or two
 Reacts) gives a before/after baseline at the same widths. For table layouts,
 measure `scrollWidth` and each `th` width at 768/800/1024/1280: `w-full` on one
 auto-layout column squeezes every other column to min-content.
+
+**Measure against the real column, not the viewport (NEO-522).** A harness
+without binder-layout's wrappers lies about width: from `lg` (1024) `main`
+reserves `lg:pr-[170px]` for the fixed right-hand side nav, and the inner
+`max-w-6xl p-6` takes 48 more, so the content column is `min(1152, vw-170)-48`
+(806 at 1024, 1062 at 1280), but `vw-48` below lg (852 at 900). A desktop at
+1024 has LESS room than a 900px tablet. A table sized with `lg:` classes
+overflowed under the side nav (the nav then intercepts clicks on the
+right-hand columns in E2E). Fix: wrap the table in `@container` and size it
+with container variants (`@min-[62rem]:text-[1.75rem]`); Tailwind 4 emits
+those after the `md:` ones, so they win when both match. Keep the
+phone/columns switch on the viewport (`md:`), since the E2E projects key on it.

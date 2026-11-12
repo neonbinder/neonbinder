@@ -174,15 +174,32 @@ test(
     expect(tick.width).toBeLessThanOrEqual(22);
     expect(tick.height).toBeGreaterThanOrEqual(18);
     expect(tick.height).toBeLessThanOrEqual(22);
-    // The number and the name read from a few feet away: 18px on a phone, 28px on a
-    // desktop (the config's 1024px viewport is Tailwind's lg).
+    // The number and the name read from a few feet away: never under 18px, and 28px once
+    // the table has the room. It sizes by its own width, not the screen's: at the config's
+    // 1024px the page keeps a gutter for the binder's side nav, so the table stays compact
+    // there and still fits its column (it must never run under that nav).
     const fontPx = (text: Locator) => text.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
-    const readable = isMobile ? 18 : 28;
     const troutNumber = isMobile
       ? troutName.getByText("#27", { exact: true })
       : seen(pickRow(table, TROUT).getByRole("cell", { name: "#27", exact: true }));
-    expect(await fontPx(troutNumber)).toBeGreaterThanOrEqual(readable);
-    expect(await fontPx(troutName.getByText("Mike Trout", { exact: true }))).toBeGreaterThanOrEqual(readable);
+    const troutWho = troutName.getByText("Mike Trout", { exact: true });
+    expect(await fontPx(troutNumber)).toBeGreaterThanOrEqual(18);
+    expect(await fontPx(troutWho)).toBeGreaterThanOrEqual(18);
+    const fits = async () => {
+      const [list, column] = await Promise.all([table.boundingBox(), region.boundingBox()]);
+      expect(list!.x + list!.width).toBeLessThanOrEqual(column!.x + column!.width + 1);
+    };
+    await fits();
+    if (!isMobile) {
+      // A wide desktop gives it the room: the big type.
+      const viewport = page.viewportSize()!;
+      await page.setViewportSize({ width: 1440, height: viewport.height });
+      await expect.poll(() => fontPx(troutNumber)).toBeGreaterThanOrEqual(28);
+      expect(await fontPx(troutWho)).toBeGreaterThanOrEqual(28);
+      await fits();
+      await page.setViewportSize(viewport);
+      await expect.poll(() => fontPx(troutNumber)).toBeLessThan(28);
+    }
 
     // The same card in the same condition on two orders is ONE row: ×2, both orders.
     await expect(pulledToggle(table, SKENES)).toHaveCount(1);

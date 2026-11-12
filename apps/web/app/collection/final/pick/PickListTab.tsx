@@ -1053,7 +1053,7 @@ function PickTable({
 
   // The column headers stick just under the site header (its height is published as `--nb-header-h`, 0 on a phone).
   const headCell =
-    "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold md:max-lg:px-1.5";
+    "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold md:px-1.5 @min-[62rem]:px-2";
 
   const sortButton = (key: SortKey) => {
     const on = sort === key;
@@ -1082,8 +1082,8 @@ function PickTable({
         className={`${headCell} max-md:hidden ${className}`}
       >
         {also ? (
-          // Below lg the two sorts may stack, so the header never holds the table wider than the screen.
-          <span className="inline-flex flex-wrap items-center gap-x-2 lg:flex-nowrap">
+          // In a compact table the two sorts may stack, so the header never holds the table wider than the screen.
+          <span className="inline-flex flex-wrap items-center gap-x-2 @min-[62rem]:flex-nowrap">
             {sortButton(key)}
             <span aria-hidden="true" className="text-ink-3">
               ·
@@ -1106,6 +1106,12 @@ function PickTable({
 
   return (
     <>
+      {/*
+        The table sizes itself by the room it has, not by the screen: from 1024px the
+        binder's side nav takes 170px, so a desktop can have less room than a tablet.
+        Below 62rem of room the columns stay compact; the big type needs the full width.
+      */}
+      <div className="@container">
       {/* Not focusable itself: the rows' toggles are, and arrow keys move between them. */}
       <table ref={tableRef} onKeyDown={onKeyDown} className="nb-pick-table w-full border-separate border-spacing-0 text-sm">
         <caption className="sr-only">{caption}</caption>
@@ -1129,7 +1135,7 @@ function PickTable({
             </th>
             {sortHead("number", "w-16")}
             {sortHead("player")}
-            {sortHead("set", setInCells ? "lg:min-w-36" : "", "detail")}
+            {sortHead("set", setInCells ? "@min-[62rem]:min-w-36" : "", "detail")}
             {sortHead("condition")}
             {sortHead("order", "w-28")}
             <th scope="col" className={`${headCell} md:hidden`}>
@@ -1170,6 +1176,7 @@ function PickTable({
           );
         })}
       </table>
+      </div>
       {printing && <PrintSheet sections={sections} pulled={pulled} showSlot={showSlot} />}
       {thumb?.card && (
         <P3Dialog
@@ -1214,7 +1221,7 @@ function SectionHead({ section, columns }: { section: PickSection; columns: numb
   let body: ReactNode;
   let line = "border-rule-strong";
   // NEO-522: read from across the room, so the group's name outranks the rows' 28px names.
-  const title = "text-xl font-bold leading-7 text-balance lg:text-3xl lg:leading-9";
+  const title = "text-xl font-bold leading-7 text-balance @min-[62rem]:text-3xl @min-[62rem]:leading-9";
   if (section.kind === "set") {
     const hue = sportHue(section.sportCode);
     line = SPORT_LINE[hue];
@@ -1269,7 +1276,7 @@ function VariantTag({ tag }: { tag: VariantTagModel }) {
       title={tag.kind ? `${tag.kind}: ${tag.text}` : tag.text}
       // Capped per width so a long name wraps onto more lines instead of widening the
       // table, never cut: the whole name always shows (the title is only an extra).
-      className={`nb-pick-chip inline-flex min-h-7 w-max max-w-40 items-center rounded-md border px-2 py-0.5 text-base font-bold leading-5 md:max-w-27 lg:min-h-8 lg:max-w-40 lg:text-lg lg:leading-6 xl:max-w-52 ${paint}`}
+      className={`nb-pick-chip inline-flex min-h-7 w-max max-w-40 items-center rounded-md border px-2 py-0.5 text-base font-bold leading-5 md:max-w-27 @min-[62rem]:min-h-8 @min-[62rem]:max-w-40 @min-[62rem]:text-lg @min-[62rem]:leading-6 @min-[68rem]:max-w-52 ${paint}`}
     >
       {tag.kind && <span className="sr-only">{tag.kind}: </span>}
       <span className="break-words hyphens-auto">{tag.text}</span>
@@ -1363,10 +1370,10 @@ function Row({
   const rule =
     ruleBelow === undefined ? "border-b border-rule" : `border-b-[3px] ${ruleBelow ? VARIANT_RULE[ruleBelow] : "border-b-rule-strong"}`;
   const cell = `${rule} py-1 align-middle`;
-  // Between md and lg nine columns share a tablet's width: a touch less air between them.
-  const pad = "px-2 md:max-lg:px-1.5";
+  // In a compact table (a tablet, or a desktop beside the side nav) a touch less air between columns.
+  const pad = "px-2 md:px-1.5 @min-[62rem]:px-2";
   // NEO-522: the number and the name are what a picker reads from a few feet away.
-  const big = "text-lg leading-8 lg:text-[1.75rem]";
+  const big = "text-lg leading-8 @min-[62rem]:text-[1.75rem]";
 
   const onRowClick = (e: MouseEvent<HTMLTableRowElement>) => {
     if ((e.target as Element).closest("button, a, input, select")) return;
@@ -1412,7 +1419,7 @@ function Row({
   // Condition, or a slab's grade and cert.
   // NEO-522: big enough to check against the copy in hand (NM or EX), so it reads at the row's scale.
   const condition = (
-    <span className="flex flex-col text-base leading-6 lg:text-lg lg:leading-7">
+    <span className="flex flex-col text-base leading-6 @min-[62rem]:text-lg @min-[62rem]:leading-7">
       {row.grade ? (
         <>
           <span className="whitespace-nowrap font-semibold text-ink">
@@ -1437,7 +1444,7 @@ function Row({
     </>
   );
   const orders = (
-    <span className="flex flex-col text-sm leading-5 lg:text-base lg:leading-6">
+    <span className="flex flex-col text-sm leading-5 @min-[62rem]:text-base @min-[62rem]:leading-6">
       {row.orders.map((o) =>
         !c && salesLink ? (
           <ParamLink
