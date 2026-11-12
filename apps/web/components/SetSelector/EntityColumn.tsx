@@ -1365,8 +1365,11 @@ export default function EntityColumn({
   // `custom-entry-survives-resync.yaml` asserts `text: "Custom"` positioned
   // rightOf a row, and a second match here is a resolution hazard.)
   const customForm = (
+    // NEO-499: `wrap-anywhere` is inherited by every sentence below, which
+    // quote the typed name (and, on "already used", other rows' names). A
+    // long unbroken name otherwise ran out of the column over its neighbour.
     <div
-      className="bg-raised p-6 rounded-lg shadow"
+      className="bg-raised p-6 rounded-lg shadow wrap-anywhere"
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
         // Escape steps BACK out of a confirm before it closes the form: the
@@ -1910,7 +1913,7 @@ export default function EntityColumn({
         // because a background sync can land while this column is scrolled well
         // off-screen and an in-flow banner would announce to nobody.
         <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-raised-deep border border-notice-warn-rule rounded text-xs text-notice-warn-ink shadow-lg"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] wrap-anywhere px-4 py-2 bg-raised-deep border border-notice-warn-rule rounded text-xs text-notice-warn-ink shadow-lg"
           role="status"
           aria-live="polite"
         >

@@ -643,8 +643,12 @@ function EntitySelector({
         onClick={() => setExpanded(true)}
         onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
       >
-        <div className="flex items-center gap-2">
-          <div className="font-semibold">{nameOf(selected)}</div>
+        {/* NEO-499: `min-w-0` down the flex chain and `wrap-anywhere` on the
+            name, so a long unbroken name (a set name may be 200 characters
+            with no space) wraps inside the column's card instead of running
+            out of it over the next column; the chevron keeps its size. */}
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="min-w-0 wrap-anywhere font-semibold">{nameOf(selected)}</div>
           {suffixOf(selected) && (
             <>
               {" "}
@@ -652,7 +656,7 @@ function EntitySelector({
             </>
           )}
         </div>
-        <ChevronDownIcon className="w-5 h-5 text-ink-3" />
+        <ChevronDownIcon className="w-5 h-5 shrink-0 text-ink-3" />
       </button>
     );
   }
@@ -879,7 +883,10 @@ function EntitySelector({
                     }`}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold">{nameOf(item)}</span>
+                      {/* NEO-499: wraps a long unbroken name inside the row
+                          (see the collapsed card above); the pills keep
+                          their size beside it. */}
+                      <span className="min-w-0 wrap-anywhere font-semibold">{nameOf(item)}</span>
                       {/* NEO-325: its own element beside the name, so the
                           name stays alone in its text node (flows tap rows
                           by that text) while the option's accessible name

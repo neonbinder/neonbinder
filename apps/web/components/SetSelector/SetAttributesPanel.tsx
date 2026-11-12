@@ -648,7 +648,13 @@ export default function SetAttributesPanel({
               deepest current selection at ANY level, so this one control
               renames sports, years, manufacturers, sets and variants alike. */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <h3 className="text-sm font-semibold text-ink">
+            {/* NEO-499: `min-w-0 wrap-anywhere` (WizardChrome's h2 pattern). A
+                set name can be one unbroken token up to the 200-character
+                cap; as a flex item the heading's minimum width was that whole
+                token, so past about 100 characters it ran off a phone's right
+                edge, widened the page and put the page under the reader's
+                taps. Now the name breaks wherever it has to. */}
+            <h3 className="min-w-0 wrap-anywhere text-sm font-semibold text-ink">
               {headerTitle}
             </h3>
             {/* NEO-239: every level renames, variantType included.
@@ -842,7 +848,10 @@ export default function SetAttributesPanel({
           change on a mounted node is. The box is drawn only while there is a
           message. The status region is the panel's one `status`; a failure
           is the separate `alert`, in the negative colour. */}
-      <div className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50">
+      {/* NEO-499: capped at the viewport less a margin, and breaking anywhere,
+          so a toast that quotes a long unbroken set name wraps on a phone
+          instead of running off both edges. */}
+      <div className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] wrap-anywhere">
         <div role="status" aria-live="polite" aria-atomic="true">
           {toast && (
             <div className="px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">

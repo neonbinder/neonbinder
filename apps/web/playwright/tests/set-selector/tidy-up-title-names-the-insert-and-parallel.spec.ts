@@ -7,12 +7,16 @@
 // (a sub-variant under an insert) carries its insert's name first, because
 // "Gold" alone does not say which insert's Gold.
 //
-// The set's name is ONE unbroken 60-character token (200 is the set-name
-// cap, and past about 100 the Set Builder's own attributes panel runs off a
-// phone's width, a separate matter from this title): the worst case for the
-// title's wrap, since it has no space to break at. The heading clamps it visually, so beside the exact full name each
+// The set's name is ONE unbroken 100-character token (200 is the set-name
+// cap): the worst case for the title's wrap, since it has no space to break
+// at. The heading clamps it visually, so beside the exact full name each
 // dialog proves the layout on both projects: the heading and the "Step x of y"
 // counter are on screen, never overlap, and stay inside the viewport's width.
+// NEO-499: at 100 characters the Set Builder's own "Attributes for <set>
+// (Set)" heading used to run off a phone's right edge and widen the page, so
+// a tap on "Create variant type" landed on the page instead. The drill stops
+// at the set once to prove that heading now wraps inside the viewport, clear
+// of "Edit attributes", before it goes on to the Insert type.
 // (It lives here, not in the attention-walker spec, because a long set name
 // also cuts every auto-generated listing title short, which adds a second
 // attention reason to each card and would change that spec's counts.)
@@ -27,31 +31,66 @@
 // `tuphost<token>` (insert) and `tupgold<token>` (its parallel). Neither
 // parallel name starts with the insert's, so the prefix rule is the only thing
 // that can put the insert's name in the title. R9: the drill goes through
-// drillToCustomSet; the grouping is the same Group Parallels move the
+// drillToCustomSet (its first stop at the set is drillToCustom, the helper
+// drillToCustomSet wraps, then drillToCustomSet re-drills to the Insert
+// type, selecting what is already there); the grouping is the same Group Parallels move the
 // sub-variants spec makes.
 import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
 import { addCardViaForm } from "../../support/cards";
+import type { Locator, Page } from "@playwright/test";
 import {
   addCustomEntry,
   columnOption,
   columnSelection,
+  customSport,
+  drillToCustom,
   drillToCustomSet,
   setBuilderReady,
 } from "../../support/set-builder";
 import { tidyUpName } from "../../support/wizard";
+
+/**
+ * Two controls on screen, clear of each other, and both inside the viewport's
+ * width: the layout proof for a long unbroken name on both projects.
+ */
+async function expectClearAndInside(page: Page, a: Locator, b: Locator, what: string): Promise<void> {
+  const boxA = await a.boundingBox();
+  const boxB = await b.boundingBox();
+  const viewport = page.viewportSize();
+  if (!boxA || !boxB || !viewport) throw new Error(`${what}: both boxes and the viewport must be measurable`);
+  const clear =
+    boxA.x + boxA.width <= boxB.x ||
+    boxB.x + boxB.width <= boxA.x ||
+    boxA.y + boxA.height <= boxB.y ||
+    boxB.y + boxB.height <= boxA.y;
+  expect(clear, `${what}: the two overlap`).toBe(true);
+  for (const box of [boxA, boxB]) {
+    expect(box.x, `${what}: starts left of the viewport`).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, `${what}: runs past the viewport's right edge`).toBeLessThanOrEqual(viewport.width);
+  }
+}
 
 test(
   "The tidy-up title names an insert by its own name and a parallel after its insert (NEO-497)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
-    const SET = `tuplongset${"x".repeat(60 - "tuplongset".length - T.length)}${T}`;
+    const SET = `tuplongset${"x".repeat(100 - "tuplongset".length - T.length)}${T}`;
     const HOST = `tuphost${T}`;
     const PARALLEL = `tupgold${T}`;
     const year = "2026";
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
+
+    // NEO-499: the set open on its own, its attributes heading wrapped inside
+    // the viewport and clear of the panel's toggle.
+    await drillToCustom(page, { sport: customSport(env), year, manufacturer: "Topps", set: SET });
+    const setHeading = page.getByRole("heading", { name: `Attributes for ${SET} (Set)`, exact: true });
+    const editAttributes = page.getByRole("button", { name: "Edit attributes", exact: true });
+    await expect(setHeading).toBeVisible();
+    await expect(editAttributes).toBeVisible();
+    await expectClearAndInside(page, setHeading, editAttributes, "the set's Attributes heading and Edit attributes");
 
     // An insert, and a parallel moved under it with Group Parallels.
     await drillToCustomSet(page, env, { set: SET, variantType: "Insert" });
@@ -84,20 +123,12 @@ test(
       // inside the viewport's width (stacked below `sm`, side by side above).
       const counter = walker.getByText(/^Step [0-9]+ of [0-9]+$/);
       await expect(counter).toBeVisible();
-      const headingBox = await walker.getByRole("heading", { name, exact: true }).boundingBox();
-      const counterBox = await counter.boundingBox();
-      const viewport = page.viewportSize();
-      if (!headingBox || !counterBox || !viewport) throw new Error("heading, counter and viewport must be measurable");
-      const clear =
-        headingBox.x + headingBox.width <= counterBox.x ||
-        counterBox.x + counterBox.width <= headingBox.x ||
-        headingBox.y + headingBox.height <= counterBox.y ||
-        counterBox.y + counterBox.height <= headingBox.y;
-      expect(clear, "the heading and the Step x of y counter overlap").toBe(true);
-      for (const box of [headingBox, counterBox]) {
-        expect(box.x).toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
-      }
+      await expectClearAndInside(
+        page,
+        walker.getByRole("heading", { name, exact: true }),
+        counter,
+        "the tidy-up heading and the Step x of y counter",
+      );
 
       await page.keyboard.press("Escape");
       await expect(walker).toBeHidden();
