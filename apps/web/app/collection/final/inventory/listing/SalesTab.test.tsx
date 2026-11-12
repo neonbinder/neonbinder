@@ -53,7 +53,7 @@ function sale(over: Partial<Sale> & Pick<Sale, "id" | "orderNo">): Sale {
 
 function setup(
   initial: Partial<SalesPage>,
-  opts: { listing?: boolean; sandbox?: boolean } = {},
+  opts: { listing?: boolean; sandbox?: boolean; url?: string } = {},
 ) {
   // What the stub store answers; change it and call `rerender()`.
   const state: { page: Partial<SalesPage> } = { page: initial };
@@ -76,7 +76,7 @@ function setup(
   // A fresh element each time: re-rendering the same one bails out.
   const tree = () => (
     <Theme>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[opts.url ?? "/inventory?tab=sales"]}>
         <CollectionStoreContext.Provider value={value}>
           <PageApiContext.Provider value={pageApi}>
             <SalesTab />
@@ -261,5 +261,30 @@ describe("the Sales tab", () => {
       "https://www.sandbox.ebay.com/sh/ord",
     );
     expect(screen.getByRole("link", { name: "Open BuySportsCards orders (opens in a new tab)" })).toBeTruthy();
+  });
+
+  it("NEO-500: a one-order link (?sorder=) marks that order and focuses its heading", () => {
+    setup(
+      { sales: [sale({ id: "o1", orderNo: "1" }), sale({ id: "o2", orderNo: "2" })] },
+      { url: "/inventory?tab=sales&sorder=o2" },
+    );
+    const head = screen.getByRole("heading", { level: 3, name: "BuySportsCards order 2" });
+    expect(document.activeElement).toBe(head);
+    expect(head.closest("article")?.getAttribute("aria-current")).toBe("true");
+    expect(
+      screen.getByRole("heading", { level: 3, name: "BuySportsCards order 1" }).closest("article")?.getAttribute("aria-current"),
+    ).toBeNull();
+  });
+
+  it("NEO-500: an order past the loaded pages loads more until it shows, then takes focus", () => {
+    const first = [sale({ id: "o1", orderNo: "1" })];
+    const { loadMore, rerender } = setup({ sales: first, canLoadMore: true }, { url: "/inventory?tab=sales&sorder=o3" });
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    rerender({ sales: first, canLoadMore: false, loadingMore: true });
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    const next = [...first, sale({ id: "o2", orderNo: "2" }), sale({ id: "o3", orderNo: "3" })];
+    rerender({ sales: next, canLoadMore: true, loadingMore: false });
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "BuySportsCards order 3" }));
   });
 });

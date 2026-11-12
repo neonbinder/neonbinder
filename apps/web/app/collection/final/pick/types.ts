@@ -116,5 +116,10 @@ export interface PickListStore {
   kind: "demo" | "convex";
   data: PickListData | undefined;
   pulled: ReadonlySet<string>;
+  /**
+   * The demo's answers nothing (it is instant); the real one a promise that
+   * resolves once the server has the mark and rejects (after putting the
+   * tick back) when it could not save.
+   */
   setPulled: (lineIds: readonly string[], pulled: boolean) => void | Promise<void>;
 }

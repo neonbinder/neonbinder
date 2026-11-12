@@ -107,20 +107,20 @@ export function toSaleLines(
 ): SaleLine[] {
   const venue = VENUE[raw.platform];
   const order = { id: raw.saleId, venue, number: raw.orderNo };
-  const where = `${venue} ${raw.orderNo}`;
   const isNew = options.isNew || undefined;
   const lostTitle = () => {
     const nth = options.lostIndex && options.lostIndex.of > 1 ? ` (${options.lostIndex.n} of ${options.lostIndex.of})` : "";
-    return `Card NB couldn't match, ${where}${nth}`;
+    // The Order column (a link to the sale) says which order; the toggle's name adds it.
+    return `Unmatched sale${nth}`;
   };
 
   if (raw.cantFind || !raw.cardId || !hydrated?.card) {
     const problem =
       raw.cantFind === "linkMismatch"
-        ? `This listing's card doesn't match NB's card. Open order ${where} to see which it is.`
+        ? "This listing's card doesn't match NB's card. Check the order's photo."
         : raw.cantFind === "unmatched" || !raw.cardId
-          ? `NB couldn't match this line. Open order ${where} to see the card.`
-          : `This card isn't in NB's catalog any more. Open order ${where} to see it.`;
+          ? "NB couldn't match this line. Check the order's photo."
+          : "This card isn't in NB's catalog any more. Check the order's photo.";
     return [
       {
         id: raw.id,
@@ -175,6 +175,21 @@ export function toSaleLines(
   });
 }
 
+function askBeforeUnload(event: BeforeUnloadEvent): void {
+  event.preventDefault();
+  // Older browsers show the prompt only when this is set.
+  event.returnValue = "";
+}
+
+/** While `on`, leaving the page (reload, close, typed URL) asks first. */
+export function useUnsavedGuard(on: boolean): void {
+  useEffect(() => {
+    if (!on) return;
+    window.addEventListener("beforeunload", askBeforeUnload);
+    return () => window.removeEventListener("beforeunload", askBeforeUnload);
+  }, [on]);
+}
+
 /** Mounts the signed-in Pick List store for everything below it. */
 export function ConvexPickListProvider({ children }: { children: ReactNode }) {
   const store = useConvexPickListStore();
@@ -198,6 +213,8 @@ function useConvexPickListStore(): PickListStore {
   /** Line ids marked pulled this session (optimistic). */
   const [pulledLines, setPulledLines] = useState<ReadonlySet<string>>(() => new Set());
   const [loadedOnce, setLoadedOnce] = useState(false);
+  /** Marks sent and not yet saved. */
+  const [saving, setSaving] = useState(0);
 
   // Set while rendering (React's "adjust state when a prop changes"), so the
   // first answer never draws every line as New for a frame.
@@ -316,15 +333,22 @@ function useConvexPickListStore(): PickListStore {
         return next;
       };
       setPulledLines((prev) => flip(prev, on));
+      setSaving((n) => n + 1);
       try {
         for (const batch of chunks(ids, PULLS_PER_CALL)) await mutate({ ids: batch, pulled: on });
-      } catch {
+      } catch (error) {
         setPulledLines((prev) => flip(prev, !on));
-        pageApi?.inform(on ? "That pull didn't save. Try it again." : "That card didn't go back on the list. Try it again.");
+        // The page says it didn't save (`PickListTab`'s mark).
+        throw error;
+      } finally {
+        setSaving((n) => n - 1);
       }
     },
-    [rawLines, mutate, pageApi],
+    [rawLines, mutate],
   );
+
+  // A reload or a closed tab while a mark is still on its way would lose it.
+  useUnsavedGuard(saving > 0);
 
   return useMemo<PickListStore>(() => ({ kind: "convex", data, pulled, setPulled }), [data, pulled, setPulled]);
 }

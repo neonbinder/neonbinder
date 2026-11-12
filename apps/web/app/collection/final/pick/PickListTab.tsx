@@ -8,6 +8,8 @@ import P3Dialog from "../../prototypes/p3/Dialog";
 import { LABEL, QUIET_BUTTON, SELECT } from "../../prototypes/p3/classes";
 import { SkeletonBars } from "../catalog/Skeleton";
 import { playerNames, setLabel } from "../data/labels";
+import { useListing } from "../data/store";
+import { SALE_PARAM } from "../inventory/listing/copy";
 import { ParamLink, usePushParams, useReplaceParams } from "../mode";
 import { PageApiContext } from "../pageApi";
 import { SPORT_LINE, SPORT_TAB, VARIANT_CHIP, VARIANT_STRIPE, sportHue } from "./colours";
@@ -38,7 +40,7 @@ import {
   type VariantRole,
 } from "./model";
 import { PickListStoreContext } from "./store";
-import type { PickListData, PickListStore } from "./types";
+import type { PickListData, PickListStore, PickOrder } from "./types";
 import "./pick-list.css";
 
 /**
@@ -102,6 +104,9 @@ const COPY = {
   cantFind: "Can't find it",
   cantFindNote: "NB couldn't tie these sales to one card. Check each listing's photo to find it.",
   truncated: "Your Pick List is too long to show at once, so it starts with your oldest orders. Pull these and the rest will show up.",
+  saving: "Saving…",
+  pullFailed: "That pull didn't save. Try it again.",
+  putBackFailed: "That card didn't go back on the list. Try it again.",
   noBox: "Box not recorded",
   noBoxNote: "These sold before NB kept track of boxes. Look wherever you keep the set.",
   fresh: "Sold since you started",
@@ -192,6 +197,7 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
   const { data, pulled, setPulled } = store;
   const byBox = params.get(PICK_PARAMS.view) === "box";
   const titleId = useId();
+  const markSeq = useRef(0);
 
   const list = useMemo<ListState>(() => {
     const p = new URLSearchParams(search);
@@ -214,14 +220,36 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
   if (!data) return <SkeletonBars rows={6} />;
 
   /** Marks lines pulled (or not), saying so on the status line with Undo. */
+  /**
+   * Marks lines pulled (or not). A store that saves to a server answers with
+   * a promise: the status line says "Saving…" until it lands, then the
+   * message, so "Pulled" only ever means saved. A failed save says so (the
+   * store has already put the tick back).
+   */
   const mark: Mark = (ids, on, message) => {
     const before = ids.filter((id) => pulled.has(id));
-    void setPulled(ids, on);
-    const undo = () => {
-      void setPulled(ids, !on);
-      if (on && before.length) void setPulled(before, true);
+    const failed = (wasOn: boolean) => pageApi?.notify(wasOn ? COPY.pullFailed : COPY.putBackFailed);
+    const run = (lineIds: readonly string[], to: boolean) => {
+      const saving = setPulled(lineIds, to);
+      if (saving) saving.catch(() => failed(to));
+      return saving;
     };
-    pageApi?.notify(message, undo);
+    const undo = () => {
+      void run(ids, !on);
+      if (on && before.length) void run(before, true);
+    };
+    const saving = setPulled(ids, on);
+    if (!saving) {
+      pageApi?.notify(message, undo);
+      return;
+    }
+    const seq = ++markSeq.current;
+    pageApi?.notify(COPY.saving, undo);
+    saving.then(
+      // A later mark owns the line by now: this one's word would be stale.
+      () => seq === markSeq.current && pageApi?.notify(message, undo),
+      () => failed(on),
+    );
   };
 
   const goStop = (to: number) => push((p) => p.set(PICK_PARAMS.box, stops[to].box.id));
@@ -270,9 +298,7 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
     <section aria-labelledby={titleId} className="nb-pick space-y-4">
       <PickHeader titleId={titleId} total={total} left={left} scope={scope} pulled={pulled} onPull={pullScope} byBox={byBox} />
       {data.lines.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-rule-strong px-4 py-10 text-center text-lg font-semibold text-ink-2">
-          {COPY.empty}
-        </p>
+        <EmptyList />
       ) : (
         <>
           {data.truncated && (
@@ -295,6 +321,35 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * Nothing to pull: where the next pull comes from. Sales (where the store has
+ * one) shows what sold; the Inventory list is what is up for sale.
+ */
+function EmptyList() {
+  const sales = useListing() !== undefined;
+  const link = "rounded-sm font-semibold text-neon-blue-text underline underline-offset-4 focus-outline";
+  return (
+    <div className="space-y-2 rounded-xl border border-dashed border-rule-strong px-4 py-10 text-center">
+      <p className="text-lg font-semibold text-ink-2">{COPY.empty}</p>
+      <p className="text-sm text-ink-2">
+        {sales ? (
+          <>
+            New orders show up here within about 15 minutes.{" "}
+            <ParamLink search={{ tab: "sales" }} className={link}>
+              See what sold
+            </ParamLink>{" "}
+            or{" "}
+          </>
+        ) : null}
+        <ParamLink search={{ tab: "cards" }} className={link}>
+          {sales ? "open your inventory" : "Open your inventory"}
+        </ParamLink>
+        .
+      </p>
+    </div>
   );
 }
 
@@ -330,21 +385,26 @@ function PickHeader({
           <span className="font-semibold text-ink tabular-nums">{got}</span> of{" "}
           <span className="tabular-nums">{total}</span> {total === 1 ? "card" : "cards"} pulled
         </p>
-        <div aria-hidden="true" className="nb-pick-noprint h-1.5 w-56 max-w-full overflow-hidden rounded-full bg-rule">
-          <div
-            className="h-full w-full origin-left bg-neon-green transition-transform duration-300 motion-reduce:transition-none"
-            style={{ transform: `scaleX(${total ? got / total : 0})` }}
-          />
+        {total > 0 && (
+          <div aria-hidden="true" className="nb-pick-noprint h-1.5 w-56 max-w-full overflow-hidden rounded-full bg-rule">
+            <div
+              className="h-full w-full origin-left bg-neon-green transition-transform duration-300 motion-reduce:transition-none"
+              style={{ transform: `scaleX(${got / total})` }}
+            />
+          </div>
+        )}
+      </div>
+      {/* Nothing to pull: nothing to print or track either. */}
+      {total > 0 && (
+        <div className="nb-pick-noprint flex flex-wrap items-center gap-2">
+          {/* Print shows only what is on screen: in By the Box, that is this box. */}
+          <button type="button" onClick={() => window.print()} className={QUIET_BUTTON}>
+            <PrinterIcon aria-hidden="true" className="size-4" />
+            {byBox ? "Print this box" : "Print list"}
+          </button>
+          {scope && <PullButton scope={scope} pulled={pulled} onPull={onPull} />}
         </div>
-      </div>
-      <div className="nb-pick-noprint flex flex-wrap items-center gap-2">
-        {/* Print shows only what is on screen: in By the Box, that is this box. */}
-        <button type="button" onClick={() => window.print()} className={QUIET_BUTTON}>
-          <PrinterIcon aria-hidden="true" className="size-4" />
-          {byBox ? "Print this box" : "Print list"}
-        </button>
-        {scope && <PullButton scope={scope} pulled={pulled} onPull={onPull} />}
-      </div>
+      )}
     </header>
   );
 }
@@ -710,8 +770,8 @@ function FilterBar({
           )}
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <div role="group" aria-label="Quick filters" className="flex flex-wrap gap-1.5">
+      {/* Back to default rides the last chip's row, never a row of its own. */}
+      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
           <Toggle pressed={Boolean(filters.slabs)} onClick={() => setParam(PICK_PARAMS.slabs, filters.slabs ? null : "1")}>
             Only slabs
           </Toggle>
@@ -721,7 +781,6 @@ function FilterBar({
           <Toggle pressed={groupByOrder} onClick={() => setParam(PICK_PARAMS.group, groupByOrder ? null : "order")}>
             Group by order
           </Toggle>
-        </div>
         <button
           type="button"
           onClick={() => {
@@ -879,12 +938,15 @@ function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolea
     : row.serial
       ? `${row.condition}, ${row.serial}`
       : row.condition;
+  const orders = row.orders.map(orderLabel).join(" and ");
+  // A card-less row's title ("Unmatched sale") says nothing of its order, so
+  // its name always carries it: two orders' strays never read alike.
   let name = c
     ? `#${c.cardNumber} ${playerNames(c)}, ${setLabel(c.set)}${variantName(c) ? ` ${variantName(c)}` : ""}, ${extra}`
-    : row.listingTitle;
+    : `${row.listingTitle}, ${orders}`;
   if (options.withSlot && row.spot?.slot !== undefined) name += `, slot ${row.spot.slot}`;
   if (row.isNew) name += `, ${COPY.fresh.toLowerCase()}`;
-  if (options.withOrder) name += `, ${row.orders.map(orderLabel).join(" and ")}`;
+  if (options.withOrder && c) name += `, ${orders}`;
   return name;
 }
 
@@ -913,6 +975,8 @@ function PickTable({
   nameWithOrder?: boolean;
 }) {
   const tableRef = useRef<HTMLTableElement>(null);
+  // A stray's order opens on the Sales tab, where the store has one.
+  const salesLink = useListing() !== undefined;
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [thumb, setThumb] = useState<PickRow | null>(null);
   const printing = usePrinting();
@@ -985,7 +1049,12 @@ function PickTable({
     );
   };
 
-  const columns = 9 + (showSlot ? 1 : 0);
+  // Qty shows only where a row in view sold two or more (or the list sorts by it).
+  const showQty = sort === "qty" || sections.some((s) => s.rows.some((r) => r.quantity > 1));
+  // The Set column holds a reading width only where its cells name the set (or
+  // a stray's problem): under a set divider they hold just the variant.
+  const setInCells = sections.some((s) => s.kind !== "set" && s.rows.length > 0);
+  const columns = 8 + (showQty ? 1 : 0) + (showSlot ? 1 : 0);
 
   return (
     <>
@@ -1005,10 +1074,10 @@ function PickTable({
                 Slot
               </th>
             )}
-            {sortHead("qty", "w-14")}
+            {showQty && sortHead("qty", "w-14")}
             {sortHead("number", "w-16")}
             {sortHead("player")}
-            {sortHead("set", "min-w-48", "detail")}
+            {sortHead("set", setInCells ? "min-w-48" : "", "detail")}
             {sortHead("condition", "w-28")}
             {sortHead("order", "w-28")}
             <th scope="col" className={`${headCell} md:hidden`}>
@@ -1032,6 +1101,8 @@ function PickTable({
                   onToggle={() => toggle(row)}
                   onThumb={() => setThumb(row)}
                   showSlot={showSlot}
+                  showQty={showQty}
+                  salesLink={salesLink}
                   showSet={!inSet}
                   showSport={!hideSport && !inSet && section.kind !== "cantFind"}
                   name={rowName(row, { withOrder: nameWithOrder, withSlot: showSlot })}
@@ -1104,7 +1175,8 @@ function SectionHead({ section, columns }: { section: PickSection; columns: numb
     );
   } else {
     const warn = section.kind === "cantFind";
-    line = warn ? "border-notice-warn-rule" : "border-neon-blue";
+    // The heading's words and its rule share one hue in both themes.
+    line = warn ? "border-notice-warn-ink" : "border-neon-blue";
     body = (
       <div className="pb-1">
         {heading(`text-base font-bold ${warn ? "text-notice-warn-ink" : "text-neon-blue-text"}`, warn ? COPY.cantFind : COPY.fresh)}
@@ -1171,6 +1243,8 @@ function Row({
   onToggle,
   onThumb,
   showSlot,
+  showQty,
+  salesLink,
   showSet,
   showSport,
   name,
@@ -1182,6 +1256,9 @@ function Row({
   onToggle: () => void;
   onThumb: () => void;
   showSlot: boolean;
+  showQty: boolean;
+  /** A card-less row's order links to that sale on the Sales tab. */
+  salesLink: boolean;
   /** Off under a set divider, which already names the set. */
   showSet: boolean;
   showSport: boolean;
@@ -1252,13 +1329,32 @@ function Row({
     </span>
   );
 
+  // Venue and number may wrap apart, never inside either. A stray's order
+  // opens that sale on the Sales tab: the order's photo is how to find it.
+  const orderText = (o: PickOrder) => (
+    <>
+      <span className="whitespace-nowrap">{o.venue}</span> <span className="whitespace-nowrap">{o.number}</span>
+    </>
+  );
   const orders = (
     <span className="flex flex-col">
-      {row.orders.map((o) => (
-        <span key={o.id} className="whitespace-nowrap text-ink-2 tabular-nums">
-          {orderLabel(o)}
-        </span>
-      ))}
+      {row.orders.map((o) =>
+        !c && salesLink ? (
+          <ParamLink
+            key={o.id}
+            search={{ tab: "sales", [SALE_PARAM]: o.id }}
+            tabIndex={tab}
+            className="rounded-sm text-neon-blue-text underline underline-offset-2 tabular-nums focus-outline"
+          >
+            {orderText(o)}
+            <span className="sr-only"> on your Sales tab</span>
+          </ParamLink>
+        ) : (
+          <span key={o.id} className="text-ink-2 tabular-nums">
+            {orderText(o)}
+          </span>
+        ),
+      )}
     </span>
   );
 
@@ -1306,7 +1402,7 @@ function Row({
             className="nb-pick-thumb block w-10 rounded-sm focus-outline"
           >
             {row.photo ? (
-              <img src={row.photo.thumbUrl} alt="" loading="lazy" className="block aspect-[5/7] w-10 rounded-sm object-cover" />
+              <img src={row.photo.thumbUrl} alt="" loading="lazy" className="block aspect-[5/7] w-10 rounded-sm bg-rule object-contain" />
             ) : (
               <CardFace model={c} size="fill" serial={row.serial} />
             )}
@@ -1321,12 +1417,12 @@ function Row({
         )}
       </td>
       {showSlot && <td className={`${cell} font-semibold tabular-nums text-ink`}>{row.spot?.slot ?? "–"}</td>}
-      <td className={`${cell} max-md:hidden`}>{qty}</td>
+      {showQty && <td className={`${cell} max-md:hidden`}>{qty}</td>}
       {c && <td className={`${cell} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden`}>#{c.cardNumber}</td>}
       {/* No card: the listing's own words take the number's column too. */}
       <td colSpan={c ? undefined : 2} className={`${cell} max-md:hidden`}>
         <span className="flex flex-col">
-          <span className={c ? "font-semibold text-ink" : "text-ink"}>{who}</span>
+          <span className={c ? "whitespace-nowrap font-semibold text-ink" : "text-ink"}>{who}</span>
           {team && <span className="text-xs text-ink-3">{team}</span>}
           <span className="mt-1 empty:hidden">
             <Markers row={row} />

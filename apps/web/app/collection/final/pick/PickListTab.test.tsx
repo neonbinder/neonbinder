@@ -246,3 +246,102 @@ describe("a Pick List cut short", () => {
     expect(screen.getByRole("region", { name: "Pick List" })).toBeTruthy();
   });
 });
+
+describe("a store that saves to a server", () => {
+  it("says Saving… until the mark lands, then Pulled; a failed save says so", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const { default: PickListTab } = await import("./PickListTab");
+    const { CollectionModeProvider } = await import("../mode");
+    const { PickListStoreContext } = await import("./store");
+    const { PageApiContext } = await import("../pageApi");
+    const notify = vi.fn();
+    let settle: { resolve: () => void; reject: (e: Error) => void } | null = null;
+    const store = {
+      kind: "convex" as const,
+      data: DEMO_PICK_DATA,
+      pulled: new Set<string>(),
+      setPulled: () =>
+        new Promise<void>((resolve, reject) => {
+          settle = { resolve, reject };
+        }),
+    };
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={["/inventory?tab=pick"]}>
+          <CollectionModeProvider mode="app" surface="inventory">
+            <PageApiContext.Provider value={{ notify, inform: vi.fn() } as never}>
+              <PickListStoreContext.Provider value={store}>
+                <PickListTab />
+              </PickListStoreContext.Provider>
+            </PageApiContext.Provider>
+          </CollectionModeProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    const toggles = screen.getAllByRole("button", { name: /^Pulled #/ });
+    fireEvent.click(toggles[0]);
+    expect(notify).toHaveBeenLastCalledWith("Saving…", expect.any(Function));
+    await act(async () => settle!.resolve());
+    expect(notify.mock.lastCall?.[0]).toMatch(/^Pulled #/);
+
+    fireEvent.click(toggles[1]);
+    expect(notify).toHaveBeenLastCalledWith("Saving…", expect.any(Function));
+    await act(async () => settle!.reject(new Error("offline")));
+    expect(notify).toHaveBeenLastCalledWith("That pull didn't save. Try it again.");
+  });
+});
+
+describe("the signed-in Pick List's ways out", () => {
+  async function show(data: Partial<import("./types").PickListData>, withSales: boolean) {
+    const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
+    const { default: PickListTab } = await import("./PickListTab");
+    const { CollectionModeProvider } = await import("../mode");
+    const { CollectionStoreContext } = await import("../data/store");
+    const { REAL_CAPABILITIES } = await import("../data/types");
+    const { stubListing } = await import("../inventory/listing/stubListing");
+    const store = { kind: "convex", capabilities: REAL_CAPABILITIES, listing: stubListing() } as never;
+    const tab = (
+      <DemoPickListProvider data={{ ...DEMO_PICK_DATA, ...data }}>
+        <PickListTab />
+      </DemoPickListProvider>
+    );
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={["/inventory?tab=pick"]}>
+          <CollectionModeProvider mode="app" surface="inventory">
+            {withSales ? <CollectionStoreContext.Provider value={store}>{tab}</CollectionStoreContext.Provider> : tab}
+          </CollectionModeProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    return screen.getByRole("region", { name: "Pick List" });
+  }
+
+  it("nothing to pull: no progress bar or Print, and links to Sales and the Inventory list", async () => {
+    const region = await show({ lines: [] }, true);
+    expect(within(region).getByText("Nothing to pull. Go sell something rad.")).toBeTruthy();
+    expect(within(region).queryByRole("button", { name: /^Print/ })).toBeNull();
+    expect(region.querySelector(".bg-neon-green")).toBeNull();
+    expect(within(region).getByRole("link", { name: "See what sold" }).getAttribute("href")).toBe("/inventory?tab=sales");
+    expect(within(region).getByRole("link", { name: "open your inventory" }).getAttribute("href")).toBe("/inventory?tab=cards");
+    cleanup();
+    // No Sales tab (the demo): only the Inventory list.
+    const demo = await show({ lines: [] }, false);
+    expect(within(demo).queryByRole("link", { name: "See what sold" })).toBeNull();
+    expect(within(demo).getByRole("link", { name: "Open your inventory" })).toBeTruthy();
+  });
+
+  it("a line NB couldn't match names its order, and its order opens that sale on the Sales tab", async () => {
+    const region = await show({}, true);
+    // The toggle carries the order: two orders' strays never read alike.
+    expect(
+      within(region).getByRole("button", { name: /^Pulled 2025 Bowman Chrome Prospects #BCP-77 Auto, BSC 88257$/ }),
+    ).toBeTruthy();
+    // The wide cell and the phone's one cell each carry it; CSS shows one.
+    for (const link of within(region).getAllByRole("link", { name: "BSC 88257 on your Sales tab" })) {
+      expect(link.getAttribute("href")).toBe("/inventory?tab=sales&sorder=o7");
+    }
+    // A matched card's order stays plain text.
+    expect(within(region).queryByRole("link", { name: /^eBay 12-3456/ })).toBeNull();
+  });
+});
