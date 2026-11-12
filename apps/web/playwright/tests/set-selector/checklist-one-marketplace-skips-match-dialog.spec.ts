@@ -363,12 +363,13 @@ test(
     // and a pointer resting on a row moves the highlight (onMouseEnter) off the first row.
     await teamSearch.click();
     await teamSearch.fill("pittsburgh");
-    // The slowest-ranked rows are on screen, so the list is the settled answer, and the create
-    // row is last. Only then is "first" the first of the final order.
+    // The lower-ranked rows are on screen, so the list is the settled answer and "first" is the
+    // first of the final order. No row count is pinned: the catalogue may hold more Pittsburgh
+    // Hockey teams one day. The create row is always last.
     await expect(rankedOptions.filter({ hasText: "Pittsburgh Panthers" })).toBeVisible();
     await expect(rankedOptions.filter({ hasText: "Pittsburgh Pirates" })).toBeVisible();
-    await expect(rankedOptions).toHaveCount(4);
     await expect(rankedOptions.first()).toHaveAccessibleName(/^Pittsburgh Penguins/);
+    await expect(rankedOptions.last()).toHaveAccessibleName("+ New team “pittsburgh”…");
     // The highlighted row is the one Enter takes: exactly one, and it is the Penguins.
     await expect(suggestions.getByRole("option", { selected: true })).toHaveCount(1);
     await expect(rankedOptions.first()).toHaveAttribute("aria-selected", "true");
