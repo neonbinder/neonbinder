@@ -11,6 +11,7 @@ import { DASHBOARD_SPINE_PX } from "@/app/dashboard/screen/Shelf";
 import SpineLabel from "./SpineLabel";
 import {
   ALL_LABEL,
+  BADGE_ROOM_PX,
   BOX_LABEL,
   BOX_LETTERING_PX,
   LARGE_TEXT_PX,
@@ -281,6 +282,19 @@ describe("the shelf checks contrast at the size it draws", () => {
       <SpineLabel name="Show box" label={between} spineWidth={108} letteringPx={BOX_LETTERING_PX} />,
     );
     expect(swapped(container)).toBe("true");
+  });
+
+  it("takes a badge's room (the Smart chip) off the lettering's run", () => {
+    const anton = spineFontById("anton");
+    const name = "Green Bay 1996";
+    expect(smallestLetteringPx(name, anton, 54)).toBeGreaterThanOrEqual(LARGE_TEXT_PX);
+    expect(smallestLetteringPx(name, anton, 54, undefined, BADGE_ROOM_PX)).toBeLessThan(LARGE_TEXT_PX);
+
+    const chip = <span>Smart</span>;
+    const plain = render(<SpineLabel name={name} label={between} spineWidth={54} count={3} />);
+    expect(swapped(plain.container)).toBeNull();
+    const smart = render(<SpineLabel name={name} label={between} spineWidth={54} count={3} badge={chip} />);
+    expect(swapped(smart.container)).toBe("true");
   });
 
   it("holds the dashboard's spine height to the shortest .cb-spine in combined.css", () => {

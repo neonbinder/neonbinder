@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { spineFontById, spineFontFacesCss, spineFontFamilyCss } from "@/lib/print/spine-fonts";
 import type { ContainerLabel } from "../data/types";
-import { letteringSizeCss, shelfColors, smallestLetteringPx } from "./label";
+import { BADGE_ROOM_PX, letteringSizeCss, shelfColors, smallestLetteringPx } from "./label";
 import "./spine-label.css";
 
 /**
@@ -33,7 +33,7 @@ export default function SpineLabel({
 }: {
   name: string;
   label: ContainerLabel;
-  /** The spine's width in px, for the contrast check at its smallest size. */
+  /** The spine's width in px as drawn (or its smallest), for the contrast check. */
   spineWidth: number;
   /** The shortest the shelf draws this spine, in px, when shorter than My Binders' phone spine. */
   spineHeight?: number;
@@ -47,7 +47,9 @@ export default function SpineLabel({
   badge?: ReactNode;
 }) {
   const font = spineFontById(label.fontId);
-  const colors = shelfColors(label, letteringPx ?? smallestLetteringPx(name, font, spineWidth, spineHeight));
+  // A badge (the Smart chip) stands at the head of the label and shortens the lettering's run.
+  const head = badge ? BADGE_ROOM_PX : 0;
+  const colors = shelfColors(label, letteringPx ?? smallestLetteringPx(name, font, spineWidth, spineHeight, head));
   return (
     <span
       aria-hidden="true"

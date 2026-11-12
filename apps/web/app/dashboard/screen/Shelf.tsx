@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router";
 import { ChevronDownIcon, PlusIcon } from "@heroicons/react/24/outline";
 import { useOpen } from "./useOpen";
@@ -94,6 +94,31 @@ export function spineCssWidth(width: number, narrow: boolean): string {
   return narrow ? `min(${width}px, ${share})` : `min(calc(${width}px * var(--spine-scale, 1)), ${share})`;
 }
 
+/**
+ * The width an element is drawn at, in whole px (rounded down); null until
+ * it has been laid out. A spine's CSS width is capped by its shelf's share
+ * (`spineCssWidth`), so on a narrow shelf it stands thinner than the width
+ * it asks for, and its lettering with it. Read before the first paint and
+ * again whenever it changes.
+ */
+export function useDrawnWidth(ref: RefObject<HTMLElement | null>): number | null {
+  const [width, setWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const read = () => {
+      const px = Math.floor(el.getBoundingClientRect().width);
+      setWidth(px > 0 ? px : null);
+    };
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(read);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
+}
+
 export function spineLabel(b: ShelfBinder): string {
   const parts = [b.name];
   if (b.kind === "smart") parts.push("smart binder");
@@ -122,6 +147,10 @@ function Spine({
 }) {
   const fresh = binder.newCards.length;
   const width = spineWidth(binder.cardCount, narrow);
+  const ref = useRef<HTMLButtonElement>(null);
+  // The lettering is checked at the width the spine is drawn, never wider than it asks for.
+  const drawn = useDrawnWidth(ref);
+  const checkWidth = drawn === null ? width : Math.min(width, drawn);
   const style = {
     "--vinyl": binder.label.background,
     "--i": index,
@@ -129,6 +158,7 @@ function Spine({
   } as CSSProperties;
   return (
     <button
+      ref={ref}
       type="button"
       data-cb-spine={binder.id}
       aria-label={spineLabel(binder)}
@@ -148,7 +178,7 @@ function Spine({
       <SpineLabel
         name={binder.name}
         label={binder.label}
-        spineWidth={width}
+        spineWidth={checkWidth}
         spineHeight={DASHBOARD_SPINE_PX}
         count={binder.cardCount}
         badge={
