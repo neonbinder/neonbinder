@@ -12,8 +12,9 @@
 # Dependabot's block for this directory has version updates off
 # (.github/dependabot.yml): a bump changes the oracle, so it is made by hand,
 # and only with the goldens regenerated.
-rembg==2.0.78 \
-    --hash=sha256:57dde57215d0cd407947753bd9928c927c363c7381139ae87dcd6160cc13c89a
+rembg==2.0.82 \
+    --hash=sha256:f75b60838cbb9c57160f12e6bdbf4a9048969701bff2f1ed9fff78a65ea97741 \
+    --hash=sha256:fbf3b29dc6210054eb7914ebc41879883331d3d2fa25b7afd84f0e9c51541197
     # rembg-2.0.78-py3-none-any.whl
 PyMatting==1.1.16 \
     --hash=sha256:6ad3f787f90d7720b60e9734c33588cb30f98a66abf7bd772fa499d3a32b466a
