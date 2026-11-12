@@ -629,12 +629,25 @@ describe("NEO-509: the variant words a listing gives", () => {
     expect(rowFacts(mergeLines([line(null, { sportCode: null, listed: listed() })])[0])?.role).toBeNull();
   });
 
-  // BUG (NEO-509, found in the adversarial pass): `listedVariantPhrase` drops the word whenever the
-  // name contains it as a substring ("SP" inside "Special"), so the title and toggle name lose it.
-  // `it.fails` documents the bug without turning the gate red; flip to `it` when it is fixed.
-  it.fails("keeps a short word when the name only contains it inside another word", () => {
+  // NEO-509 (found in the adversarial pass): the word collapses into the name only when the name
+  // says it as whole words, never as a substring of another word ("SP" inside "Special").
+  it("keeps a short word when the name only contains it inside another word", () => {
     // The word is the seller's clue; "Special" does not say SP.
     expect(listedTitle(listed({ variantWord: "SP", variantName: "Gold Special" }))).toBe("2024 Score SP Gold Special #302");
+    expect(listedTitle(listed({ variantWord: "SP", variantName: "Gold SPX" }))).toBe("2024 Score SP Gold SPX #302");
+    expect(listedTitle(listed({ variantWord: "Promo", variantName: "Promotional Gold" }))).toBe("2024 Score Promo Promotional Gold #302");
+  });
+
+  it("collapses a word the name says as whole words, multi-word words and punctuation included", () => {
+    const written = (l: Partial<ListedCard>) => listedTitle(listed(l));
+    expect(written({ variantWord: "SP", variantName: "Gold SP" })).toBe("2024 Score Gold SP #302");
+    expect(written({ variantWord: "sp", variantName: "SP Photo" })).toBe("2024 Score SP Photo #302");
+    expect(written({ variantWord: "SP", variantName: "Gold (SP)" })).toBe("2024 Score Gold (SP) #302");
+    expect(written({ variantWord: "Photo Variation", variantName: "Gold  photo   variation" })).toBe("2024 Score Gold  photo   variation #302");
+    expect(written({ variantWord: "Photo Variation", variantName: "Photo Variations" })).toBe(
+      "2024 Score Photo Variation Photo Variations #302",
+    );
+    expect(written({ variantWord: "1/1", variantName: "Gold 1/1" })).toBe("2024 Score Gold 1/1 #302");
   });
 
   it("a blank word or name is no word", () => {

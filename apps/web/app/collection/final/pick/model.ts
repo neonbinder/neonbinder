@@ -233,7 +233,7 @@ export function listedVariant(listed: ListedCard): { word: string | null; name: 
 /** The variant as one phrase for a title: "1991 Throwback", "SP Photo", "Insert"; null for Base or none. */
 function listedVariantPhrase(listed: ListedCard): string | null {
   const { word, name } = listedVariant(listed);
-  if (word && name) return fold(name).includes(fold(word)) ? name : `${word} ${name}`;
+  if (word && name) return containsWholeWords(name, word) ? name : `${word} ${name}`;
   if (word || name) return word ?? name;
   return listed.role === "insert" ? "Insert" : listed.role === "parallel" ? "Parallel" : null;
 }
@@ -259,6 +259,16 @@ export function listedTitle(listed: ListedCard): string {
 export interface SetOnList {
   set: SetRef;
   sportCode: string | null;
+}
+
+/**
+ * Whether `name` says `word` as whole words, folded: "Photo Variation" says
+ * "Variation", but "Gold Special" does not say "SP". A boundary is the edge
+ * of the text or any character that is not a letter or a digit.
+ */
+function containsWholeWords(name: string, word: string): boolean {
+  const escaped = fold(word).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(fold(name));
 }
 
 /** Trimmed, inner spaces collapsed, case-folded. */
