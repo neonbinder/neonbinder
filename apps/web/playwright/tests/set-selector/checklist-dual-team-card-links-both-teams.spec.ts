@@ -40,6 +40,7 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { bscLookupOutcome } from "../../support/marketplace-wait";
 import { CHECKLISTS, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
 
@@ -266,10 +267,20 @@ test(
     // last row (this assert failed on both projects in CI run 42844015539, and locally
     // with the list at its first card), so the card is found the way a collector would,
     // by its number.
+    //
+    // NEO-489 (Jason, 2026-11-11: a BSC 429 or an open cooldown on the spec's live card is a
+    // pass). PDA-WW's one live lookup either ANSWERED (both clubs linked, the row reads them)
+    // or was SKIPPED (the card has no team and waits in the background queue, so the
+    // checklist says "Still looking up teams for 1 card."). Never a third shape: the row never
+    // reads ONE club alone, which is the unsplit/half-resolved value NEO-333 forbids, and the
+    // wizard loop above already refused every comma-joined or half-of-the-value step.
     await page.getByRole("searchbox", { name: "Search cards" }).fill("PDA-WW");
-    await expect(
-      page.getByText(/^(Boston Red Sox, Detroit Tigers|Detroit Tigers, Boston Red Sox)( · .*)?$/),
-    ).toBeVisible();
+    const bothClubs = page.getByText(/^(Boston Red Sox, Detroit Tigers|Detroit Tigers, Boston Red Sox)( · .*)?$/);
+    const lookingUp = page.getByRole("status").filter({ hasText: "Still looking up teams for 1 card." });
+    await expect(bothClubs.or(lookingUp).first()).toBeVisible();
+    await expect(page.getByText(/^(Boston Red Sox|Detroit Tigers)( · .*)?$/)).toHaveCount(0);
+    const answered = await bothClubs.isVisible();
+    bscLookupOutcome(answered ? "answered" : "cooldown", "PDA-WW");
     await expectAccessible(page, { label: "Prospect Dual Autographs checklist, dual-team card saved" });
 
     // ── STEP 7: claim (c): no combined team exists ──

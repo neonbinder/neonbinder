@@ -26,6 +26,8 @@ export type ChecklistLinkRow = {
   players: readonly string[];
   teams: readonly string[];
   noNumber?: true;
+  /** NEO-489 — the checklist says this card shows no team ("No Team"). */
+  noTeam?: true;
 };
 
 /** What a linked card needs to carry into the question. */
@@ -43,7 +45,7 @@ export type ChecklistPairRequest = {
   /** The card's `candidateKey` in the dialog; the answer comes back keyed by it. */
   cardKey: string;
   card: { cardNumber: string; players: string[]; teams: string[] };
-  row: { number: string; players: string[]; teams: string[]; noNumber?: true };
+  row: { number: string; players: string[]; teams: string[]; noNumber?: true; noTeam?: true };
 };
 
 /**
@@ -51,7 +53,9 @@ export type ChecklistPairRequest = {
  *
  *  - `teams` + `teamLookup: "checklist"` — the row settles the card's team;
  *    the card carries the row's (resolved) teams and skips the BSC lookup's
- *    answer.
+ *    answer. `teams: []` with `teamLookup: "checklist"` is the checklist's
+ *    "No Team" (NEO-489): the card carries no team and is never looked up
+ *    or guessed (`checklistClaimsNoTeam`).
  *  - `checklistConflict` — the row and the card disagree about players or
  *    teams. The card keeps its own values; the wizard's "Checklist says
  *    otherwise" step settles it.
@@ -110,6 +114,9 @@ export function buildChecklistPairRequests<C extends ChecklistLinkCard>(
         players: clean(row.players),
         teams: clean(row.teams),
         ...(row.noNumber ? { noNumber: true as const } : {}),
+        // NEO-489: a "No Team" row is a claim; dropping the flag would turn
+        // it into a row that names no team, which claims nothing.
+        ...(row.noTeam ? { noTeam: true as const } : {}),
       },
     });
   }
@@ -125,7 +132,9 @@ export function buildChecklistPairRequests<C extends ChecklistLinkCard>(
  *    own values stay;
  *  - a settled team replaces the card's teams and marks it
  *    `teamLookup: "checklist"`. BSC's raw team text goes with it: it was the
- *    hint for a card that might save with no team, and this one has one.
+ *    hint for a card that might save with no team, and this one has one —
+ *    or the checklist said "No Team" (an empty `teams`, NEO-489), a claim
+ *    that holds back any guess from that hint.
  *
  * Returns a new array; a card with no answer is returned by reference. The
  * number and `platformData` are never touched.
@@ -152,7 +161,17 @@ export function applyChecklistAnswers<C extends AnswerableCard>(
       out.checklistConflict = answer.checklistConflict;
     }
     const teams = clean(answer.teams);
-    if (answer.teamLookup === "checklist" && teams.length > 0 && !answer.checklistConflict?.teams) {
+    // NEO-489: an empty `teams` is the checklist's "No Team" claim, applied
+    // only to a card with no team of its own (the server answers a card that
+    // has one with a conflict instead), so this fold never wipes a team. An
+    // answer with no `teams` at all settles nothing.
+    const noTeamClaim =
+      teams.length === 0 && answer.teams !== undefined && clean(card.teams).length === 0;
+    if (
+      answer.teamLookup === "checklist" &&
+      (teams.length > 0 || noTeamClaim) &&
+      !answer.checklistConflict?.teams
+    ) {
       out.teams = teams;
       out.teamLookup = "checklist";
       delete out.rawTeamName;

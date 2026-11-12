@@ -16,7 +16,8 @@
  * How a card's team was settled at fetch time:
  *  - "answered"  — BSC's per-card lookup replied (with a team or with none);
  *  - "failed"    — that lookup failed;
- *  - "checklist" — the operator's published checklist named it (NEO-478).
+ *  - "checklist" — the operator's published checklist named it (NEO-478),
+ *    or said "No Team" (NEO-489: then the card carries no team strings).
  * Absent when no lookup ran. "checklist" is a data claim (wrapper rule 8): no
  * inference rule may write a different team over it.
  */
@@ -75,6 +76,10 @@ function sameName(a: string, b: string): boolean {
  * - A teams answer records where the team came from: the checklist's is a
  *   checklist claim (`teamLookup: "checklist"`); the marketplace's is the
  *   lookup's answer (`"answered"`).
+ *   NEO-489: the checklist's side is empty when its row said "No Team", so
+ *   picking it leaves `teams: []` with `teamLookup: "checklist"`, which is
+ *   exactly how a No Team claim reads (`checklistClaimsNoTeam`): the card
+ *   stays out of the Teams step and saves as a confirmed no-team card.
  *
  * Returns a new object; the input is never touched. A card with nothing to
  * settle comes back as it is (minus an empty `checklistConflict`).

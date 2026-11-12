@@ -23,8 +23,17 @@ The recorder (and wait writer) must exist BEFORE the token read, with the
 early returns inside the try/finally that flushes and drains.
 
 `fetchBscCardTeamNames` has no token leg (card-listing is public). The seller
-session (`bscSeller.openBscSellerSession` → `getSiteTokenForUser`) reads its
-token before its recorder exists, so the listing drain's wait misses it.
+session (`bscSeller.openBscSellerSession`) builds its recorder first and wraps
+`getSiteTokenForUser` and the 401 re-auth (refresh + re-read, one span) since
+NEO-489; on no token it flushes the recorder so the wait closes (no calls =
+no summary row). A paused platform returns before the recorder: no wait.
+
+The consumer must have somewhere to show the edge. `ProgressLedger.waitEdge`
+drops an edge when no step is `working`, so the drain starts the first read
+step BEFORE `getSession()`. Start the key `readSheets` reads first
+(`reads.order[0]`), not `conditions[0]`: unnamed sheets sort last, so the
+first condition can be the LAST read. A failed open then settles that read
+`failed` (see [[progress-ledger-error-finish-settles-working-failed]]).
 
 Test pattern: `marketplaceWaits.tokenLeg.test.ts` mocks getSiteToken with a
 real delay and wraps `createMarketplaceWaitWriter` to interleave edges with

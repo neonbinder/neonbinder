@@ -8,8 +8,10 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import type { Doc } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import { __resetContractCache } from "./credentials";
-import { SEED_BSC_RELOGIN_SPACING_MS, seedBscReloginClock } from "./testing";
+import { SEED_BSC_RELOGIN_SPACING_MS, SEED_BSC_SELLER_CONFLICT_REASON, seedBscReloginClock } from "./testing";
 import { insertTestCard } from "../lib/testing/card-row";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { VISIT_GAP_MS } from "./dashboard";
@@ -1308,6 +1310,180 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
 
     expect(state.logins).toBe(5);
     expect(await sellerIdOf(t)).toBe(SELLER);
+    await drainScheduled(t);
+  });
+
+  /**
+   * NEO-489: a convex-test instance whose `updateSiteCredentialStatus` records
+   * every call: the `listing` it was asked for, the seller id saved at that
+   * moment, and the BSC listing row it left behind. The real handler runs.
+   */
+  async function recordingStatusWrites() {
+    const calls: Array<{
+      listing: string | undefined;
+      sellerIdAtCall: string | null;
+      rowAfter: Doc<"marketplaceListingStates"> | null;
+    }> = [];
+    const realModule = (await modules["./userProfile.ts"]()) as Record<string, unknown>;
+    const real = realModule.updateSiteCredentialStatus as {
+      _handler: (ctx: MutationCtx, args: { userId: string; listing?: string }) => Promise<null>;
+    };
+    const t = convexTest(schema, {
+      ...modules,
+      "./userProfile.ts": async () => ({
+        ...realModule,
+        updateSiteCredentialStatus: Object.assign(() => undefined, real as object, {
+          _handler: async (
+            ctx: MutationCtx,
+            args: { userId: string; listing?: string },
+          ) => {
+            const profile = await ctx.db
+              .query("userProfiles")
+              .withIndex("by_user", (q) => q.eq("userId", args.userId))
+              .unique();
+            const sellerIdAtCall = profile?.marketplaceAccountIds?.bscSellerId ?? null;
+            const out = await real._handler(ctx, args);
+            const rowAfter = await ctx.db
+              .query("marketplaceListingStates")
+              .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.userId).eq("platform", "bsc"))
+              .first();
+            calls.push({ listing: args.listing, sellerIdAtCall, rowAfter });
+            return out;
+          },
+        }),
+      }),
+    });
+    return { t, calls };
+  }
+
+  /** The `startListingWalk` jobs scheduled so far (a listing run starting). */
+  const listingWalks = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("startListingWalk"),
+      ),
+    );
+
+  test("NEO-489: listing stays off while the id is missing, then exactly one save once it lands", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, {}, { sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(3);
+    // Every sign-in in the loop stores with listing off; one save follows the id.
+    expect(calls.map((c) => c.listing)).toEqual(["testOff", "testOff", "testOff", "save"]);
+    for (const call of calls.slice(0, 3)) {
+      expect(call.rowAfter).toMatchObject({ testListingOff: true });
+      expect(call.rowAfter?.listingStartedAt).toBeUndefined();
+    }
+    // The save comes only after the id is saved, and listing starts on that id.
+    const save = calls[3];
+    expect(save.sellerIdAtCall).toBe(SELLER);
+    expect(save.rowAfter?.testListingOff).toBeUndefined();
+    expect(save.rowAfter?.listingStartedAt).toBeTypeOf("number");
+    expect(save.rowAfter?.platformAccountId).toBe(SELLER);
+    expect(await listingWalks(t)).toHaveLength(1);
+    await drainScheduled(t);
+  });
+
+  test("NEO-489: the id on the first sign-in: one listing-off store, then one save", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    const { fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(calls.map((c) => [c.listing, c.sellerIdAtCall])).toEqual([
+      ["testOff", SELLER],
+      ["save", SELLER],
+    ]);
+    expect(calls[1].rowAfter).toMatchObject({ platformAccountId: SELLER });
+    expect(calls[1].rowAfter?.listingStartedAt).toBeTypeOf("number");
+    expect(await listingWalks(t)).toHaveLength(1);
+    await drainScheduled(t);
+  });
+
+  test("NEO-489: a stalled seed leaves listing off: no save, the marker held, no listing run", async () => {
+    const { t, calls } = await recordingStatusWrites();
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([
+      { site: "buysportscards", stored: false, reason: stalled(5) },
+    ]);
+
+    expect(state.logins).toBe(5);
+    expect(calls.map((c) => c.listing)).toEqual(["testOff", "testOff", "testOff", "testOff", "testOff"]);
+    const [row] = await t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
+    );
+    expect(row.testListingOff).toBe(true);
+    expect(row.listingStartedAt).toBeUndefined();
+    expect(await listingWalks(t)).toEqual([]);
+    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+    await drainScheduled(t);
+  });
+
+  /** Another NB owner who already lists from the BSC seller account `accountId`. */
+  const otherOwnerListsFrom = (t: ReturnType<typeof convexTest>, accountId: string) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: USER_B,
+        platform: "bsc",
+        platformAccountId: accountId,
+        listingStartedAt: Date.now() - 60_000,
+        lastUpdated: Date.now() - 60_000,
+      });
+    });
+
+  /** USER_A's BSC listing row. */
+  const ownBscRow = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", USER_A).eq("platform", "bsc"))
+        .first(),
+    );
+
+  test("NEO-489: id missing, the listing save meets a seller conflict: stored false naming it, no listing run", async () => {
+    const t = convexTest(schema, modules);
+    await otherOwnerListsFrom(t, SELLER);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([
+      { site: "buysportscards", stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON },
+    ]);
+    expect(SEED_BSC_SELLER_CONFLICT_REASON).toContain("sellerConflict");
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    const row = await ownBscRow(t);
+    expect(row?.dormant).toBe("sellerConflict");
+    expect(row?.listingStartedAt).toBeUndefined();
+    expect(await listingWalks(t)).toEqual([]);
+    await drainScheduled(t);
+  });
+
+  test.each([
+    ["flag-only", SIGNED_IN, 0],
+    ["store", 404 as const, 1],
+  ])("NEO-489: id already saved (%s branch), a seller conflict: stored false naming it, no listing run", async (_name, metadata, logins) => {
+    const t = convexTest(schema, modules);
+    await preseedSellerId(t, "seller-kept");
+    await otherOwnerListsFrom(t, "seller-kept");
+    const { state, fetchFn } = loginStub({ metadata, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([
+      { site: "buysportscards", stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON },
+    ]);
+
+    expect(state.logins).toBe(logins);
+    expect((await ownBscRow(t))?.dormant).toBe("sellerConflict");
+    expect(await listingWalks(t)).toEqual([]);
     await drainScheduled(t);
   });
 

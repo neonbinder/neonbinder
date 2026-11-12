@@ -69,7 +69,7 @@ async function seedSet(t: ReturnType<typeof convexTest>): Promise<Id<"selectorOp
 
 type Pair = {
   card: { players: string[]; teams: string[] };
-  row: { number: string; players: string[]; teams: string[] };
+  row: { number: string; players: string[]; teams: string[]; noTeam?: boolean };
 };
 const pair = (card: Pair["card"], row: Partial<Pair["row"]> = {}): Pair => ({
   card,
@@ -234,6 +234,32 @@ describe("applyPublishedChecklistPairs: answers", () => {
           teams: { marketplace: ["New York Mets"], checklist: ["Philadelphia Phillies"] },
         },
       },
+    ]);
+  });
+
+  // NEO-489 × NEO-490 — a "No Team" row the operator links is the same claim
+  // a number pair makes: the card is answered with no team, or, when it has
+  // a team, the disagreement has an empty checklist side.
+  test("a No Team row linked to a teamless card answers it with no team", async () => {
+    const { answers } = await call([
+      pair({ players: ["A One"], teams: [] }, { players: ["A One"], teams: [], noTeam: true }),
+    ]);
+    expect(answers).toEqual([{ teams: [], teamLookup: "checklist" }]);
+  });
+
+  test("a row whose only team text is \"No Team\" reads as the same claim", async () => {
+    const { answers } = await call([
+      pair({ players: ["A One"], teams: [] }, { players: ["A One"], teams: ["No Team"] }),
+    ]);
+    expect(answers).toEqual([{ teams: [], teamLookup: "checklist" }]);
+  });
+
+  test("a No Team row linked to a card with a team is a conflict with an empty checklist side", async () => {
+    const { answers } = await call([
+      pair({ players: ["A One"], teams: ["New York Mets"] }, { players: ["A One"], teams: [], noTeam: true }),
+    ]);
+    expect(answers).toEqual([
+      { checklistConflict: { teams: { marketplace: ["New York Mets"], checklist: [] } } },
     ]);
   });
 

@@ -285,9 +285,11 @@ describe("a seller session samples failed bodies keysOnly", () => {
     const samples = scheduled[0].args.samples as Array<Record<string, unknown>>;
     expect(samples).toHaveLength(1);
     expect(samples[0].body).toBe(body);
-    // `at` is an epoch-ms timestamp whose digits can by chance contain "555",
-    // "867" or "5309"; drop that one key everywhere and check every other field.
-    const withoutAt = (_key: string, v: unknown) => (_key === "at" ? undefined : v);
+    // `at`, `startedAt` and `endedAt` are epoch-ms timestamps whose digits can
+    // by chance contain "555", "867" or "5309" (a `startedAt` of
+    // 1794400755570 did); drop those keys everywhere and check every other field.
+    const timestamps = new Set(["at", "startedAt", "endedAt"]);
+    const withoutAt = (_key: string, v: unknown) => (timestamps.has(_key) ? undefined : v);
     for (const out of [
       JSON.stringify(failures()[0], withoutAt),
       JSON.stringify(scheduled[0].args, withoutAt),
@@ -360,5 +362,135 @@ describe("flushBscRecorder never throws into its caller", () => {
     await expect(flushBscRecorder(undefined, rec)).resolves.toBeUndefined();
     await expect(flushBscRecorder({ runAction: vi.fn() }, createBscRecorder("x"))).resolves.toBeUndefined();
     expect(summaries()).toEqual([expect.objectContaining({ op: "resolveBscCardTeam", calls: 1, ok: 1 })]);
+  });
+});
+
+describe("NEO-489: the session's sign-in is BSC wait time, counted once", () => {
+  type Edge = { waiting: boolean; at: number; accumulatedMs: number };
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  /** A ctx whose credential actions are the test's own, named by function. */
+  function waitCtx(handlers: { token?: () => Promise<unknown>; refresh?: () => Promise<unknown> }) {
+    const runAction = vi.fn(async (ref: unknown, _args: unknown) => {
+      const name = getFunctionName(ref as never);
+      if (name === "credentials:refreshSiteTokenForUser") return (handlers.refresh ?? (async () => ({ refreshed: true })))();
+      return (handlers.token ?? (async () => ({ token: "tok-1" })))();
+    });
+    const runAfter = vi.fn(async () => "scheduled-id");
+    return { ctx: { runAction, scheduler: { runAfter } }, runAction, runAfter };
+  }
+
+  test("the token read opens the wait, and it and the first call are one wait: one open edge, one close", async () => {
+    vi.stubGlobal("fetch", (async () => Response.json({ results: [], totalElements: 0 })) as typeof fetch);
+    const edges: Edge[] = [];
+    let edgesWhileReading: Edge[] = [];
+    const { ctx } = waitCtx({
+      token: async () => {
+        edgesWhileReading = [...edges];
+        await sleep(60);
+        return { token: "tok-1" };
+      },
+    });
+    const opened = await openBscSellerSession(ctx as never, "owner", {
+      op: "drainOwner",
+      onWaitEdge: (e) => edges.push(e),
+    });
+    if (!opened.ok) throw new Error("expected a session");
+    // The wait was already open while the token was being read.
+    expect(edgesWhileReading).toEqual([expect.objectContaining({ waiting: true, accumulatedMs: 0 })]);
+    await readBscOrderHistory(ctx as never, opened.value, 0);
+    await closeBscSellerSession(ctx, opened.value);
+
+    expect(edges.map((e) => e.waiting)).toEqual([true, false]);
+    // The closed wait covers the token read, not just the call.
+    expect(edges[1].accumulatedMs).toBeGreaterThanOrEqual(50);
+    expect(edges[1].accumulatedMs).toBe(edges[1].at - edges[0].at);
+    // Still one call on the summary: the token read is wait, not a call.
+    expect(summaries()[0]).toMatchObject({ op: "drainOwner", calls: 1, ok: 1 });
+  });
+
+  test("no token: the wait closes at once and nothing is recorded", async () => {
+    const edges: Edge[] = [];
+    const { ctx, runAfter } = waitCtx({ token: async () => null });
+    const opened = await openBscSellerSession(ctx as never, "owner", {
+      op: "drainOwner",
+      onWaitEdge: (e) => edges.push(e),
+    });
+    expect(opened).toMatchObject({ ok: false, failure: { kind: "no_token" } });
+    expect(edges.map((e) => e.waiting)).toEqual([true, false]);
+    expect(summaries()).toHaveLength(0);
+    expect(runAfter).not.toHaveBeenCalled();
+  });
+
+  test("a token read that throws closes the wait the same way", async () => {
+    const edges: Edge[] = [];
+    const { ctx, runAfter } = waitCtx({
+      token: async () => {
+        throw new Error("browser service down");
+      },
+    });
+    const opened = await openBscSellerSession(ctx as never, "owner", { onWaitEdge: (e) => edges.push(e) });
+    expect(opened).toMatchObject({ ok: false, failure: { kind: "no_token" } });
+    expect(edges.map((e) => e.waiting)).toEqual([true, false]);
+    expect(runAfter).not.toHaveBeenCalled();
+  });
+
+  test("a paused BSC opens no wait: nothing is contacted", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    const edges: Edge[] = [];
+    const { ctx, runAction } = waitCtx({});
+    const opened = await openBscSellerSession(ctx as never, "owner", { onWaitEdge: (e) => edges.push(e) });
+    expect(opened).toMatchObject({ ok: false, failure: { kind: "paused" } });
+    expect(runAction).not.toHaveBeenCalled();
+    expect(edges).toEqual([]);
+  });
+
+  test("a 401's re-auth is one span: the 401, a re-auth slower than the idle grace and the retry are ONE wait", async () => {
+    const statuses = [401, 200];
+    vi.stubGlobal("fetch", (async () => {
+      const status = statuses.shift() ?? 500;
+      return status === 200 ? Response.json({ results: [], totalElements: 0 }) : new Response("expired", { status });
+    }) as typeof fetch);
+    const edges: Edge[] = [];
+    let tokenReads = 0;
+    let edgesWhileRefreshing: Edge[] = [];
+    const { ctx } = waitCtx({
+      token: async () => {
+        tokenReads += 1;
+        return { token: tokenReads === 1 ? "tok-1" : "tok-2" };
+      },
+      refresh: async () => {
+        edgesWhileRefreshing = [...edges];
+        // Longer than the recorder's 500 ms idle grace: without the span the
+        // wait would close here and open again for the retry.
+        await sleep(650);
+        return { refreshed: true };
+      },
+    });
+    const opened = await openBscSellerSession(ctx as never, "owner", { onWaitEdge: (e) => edges.push(e) });
+    if (!opened.ok) throw new Error("expected a session");
+    const r = await readBscOrderHistory(ctx as never, opened.value, 0);
+    expect(r.ok).toBe(true);
+    expect(opened.value.token).toBe("tok-2");
+    await closeBscSellerSession(ctx, opened.value);
+
+    expect(edgesWhileRefreshing.map((e) => e.waiting)).toEqual([true]);
+    expect(edges.map((e) => e.waiting)).toEqual([true, false]);
+    expect(edges[1].accumulatedMs).toBeGreaterThanOrEqual(600);
+    expect(summaries()[0]).toMatchObject({ calls: 2, ok: 1, byStatus: { "401": 1, "200": 1 } });
+  });
+
+  test("a re-auth that fails still ends its span: the wait closes and the session is dead", async () => {
+    vi.stubGlobal("fetch", (async () => new Response("expired", { status: 401 })) as typeof fetch);
+    const edges: Edge[] = [];
+    const { ctx } = waitCtx({ refresh: async () => ({ refreshed: false }) });
+    const opened = await openBscSellerSession(ctx as never, "owner", { onWaitEdge: (e) => edges.push(e) });
+    if (!opened.ok) throw new Error("expected a session");
+    expect(await readBscOrderHistory(ctx as never, opened.value, 0)).toMatchObject({
+      ok: false,
+      failure: { kind: "signed_out" },
+    });
+    expect(opened.value.dead).toBe(true);
+    await closeBscSellerSession(ctx, opened.value);
+    expect(edges.map((e) => e.waiting)).toEqual([true, false]);
   });
 });
