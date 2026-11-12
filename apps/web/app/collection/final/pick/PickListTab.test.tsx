@@ -71,6 +71,24 @@ describe("the Pick List demo", () => {
     expect(within(table).getByRole("heading", { level: 3, name: "2026 Topps Series 1" })).toBeTruthy();
   });
 
+  it("files a sale NB couldn't match with its set when the listing says what it is, marked Unmatched (NEO-509)", async () => {
+    renderPick();
+    const nabers = await screen.findByRole("button", { name: "Pulled 2024 Score · Malik Nabers · #302, unmatched, BSC 88240" });
+    const row = nabers.closest("tr")!;
+    expect(within(row).getAllByText("Unmatched").length).toBeGreaterThan(0);
+    expect(within(row).getAllByText("#302").length).toBeGreaterThan(0);
+    // Under the 2024 Score divider, before that set's insert, not in Can't find it.
+    const group = row.closest("tbody")!;
+    expect(within(group).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
+    const order = within(group)
+      .getAllByRole("button", { name: /^Pulled / })
+      .map((b) => b.getAttribute("aria-label"));
+    expect(order[0]).toBe(nabers.getAttribute("aria-label"));
+    expect(order[1]).toMatch(/^Pulled #7 JC Latham/);
+    fireEvent.click(nabers);
+    expect(nabers.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("never gives two rows' controls the same name", async () => {
     renderPick();
     const names = (await screen.findAllByRole("button", { name: /^Pulled / })).map((b) => b.getAttribute("aria-label"));
@@ -135,12 +153,13 @@ describe("the Pick List demo", () => {
     renderPick();
     fireEvent.click(await screen.findByRole("link", { name: "By the Box" }));
     expect(document.title).toContain("2026 Baseball");
-    expect(screen.getByText("Plus 2 sales NB couldn't tie to a card. They're the last stop, after the boxes.")).toBeTruthy();
+    // Three: the demo's two strays and its listing NB filed by its words (NEO-509: no box holds it).
+    expect(screen.getByText("Plus 3 sales NB couldn't tie to a card. They're the last stop, after the boxes.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Print this box" })).toBeTruthy();
     for (let i = 0; i < 4; i += 1) fireEvent.click(screen.getByRole("button", { name: "Next box" }));
-    fireEvent.click(screen.getByRole("button", { name: "Can't find it (2)" }));
-    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("Last stop · Can't find it · 2 to pull");
-    expect(within(screen.getByRole("table")).getAllByRole("button", { name: /^Pulled / })).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Can't find it (3)" }));
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("Last stop · Can't find it · 3 to pull");
+    expect(within(screen.getByRole("table")).getAllByRole("button", { name: /^Pulled / })).toHaveLength(3);
   });
 
   it("Box done marks the box after a confirm and steps to the next one", async () => {

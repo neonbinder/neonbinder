@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
-import { playerNames, setLabel } from "../data/labels";
+import { playerNames } from "../data/labels";
 import { SPORT_LINE, VARIANT_STRIPE, sportHue } from "./colours";
-import { isPulled, orderLabel, VARIANT_ROLE_LABEL, variantName, variantRole, type PickRow, type PickSection } from "./model";
+import { isPulled, orderLabel, rowFacts, UNMATCHED, VARIANT_ROLE_LABEL, type PickRow, type PickSection } from "./model";
 
 /**
  * NEO-500 — the printed pick sheet: the screen's rows as a dense list, one
@@ -16,6 +16,9 @@ import { isPulled, orderLabel, VARIANT_ROLE_LABEL, variantName, variantRole, typ
  * order at the right. A set's divider is a thin rule in its sport's colour
  * with the set title inline; the sport's name is written once, where the
  * sport starts. Colours are the paper roles (pick-list.css).
+ *
+ * NEO-509: a sale filed with its set by the listing's words alone prints
+ * like a card, with "Unmatched" among its marks.
  */
 
 /** True while the page is printing: the Print button, Ctrl/⌘+P and print emulation all count. */
@@ -41,15 +44,14 @@ export function usePrinting(): boolean {
 
 /** "Parallel Gold Foil", "Insert parallel 8 Bit Ballers Red", "Base". */
 function variantText(row: PickRow): string {
-  const c = row.card;
-  if (!c) return "";
-  const role = variantRole(c);
-  const name = variantName(c);
-  return name ? `${VARIANT_ROLE_LABEL[role]} ${name}` : VARIANT_ROLE_LABEL[role];
+  const facts = rowFacts(row);
+  if (!facts) return "";
+  return facts.variantName ? `${VARIANT_ROLE_LABEL[facts.role]} ${facts.variantName}` : VARIANT_ROLE_LABEL[facts.role];
 }
 
 function markersText(row: PickRow): string {
-  const marks = [row.isNew && "New", row.lastOnes && "Last ones", row.short > 0 && `Short ${row.short}`].filter(Boolean);
+  const unmatched = !row.card && rowFacts(row) !== null;
+  const marks = [unmatched && UNMATCHED, row.isNew && "New", row.lastOnes && "Last ones", row.short > 0 && `Short ${row.short}`].filter(Boolean);
   return marks.length ? marks.join(", ") : "";
 }
 
@@ -118,27 +120,30 @@ export default function PrintSheet({
             )}
             {section.rows.map((row) => {
               const c = row.card;
+              const facts = rowFacts(row);
               const done = isPulled(row, pulled);
-              const role = c ? variantRole(c) : null;
+              const role = facts?.role ?? null;
               // Outside a set's divider the line names its set too.
-              const card = c
-                ? `${section.kind === "set" ? "" : `${setLabel(c.set)} `}${variantText(row)}${row.serial ? ` ${row.serial}` : ""}`
+              const card = facts
+                ? `${section.kind === "set" ? "" : `${facts.setTitle} `}${variantText(row)}${row.serial ? ` ${row.serial}` : ""}`
                 : (row.problem ?? "");
               const marks = markersText(row);
               return (
-                <tr key={row.key} data-pulled={done || undefined} className={c ? "nb-pick-sheet-row" : "nb-pick-sheet-row nb-pick-sheet-lost"}>
+                <tr key={row.key} data-pulled={done || undefined} className={facts ? "nb-pick-sheet-row" : "nb-pick-sheet-row nb-pick-sheet-lost"}>
                   <td>
                     <span className="nb-pick-tick">{done ? "✓" : ""}</span>
                   </td>
                   {showSlot && <td>{row.spot?.slot ?? ""}</td>}
                   <td className="nb-pick-sheet-strong">{row.quantity > 1 ? `×${row.quantity}` : ""}</td>
-                  <td className="nb-pick-sheet-strong">{c ? `#${c.cardNumber}` : ""}</td>
+                  <td className="nb-pick-sheet-strong">{facts ? `#${facts.cardNumber}` : ""}</td>
                   <td>
                     {c ? (
                       <>
                         <span className="nb-pick-sheet-strong">{playerNames(c)}</span>
                         {c.teams.length > 0 && ` ${c.teams.map((t) => t.name).join(" / ")}`}
                       </>
+                    ) : facts?.players ? (
+                      <span className="nb-pick-sheet-strong">{facts.players}</span>
                     ) : (
                       row.listingTitle
                     )}

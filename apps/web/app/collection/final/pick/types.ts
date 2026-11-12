@@ -56,10 +56,43 @@ export interface PickBox {
 }
 
 /**
+ * NEO-509 — the card a sale line was listed as, in the marketplace's own
+ * words, kept on the sale for the Pick List only (never written to an NB
+ * card, set or player). The store resolves it: the sport through NB's own
+ * sport row when the sale names one, the year as a number, the variant's
+ * role from its word. Every field is optional: a line shows what it has.
+ *
+ * With a sport, a year, a set name and a card number the line is walked
+ * with its set (`./model` `rowFacts`); with less it stays in "Can't find it".
+ */
+export interface ListedCard {
+  /** NB's sport row, when the sale named one NB knows. */
+  sportId?: string;
+  /** NB's sport name when resolved, else the listing's own sport word. */
+  sportName?: string;
+  /** NB's sport code ("BB"), resolved sports only: it picks the divider colour. */
+  sportCode?: string;
+  /** The year the set files under (a season's start), 1800 to 2100. */
+  year?: number;
+  /** The listing's year as written ("2023-24"), for the label. */
+  season?: string;
+  /** The listing's set name: "Score", "Topps Chrome". */
+  setName?: string;
+  /** The listing's players, as written. */
+  players?: string;
+  cardNumber?: string;
+  /** The divider the variant's word names; absent when the line names no variant. */
+  role?: "base" | "parallel" | "insert";
+  /** The insert or parallel's name: "1991 Throwback". */
+  variantName?: string;
+}
+
+/**
  * One line of one order to pull.
  *
  * - `card` is NB's card when the sale matched one; null when NB could not
- *   match the listing to a card (it goes in "Can't find it" with `problem`).
+ *   match the listing to a card (it goes in "Can't find it" with `problem`,
+ *   or with its set when `listed` says enough).
  * - `sportCode` is NB's own code for the card's sport (the sport row's SKU
  *   code: "BB", "FB", "BK", "HK"); it picks the divider colour. Never the
  *   sport's name.
@@ -70,6 +103,8 @@ export interface SaleLine {
   sportCode: string | null;
   /** The listing's own title, shown when there is no card. */
   listingTitle: string;
+  /** NEO-509 — on a line with no card: what the sale says the card is, when it says anything. */
+  listed?: ListedCard;
   /** Why NB could not match it (only on a line with no card). */
   problem?: string;
   /** Copies sold on this line. */

@@ -18,7 +18,7 @@ vi.mock("convex/react", () => ({
   useMutation: () => mutate,
 }));
 
-import { ConvexPickListProvider } from "./convexPickStore";
+import { ConvexPickListProvider, listedTitle, listedYear, toListedCard } from "./convexPickStore";
 import { PickListStoreContext } from "./store";
 import type { PickListStore } from "./types";
 
@@ -201,5 +201,40 @@ describe("the signed-in Pick List store", () => {
     });
     expect(mutate).not.toHaveBeenCalled();
     expect(leaving()).toBe(false);
+  });
+});
+
+describe("NEO-509: a sale's own words for its card", () => {
+  it("titles the line set, players, number, variant; a Base variant unwritten", () => {
+    const listed = toListedCard(
+      { sport: "football", year: "2021", setName: "Score", players: "Justin Fields", cardNo: "TB2", variant: "Insert", variantName: "1991 Throwback" },
+      undefined,
+    );
+    expect(listedTitle(listed!)).toBe("2021 Score · Justin Fields · #TB2 · 1991 Throwback");
+    expect(listed).toMatchObject({ sportName: "football", year: 2021, role: "insert", cardNumber: "TB2" });
+    expect(listedTitle(toListedCard({ year: "2024", setName: "2024 Topps Chrome", cardNo: "7", variant: "Base" }, undefined)!)).toBe(
+      "2024 Topps Chrome · #7",
+    );
+  });
+
+  it("takes NB's sport when the sale names one NB has, the listing's word otherwise", () => {
+    const raw = { sport: "football", sportId: "sp1" as never, year: "2021" };
+    expect(toListedCard(raw, { name: "Football", code: "FB" })).toMatchObject({ sportId: "sp1", sportName: "Football", sportCode: "FB" });
+    const unresolved = toListedCard(raw, null)!;
+    expect(unresolved.sportId).toBeUndefined();
+    expect(unresolved.sportName).toBe("football");
+  });
+
+  it("reads an unknown variant word as Base, or an insert when it names one, and keeps the word for the title", () => {
+    expect(toListedCard({ variant: "Promo" }, undefined)).toMatchObject({ role: "base", variantName: "Promo" });
+    expect(toListedCard({ variant: "Short Print", variantName: "Gold" }, undefined)).toMatchObject({ role: "insert", variantName: "Gold" });
+    expect(toListedCard({ variant: "Parallels", variantName: "Gold" }, undefined)).toMatchObject({ role: "parallel" });
+  });
+
+  it("files a season under its start year and refuses a year that is no year", () => {
+    expect(["2021", "2023-24", "2023/2024", "1799", "2101", "21", "2021a"].map(listedYear)).toEqual([
+      2021, 2023, 2023, undefined, undefined, undefined, undefined,
+    ]);
+    expect(toListedCard({ sport: " ", players: "" }, undefined)).toBeUndefined();
   });
 });

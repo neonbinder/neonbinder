@@ -3,11 +3,12 @@ import { useConvex, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { toCardWithPath } from "../data/convexStore";
 import type { Card, Condition } from "../data/types";
 import { PageApiContext } from "../pageApi";
 import { PickListStoreContext } from "./store";
-import type { PickBox, PickListData, PickListStore, PickPhoto, SaleLine } from "./types";
+import type { ListedCard, PickBox, PickListData, PickListStore, PickPhoto, SaleLine } from "./types";
 
 /**
  * NEO-500 — the signed-in seller's Pick List, on Convex. The same
@@ -29,10 +30,17 @@ import type { PickBox, PickListData, PickListStore, PickPhoto, SaleLine } from "
  * A line that first shows after the list loaded is New ("Sold since you
  * started"). One order item taken from two boxes is two rows, one per box,
  * sharing the item's mark (`${id}@${k}`).
+ *
+ * NEO-509: a line NB could not tie to a card carries the sale's own words
+ * for it (`listed`). The store reads its sport through `sports` (once per
+ * sport, like `cards`), turns the words into a `ListedCard`, and titles the
+ * line with them: "2021 Score · Justin Fields · #TB2 · 1991 Throwback".
+ * Only a line that says nothing is "Unmatched sale (n of m)".
  */
 
 type OpenAnswer = FunctionReturnType<typeof api.pickList.open>;
 type RawLine = OpenAnswer["lines"][number];
+type RawListed = NonNullable<RawLine["listed"]>;
 
 /** Card ids `pickList.cards` takes at once (the server's `MAX_CARDS_BY_ID`). */
 const CARDS_PER_CALL = 200;
@@ -40,6 +48,8 @@ const CARDS_PER_CALL = 200;
 const PHOTOS_PER_CALL = 100;
 /** Line ids `pickList.setPulled` takes at once (the server's `MAX_SET_PULLED`). */
 const PULLS_PER_CALL = 200;
+/** Sport ids `pickList.sports` takes at once (the server's `MAX_SPORTS_BY_ID`). */
+const SPORTS_PER_CALL = 20;
 
 const VENUE: Record<RawLine["platform"], string> = { bsc: "BSC", ebay: "eBay" };
 
@@ -95,6 +105,77 @@ interface Hydrated {
   sportCode: string | null;
 }
 
+/** NB's sport row a sale names: its name and SKU code. */
+interface SportRow {
+  name: string;
+  code: string | null;
+}
+
+/** A listing's words, trimmed; blank is absent. */
+function words(text: string | undefined): string | undefined {
+  const t = text?.replace(/\s+/g, " ").trim();
+  return t ? t : undefined;
+}
+
+/** The years a set files under; a listing's year outside them is a misread. */
+const FIRST_YEAR = 1800;
+const LAST_YEAR = 2100;
+
+/** "2021" is 2021; a season files under its start: "2023-24" and "2023/2024" are 2023. */
+export function listedYear(season: string): number | undefined {
+  const m = /^(\d{4})(?:\s*[-/]\s*(?:\d{2}|\d{4}))?$/.exec(season);
+  if (!m) return undefined;
+  const year = Number(m[1]);
+  return year >= FIRST_YEAR && year <= LAST_YEAR ? year : undefined;
+}
+
+/**
+ * A sale's words for its card, resolved: NB's sport when the sale named one
+ * NB has (`sport` loaded), else the listing's sport word; the year as a
+ * number; the variant's divider from its word (Base, Insert, Parallel), an
+ * unknown word reading as an insert when it names one ("1991 Throwback")
+ * and as Base when it does not. Undefined when the words say nothing.
+ */
+export function toListedCard(raw: RawListed, sport: SportRow | null | undefined): ListedCard | undefined {
+  const season = words(raw.year);
+  const year = season ? listedYear(season) : undefined;
+  const variant = words(raw.variant);
+  const variantName = words(raw.variantName);
+  const kind = variantTypeKindFromTitle(variant);
+  const sportName = sport?.name ?? words(raw.sport);
+  const out: ListedCard = {
+    ...(sport && raw.sportId ? { sportId: raw.sportId } : {}),
+    ...(sportName ? { sportName } : {}),
+    ...(sport?.code ? { sportCode: sport.code } : {}),
+    ...(year !== undefined ? { year } : {}),
+    ...(season ? { season } : {}),
+    ...(words(raw.setName) ? { setName: words(raw.setName) } : {}),
+    ...(words(raw.players) ? { players: words(raw.players) } : {}),
+    ...(words(raw.cardNo) ? { cardNumber: words(raw.cardNo) } : {}),
+    ...(variant || variantName ? { role: kind ?? (variantName ? "insert" : "base") } : {}),
+    // A word NB does not file by ("Promo") is still how the seller finds the card: it titles the line.
+    ...(variantName || (variant && !kind) ? { variantName: variantName ?? variant } : {}),
+  };
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * A listing's title, from whatever it says, in the order a seller reads a
+ * card: set, players, number, variant. "2021 Score · Justin Fields · #TB2 ·
+ * 1991 Throwback". A Base variant is not written; an empty answer means the
+ * listing said nothing a seller could look for.
+ */
+export function listedTitle(listed: ListedCard): string {
+  const { season, setName } = listed;
+  const set = setName
+    ? season && !setName.toLowerCase().startsWith(`${season.toLowerCase()} `)
+      ? `${season} ${setName}`
+      : setName
+    : season;
+  const variant = listed.variantName ?? (listed.role && listed.role !== "base" ? (listed.role === "insert" ? "Insert" : "Parallel") : undefined);
+  return [set, listed.players, listed.cardNumber ? `#${listed.cardNumber}` : undefined, variant].filter(Boolean).join(" · ");
+}
+
 /**
  * One server line as the rows the UI draws. `card` is undefined while the
  * card is still loading (the line waits), null when it is gone.
@@ -103,7 +184,13 @@ export function toSaleLines(
   raw: RawLine,
   hydrated: Hydrated | null | undefined,
   photos: ReadonlyMap<string, PickPhoto | null>,
-  options: { isNew: boolean; lostIndex?: { n: number; of: number } },
+  options: {
+    isNew: boolean;
+    /** This line's place among its order's lines with the same title, when more than one shares it. */
+    lostIndex?: { n: number; of: number };
+    /** What the sale says the card is, resolved (`toListedCard`). */
+    listed?: ListedCard;
+  },
 ): SaleLine[] {
   const venue = VENUE[raw.platform];
   const order = { id: raw.saleId, venue, number: raw.orderNo };
@@ -111,7 +198,8 @@ export function toSaleLines(
   const lostTitle = () => {
     const nth = options.lostIndex && options.lostIndex.of > 1 ? ` (${options.lostIndex.n} of ${options.lostIndex.of})` : "";
     // The Order column (a link to the sale) says which order; the toggle's name adds it.
-    return `Unmatched sale${nth}`;
+    const said = options.listed ? listedTitle(options.listed) : "";
+    return `${said || "Unmatched sale"}${nth}`;
   };
 
   if (raw.cantFind || !raw.cardId || !hydrated?.card) {
@@ -121,12 +209,14 @@ export function toSaleLines(
         : raw.cantFind === "unmatched" || !raw.cardId
           ? "NB couldn't match this line. Check the order's photo."
           : "This card isn't in NB's catalog any more. Check the order's photo.";
+    const listed = options.listed && listedTitle(options.listed) ? options.listed : undefined;
     return [
       {
         id: raw.id,
         card: null,
-        sportCode: null,
+        sportCode: listed?.sportCode ?? null,
         listingTitle: lostTitle(),
+        ...(listed ? { listed } : {}),
         problem,
         quantity: raw.quantity,
         condition: marketCondition(raw.condition),
@@ -204,8 +294,10 @@ function useConvexPickListStore(): PickListStore {
 
   const [cards, setCards] = useState<ReadonlyMap<string, Hydrated | null>>(() => new Map());
   const [photos, setPhotos] = useState<ReadonlyMap<string, PickPhoto | null>>(() => new Map());
+  const [sports, setSports] = useState<ReadonlyMap<string, SportRow | null>>(() => new Map());
   const askedCards = useRef(new Set<string>());
   const askedPhotos = useRef(new Set<string>());
+  const askedSports = useRef(new Set<string>());
   /** Line ids in the first answer: anything after is New. */
   const [baseline, setBaseline] = useState<ReadonlySet<string> | null>(null);
   /** Lines the seller marked this session, as last seen, so they stay on screen once the server drops them. */
@@ -253,6 +345,31 @@ function useConvexPickListStore(): PickListStore {
     }
   }, [rawLines, convex, pageApi]);
 
+  // The sports the sales' own words name, once each. A sport that does not
+  // load is the listing's word instead (never a wait, never a guess).
+  useEffect(() => {
+    const missing = [...new Set(rawLines.flatMap((l) => (l.listed?.sportId ? [l.listed.sportId as string] : [])))].filter(
+      (id) => !askedSports.current.has(id),
+    );
+    if (!missing.length) return;
+    for (const id of missing) askedSports.current.add(id);
+    const settle = (batch: string[], answer: ReadonlyArray<{ name: string; code: string | null } | null> | null) =>
+      setSports((prev) => {
+        const next = new Map(prev);
+        batch.forEach((id, i) => {
+          const hit = answer?.[i];
+          next.set(id, hit ? { name: hit.name, code: hit.code } : null);
+        });
+        return next;
+      });
+    for (const batch of chunks(missing, SPORTS_PER_CALL)) {
+      convex.query(api.pickList.sports, { sportIds: batch }).then(
+        (answer) => settle(batch, answer),
+        () => settle(batch, null),
+      );
+    }
+  }, [rawLines, convex]);
+
   // Photos of the sold copies, once each; a row draws the card until its photo lands.
   useEffect(() => {
     const missing = [...new Set(rawLines.flatMap((l) => l.from.map((f) => f.copyId as string)))].filter(
@@ -280,13 +397,28 @@ function useConvexPickListStore(): PickListStore {
     }
   }, [rawLines, convex]);
 
-  const allLoaded = rawLines.every((l) => l.cantFind || !l.cardId || cards.has(l.cardId));
+  const allLoaded = rawLines.every(
+    (l) => (l.cantFind || !l.cardId || cards.has(l.cardId)) && (!l.listed?.sportId || sports.has(l.listed.sportId)),
+  );
   if (!loadedOnce && open && baseline && allLoaded) setLoadedOnce(true);
 
   const data = useMemo<PickListData | undefined>(() => {
     if (!open || !baseline || (!loadedOnce && !allLoaded)) return undefined;
+    // A line NB could not tie to a card is titled by its own words; lines of
+    // one order that read the same (or say nothing) are numbered "(n of m)",
+    // so no two rows' controls read alike.
+    const listedOf = new Map<string, ListedCard | undefined>();
+    const titleKey = (raw: RawLine) => {
+      const listed = listedOf.get(raw.id);
+      return `${raw.saleId}\n${listed ? listedTitle(listed) : ""}`;
+    };
+    for (const raw of rawLines) {
+      if (!raw.cantFind || !raw.listed) continue;
+      const sportId = raw.listed.sportId as string | undefined;
+      listedOf.set(raw.id, toListedCard(raw.listed, sportId ? sports.get(sportId) : undefined));
+    }
     const lostCount = new Map<string, number>();
-    for (const l of rawLines) if (l.cantFind) lostCount.set(l.saleId, (lostCount.get(l.saleId) ?? 0) + 1);
+    for (const l of rawLines) if (l.cantFind) lostCount.set(titleKey(l), (lostCount.get(titleKey(l)) ?? 0) + 1);
     const lostSeen = new Map<string, number>();
     const lines: SaleLine[] = [];
     for (const raw of rawLines) {
@@ -294,16 +426,17 @@ function useConvexPickListStore(): PickListStore {
       if (!raw.cantFind && raw.cardId && !cards.has(raw.cardId)) continue;
       let lostIndex: { n: number; of: number } | undefined;
       if (raw.cantFind) {
-        const n = (lostSeen.get(raw.saleId) ?? 0) + 1;
-        lostSeen.set(raw.saleId, n);
-        lostIndex = { n, of: lostCount.get(raw.saleId) ?? 1 };
+        const key = titleKey(raw);
+        const n = (lostSeen.get(key) ?? 0) + 1;
+        lostSeen.set(key, n);
+        lostIndex = { n, of: lostCount.get(key) ?? 1 };
       }
       const hydrated = raw.cardId ? cards.get(raw.cardId) : undefined;
-      lines.push(...toSaleLines(raw, hydrated, photos, { isNew: !baseline.has(raw.id), lostIndex }));
+      lines.push(...toSaleLines(raw, hydrated, photos, { isNew: !baseline.has(raw.id), lostIndex, listed: listedOf.get(raw.id) }));
     }
     const boxes: PickBox[] = open.boxes.map((b) => ({ id: b.id, name: b.name, ...(b.unsorted ? { unsorted: true } : {}) }));
     return { lines, boxes, ...(open.truncated ? { truncated: true } : {}) };
-  }, [open, baseline, loadedOnce, allLoaded, rawLines, cards, photos]);
+  }, [open, baseline, loadedOnce, allLoaded, rawLines, cards, photos, sports]);
 
   // The page's ids are rows; a row is pulled when its line is.
   const pulled = useMemo<ReadonlySet<string>>(

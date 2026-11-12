@@ -337,6 +337,22 @@ export const DEMO_PICK_LINES: readonly SaleLine[] = [
   line(card({ set: S24_GPK, number: "1a", player: "Adam Bomb" }), NON_SPORT, O6),
   line(card({ set: S24_GPK, number: "KP-3", player: "Dead Ted", kind: "insert", variant: "Kids at Play" }), NON_SPORT, O6),
 
+  // NB could not tie this sale to a card, but the listing says what it is,
+  // so it walks with its set (2024 Score) and wears "Unmatched".
+  line(null, null, O5, {
+    listingTitle: "2024 Score · Malik Nabers · #302",
+    listed: {
+      sportName: FOOTBALL.name,
+      year: 2024,
+      season: "2024",
+      setName: "Score",
+      players: "Malik Nabers",
+      cardNumber: "302",
+      role: "base",
+    },
+    problem: "NB couldn't match this line. Check the order's photo.",
+  }),
+
   // Can't find it: NB could not tie these to one card.
   line(null, null, O3, {
     listingTitle: "2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr. #CCR-BW",

@@ -43,7 +43,7 @@
 - [convex-test ids fail real-id codecs](reference_convex_test_ids_fail_real_id_codecs.md) — mock id-checksum codecs (listingSku); fake timers when a test only inspects scheduled network actions
 - [Hold a runAfter(0) action in convex-test](reference_hold_runafter0_in_convex_test.md) — fake setTimeout, hand-run walks, cancel before useRealTimers; count drains in any state
 - [Scratch test typecheck: node-types noise](reference_scratch_test_typecheck_node_types_noise.md) — fixture-reading tests report TS2591/TS2304 under the convex tsconfig; encodeId mints real ids for lib tests
-- [New table naming a card: three places](reference_new_table_naming_a_card_three_places.md) — wipe reference graph (tested), set-builder reset batch and per-user testing reset (untested)
+- [New table naming a card: four places](reference_new_table_naming_a_card_three_places.md) — wipe graph (tested), set-builder reset, per-user reset (untested), reference-seed dependant list (tested; nested ids count)
 - [eBay Sell API shapes come from the OAS specs](reference_ebay_sell_api_shapes_come_from_the_oas_specs.md) — no schemas on doc pages; bulk 400 per-entry; 25002 adopt; enums via SDK; cost types loose; hash every item field
 - [Work under the credential lock reads tokens directly](reference_work_under_the_credential_lock_reads_tokens_directly.md) — getSiteTokenForUser/re-auth contend for the held lock (busy = no token); read cache, refresh body, reauthAttempted:true
 - [Public refusals: return or ConvexError](reference_public_refusals_are_returns_or_convex_error.md) — a plain Error from a public function is "Server Error" in prod; return {ok:false,error}
@@ -73,3 +73,4 @@
 - [Wall-clock unit tests red under load](reference_wall_clock_unit_tests_red_under_load.md) — parser 2 MB bound and theme-allowlist scan time out at load ~30+; rerun alone, never raise the bound
 - [Scratch probe via a sibling test's header](reference_scratch_probe_via_sibling_test_header.md) — copy a test file's pre-describe header into convex/zz*.test.ts, probe, rm in the same call
 - [Seed hops that consume rows replay on retry](reference_seed_hops_that_consume_rows_replay_on_retry.md) — an apply-seed lowers the copies it resolved from; replay the stored order by token on a re-visit
+- [Convex doc-size budget counts framing](reference_convex_doc_size_budget_counts_framing.md) — getDocumentSize adds ~3 B/field + ~10 B/object; test both fat and many-tiny worst shapes

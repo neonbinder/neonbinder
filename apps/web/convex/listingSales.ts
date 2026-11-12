@@ -64,7 +64,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { listingPlatformValidator } from "./schema";
+import { listingPlatformValidator, saleItemListedValidator } from "./schema";
+import { slotIds } from "./platformSlots";
 import {
   applyCopyChanges,
   changeOf,
@@ -95,7 +96,13 @@ import { getOrdersPage, openEbaySellerSession, EBAY_ORDERS_PAGE } from "./adapte
 import { isPlatformPaused } from "./marketplacePause";
 import { savedSignInsPassDone } from "./listingSync";
 import { bscEraForYear, isBscRawCondition, nbConditionsFor, type BscEra } from "./lib/bscConditions";
-import { bscOrderDisposition, chooseCopiesToLower, type BscOrder } from "./lib/bscOrders";
+import {
+  BSC_LISTED_BOUNDS,
+  bscListedText,
+  bscOrderDisposition,
+  chooseCopiesToLower,
+  type BscOrder,
+} from "./lib/bscOrders";
 import { parseListingSku } from "./lib/listingSku";
 import { MAX_FROM_PER_SALE, MAX_PICK_FROM, pullOpenOf, saleItemKey } from "./lib/pickLines";
 import { isTestSaleOrderId } from "./lib/testSeedMarks";
@@ -290,6 +297,16 @@ export const pollInput = internalQuery({
 
 // ── Storing an order ───────────────────────────────────────────────────────
 
+/**
+ * NEO-509 — a line's description as the poll projects it: the stored shape
+ * (`saleItemListedValidator`) less NB's `sportId`, plus the platform's own
+ * sport id (`platformSportId`, BSC's item-level `sportId`, e.g. "football").
+ * `recordOrderCore` turns that id into NB's `sportId` and never stores it.
+ */
+const projectedListedValidator = saleItemListedValidator.omit("sportId").extend({
+  platformSportId: v.optional(v.string()),
+});
+
 const orderValidator = v.object({
   orderId: v.string(),
   orderNo: v.string(),
@@ -311,16 +328,19 @@ const orderValidator = v.object({
       sellerSku: v.optional(v.string()),
       /** A graded line is never NB's (NB lists raw only). */
       graded: v.boolean(),
+      /** NEO-509 — the card as the platform described it (`projectedListedValidator`). */
+      listed: v.optional(projectedListedValidator),
     }),
   ),
 });
 export type ProjectedOrder = typeof orderValidator.type;
+type ProjectedListed = typeof projectedListedValidator.type;
 
 /**
  * BSC's order → what NB keeps. Drops every buyer and seller field (only ids,
  * date, status, money and per-line card id / condition / quantity / price /
- * SKU survive), turning dollars into cents. `fallbackDate` is the history
- * page's date for an order whose detail carries none.
+ * SKU / description survive), turning dollars into cents. `fallbackDate` is
+ * the history page's date for an order whose detail carries none.
  */
 export function projectBscOrder(order: BscOrder, fallbackDate: number | null): ProjectedOrder {
   const t = order.totals;
@@ -343,6 +363,7 @@ export function projectBscOrder(order: BscOrder, fallbackDate: number | null): P
       priceCents: item.priceCents ?? 0,
       ...(item.sellerSku !== null ? { sellerSku: item.sellerSku } : {}),
       graded: item.productType !== null && item.productType !== "raw",
+      ...(item.listed !== null ? { listed: item.listed } : {}),
     })),
   };
 }
@@ -363,6 +384,144 @@ async function pollingOn(ctx: QueryCtx, ownerId: string, platform: Doc<"marketpl
 
 const itemKey = saleItemKey;
 
+// ── NEO-509: the card a line describes ─────────────────────────────────────
+
+/**
+ * Bytes one sale may spend on its lines' `listed` (key names and values in
+ * UTF-8, plus Convex's framing: `listedBytes`), counted in item order: from
+ * the first line that would pass the budget, no line stores a `listed` (such
+ * a line shows in "Can't find it" by its line number, as before NEO-509).
+ * With `MAX_SALE_ITEMS` worst-case lines the sale stays under 1,000,000 bytes
+ * (`listingSales.pickList.test.ts`).
+ */
+export const MAX_LISTED_BYTES_PER_SALE = 100_000;
+/** Sport rows the resolver reads (NB has a handful; the bound only stops a runaway read). */
+export const SPORT_ROW_SCAN = 200;
+
+type StoredListed = NonNullable<SaleItem["listed"]>;
+
+/** UTF-8 length of `text` (a lone surrogate counts as the 3-byte replacement character). */
+export function utf8Bytes(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const d = text.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        n += 4;
+        i += 1;
+      } else n += 3;
+    } else n += 3;
+  }
+  return n;
+}
+
+/**
+ * Convex's per-field framing beside the key and value bytes, and the
+ * `listed` key plus its object frame, as `getDocumentSize` measures them
+ * (rounded up). Counted so a sale of many one-letter descriptions cannot
+ * spend past the budget on framing the bytes alone would not show.
+ */
+const LISTED_FIELD_OVERHEAD = 3;
+const LISTED_OBJECT_OVERHEAD = 10;
+
+/**
+ * What one line's `listed` costs against `MAX_LISTED_BYTES_PER_SALE`: every
+ * key name and value in UTF-8, plus the framing Convex stores around them.
+ */
+export function listedBytes(listed: StoredListed): number {
+  let n = LISTED_OBJECT_OVERHEAD;
+  for (const [key, value] of Object.entries(listed)) {
+    if (typeof value === "string") n += utf8Bytes(key) + utf8Bytes(value) + LISTED_FIELD_OVERHEAD;
+  }
+  return n;
+}
+
+/**
+ * The sale's lines with `listed` kept in item order until the budget is
+ * spent; from the first line that would pass it, no line carries one.
+ */
+export function capListed<T extends { listed?: StoredListed }>(items: readonly T[]): T[] {
+  let spent = 0;
+  let over = false;
+  return items.map((item) => {
+    if (item.listed === undefined) return item;
+    if (!over) {
+      const cost = listedBytes(item.listed);
+      if (spent + cost <= MAX_LISTED_BYTES_PER_SALE) {
+        spent += cost;
+        return item;
+      }
+      over = true;
+    }
+    const out = { ...item };
+    delete out.listed;
+    return out;
+  });
+}
+
+/**
+ * NB's sport row for a platform's sport id, by id and never by name: the ONE
+ * sport row whose `platformData.<platform>` slots hold it (`slotIds`). The
+ * sport rows are read once per resolver (`by_level` "sport", bounded) and only
+ * when a line carries an id. No row, or two rows holding the same id: null,
+ * and the line keeps only the platform's sport word as a label. BSC only;
+ * another platform's lines resolve nothing.
+ */
+export function sportResolver(
+  ctx: Pick<QueryCtx, "db">,
+  platform: Platform,
+): (platformSportId: string) => Promise<Id<"selectorOptions"> | null> {
+  let byId: Map<string, Set<Id<"selectorOptions">>> | null = null;
+  return async (platformSportId) => {
+    if (platform !== "bsc") return null;
+    if (byId === null) {
+      const index = new Map<string, Set<Id<"selectorOptions">>>();
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level", (q) => q.eq("level", "sport"))
+        .take(SPORT_ROW_SCAN);
+      for (const row of rows) {
+        for (const id of slotIds(row, "bsc")) {
+          const set = index.get(id) ?? new Set<Id<"selectorOptions">>();
+          set.add(row._id);
+          index.set(id, set);
+        }
+      }
+      byId = index;
+    }
+    const hits = byId.get(platformSportId);
+    return hits !== undefined && hits.size === 1 ? [...hits][0] : null;
+  };
+}
+
+/** The description's text fields, re-checked one by one before storing. */
+const LISTED_TEXT_KEYS = ["sport", "year", "setName", "players", "cardNo", "variant", "variantName"] as const;
+
+/**
+ * A projected description → what the sale stores: every field re-checked
+ * against `BSC_LISTED_BOUNDS` (a caller other than the parser gets the same
+ * rule), the platform's sport id swapped for NB's `sportId` when exactly one
+ * sport row holds it. Undefined when nothing readable is left.
+ */
+async function storedListed(
+  projected: ProjectedListed,
+  resolveSport: (platformSportId: string) => Promise<Id<"selectorOptions"> | null>,
+): Promise<StoredListed | undefined> {
+  const out: StoredListed = {};
+  for (const key of LISTED_TEXT_KEYS) {
+    const s = bscListedText(projected[key], BSC_LISTED_BOUNDS[key]);
+    if (s !== null) out[key] = s;
+  }
+  const platformSportId = bscListedText(projected.platformSportId, BSC_LISTED_BOUNDS.platformSportId);
+  const sportId = platformSportId !== null ? await resolveSport(platformSportId) : null;
+  if (sportId !== null) out.sportId = sportId;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+
 /**
  * NEO-500 — the one gate the test seed (`testing.seedMyTestPickOrder`) skips:
  * whether the owner's listing state polls sales. Every other check (owner,
@@ -376,9 +535,13 @@ export interface SaleCoreOptions {
  * Upserts one order. A re-read updates status, totals and lines and NEVER
  * resets a line's `applied` (lines are matched on card id, condition and SKU;
  * a stored line the new read lacks is kept), nor what the apply and the Pick
- * List wrote on it (`from`, `lastOnes`, `pulledAt`). Recomputes `pullOpen`
- * (written as an explicit `undefined` when nothing is open: a patch merges),
- * so a SHIPPED or CANCELLED re-read takes the order off the Pick List.
+ * List wrote on it (`from`, `lastOnes`, `pulledAt`). NEO-509: each line's
+ * description (`listed`) is stored with NB's sport resolved by id
+ * (`sportResolver`); a re-read that carries one replaces it, one that does not
+ * keeps it; the sale spends at most `MAX_LISTED_BYTES_PER_SALE` on them.
+ * Recomputes `pullOpen` (written as an explicit `undefined` when nothing is
+ * open: a patch merges), so a SHIPPED or CANCELLED re-read takes the order
+ * off the Pick List.
  * Returns the lines still to apply: only on a "sale" status, only lines not
  * applied and not already refused. `saleId` null: the poll gate refused.
  */
@@ -397,16 +560,22 @@ export async function recordOrderCore(
     )
     .unique();
 
-  const fresh: SaleItem[] = order.items.map((item) => ({
-    platformCardId: item.platformCardId,
-    condition: item.condition,
-    quantity: item.quantity,
-    priceCents: item.priceCents,
-    ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
-    applied: false,
-    // A graded line was never NB's listing: refused at once, never applied.
-    ...(item.graded ? { problem: "unmatched" as const } : {}),
-  }));
+  const resolveSport = sportResolver(ctx, args.platform);
+  const fresh: SaleItem[] = [];
+  for (const item of order.items) {
+    const listed = item.listed !== undefined ? await storedListed(item.listed, resolveSport) : undefined;
+    fresh.push({
+      platformCardId: item.platformCardId,
+      condition: item.condition,
+      quantity: item.quantity,
+      priceCents: item.priceCents,
+      ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
+      applied: false,
+      // A graded line was never NB's listing: refused at once, never applied.
+      ...(item.graded ? { problem: "unmatched" as const } : {}),
+      ...(listed !== undefined ? { listed } : {}),
+    });
+  }
 
   let items: SaleItem[];
   if (!existing) {
@@ -426,10 +595,13 @@ export async function recordOrderCore(
         ...old,
         quantity: old.applied ? old.quantity : line.quantity,
         priceCents: line.priceCents,
+        // NEO-509 — a fresh description wins; a read without one keeps the old.
+        ...(line.listed !== undefined ? { listed: line.listed } : {}),
       };
     });
     for (const leftover of pool.values()) items.push(...leftover);
   }
+  items = capListed(items);
 
   const doc = {
     ownerId: args.ownerId,

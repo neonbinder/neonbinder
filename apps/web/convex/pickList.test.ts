@@ -190,3 +190,29 @@ describe("soldPhotos and cards", () => {
     expect(out[1]).toBeNull();
   });
 });
+
+describe("NEO-509: a Can't find it line's own words", () => {
+  test("open carries the sale's listed card on an unmatched line only, as stored", async () => {
+    const { fx, sale, applied, me } = await setup();
+    const listed = { sport: "Baseball", sportId: fx.sportId, year: "2024", setName: "Topps", players: "Dwight Gooden", cardNo: "1", variant: "Base" };
+    await sale(ME.subject, "W-1", 1000, [
+      applied(),
+      { platformCardId: "bsc-y", condition: "near_mint", quantity: 1, priceCents: 5, applied: false, problem: "unmatched", listed },
+      { platformCardId: "bsc-z", condition: "near_mint", quantity: 1, priceCents: 5, applied: false, problem: "unmatched" },
+    ], { pullOpen: true });
+    const open = await me.query(api.pickList.open, {});
+    expect(open.lines.map((l) => l.listed ?? null)).toEqual([null, listed, null]);
+  });
+
+  test("sports names NB's sport and its code; a bad id or a row that is no sport is null", async () => {
+    const { fx, me } = await setup();
+    const out = await me.query(api.pickList.sports, { sportIds: [fx.sportId, fx.setId, "nope"] });
+    expect(out).toEqual([{ id: fx.sportId, name: "Baseball", code: "BB" }, null, null]);
+  });
+
+  test("sports refuses more than its limit and an anonymous caller", async () => {
+    const { t, fx, me } = await setup();
+    await expect(me.query(api.pickList.sports, { sportIds: Array.from({ length: 21 }, () => fx.sportId) })).rejects.toThrow(/at most 20/);
+    await expect(t.query(api.pickList.sports, { sportIds: [] })).rejects.toThrow(/Not authenticated/);
+  });
+});

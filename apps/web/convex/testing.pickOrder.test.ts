@@ -278,3 +278,55 @@ describe("seedMyTestPickOrder", () => {
     expect(scheduled).toBe(scheduledBefore);
   });
 });
+
+describe("seedMyTestPickOrder — listedLine (NEO-509)", () => {
+  test("adds one unmatched line described from the first card's set, its sport resolved by the sport row's BSC id", async () => {
+    const s = await setup();
+    await s.a.add(s.cards.a, 2);
+    const result = await seed(s, {
+      cards: [{ cardNumber: "901", quantity: 1 }],
+      listedLine: { cardNumber: "208", players: "Listed Player" },
+    });
+    expect(result.lines).toBe(2);
+    expect(result.applied).toBe(1);
+    const [sale] = await sales(s);
+    const line = sale.items[1];
+    expect(line.problem).toBe("unmatched");
+    expect(line.applied).toBe(false);
+    const sport = await s.t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).find((r) => r.level === "sport"),
+    );
+    expect(line.listed).toEqual({
+      sport: "Baseball",
+      sportId: sport?._id,
+      year: "2024",
+      setName: "2024 Topps Chrome",
+      players: "Listed Player",
+      cardNo: "208",
+      variant: "Base",
+    });
+    expect(sale.items[0].listed).toBeUndefined();
+  });
+
+  test("a retried hop keeps the stored description and applies nothing twice", async () => {
+    const s = await setup();
+    await s.a.add(s.cards.a, 2);
+    const args = { cards: [{ cardNumber: "901", quantity: 1 }], listedLine: { cardNumber: "208", players: "Listed Player" } };
+    await seed(s, args);
+    const again = await seed(s, args);
+    expect(again.applied).toBe(0);
+    const [sale] = await sales(s);
+    expect(sale.items).toHaveLength(2);
+    expect(sale.items[1].listed?.players).toBe("Listed Player");
+    expect(await copies(s, USER_A)).toEqual([{ cardId: s.cards.a, quantity: 1 }]);
+  });
+
+  test("refuses a blank card number or players", async () => {
+    const s = await setup();
+    await s.a.add(s.cards.a, 2);
+    await expect(
+      seed(s, { cards: [{ cardNumber: "901", quantity: 1 }], listedLine: { cardNumber: " ", players: "P" } }),
+    ).rejects.toThrow(/listedLine/);
+    expect(await sales(s)).toEqual([]);
+  });
+});

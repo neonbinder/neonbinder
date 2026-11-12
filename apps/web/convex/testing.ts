@@ -49,6 +49,9 @@ import {
 import { TEST_SALE_ORDER_PREFIX } from "./lib/testSeedMarks";
 import { bscConditionFor, type BscEra } from "./lib/bscConditions";
 import { buildListingSku } from "./lib/listingSku";
+import { BSC_LISTED_BOUNDS, bscListedText } from "./lib/bscOrders";
+import { CatalogReader } from "./lib/catalogView";
+import { slotIds } from "./platformSlots";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -1441,6 +1444,12 @@ const PICK_SEED_ORDER_NO_RE = /^[A-Za-z0-9_-]{1,40}$/;
  * card's own `platformData.bsc.ref`, the BSC condition the box copy's NB
  * condition lists as, and the SKU NB would have pushed for (card, condition,
  * box). `badLine` adds one line whose SKU is not NB's ("Can't find it").
+ * `listedLine` (NEO-509) adds one more line NB cannot match whose description
+ * (`listed`) names a card in the set of the order's first card: the sport
+ * row's name and its BSC sport id (its `platformData.bsc` slot, so the store
+ * resolves NB's sport by id as it would for a real order), the year row's
+ * name, the set as the Pick List labels it (`${season} ${name}`), the given
+ * card number and players, and variant "Base".
  * Seeding an `orderNo` that exists records the stored order again as it is
  * (a retried hop applies nothing twice and does not look at the box again);
  * `ship` re-records it as SHIPPED, which takes it off the Pick List.
@@ -1459,6 +1468,7 @@ export const seedMyTestPickOrder = mutation({
     boxName: v.optional(v.string()),
     cards: v.optional(v.array(v.object({ cardNumber: v.string(), quantity: v.number() }))),
     badLine: v.optional(v.boolean()),
+    listedLine: v.optional(v.object({ cardNumber: v.string(), players: v.string() })),
     ship: v.optional(v.boolean()),
   },
   returns: v.object({ saleId: v.id("marketplaceSales"), lines: v.number(), applied: v.number() }),
@@ -1518,6 +1528,7 @@ export const seedMyTestPickOrder = mutation({
         .take(PICK_SEED_SCAN);
       const eras = new Map<string, BscEra | null>();
       const items: ProjectedOrder["items"] = [];
+      let firstCard: Doc<"cardChecklist"> | null = null;
       for (const want of cards) {
         if (!Number.isInteger(want.quantity) || want.quantity < 1 || want.quantity > PICK_SEED_MAX_QUANTITY) {
           throw new Error(`quantity must be 1-${PICK_SEED_MAX_QUANTITY}`);
@@ -1534,6 +1545,7 @@ export const seedMyTestPickOrder = mutation({
           throw new Error(`Expected one card #${want.cardNumber} in "${boxName}", found ${matches.size}`);
         }
         const card = [...matches.values()][0];
+        firstCard ??= card;
         const ref = card.platformData?.bsc?.ref;
         if (!ref) throw new Error(`Card #${want.cardNumber} has no BuySportsCards id`);
         const copy = copies.find((c) => c.cardId === card._id && c.grading === undefined && c.condition !== undefined);
@@ -1558,6 +1570,32 @@ export const seedMyTestPickOrder = mutation({
           priceCents: 100,
           sellerSku: "nb-test-not-an-nb-sku",
           graded: false,
+        });
+      }
+      if (args.listedLine && firstCard) {
+        const cardNo = bscListedText(args.listedLine.cardNumber, BSC_LISTED_BOUNDS.cardNo);
+        const players = bscListedText(args.listedLine.players, BSC_LISTED_BOUNDS.players);
+        if (cardNo === null || players === null) throw new Error("listedLine needs a card number and players within bounds");
+        const set = await new CatalogReader(ctx).setRef(firstCard.selectorOptionId);
+        if (!set?.sport || !set.year) throw new Error(`Card #${firstCard.cardNumber} has no sport, year or set above it`);
+        const sportRow = await ctx.db.get(set.sport._id);
+        const platformSportId = sportRow ? slotIds(sportRow, "bsc")[0] : undefined;
+        items.push({
+          platformCardId: "nb-test-listed-card",
+          condition: "near_mint",
+          quantity: 1,
+          priceCents: 100,
+          sellerSku: "nb-test-listed-not-an-nb-sku",
+          graded: false,
+          listed: {
+            sport: set.sport.name,
+            ...(platformSportId !== undefined ? { platformSportId } : {}),
+            year: set.year.name,
+            setName: `${set.season} ${set.name}`,
+            players,
+            cardNo,
+            variant: "Base",
+          },
         });
       }
       const subtotalCents = items.reduce((sum, item) => sum + item.quantity * item.priceCents, 0);

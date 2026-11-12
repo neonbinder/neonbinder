@@ -21,8 +21,15 @@ import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { buildListingSku } from "./lib/listingSku";
 import { MAX_LINES_PER_CARD } from "./collection";
-import { MAX_SALE_ITEMS, type ProjectedOrder } from "./listingSales";
-import { MAX_FROM_PER_SALE, MAX_PICK_FROM } from "./lib/pickLines";
+import {
+  capListed,
+  listedBytes,
+  MAX_LISTED_BYTES_PER_SALE,
+  MAX_SALE_ITEMS,
+  type ProjectedOrder,
+} from "./listingSales";
+import { BSC_LISTED_BOUNDS } from "./lib/bscOrders";
+import { MAX_FROM_PER_SALE, MAX_PICK_FROM, saleLineKeys } from "./lib/pickLines";
 import { TEST_SALE_ORDER_PREFIX } from "./lib/testSeedMarks";
 import { priceEveryVariant } from "../lib/testing/common-prices";
 
@@ -556,6 +563,88 @@ describe("the from caps", () => {
     expect(getDocumentSize(buildDoc(() => MAX_PICK_FROM))).toBeGreaterThan(MIB);
     expect(perLine).toBeLessThan(MAX_PICK_FROM);
   });
+
+  test("NEO-509: the same worst case with every line described stays under 1,000,000 bytes", () => {
+    // Same worst-case line as above; `listed` on every line, then capped by
+    // the sale's MAX_LISTED_BYTES_PER_SALE exactly as recordOrderCore caps it.
+    const id = (table: string, n: number) => `${table.slice(0, 4)}${String(n).padStart(28, "0")}`;
+    const sku = `NB1-${"c".repeat(32)}-NM-${"b".repeat(32)}`;
+    let n = 0;
+    const fromEntry = () => ({
+      homeId: id("home", (n += 1)),
+      copyId: id("copy", n),
+      quantity: 99,
+      slot: 999,
+      condition: "Near Mint",
+      serialNumber: "1234/9999 SSP RED".padEnd(32, "x"),
+    });
+    // Two shapes: values at their bounds in 3-byte characters (fewest lines,
+    // most bytes each), and one-character values (most lines, most per-field
+    // overhead the budget does not see).
+    const fat = (line: number) => ({
+      sport: "€".repeat(BSC_LISTED_BOUNDS.sport),
+      sportId: id("spor", line),
+      year: "€".repeat(BSC_LISTED_BOUNDS.year),
+      setName: "€".repeat(BSC_LISTED_BOUNDS.setName),
+      players: "€".repeat(BSC_LISTED_BOUNDS.players),
+      cardNo: "€".repeat(BSC_LISTED_BOUNDS.cardNo),
+      variant: "€".repeat(BSC_LISTED_BOUNDS.variant),
+      variantName: "€".repeat(BSC_LISTED_BOUNDS.variantName),
+    });
+    const thin = (line: number) => ({
+      sport: "a",
+      sportId: id("spor", line),
+      year: "1",
+      setName: "s",
+      players: "p",
+      cardNo: "1",
+      variant: "v",
+      variantName: "n",
+    });
+    for (const describe of [fat, thin]) {
+      n = 0;
+      const items = capListed(
+        Array.from({ length: MAX_SALE_ITEMS }, (_, line) => ({
+          platformCardId: `bsc-${"r".repeat(36)}`,
+          condition: "near_mint",
+          quantity: 99,
+          priceCents: 999_999,
+          sellerSku: sku,
+          applied: true,
+          appliedAt: NOW,
+          cardId: id("card", line),
+          problem: "oversold",
+          shortBy: 99,
+          lastOnes: true,
+          pulledAt: NOW,
+          from: Array.from(
+            { length: Math.max(0, Math.min(MAX_PICK_FROM, MAX_FROM_PER_SALE - line * MAX_PICK_FROM)) },
+            fromEntry,
+          ),
+          listed: describe(line) as unknown as NonNullable<Doc<"marketplaceSales">["items"][number]["listed"]>,
+        })),
+      );
+      const spent = items.reduce((t, i) => t + (i.listed ? listedBytes(i.listed) : 0), 0);
+      expect(spent).toBeLessThanOrEqual(MAX_LISTED_BYTES_PER_SALE);
+      expect(items.some((i) => i.listed === undefined)).toBe(true);
+      const doc = {
+        _id: id("sale", 0),
+        _creationTime: NOW,
+        ownerId: `user_${"o".repeat(28)}`,
+        platform: "bsc",
+        orderId: "o".repeat(40),
+        orderNo: "n".repeat(40),
+        orderDate: NOW,
+        status: "PARTIALLY_REFUNDED_READY_TO_SHIP",
+        totals: { subtotalCents: 1, shippingCents: 1, taxCents: 1, totalCents: 1 },
+        items,
+        pullOpen: true,
+        firstSeenAt: NOW,
+        lastUpdated: NOW,
+      } as unknown as Record<string, Value>;
+      expect(getDocumentSize(doc)).toBeLessThan(1_000_000);
+    }
+  });
 });
 
 describe("pollInput", () => {
@@ -565,5 +654,128 @@ describe("pollInput", () => {
     await record(s, order(s, { orderId: `${TEST_SALE_ORDER_PREFIX}seeded-1`, orderNo: "seeded-1", status: "CANCELLED" }));
     const input = await s.t.query(internal.listingSales.pollInput, { ownerId: OWNER, platform: "bsc" });
     expect(input?.stored.map((o) => o.orderId)).toEqual(["real-order-1"]);
+  });
+});
+
+describe("NEO-509 — the card a line describes (listed) on the stored sale", () => {
+  const LISTED = {
+    sport: "Football",
+    platformSportId: "football",
+    year: "2021",
+    setName: "2021 Score",
+    players: "Justin Fields",
+    cardNo: "TB2",
+    variant: "Insert",
+    variantName: "1991 Throwback",
+  };
+  /** An unmatched line (not NB's SKU) carrying a description. */
+  const unmatched = (listed?: Partial<typeof LISTED>): Line => ({
+    platformCardId: "bsc-unknown",
+    sellerSku: "303|TB2",
+    ...(listed ? { listed } : {}),
+  });
+  const sportRow = (s: S, value: string, bscId: string) =>
+    s.t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value,
+        platformData: { bsc: { b0: bscId } },
+        isCustom: false,
+        children: [],
+        lastUpdated: NOW,
+      } as never),
+    );
+
+  test("stores the description with NB's sport resolved by id from exactly one sport row; the platform id is not stored", async () => {
+    const s = await setup();
+    const football = await sportRow(s, "Football (NB)", "football");
+    await record(s, order(s, { lines: [unmatched(LISTED)] }));
+    const item = (await sale(s)).items[0];
+    expect(item.problem).toBe("unmatched");
+    expect(item.listed).toEqual({
+      sport: "Football",
+      sportId: football,
+      year: "2021",
+      setName: "2021 Score",
+      players: "Justin Fields",
+      cardNo: "TB2",
+      variant: "Insert",
+      variantName: "1991 Throwback",
+    });
+    expect(JSON.stringify(item)).not.toContain("platformSportId");
+  });
+
+  test("no sport row holds the id: no sportId, BSC's sport word stays as the label", async () => {
+    const s = await setup();
+    await record(s, order(s, { lines: [unmatched(LISTED)] }));
+    const listed = (await sale(s)).items[0].listed;
+    expect(listed?.sportId).toBeUndefined();
+    expect(listed?.sport).toBe("Football");
+  });
+
+  test("two sport rows hold the same id: no sportId (never the first)", async () => {
+    const s = await setup();
+    await sportRow(s, "Football", "football");
+    await sportRow(s, "Football 2", "football");
+    await record(s, order(s, { lines: [unmatched(LISTED)] }));
+    expect((await sale(s)).items[0].listed?.sportId).toBeUndefined();
+  });
+
+  test("the sport is never resolved by name", async () => {
+    const s = await setup();
+    // The setup's sport row is named "Football" but its bsc slot is not "football".
+    await record(s, order(s, { lines: [unmatched({ ...LISTED, platformSportId: "american-football" })] }));
+    expect((await sale(s)).items[0].listed?.sportId).toBeUndefined();
+  });
+
+  test("a re-poll without a description keeps the stored one; with one, the fresh read wins; line ids do not move", async () => {
+    const s = await setup();
+    await add(s, s.cardId, { condition: "Near Mint", homeId: s.box });
+    const { saleId } = await record(s, order(s, { lines: [{ listed: LISTED }, unmatched(LISTED)] }));
+    const first = await sale(s);
+    const ids = saleLineKeys(saleId, first.items);
+    expect(first.items[0].applied).toBe(true);
+
+    await record(s, order(s, { lines: [{}, unmatched()] }));
+    const kept = await sale(s);
+    expect(kept.items.map((i) => i.listed?.players)).toEqual(["Justin Fields", "Justin Fields"]);
+    expect(kept.items[0].applied).toBe(true);
+    expect(saleLineKeys(saleId, kept.items)).toEqual(ids);
+
+    await record(s, order(s, { lines: [{}, unmatched({ ...LISTED, players: "Kyle Trask", cardNo: "TB10" })] }));
+    const fresh = await sale(s);
+    expect(fresh.items[1].listed?.players).toBe("Kyle Trask");
+    expect(fresh.items[1].listed?.cardNo).toBe("TB10");
+    expect(fresh.items[0].listed?.players).toBe("Justin Fields");
+    expect(saleLineKeys(saleId, fresh.items)).toEqual(ids);
+  });
+
+  test("the store re-checks the bounds: an over-long or control-character field is dropped, the rest kept", async () => {
+    const s = await setup();
+    await record(
+      s,
+      order(s, {
+        lines: [unmatched({ ...LISTED, players: "p".repeat(BSC_LISTED_BOUNDS.players + 1), cardNo: "TB\u00002" })],
+      }),
+    );
+    const listed = (await sale(s)).items[0].listed;
+    expect(listed?.players).toBeUndefined();
+    expect(listed?.cardNo).toBeUndefined();
+    expect(listed?.setName).toBe("2021 Score");
+  });
+
+  test("a description with nothing readable left is not stored", async () => {
+    const s = await setup();
+    await record(s, order(s, { lines: [unmatched({ platformSportId: "nobody-holds-this" })] }));
+    expect((await sale(s)).items[0].listed).toBeUndefined();
+  });
+
+  test("capListed keeps descriptions in item order until the budget is spent, then none", () => {
+    const big = { setName: "x".repeat(40_000) };
+    const small = { cardNo: "1" };
+    const items = capListed([{ listed: big }, { listed: small }, { listed: big }, { listed: big }, {}, { listed: small }]);
+    // The third big one would pass 100 KB: from there on no line carries one, small or not.
+    expect(items.map((i) => i.listed !== undefined)).toEqual([true, true, true, false, false, false]);
+    expect(listedBytes({ cardNo: "1" })).toBeGreaterThan("cardNo1".length);
   });
 });

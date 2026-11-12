@@ -13,16 +13,18 @@ import {
   CANT_FIND_STOP,
   buildSections,
   compareBoxes,
+  compareDefault,
   copiesLeft,
   filterRows,
   isPulled,
   mergeLines,
   naturalCompare,
+  rowFacts,
   sortRows,
   variantRole,
   type PickRow,
 } from "./model";
-import type { PickBox, PickOrder, SaleLine } from "./types";
+import type { ListedCard, PickBox, PickOrder, SaleLine } from "./types";
 
 const EBAY_1: PickOrder = { id: "o1", venue: "eBay", number: "12-3456" };
 const BSC_1: PickOrder = { id: "o2", venue: "BSC", number: "88213" };
@@ -315,5 +317,103 @@ describe("the demo fixture", () => {
     expect(new Set(DEMO_PICK_LINES.map((l) => sportHue(l.sportCode)))).toEqual(new Set(["baseball", "football", "basketball", "hockey", "other"]));
     const stops = boxWalk(DEMO_PICK_LINES, DEMO_PICK_BOXES);
     expect(stops.map((s) => s.box.name)).toEqual(["2026 Baseball", "Box 2", "Box 10", "Slabs", "Unsorted"]);
+  });
+});
+
+describe("NEO-509: a sale filed by its listing's words", () => {
+  const listed = (over: Partial<ListedCard> = {}): ListedCard => ({
+    sportName: "Baseball",
+    year: 2026,
+    season: "2026",
+    setName: "Topps",
+    players: "Listed Player",
+    cardNumber: "5",
+    role: "base",
+    ...over,
+  });
+  const stray = (l: ListedCard | undefined, extra: Partial<SaleLine> = {}) =>
+    line(null, { order: BSC_1, listingTitle: "a listing", sportCode: null, ...(l ? { listed: l } : {}), ...extra });
+
+  it("joins the one NB set with its sport, year and name, between that set's numbers", () => {
+    const s = buildSections(
+      [line(card({ number: "3" })), line(card({ number: "9" })), stray(listed({ setName: "2026 TOPPS" }))],
+      {},
+      { sort: null, dir: "asc", groupByOrder: false },
+    );
+    expect(s.map((x) => x.kind)).toEqual(["set"]);
+    expect(s[0].rows.map((r) => rowFacts(r)?.cardNumber)).toEqual(["3", "5", "9"]);
+    expect(s[0].rows[1].card).toBeNull();
+    // It wears the set's colour.
+    expect(s[0].rows[1].sportCode).toBe("BB");
+  });
+
+  it("gets its own divider, after NB's of the same name, when no single NB set fits", () => {
+    const two = [
+      line(card({ number: "1", setId: "a" })),
+      line(card({ number: "2", setId: "b" })),
+      stray(listed()),
+    ];
+    const s = buildSections(two, {}, { sort: null, dir: "asc", groupByOrder: false });
+    expect(s.map((x) => (x.kind === "set" ? x.title : x.kind))).toEqual(["2026 Topps", "2026 Topps", "2026 Topps"]);
+    expect(s[2].rows[0].card).toBeNull();
+    const other = buildSections([line(card({ number: "1" })), stray(listed({ setName: "Bowman" }))], {}, {
+      sort: null,
+      dir: "asc",
+      groupByOrder: false,
+    });
+    expect(other.map((x) => (x.kind === "set" ? x.title : x.kind))).toEqual(["2026 Bowman", "2026 Topps"]);
+  });
+
+  it("stays in Can't find it when it says too little, and in the last box stop either way", () => {
+    const lines = [
+      line(card({ number: "1" }), { spot: { boxId: "b1" } }),
+      stray(listed({ cardNumber: undefined })),
+      stray(listed({ year: undefined })),
+      stray(listed()),
+    ];
+    const s = buildSections(lines, {}, { sort: null, dir: "asc", groupByOrder: false });
+    expect(s.map((x) => [x.kind, x.rows.length])).toEqual([
+      ["cantFind", 2],
+      ["set", 2],
+    ]);
+    const stops = boxStops(lines, [{ id: "b1", name: "Box 1" }]);
+    expect(stops.map((x) => [x.box.id, x.rows.length])).toEqual([
+      ["b1", 1],
+      [CANT_FIND_STOP, 3],
+    ]);
+  });
+
+  it("filters and finds by its facts", () => {
+    const rows = mergeLines([line(card({ number: "1" })), stray(listed({ role: "insert", variantName: "1991 Throwback" }))]);
+    expect(filterRows(rows, { variant: "insert" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "throwback" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "unmatched" })).toHaveLength(1);
+    expect(filterRows(rows, { sport: "baseball", year: "2026" })).toHaveLength(2);
+  });
+
+  it("sorts transitively over any mix of cards, joined, own-divider and undescribed sales", () => {
+    const rows = mergeLines([
+      line(card({ number: "3" })),
+      line(card({ number: "4", setId: "s2", setName: "Bowman" })),
+      line(card({ number: "4", setId: "s3", setName: "Bowman" })),
+      line(card({ number: "1", sport: "Football", season: "2024" })),
+      stray(listed({ cardNumber: "2" })),
+      stray(listed({ setName: "Bowman", cardNumber: "1" })),
+      stray(listed({ setName: "Chrome", cardNumber: "1", role: "parallel", variantName: "Gold" })),
+      stray(listed({ sportName: "football", year: 2024, setName: "Topps", cardNumber: "0" })),
+      stray(listed({ sportName: "Hockey", year: 2023, season: "2023-24", setName: "Upper Deck", cardNumber: "9" })),
+      stray(undefined),
+      stray(listed({ setName: undefined })),
+    ]);
+    const sign = (x: number) => Math.sign(x);
+    for (const a of rows) {
+      expect(compareDefault(a, a)).toBe(0);
+      for (const b of rows) {
+        expect(sign(compareDefault(a, b)) + sign(compareDefault(b, a))).toBe(0);
+        for (const c of rows) {
+          if (compareDefault(a, b) <= 0 && compareDefault(b, c) <= 0) expect(compareDefault(a, c)).toBeLessThanOrEqual(0);
+        }
+      }
+    }
   });
 });

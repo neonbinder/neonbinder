@@ -26,11 +26,12 @@ import {
   mergeLines,
   naturalCompare,
   orderLabel,
+  rowFacts,
   SORT_KEYS,
+  UNMATCHED,
   VARIANT_ROLE_LABEL,
   VARIANT_ROLES,
   variantName,
-  variantRole,
   type BoxStop,
   type PickFilters,
   type PickRow,
@@ -629,9 +630,10 @@ function FilterBar({
     const years = new Set<number>();
     const conditions = new Set<string>();
     for (const r of rows) {
-      if (r.card) {
-        sports.set(r.card.set.sport.id, r.card.set.sport.name);
-        years.add(r.card.set.year);
+      const facts = rowFacts(r);
+      if (facts) {
+        sports.set(facts.sportKey, facts.sportName);
+        years.add(facts.year);
       }
       conditions.add(conditionOf(r));
     }
@@ -939,11 +941,12 @@ function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolea
       ? `${row.condition}, ${row.serial}`
       : row.condition;
   const orders = row.orders.map(orderLabel).join(" and ");
-  // A card-less row's title ("Unmatched sale") says nothing of its order, so
-  // its name always carries it: two orders' strays never read alike.
+  // A card-less row's title (the listing's words, or "Unmatched sale") says
+  // nothing of its order, so its name always carries it: two orders' strays
+  // never read alike. One the listing describes also says it is unmatched.
   let name = c
     ? `#${c.cardNumber} ${playerNames(c)}, ${setLabel(c.set)}${variantName(c) ? ` ${variantName(c)}` : ""}, ${extra}`
-    : `${row.listingTitle}, ${orders}`;
+    : `${row.listingTitle}${row.listed ? `, ${UNMATCHED.toLowerCase()}` : ""}, ${orders}`;
   if (options.withSlot && row.spot?.slot !== undefined) name += `, slot ${row.spot.slot}`;
   if (row.isNew) name += `, ${COPY.fresh.toLowerCase()}`;
   if (options.withOrder && c) name += `, ${orders}`;
@@ -1212,9 +1215,17 @@ function SportChip({ code, name }: { code: string | null; name: string }) {
 
 function Markers({ row }: { row: PickRow }) {
   const noBox = row.boxUnrecorded && !row.spot;
-  if (!row.lastOnes && !row.short && !row.isNew && !noBox) return null;
+  // A sale filed with its set by the listing's words alone: NB never tied it
+  // to a card, and the word says so (the dashed edge echoes the "?" picture).
+  const unmatched = !row.card && rowFacts(row) !== null;
+  if (!row.lastOnes && !row.short && !row.isNew && !noBox && !unmatched) return null;
   return (
     <span className="flex flex-wrap gap-1 whitespace-nowrap">
+      {unmatched && (
+        <span className="nb-pick-chip rounded border border-dashed border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink">
+          {UNMATCHED}
+        </span>
+      )}
       {row.isNew && <span className="nb-pick-chip rounded bg-neon-blue px-1.5 text-xs font-bold leading-5 text-on-neon-blue">New</span>}
       {row.lastOnes && (
         <span className="nb-pick-chip rounded border border-notice-info-rule bg-notice-info-bg px-1.5 text-xs font-semibold leading-5 text-notice-info-ink">
@@ -1265,8 +1276,10 @@ function Row({
   name: string;
 }) {
   const c = row.card;
-  const role = c ? variantRole(c) : null;
-  const vName = c ? variantName(c) : null;
+  // A card's facts, or a listing's when it says enough to file by (NEO-509).
+  const facts = rowFacts(row);
+  const role = facts?.role ?? null;
+  const vName = facts?.variantName ?? null;
   const tab = tabbable ? 0 : -1;
   const cell = "border-b border-rule px-2 py-2 align-middle";
 
@@ -1286,7 +1299,7 @@ function Row({
     ) : null;
 
   // The variant leads: its chip, its name, and a numbered copy's serial beside it.
-  const variantLine = c ? (
+  const variantLine = facts ? (
     <span className="flex flex-wrap items-center gap-1.5">
       {role && <VariantChip role={role} />}
       {(vName || row.serial) && (
@@ -1299,12 +1312,12 @@ function Row({
     </span>
   ) : null;
 
-  const setText = c ? (
+  const setText = facts ? (
     <span className="flex min-w-0 flex-col gap-1">
       {showSet && (
         <span className="flex flex-wrap items-center gap-1.5">
-          {showSport && <SportChip code={row.sportCode} name={c.set.sport.name} />}
-          <span className="text-ink">{setLabel(c.set)}</span>
+          {showSport && <SportChip code={row.sportCode} name={facts.sportName} />}
+          <span className="text-ink">{facts.setTitle}</span>
         </span>
       )}
       {variantLine}
@@ -1358,7 +1371,7 @@ function Row({
     </span>
   );
 
-  const who = c ? playerNames(c) : row.listingTitle;
+  const who = c ? playerNames(c) : facts?.players || row.listingTitle;
   const team = c?.teams.map((t) => t.name).join(" / ");
 
   return (
@@ -1418,11 +1431,11 @@ function Row({
       </td>
       {showSlot && <td className={`${cell} font-semibold tabular-nums text-ink`}>{row.spot?.slot ?? "–"}</td>}
       {showQty && <td className={`${cell} max-md:hidden`}>{qty}</td>}
-      {c && <td className={`${cell} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden`}>#{c.cardNumber}</td>}
-      {/* No card: the listing's own words take the number's column too. */}
-      <td colSpan={c ? undefined : 2} className={`${cell} max-md:hidden`}>
+      {facts && <td className={`${cell} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden`}>#{facts.cardNumber}</td>}
+      {/* Nothing to file by: the listing's own words take the number's column too. */}
+      <td colSpan={facts ? undefined : 2} className={`${cell} max-md:hidden`}>
         <span className="flex flex-col">
-          <span className={c ? "whitespace-nowrap font-semibold text-ink" : "text-ink"}>{who}</span>
+          <span className={facts ? "whitespace-nowrap font-semibold text-ink" : "text-ink"}>{who}</span>
           {team && <span className="text-xs text-ink-3">{team}</span>}
           <span className="mt-1 empty:hidden">
             <Markers row={row} />
@@ -1437,7 +1450,7 @@ function Row({
         <span className="flex min-w-0 flex-col gap-1">
           <span className="flex flex-wrap items-baseline gap-x-2">
             {qty}
-            {c && <span className="font-bold text-ink tabular-nums">#{c.cardNumber}</span>}
+            {facts && <span className="font-bold text-ink tabular-nums">#{facts.cardNumber}</span>}
             <span className="font-semibold text-ink">{who}</span>
           </span>
           {setText}
