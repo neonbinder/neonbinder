@@ -10,7 +10,7 @@ Mask sources share one geometry stage:
   classical  — multiple candidate masks (LAB background-distance at L-weights
                0.5/1.0, plus Canny hulls), each scored by the OUTCOME
                (bg_residual) of its provisional work-resolution crop
-  birefnet   — rembg/BiRefNet alpha matte on a border-padded input (padding
+  birefnet   — BiRefNet alpha matte on a border-padded input (padding
                makes a frame-filling card an "object on background" again)
   tiered     — classical first; when classical can't produce a QC-gate pass,
                or can't settle the pre-cropped identity question, BiRefNet
@@ -45,10 +45,12 @@ Service adaptations (the pipeline itself is untouched):
   - Components that only earn a "review" verdict (no QC-gate pass) also
     decline, letting the cascade's other strategies and uniform validator
     gates take over.
-  - The BiRefNet session is lazily created on first use and cached for the
-    container's lifetime (same pattern as `sam._load_model`). Model name
-    comes from the `REMBG_MODEL` env var (default "birefnet-general");
-    weights are baked into the image at build time via `U2NET_HOME`.
+  - BiRefNet runs through `app.cropper.birefnet` (onnxruntime directly, a
+    literal transcription of rembg 2.0.78's predict; NEO-484). That module
+    owns the session, the model selection and the baked weights. On the dev
+    base service only, `app.devcache.birefnet` may answer the alpha plane
+    for an input it has already seen (NEO-484 B); the crop, threshold and
+    close below always run, hit or miss.
 
 Public API: `tiered_crop(image_bytes) -> bytes | None`.
 """
@@ -57,8 +59,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
-import threading
 from io import BytesIO
 from typing import Any
 
@@ -66,6 +66,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+from app.cropper import birefnet
+from app.devcache import birefnet as devcache_birefnet
 from app.timing import measure_current
 
 logger = logging.getLogger(__name__)
@@ -91,82 +93,10 @@ PLAUSIBLE_ASPECTS = (CARD_ASPECT, 0.585)
 # still pass the QC gate.
 SLAB_WINDOW = (0.573, 0.597)
 
-DEFAULT_REMBG_MODEL = "birefnet-general"
 OUTPUT_JPEG_QUALITY = 92
 
-# ── BiRefNet session (lazy, cached, injectable for tests) ───────────────────
-
-_session: Any = None
-_session_lock = threading.Lock()
-
-# Only the BiRefNet family may be selected. rembg also ships session classes
-# that POST the image to third-party APIs (e.g. "withoutbg") — an env-var
-# typo must never be able to route user card photos off-box.
-ALLOWED_REMBG_MODELS = frozenset({"birefnet-general", "birefnet-general-lite"})
-
-
-def _get_session() -> Any:
-    """Create (once) and return the rembg/BiRefNet session.
-
-    Model name is read from `REMBG_MODEL` at first use so tests and deploys
-    can steer it without re-importing; it must be in ALLOWED_REMBG_MODELS.
-    The session is cached for the container's lifetime behind a lock — three
-    concurrent cold requests must not each construct a ~930MB ONNX session.
-    In Cloud Run the weights are baked into the image (`U2NET_HOME`), so
-    this never downloads at runtime.
-    """
-    global _session
-    if _session is None:
-        with _session_lock:
-            if _session is None:
-                import onnxruntime as ort
-                from rembg import new_session
-
-                model = os.environ.get("REMBG_MODEL", DEFAULT_REMBG_MODEL)
-                if model not in ALLOWED_REMBG_MODELS:
-                    raise ValueError(
-                        f"REMBG_MODEL {model!r} is not allowed; "
-                        f"choose one of {sorted(ALLOWED_REMBG_MODELS)}"
-                    )
-                # ORT's CPU memory arena retains every inference's peak
-                # allocation for the process lifetime — measured ~8GB
-                # resident after ONE warmed BiRefNet pass, which OOM-killed
-                # an 8Gi Cloud Run container on its first real request.
-                # Without the arena, activations are freed after each run;
-                # steady state drops to weights + overhead at a small
-                # per-request allocation cost.
-                sess_opts = ort.SessionOptions()
-                sess_opts.enable_cpu_mem_arena = False
-                logger.info("loading BiRefNet session %s (cpu_mem_arena off)", model)
-                _session = new_session(model, sess_opts=sess_opts)
-                logger.info("BiRefNet session ready")
-    return _session
-
-
-def warm_up() -> None:
-    """Load the session and run one tiny inference at container startup.
-
-    The first real request must pay neither the ~930MB model load (plus
-    pooch's full-file hash pass) nor ORT's first-run allocations — cold,
-    those pushed a /process call past the smoke test's 120s timeout.
-    Called from the service startup hook, gated on REQUIRE_BAKED_WEIGHTS;
-    unit tests never reach it.
-    """
-    import rembg
-
-    session = _get_session()
-    dummy = np.zeros((64, 64, 3), np.uint8)
-    rembg.remove(dummy, session=session)
-
-
-def is_session_loaded() -> bool:
-    """Cheap, side-effect-free check: is the BiRefNet session already resident?
-
-    True once `_get_session()` (via a crop or `warm_up()`) has constructed and
-    cached the session for this process. Lets a repeat warm-up short-circuit —
-    no reload, no inference — instead of paying even a tiny dummy pass again.
-    """
-    return _session is not None
+# A BiRefNet alpha above this counts as card (benchmark-tuned with the pad).
+BIREFNET_ALPHA_THRESHOLD = 25
 
 
 # ── Input ───────────────────────────────────────────────────────────────────
@@ -270,15 +200,16 @@ def classical_candidates(work: np.ndarray) -> list[np.ndarray]:
     ]
 
 
-def birefnet_mask(work: np.ndarray) -> np.ndarray:
-    """BiRefNet alpha matte → binary mask, at work resolution.
+def pad_for_birefnet(work: np.ndarray) -> tuple[np.ndarray, int]:
+    """The BiRefNet input for `work`: `(padded_rgb, p)`.
 
-    The input is padded with the measured background color (BORDER_CONSTANT)
-    before segmentation so a frame-filling card reads as an object on a
-    background rather than "the whole image".
+    `work` (BGR) is padded by `p` pixels on every side with the measured
+    background colour (BORDER_CONSTANT, the median of a border ring), so a
+    frame-filling card reads as an object on a background rather than "the
+    whole image", then converted to RGB. `padded_rgb` is exactly what
+    `birefnet.predict_alpha` receives and what the dev cache keys on;
+    `scripts/golden_masks.py` checks its own padding against this function.
     """
-    from rembg import remove
-
     h, w = work.shape[:2]
     p = int(BIREFNET_PAD * max(h, w))
     t = max(2, int(0.03 * min(h, w)))
@@ -292,12 +223,27 @@ def birefnet_mask(work: np.ndarray) -> np.ndarray:
     )
     bg_bgr = tuple(int(v) for v in np.median(ring, axis=0))
     padded = cv2.copyMakeBorder(work, p, p, p, p, cv2.BORDER_CONSTANT, value=bg_bgr)
-    # Booked to the request's `birefnet_ms` when a /process-entry is bound
-    # (NEO-315); a no-op otherwise. Includes a lazy session load, if any.
-    with measure_current("birefnet_ms"):
-        rgba = remove(cv2.cvtColor(padded, cv2.COLOR_BGR2RGB), session=_get_session())
-    alpha = np.array(rgba)[..., 3][p : p + h, p : p + w]
-    mask = (alpha > 25).astype(np.uint8) * 255
+    return cv2.cvtColor(padded, cv2.COLOR_BGR2RGB), p
+
+
+def birefnet_mask(work: np.ndarray) -> np.ndarray:
+    """BiRefNet alpha matte → binary mask, at work resolution.
+
+    pad → dev-cache lookup → on a miss, `birefnet.predict_alpha` (booked to
+    the request's `birefnet_ms`) and store → crop back to the work frame,
+    threshold, close. The post-processing runs on a hit exactly as on a miss.
+    """
+    h, w = work.shape[:2]
+    padded_rgb, p = pad_for_birefnet(work)
+    alpha_full, slot = devcache_birefnet.lookup(padded_rgb)
+    if alpha_full is None:
+        # Booked to the request's `birefnet_ms` when a /process-entry is bound
+        # (NEO-315); a no-op otherwise. Includes a lazy session load, if any.
+        with measure_current("birefnet_ms"):
+            alpha_full = birefnet.predict_alpha(padded_rgb)
+        devcache_birefnet.remember(slot, alpha_full)
+    alpha = alpha_full[p : p + h, p : p + w]
+    mask = (alpha > BIREFNET_ALPHA_THRESHOLD).astype(np.uint8) * 255
     k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
 

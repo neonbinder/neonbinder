@@ -1,4 +1,4 @@
-"""Unit tests for app.timing (NEO-315).
+"""Unit tests for app.timing (NEO-315, NEO-484).
 
 The accumulator is per request, never shared; the JSON line has a fixed key
 set Cloud Logging queries depend on; the dedicated logger must not propagate
@@ -17,7 +17,7 @@ import time
 import pytest
 
 from app import timing
-from app.timing import Timings, bound, increment_current, measure_current
+from app.timing import Timings, bound, increment_current, measure_current, peak_rss_mb
 
 EXPECTED_KEYS = {
     "msg",
@@ -45,7 +45,29 @@ EXPECTED_KEYS = {
     "baseline_supplied",
     "haiku_bbox_reached",
     "haiku_bbox_won",
+    # NEO-484
+    "cache_ms",
+    "vision_cache_hits",
+    "vision_cache_misses",
+    "vision_cache_errors",
+    "birefnet_cache_hits",
+    "birefnet_cache_misses",
+    "birefnet_cache_errors",
+    "cache_write_failures",
+    "cache_mode",
+    "error_code",
+    "maxrss_mb",
 }
+
+CACHE_COUNTERS = (
+    "vision_cache_hits",
+    "vision_cache_misses",
+    "vision_cache_errors",
+    "birefnet_cache_hits",
+    "birefnet_cache_misses",
+    "birefnet_cache_errors",
+    "cache_write_failures",
+)
 
 
 class _Collect(logging.Handler):
@@ -187,3 +209,95 @@ class TestIncrementCurrent:
     def test_rejects_an_unknown_counter(self):
         with pytest.raises(ValueError, match="unknown counter"):
             increment_current("vision_reconnect")
+
+    @pytest.mark.parametrize("name", CACHE_COUNTERS)
+    def test_counts_each_cache_counter(self, name):
+        t = Timings()
+        with bound(t):
+            increment_current(name)
+        assert getattr(t, name) == 1
+        assert t.payload()[name] == 1
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "cache_ms",  # an ms field, not a counter
+            "vision_calls",  # a plain attribute, not a registered counter
+            "cache_mode",
+            "error_code",
+            "maxrss_mb",
+            "vision_cache_hit",
+            "birefnet_cache_hits ",
+            "",
+        ],
+    )
+    def test_refuses_anything_but_a_registered_counter(self, name):
+        t = Timings()
+        with bound(t), pytest.raises(ValueError, match="unknown counter"):
+            increment_current(name)
+
+    def test_refuses_an_unknown_name_even_with_nothing_bound(self):
+        with pytest.raises(ValueError, match="unknown counter"):
+            increment_current("vision_cache_hit")
+
+
+class TestNeo484Fields:
+    """The dev cache counters, `cache_ms`, `cache_mode`, `error_code`, `maxrss_mb`."""
+
+    def test_defaults(self):
+        body = Timings().payload()
+        for name in CACHE_COUNTERS:
+            assert body[name] == 0
+        assert body["cache_ms"] == 0
+        assert body["cache_mode"] is None
+        assert body["error_code"] is None
+
+    def test_cache_ms_is_a_measurable_field(self):
+        t = Timings()
+        with bound(t), measure_current("cache_ms"):
+            time.sleep(0.005)
+        assert t.cache_ms >= 5
+        assert isinstance(t.payload()["cache_ms"], int)
+
+    def test_mode_and_error_code_ride_on_the_line(self, collected):
+        t = Timings(role="fast", index=1)
+        t.cache_mode = "off:tagged_host"
+        t.error_code = "ENTRY_UNDECODABLE"
+        t.emit()
+        body = json.loads(collected[0])
+        assert body["cache_mode"] == "off:tagged_host"
+        assert body["error_code"] == "ENTRY_UNDECODABLE"
+
+    def test_maxrss_is_the_process_peak_in_mib(self):
+        peak = peak_rss_mb()
+        assert isinstance(peak, int)
+        # A Python process with numpy and Pillow loaded: tens of MiB, not KiB
+        # or bytes (the unit differs between Linux and macOS).
+        assert 10 <= peak <= 64 * 1024
+
+    def test_emit_fills_maxrss_and_payload_reports_it(self, collected, monkeypatch):
+        monkeypatch.setattr(timing, "peak_rss_mb", lambda: 321)
+        t = Timings()
+        t.emit()
+        assert t.maxrss_mb == 321
+        assert json.loads(collected[0])["maxrss_mb"] == 321
+
+    def test_payload_reads_the_peak_when_unset(self, monkeypatch):
+        monkeypatch.setattr(timing, "peak_rss_mb", lambda: 77)
+        assert Timings().payload()["maxrss_mb"] == 77
+
+    def test_an_explicit_maxrss_is_kept(self, monkeypatch):
+        monkeypatch.setattr(timing, "peak_rss_mb", lambda: 77)
+        t = Timings()
+        t.maxrss_mb = 5
+        assert t.payload()["maxrss_mb"] == 5
+
+    def test_every_count_field_is_on_the_line(self):
+        body = Timings().payload()
+        for name in timing.COUNT_FIELDS:
+            assert name in body
+
+    def test_every_ms_field_is_on_the_line(self):
+        body = Timings().payload()
+        for name in timing.MS_FIELDS:
+            assert name in body

@@ -579,11 +579,17 @@ jobs:
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
-    # 45, not 20 like wire-browser-url: the preprocess preview image is multi-GB
+    # 90, not 20 like wire-browser-url: the preprocess preview image is multi-GB
     # (torch + baked SAM) and rebuilds with NO layer cache (~20-25 min), and the
     # fast per-PR revision deploys only AFTER deploy-preview — so this parallel
     # job must be able to wait ~25-30 min for both pr-<N> revisions to come up.
-    timeout-minutes: 45
+    # NEO-484: it then also waits for each revision to carry THIS push's sha
+    # (heavy up to 40 min, fast up to 15 more after it), so a second push's
+    # E2E never starts against the previous push's container. The worst case
+    # (every ceiling hit in turn) is far beyond a healthy run's ~30 min; the
+    # job timeout only has to outlast the per-step ceilings so that a stuck
+    # deploy fails at a step with a clear ::error::, not as a cancelled job.
+    timeout-minutes: 90
     # Job-scoped perms: id-token (WIF), contents (checkout). Does NOT need
     # checks/PR-write, and no longer needs deployments:read — NEO-162 replaced
     # the Deployments API poll with a `needs:` on web-preview.
@@ -730,6 +736,34 @@ jobs:
             sleep 10
           done
           echo "::error::pr-${PR} fast preprocess preview never came up — preprocess.yml deploy-preview-fast may have failed."; exit 1
+
+      # NEO-484: the two waits above only prove the pr-<N> URL answers. On a
+      # second-or-later push that is already true of the PREVIOUS push's
+      # revision, so without this E2E (which needs this job) ran against a
+      # stale container while the new image was still building. Hold here, and
+      # so hold E2E, until each revision behind the tag carries this commit's
+      # PREVIEW_SHA. Same script as the crop matrix's guard, so the two cannot
+      # drift. A deploy that never arrives fails this job with an ::error::
+      # (ceilings: heavy 120 x 20s = 40 min, fast 45 x 20s = 15 min after it);
+      # it never falls through to the stale revision. Runs inside the existing
+      # `preprocess == 'true'` job condition, so PRs that do not touch
+      # services/preprocess take no extra wait.
+      - name: Wait for the pr-<N> heavy revision to be built from this commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project neonbinder-dev --service neonbinder-preprocess \
+            --tag "pr-${PR}" --sha "$EXPECTED_SHA" --attempts 120 --interval 20
+
+      - name: Wait for the pr-<N> fast revision to be built from this commit
+        if: steps.host-fast.outputs.exists == 'true'
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project neonbinder-dev --service neonbinder-preprocess-fast \
+            --tag "pr-${PR}" --sha "$EXPECTED_SHA" --attempts 45 --interval 20
 
       # Point the Convex preview at the pr-<N> preprocess preview(s). Same
       # deploy-key mechanism + read-back verification as wire-browser-url.
@@ -1166,7 +1200,13 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: ruff format --check .
-      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80
+      # NEO-484: COVERAGE_CORE=sysmon (see pyproject [tool.coverage.run]) and
+      # --durations so the next slow test shows up in the log. The unit
+      # conftest blocks the real SAM model load; without that, a runner with
+      # torch installed spent ~14 of its ~15 minutes running SAM per test.
+      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80 --durations=15
+        env:
+          COVERAGE_CORE: sysmon
 
   # NEO-309/NEO-310: `node --test` over the ops shell scripts' own test
   # suites. No `npm ci` / package.json involved — these use only Node
@@ -1297,46 +1337,22 @@ jobs:
           echo "SMOKE_INTERNAL_KEY=$KEY" >> "$GITHUB_ENV"
 
       # ── Refuse to test a stale revision (NEO-191) ────────────────────
-      # `wire-preprocess-url` waits only for the pr-<N> URL to stop 404ing.
-      # On the FIRST push that means waiting out the ~25 min image build, but
-      # on any later push the URL already answers — serving the PREVIOUS
-      # push's revision — so it returns in ~30s and everything downstream
-      # would assert against the wrong container. Observed on this PR: a green
-      # matrix in 2m against an image built from the prior commit.
-      #
-      # deploy-preview stamps each revision with PREVIEW_SHA, so wait for the
-      # revision behind the tag to actually be THIS commit. On a first push
-      # this passes on the first poll (wire-preprocess-url already waited);
-      # on a later push it absorbs the remaining build time, which is the
-      # cost of the gate meaning what it says.
+      # `wire-preprocess-url` now holds until the pr-<N> heavy (and fast)
+      # revision carries this commit's PREVIEW_SHA (NEO-484; it used to wait
+      # only for the URL to stop 404ing, which on a later push is true of the
+      # previous push's revision). This re-check costs one poll in the normal
+      # case and is kept on purpose: it is the same script, so the matrix and
+      # E2E can never disagree about what "this commit's revision" means, and
+      # it still guards this job if the wiring job is ever restructured.
       - name: Wait for the pr-<N> revision to be built from this commit
         env:
           PR: ${{ github.event.pull_request.number }}
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        working-directory: ${{ github.workspace }}
         run: |
-          set -euo pipefail
-          for attempt in $(seq 1 120); do   # ~40 min ceiling; build is ~25
-            # `|| true` on both reads: a transient gcloud/API blip must cost
-            # one poll, not the whole job. Same idiom as the wait loops above.
-            REV=$(gcloud run services describe neonbinder-preprocess \
-              --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
-              | jq -r --arg t "pr-$PR" '.status.traffic[]? | select(.tag==$t) | .revisionName' || true)
-            if [ -n "$REV" ] && [ "$REV" != "null" ]; then
-              ACTUAL=$(gcloud run revisions describe "$REV" \
-                --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
-                | jq -r '.spec.containers[0].env[]? | select(.name=="PREVIEW_SHA") | .value' || true)
-              if [ "$ACTUAL" = "$EXPECTED_SHA" ]; then
-                echo "$REV is built from $EXPECTED_SHA"
-                exit 0
-              fi
-              echo "attempt $attempt/120: $REV has PREVIEW_SHA='${ACTUAL:-<unset>}', want $EXPECTED_SHA — retry in 20s"
-            else
-              echo "attempt $attempt/120: no revision serving tag pr-$PR yet — retry in 20s"
-            fi
-            sleep 20
-          done
-          echo "::error::pr-$PR never served a revision built from $EXPECTED_SHA — preprocess.yml deploy-preview may have failed."
-          exit 1
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project "$DEV_PROJECT" --service neonbinder-preprocess \
+            --tag "pr-$PR" --sha "$EXPECTED_SHA" --attempts 120 --interval 20
 
       # A cold preview would otherwise spend the first fixture's timeout loading
       # ~930MB of BiRefNet. /warmup is synchronous and idempotent.
@@ -1357,6 +1373,244 @@ jobs:
           SMOKE_TARGET_URL: ${{ needs.wire-preprocess-url.outputs.heavy_preview_url }}
           SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/functional -v
+
+  # NEO-484 C: golden-mask parity for the direct-ORT BiRefNet path.
+  #
+  # The heavy service stopped importing rembg and runs a literal transcription
+  # of rembg 2.0.78's BiRefNet predict through onnxruntime
+  # (app/cropper/birefnet.py). This job proves that transcription still
+  # produces rembg's masks, on THIS PR's own image, on every preprocess PR.
+  #
+  #   * The image: the pr-<N> preview image preprocess.yml builds, waited for
+  #     until its org.opencontainers.image.revision label is this head SHA
+  #     (the same stale-image trap the crop matrix guards with PREVIEW_SHA),
+  #     then PINNED by digest so a later push cannot swap it mid-run.
+  #   * The oracle: services/preprocess/tests/parity/Dockerfile layers
+  #     requirements-oracle.txt (rembg and the packages its removal dropped,
+  #     pinned with hashes) on that digest. Target `check` adds only the test
+  #     runner; target `oracle` adds rembg.
+  #   * The reference model: rembg's own release download, verified by its
+  #     md5 and a pinned sha256 on every run (cached or not).
+  #   * Hardening: the containers run with --network none, a read-only root,
+  #     no capabilities and no credentials; only services/preprocess is
+  #     mounted, read-only. The GCP credentials file the auth action writes
+  #     sits at the workspace root, outside that mount.
+  #
+  # Runs whenever preprocess changed, deps-only PRs included: a dependency
+  # bump (onnxruntime, numpy, Pillow) is exactly what can move a mask. It does
+  # not depend on the web preview or E2E, so it adds no wall-clock beyond the
+  # preview image build it waits for.
+  #
+  # Interface with tests/parity (P3 owns that directory), all env vars:
+  #   PARITY_STAGE          base | oracle (base: image checks + SAM, in `check`)
+  #   PARITY_SHARD_INDEX    0-based shard of this run
+  #   PARITY_SHARD_COUNT    total shards (2)
+  #   PARITY_FIXTURES_DIR   the fixture images (the whole fixtures bucket)
+  #   PARITY_ORIGINAL_MODEL the verified original birefnet-general.onnx
+  preprocess-mask-parity:
+    name: Preprocess mask parity (shard ${{ matrix.shard }})
+    needs: [changes]
+    if: |
+      github.event_name == 'pull_request'
+      && needs.changes.outputs.preprocess == 'true'
+    runs-on: ubuntu-latest
+    # The preview image build is ~25 min on a first push; this job may wait
+    # for all of it before its own ~10 min.
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEV_PROJECT: neonbinder-dev
+      PREVIEW_IMAGE: gcr.io/neonbinder-dev/neonbinder-preprocess-preview
+      PARITY_SHARD_COUNT: "2"
+      # rembg 2.0.78's download for birefnet-general and its pinned md5
+      # (rembg/sessions/birefnet_general.py). The sha256 was captured in S0a
+      # and is the same pin scripts/bake_birefnet.py verifies at image build.
+      BIREFNET_SOURCE_URL: https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-epoch_244.onnx
+      BIREFNET_SOURCE_MD5: 7a35a0141cbbc80de11d9c9a28f52697
+      BIREFNET_SOURCE_SHA256: 58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Dependabot-triggered runs get no secrets, so preprocess.yml cannot
+      # build the pr-<N> image this job tests. Fail with the remedy rather
+      # than wait 40 minutes for an image that never comes. A maintainer
+      # push to the branch (or the deps batch) runs it with secrets.
+      - name: Preconditions
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "::error::mask parity needs this PR's pr-<N> image, which a Dependabot-triggered run cannot build (no secrets). Push to the branch as a maintainer, or validate the bump in the deps batch."
+            exit 1
+          fi
+          case "$BIREFNET_SOURCE_SHA256" in
+            *[!0-9a-f]*|"") echo "::error::BIREFNET_SOURCE_SHA256 is not a sha256 yet; set it from S0a."; exit 1 ;;
+          esac
+          [ "${#BIREFNET_SOURCE_SHA256}" -eq 64 ] || { echo "::error::BIREFNET_SOURCE_SHA256 must be 64 hex characters."; exit 1; }
+
+      # The PR image unpacks to several GB, and the oracle layer, the model
+      # and the fixtures sit beside it. Drop toolchains this job never uses.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Restore the reference model
+        id: model-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: services/preprocess/.parity/model
+          key: birefnet-general-${{ env.BIREFNET_SOURCE_SHA256 }}
+
+      - name: Download and verify the reference model
+        working-directory: services/preprocess
+        run: |
+          set -euo pipefail
+          mkdir -p .parity/model
+          f=.parity/model/birefnet-general.onnx
+          if [ ! -s "$f" ]; then
+            curl -fsSL --retry 3 --retry-all-errors -o "$f.part" "$BIREFNET_SOURCE_URL"
+            mv "$f.part" "$f"
+          fi
+          # Verified on every run, cache hit or not: the cache is keyed on the
+          # sha256 we expect, not on what the file actually is.
+          echo "$BIREFNET_SOURCE_MD5  $f" | md5sum -c -
+          echo "$BIREFNET_SOURCE_SHA256  $f" | sha256sum -c -
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
+
+      # Every fixture in the bucket (the crop matrix's --crop subset is 11 of
+      # them). The bucket name is read from fetch_fixtures.py so there is one
+      # source for it; tests/parity checks each file's sha256 against its
+      # goldens manifest, so a replaced fixture fails loudly.
+      - name: Fetch fixture images
+        working-directory: services/preprocess
+        run: |
+          set -euo pipefail
+          BUCKET=$(python3 -c 'import re; print(re.search(r"^FIXTURES_BUCKET = \"(gs://[^\"]+)\"", open("scripts/fetch_fixtures.py").read(), re.M).group(1))')
+          mkdir -p .parity/fixtures
+          gcloud storage cp "$BUCKET/*" .parity/fixtures/
+          echo "fixtures: $(find .parity/fixtures -type f | wc -l)"
+
+      # Wait for pr-<N> to be THIS commit's image, then pin its digest. The
+      # label is read from the image config through the registry API, so no
+      # multi-GB pull happens until the right image is there.
+      - name: Wait for this commit's pr-<N> image and pin its digest
+        id: pin
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          ref="$PREVIEW_IMAGE:pr-$PR"
+          for attempt in $(seq 1 120); do   # ~40 min ceiling; build is ~25
+            # `|| true`: a transient registry blip costs one poll, not the job.
+            fq=$(gcloud artifacts docker images describe "$ref" --project="$DEV_PROJECT" \
+              --format='value(image_summary.fully_qualified_digest)' 2>/dev/null || true)
+            if [ -n "$fq" ]; then
+              pkg="${fq%@*}"; digest="${fq#*@}"
+              host="${pkg%%/*}"; path="${pkg#*/}"
+              token=$(gcloud auth print-access-token)
+              echo "::add-mask::$token"
+              manifest=$(printf 'Authorization: Bearer %s\n' "$token" | curl -sf -H @- \
+                -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+                "https://$host/v2/$path/manifests/$digest" || true)
+              cfg=$(jq -r '.config.digest // empty' <<< "$manifest" 2>/dev/null || true)
+              label=""
+              if [ -n "$cfg" ]; then
+                label=$(printf 'Authorization: Bearer %s\n' "$token" | curl -sfL -H @- \
+                  "https://$host/v2/$path/blobs/$cfg" \
+                  | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' || true)
+              fi
+              if [ "$label" = "$EXPECTED_SHA" ]; then
+                echo "pr-$PR is $digest, built from $EXPECTED_SHA"
+                echo "image=$PREVIEW_IMAGE@$digest" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "attempt $attempt/120: pr-$PR is $digest with revision '${label:-<none>}', want $EXPECTED_SHA — retry in 20s"
+            else
+              echo "attempt $attempt/120: no pr-$PR image yet — retry in 20s"
+            fi
+            sleep 20
+          done
+          echo "::error::pr-$PR never became an image built from $EXPECTED_SHA — check preprocess.yml's deploy-preview."
+          exit 1
+
+      - name: Pull the pinned image
+        env:
+          IMAGE: ${{ steps.pin.outputs.image }}
+        run: docker pull "$IMAGE"
+
+      # Built with network (pip installs requirements-oracle.txt with
+      # --require-hashes); only the test runs below are offline.
+      - name: Build the parity images on the pinned digest
+        env:
+          IMAGE: ${{ steps.pin.outputs.image }}
+        run: |
+          set -euo pipefail
+          ctx=services/preprocess/tests/parity
+          docker build --provenance=false --sbom=false --build-arg "BASE_IMAGE=$IMAGE" \
+            --target check -t nb-parity-check "$ctx"
+          docker build --provenance=false --sbom=false --build-arg "BASE_IMAGE=$IMAGE" \
+            --target oracle -t nb-parity-oracle "$ctx"
+
+      # Nothing a test needs is outside services/preprocess, and nothing in it
+      # is a credential: assert that, since the mount is the whole boundary.
+      - name: Check the mount holds no credentials
+        run: |
+          set -euo pipefail
+          if find services/preprocess -name 'gha-creds-*.json' -o -name '*.pem' -o -name 'application_default_credentials.json' | grep -q .; then
+            echo "::error::credential-like file under services/preprocess; refusing to mount it."
+            exit 1
+          fi
+
+      - name: Step A — base image checks and SAM (shard 0)
+        if: matrix.shard == 0
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=4g \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -v "$GITHUB_WORKSPACE/services/preprocess:/work:ro" -w /work \
+            -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PARITY_STAGE=base -e PARITY_SHARD_INDEX="$SHARD" -e PARITY_SHARD_COUNT \
+            -e PARITY_FIXTURES_DIR=/work/.parity/fixtures \
+            -e PARITY_ORIGINAL_MODEL=/work/.parity/model/birefnet-general.onnx \
+            --entrypoint python nb-parity-check \
+            -m pytest tests/parity -p no:cacheprovider -v -rA
+
+      - name: Step B — rembg oracle and goldens
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=4g \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -v "$GITHUB_WORKSPACE/services/preprocess:/work:ro" -w /work \
+            -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PARITY_STAGE=oracle -e PARITY_SHARD_INDEX="$SHARD" -e PARITY_SHARD_COUNT \
+            -e PARITY_FIXTURES_DIR=/work/.parity/fixtures \
+            -e PARITY_ORIGINAL_MODEL=/work/.parity/model/birefnet-general.onnx \
+            --entrypoint python nb-parity-oracle \
+            -m pytest tests/parity -p no:cacheprovider -v -rA
 
   repo-hygiene:
     name: Repo hygiene (stray agent memory)
@@ -1456,7 +1710,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, preprocess-mask-parity, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -1475,6 +1729,8 @@ jobs:
           R_SCANNER_TEST: ${{ needs.scanner-test.result }}
           R_SCANNER_BUILD: ${{ needs.scanner-build.result }}
           R_CROP_MATRIX: ${{ needs.preprocess-crop-matrix.result }}
+          R_MASK_PARITY: ${{ needs.preprocess-mask-parity.result }}
+          R_PREPROCESS_CHANGED: ${{ needs.changes.outputs.preprocess }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
           R_WIRE_PREPROCESS: ${{ needs.wire-preprocess-url.result }}
           R_WIRE_CAPACITY: ${{ needs.wire-preprocess-capacity.result }}
@@ -1485,7 +1741,7 @@ jobs:
           R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
         run: |
           set -euo pipefail
-          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST scripts-test=$R_SCRIPTS_TEST scanner-test=$R_SCANNER_TEST scanner-build=$R_SCANNER_BUILD crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST scripts-test=$R_SCRIPTS_TEST scanner-test=$R_SCANNER_TEST scanner-build=$R_SCANNER_BUILD crop-matrix=$R_CROP_MATRIX mask-parity=$R_MASK_PARITY wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
@@ -1502,6 +1758,18 @@ jobs:
             else
               echo "::error::e2e=$R_E2E (must succeed; skip allowed only when deps_only=true)"; fail=1
             fi
+          fi
+          # NEO-484: mask parity must SUCCEED whenever preprocess changed,
+          # deps-only PRs included; a skip there would wave an unproven model
+          # path through. Skipped is out-of-scope only when preprocess did not
+          # change.
+          if [ "$R_PREPROCESS_CHANGED" = "true" ]; then
+            [ "$R_MASK_PARITY" = "success" ] || { echo "::error::preprocess-mask-parity=$R_MASK_PARITY (must succeed when preprocess changed)"; fail=1; }
+          else
+            case "$R_MASK_PARITY" in
+              success|skipped) ;;
+              *) echo "::error::preprocess-mask-parity=$R_MASK_PARITY"; fail=1 ;;
+            esac
           fi
           # area + wiring jobs: success OR skipped (out-of-area) OK; else fail
           # web-preview joins this list rather than getting a rule of its own
