@@ -12,6 +12,7 @@ import { ParamLink, usePushParams, useReplaceParams } from "../mode";
 import { PageApiContext } from "../pageApi";
 import { SPORT_LINE, SPORT_TAB, VARIANT_CHIP, VARIANT_STRIPE, sportHue } from "./colours";
 import { DemoPickListProvider } from "./demoPickStore";
+import PrintSheet, { usePrinting } from "./PrintSheet";
 import {
   boxStops,
   buildSections,
@@ -880,6 +881,7 @@ function PickTable({
   const tableRef = useRef<HTMLTableElement>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [thumb, setThumb] = useState<PickRow | null>(null);
+  const printing = usePrinting();
   const keys = sections.flatMap((s) => s.rows.map((r) => `${s.key}/${r.key}`));
   const active = activeKey && keys.includes(activeKey) ? activeKey : keys[0];
 
@@ -1005,6 +1007,7 @@ function PickTable({
           </tbody>
         ))}
       </table>
+      {printing && <PrintSheet sections={sections} pulled={pulled} showSlot={showSlot} />}
       {thumb?.card && (
         <P3Dialog
           shape="center"
@@ -1094,13 +1097,13 @@ function SportChip({ code, name }: { code: string | null; name: string }) {
 }
 
 function Markers({ row }: { row: PickRow }) {
-  if (!row.allRemaining && !row.short && !row.isNew) return null;
+  if (!row.lastOnes && !row.short && !row.isNew) return null;
   return (
     <span className="flex flex-wrap gap-1 whitespace-nowrap">
       {row.isNew && <span className="nb-pick-chip rounded bg-neon-blue px-1.5 text-xs font-bold leading-5 text-on-neon-blue">New</span>}
-      {row.allRemaining && (
+      {row.lastOnes && (
         <span className="nb-pick-chip rounded border border-notice-info-rule bg-notice-info-bg px-1.5 text-xs font-semibold leading-5 text-notice-info-ink">
-          All remaining
+          Last ones
         </span>
       )}
       {row.short > 0 && (

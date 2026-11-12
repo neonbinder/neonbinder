@@ -170,10 +170,10 @@ describe("mergeLines", () => {
     expect(mergeLines([line(skenes), line(skenes, { isNew: true })])).toHaveLength(2);
   });
 
-  it("adds up shortfalls and carries All remaining", () => {
-    const [row] = mergeLines([line(skenes, { short: 1 }), line(skenes, { allRemaining: true, order: BSC_1 })]);
+  it("adds up shortfalls and carries Last ones", () => {
+    const [row] = mergeLines([line(skenes, { short: 1 }), line(skenes, { lastOnes: true, order: BSC_1 })]);
     expect(row.short).toBe(1);
-    expect(row.allRemaining).toBe(true);
+    expect(row.lastOnes).toBe(true);
   });
 
   it("a merged row is pulled once every line in it is", () => {
@@ -305,7 +305,7 @@ describe("the demo fixture", () => {
     const rows = mergeLines(DEMO_PICK_LINES);
     expect(DEMO_PICK_LINES.length).toBeGreaterThanOrEqual(25);
     expect(rows.some((r) => r.orders.length === 2 && r.quantity === 2)).toBe(true);
-    expect(rows.some((r) => r.allRemaining)).toBe(true);
+    expect(rows.some((r) => r.lastOnes)).toBe(true);
     expect(rows.some((r) => r.short === 1)).toBe(true);
     expect(rows.filter((r) => !r.card).length).toBeGreaterThanOrEqual(1);
     expect(rows.some((r) => r.isNew)).toBe(true);

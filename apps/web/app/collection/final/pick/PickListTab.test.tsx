@@ -186,6 +186,28 @@ describe("the Pick List demo", () => {
     expect(all.filter((b) => b.getAttribute("aria-pressed") === "true")).toHaveLength(2);
   });
 
+  it("prints a dense sheet, one line per card, only while printing", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    expect(screen.queryByRole("table", { name: "Pick sheet" })).toBeNull();
+    act(() => {
+      window.dispatchEvent(new Event("beforeprint"));
+    });
+    const sheet = screen.getByRole("table", { name: "Pick sheet" });
+    const lines = within(sheet).getAllByRole("row").filter((r) => r.closest("tbody") && !within(r).queryByRole("rowheader"));
+    // One line per row on screen: 29 sales, the two-order Skenes merged into one.
+    expect(lines).toHaveLength(screen.getAllByRole("button", { name: /^Pulled / }).length);
+    const groups = within(sheet).getAllByRole("rowheader").map((h) => h.textContent);
+    // The sport is written once, where it starts.
+    expect(groups.filter((g) => g?.startsWith("Baseball"))).toHaveLength(1);
+    expect(groups.some((g) => g?.startsWith("2022 Topps Heritage"))).toBe(true);
+    expect(within(sheet).getAllByText(/Last ones/).length).toBeGreaterThan(0);
+    act(() => {
+      window.dispatchEvent(new Event("afterprint"));
+    });
+    expect(screen.queryByRole("table", { name: "Pick sheet" })).toBeNull();
+  });
+
   it("tucks the extra filters under More filters with a count of what is on", async () => {
     renderPick();
     const more = await screen.findByRole("button", { name: "More filters" });

@@ -83,7 +83,7 @@ export interface PickRow {
   grade?: PickGrade;
   /** Every order it fills, in first-seen order. */
   orders: readonly PickOrder[];
-  allRemaining: boolean;
+  lastOnes: boolean;
   /** Copies short across every merged line; 0 when none. */
   short: number;
   isNew: boolean;
@@ -135,7 +135,7 @@ function toRow(key: string, group: SaleLine[]): PickRow {
     serial: first.serial,
     grade: first.grade,
     orders,
-    allRemaining: group.some((l) => l.allRemaining),
+    lastOnes: group.some((l) => l.lastOnes),
     short: group.reduce((n, l) => n + (l.short ?? 0), 0),
     isNew: group.every((l) => l.isNew),
     spot: first.spot,

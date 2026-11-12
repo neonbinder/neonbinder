@@ -226,7 +226,7 @@ export const DEMO_PICK_LINES: readonly SaleLine[] = [
     }),
     BASEBALL,
     O5,
-    { ...at("box-2026-bb", 14), serial: "4/5", allRemaining: true },
+    { ...at("box-2026-bb", 14), serial: "4/5", lastOnes: true },
   ),
   line(card({ set: S22_HERITAGE, number: "239", player: "Brian Goodwin", team: WHITE_SOX }), BASEBALL, O3, at("box-2")),
   line(card({ set: S21_GYPSY, number: "209", player: "Mike Yastrzemski", team: GIANTS_SF }), BASEBALL, O3, {
@@ -250,7 +250,7 @@ export const DEMO_PICK_LINES: readonly SaleLine[] = [
   }),
   line(card({ set: S26_TOPPS_FB, number: "365", player: "Caleb Douglas", team: DOLPHINS, features: ["RC"] }), FOOTBALL, O4, {
     ...at("box-10"),
-    allRemaining: true,
+    lastOnes: true,
   }),
   line(
     card({ set: S24_SCORE, number: "7", player: "JC Latham", team: TITANS, kind: "insert", variant: "NFL Draft", features: ["RC"] }),

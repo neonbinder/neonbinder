@@ -76,7 +76,7 @@ export interface SaleLine {
   order: PickOrder;
   spot?: PickSpot;
   /** The sale took every copy NB held. */
-  allRemaining?: boolean;
+  lastOnes?: boolean;
   /** NB held fewer copies than sold: this many short. */
   short?: number;
   /** Arrived after the seller started this pull. */
