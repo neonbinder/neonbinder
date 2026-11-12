@@ -3445,6 +3445,9 @@ export default defineSchema({
     //
     // PR 451 (NEO-478): "checklist" — the team came from the operator's
     // publisher checklist (an exactly-one number match), so no BSC lookup ran.
+    // NEO-489: "checklist" with no team on the row means the checklist said
+    // "No Team" (`lib/checklists/no-team.ts`, `checklistClaimsNoTeam`); the
+    // commit stamps that card confirmed no-team. No separate field marks it.
     teamLookup: v.optional(cardTeamLookupValidator),
     // PR 451 (NEO-478) — the operator's publisher checklist disagrees with the
     // marketplace on this card's players and/or teams. Written only on a

@@ -13,6 +13,7 @@
 // pause on the page instead.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
+import { CHECKLISTS, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnHeading,
   columnOption,
@@ -63,6 +64,10 @@ test(
 
     // ── STEP 1: sync must NOT commit; it opens the pairing dialog (a live
     // BSC + SportLots round trip, the flow's 90 s).
+    // NEO-489: the seed's own publisher's checklist first (BSC's answers for the 20 cards), so the
+    // fetch asks BSC for no card one by one: this spec is about the pairing dialog, and twenty live
+    // lookups in a burst are what BSC rate-limits.
+    await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
     await syncChecklistButton(page).click();
     const dialog = page.getByRole("dialog", { name: /Match Cards/ });
     await expect(dialog).toBeVisible({ timeout: 90_000 });

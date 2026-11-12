@@ -149,9 +149,9 @@ test(
     await expect(columnOption(page, "Parallels", "Anime Kanji")).toBeVisible();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     // The publisher's checklist (NEO-478): Anime's teams are BSC's own answers, uploaded, so the fetch
-    // asks BSC for the cards' list and for ONE card's team (the `TBD` card, whose number is no number
-    // the checklist can match, stays a live lookup). Six of the cards are football players; the file
-    // carries their teams as BSC named them.
+    // asks BSC for the cards' list and for no card's team (NEO-489: the number column is trusted as
+    // printed, so the `TBD` card pairs by its number like the rest, 36 of 36). Six of the cards are
+    // football players; the file carries their teams as BSC named them.
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
     await syncChecklistButton(page).click();
 

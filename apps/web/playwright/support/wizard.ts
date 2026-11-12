@@ -47,7 +47,7 @@ import {
 
 /** A live marketplace fetch, or a whole batch's lookups (the flows' 120 s / 180 s). */
 const FETCH = 120_000;
-const LOOKUPS = 180_000;
+export const LOOKUPS = 180_000;
 
 /**
  * NEO-497 — the name every tidy-up dialog (the pre-save wizard and the
@@ -114,7 +114,7 @@ export async function expectStepLeft(page: Page, x: number): Promise<void> {
 }
 
 /** The footer's forward button on the teams / autograph / titles steps. */
-function nextStepButton(page: Page): Locator {
+export function nextStepButton(page: Page): Locator {
   return reviewWizard(page).getByRole("button", { name: "Next (Enter)", exact: true });
 }
 
@@ -287,10 +287,11 @@ export async function fetchChecklistToWizard(
 ): Promise<void> {
   const drilled = { set: "Topps Stars of MLB Network", ...target };
   await drillToBaseVariant(page, env, drilled);
-  // NEO-478/482: the publisher's checklist is uploaded before the fetch, so BSC is
-  // asked for nothing per card. The default set's own CSV is used unless the
-  // caller names another file; a caller that targets another set and names none
-  // fetches live.
+  // NEO-478/482/489: the publisher's checklist is uploaded before the fetch. The default
+  // set's file answers every card (each row says "No Team": the hosts and the show card
+  // have none), so BSC is asked for nothing per card and none of its cards reaches "Cards
+  // with no team". A caller naming another file gets that file; one targeting another set
+  // and naming none fetches live.
   const facts = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 

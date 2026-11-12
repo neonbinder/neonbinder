@@ -1289,6 +1289,16 @@ describe("checklistRowLine (NEO-490)", () => {
     ).toBe("NNO Mike Lowell");
   });
 
+  test("a No Team row says so, in the preview's own words (NEO-489)", () => {
+    expect(
+      checklistRowLine({ number: "9", players: ["Show Card"], teams: [], noTeam: true }),
+    ).toBe("#9 Show Card · No team");
+    // A row that merely names no team makes no claim and shows none.
+    expect(checklistRowLine({ number: "9", players: ["Show Card"], teams: [] })).toBe(
+      "#9 Show Card",
+    );
+  });
+
   test("without the noNumber flag a number is a number, even one spelled NNO", () => {
     expect(checklistRowLine({ number: "NNO", players: ["Mike Lowell"], teams: [] })).toBe(
       "#NNO Mike Lowell",

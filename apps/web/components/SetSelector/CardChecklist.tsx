@@ -892,6 +892,7 @@ export default function CardChecklist({
             players: p.row.players,
             teams: p.row.teams,
             ...(p.row.noNumber ? { noNumber: true } : {}),
+            ...(p.row.noTeam ? { noTeam: true } : {}),
           },
         })),
       },
