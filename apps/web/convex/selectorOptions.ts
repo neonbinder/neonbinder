@@ -329,6 +329,9 @@ import {
   applyChecklistRow,
   checklistTeamTextNeedsResolving,
 } from "../lib/checklists/apply-published-row";
+// NEO-496 — "Teams from your checklist: N of M cards", one definition for the
+// fetch's line and the save's line (Match Cards recounts with it).
+import { tallyFetchChecklistTeams } from "../lib/checklists/checklist-teams-tally";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
 import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 import {
@@ -16368,13 +16371,12 @@ export const fetchCardChecklist = action({
         // "Teams from your checklist: N of M cards" counts the cards the
         // marketplaces listed (D2): a checklist-only row is not a card until
         // the operator keeps it in Match Cards (NQ1), which recounts what was
-        // confirmed. With no marketplace card at all (a checklist-only
-        // fetch, every row kept), the rows are the cards.
-        const countedCards = out.length > 0 ? out : checklistOnlyCards;
-        checklistTeams = {
-          matched: countedCards.filter((c) => checklistAnswered.has(c)).length,
-          total: countedCards.length,
-        };
+        // confirmed with the same definition (`tallyChecklistTeams`). With no
+        // marketplace card at all (a checklist-only fetch, every row kept),
+        // the rows are the cards. A card counts in N exactly when it is in
+        // `checklistAnswered`: both loops above stamp `teamLookup:
+        // "checklist"` on the cards they add to it, and on no other card.
+        checklistTeams = tallyFetchChecklistTeams(out, checklistOnlyCards);
         checklistMatch = {
           needsOperator: match.needsOperator,
           byNumber: match.matches.filter(

@@ -319,10 +319,3 @@ export function revertServerChecklistPair<C extends PairingCard>(card: C): C | n
   }
   return next;
 }
-
-/** How many of these cards took their team from the checklist. */
-export function countChecklistTeams(
-  cards: readonly { teamLookup?: TeamLookupOutcome }[],
-): number {
-  return cards.filter((c) => c.teamLookup === "checklist").length;
-}

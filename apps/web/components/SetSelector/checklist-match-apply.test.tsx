@@ -8,7 +8,6 @@ import {
   applyChecklistAnswers,
   buildChecklistPairRequests,
   committable,
-  countChecklistTeams,
   pairedRowCard,
   pairedRowOf,
   revertServerChecklistPair,
@@ -276,23 +275,6 @@ describe("applyChecklistAnswers", () => {
       keyOf,
     );
     expect(out.teams).toEqual(["Second"]);
-  });
-});
-
-describe("countChecklistTeams", () => {
-  test("counts only the cards whose team came from the checklist", () => {
-    expect(
-      countChecklistTeams([
-        { teamLookup: "checklist" },
-        { teamLookup: "failed" },
-        {},
-        { teamLookup: "checklist" },
-      ]),
-    ).toBe(2);
-  });
-
-  test("an empty list counts zero", () => {
-    expect(countChecklistTeams([])).toBe(0);
   });
 });
 

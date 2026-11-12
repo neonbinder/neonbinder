@@ -109,13 +109,14 @@ import PublishedChecklistDialog, {
   type PublishedChecklist,
 } from "./PublishedChecklistDialog";
 // NEO-490 — the operator's checklist links in Match Cards: the question the
-// server is asked about them, and the count the "Teams from your checklist"
-// line is rebuilt from once they are answered.
+// server is asked about them.
 import {
-  countChecklistTeams,
   type ChecklistPairAnswer,
   type ChecklistPairRequest,
 } from "./checklist-match-apply";
+// NEO-496 — the "Teams from your checklist" line, rebuilt from the confirmed
+// cards with the definition the fetch's own line uses.
+import { tallyChecklistTeams } from "@/lib/checklists/checklist-teams-tally";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import {
@@ -4143,13 +4144,12 @@ export default function CardChecklist({
             }
             // NEO-490 / NEO-496 — the operator linked and kept checklist rows
             // in this dialog, so the fetch's own count no longer describes
-            // what is being saved: count the confirmed cards that took their
-            // team from the list.
+            // what is being saved: recount over the confirmed cards, with the
+            // fetch's own definition (a card counts when its team came from
+            // the checklist; a kept checklist-only row is a card now).
             if (pairingSources?.includes("checklist")) {
-              checklistTeamsRef.current = checklistTeamsLine(
-                countChecklistTeams(result.cards),
-                result.cards.length,
-              );
+              const tally = tallyChecklistTeams(result.cards);
+              checklistTeamsRef.current = checklistTeamsLine(tally.matched, tally.total);
             }
             return handlePairingConfirm(result);
           }}

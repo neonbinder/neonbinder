@@ -2022,6 +2022,60 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         expect(mockCommitChecklist).not.toHaveBeenCalled();
         expect(screen.getByText(/Match Cards/)).toBeTruthy();
       });
+
+      it("the saved line counts the cards whose team came from the checklist: a repeated number's card, asked of the marketplace and kept, is saved but not counted (D2)", async () => {
+        // The NEO-478 spec's shape: 17 cards the server paired by number, card
+        // #6 whose number is on two rows (so it paired with neither and its
+        // team was asked of the marketplace), and those two rows left over.
+        const paired = Array.from({ length: 18 }, (_, i) => String(i + 1))
+          .filter((n) => n !== "6")
+          .map((n) => ({
+            cardNumber: n,
+            cardName: `Player ${n}`,
+            teams: ["Solo Team"],
+            teamLookup: "checklist" as const,
+            checklistLink: { via: "number" as const },
+            bucket: "slOnly" as const,
+            platformData: { sportlots: { ref: `sl-${n}` } },
+          }));
+        const six = {
+          cardNumber: "6",
+          cardName: "Player 6",
+          teams: ["Marketplace Team"],
+          teamLookup: "answered" as const,
+          bucket: "slOnly" as const,
+          platformData: { sportlots: { ref: "sl-6" } },
+        };
+        const batch = {
+          ...arrivedBatch,
+          ready: 20,
+          total: 20,
+          cards: [
+            ...paired,
+            six,
+            rowCandidate("6", "Player 6", "row-6a"),
+            rowCandidate("6", "Player 8", "row-6b"),
+          ],
+        };
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, batch, {
+          candidateCount: 20,
+          checklistTeams: { matched: 17, total: 18 },
+        });
+        await screen.findByText(/Match Cards/);
+        fireEvent.click(screen.getByLabelText("Keep all SportLots-only cards"));
+        await act(async () => {
+          fireEvent.click(screen.getByLabelText("Confirm card matches"));
+        });
+
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        // The rows nobody kept are dropped: 18 cards saved, #6 among them.
+        expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(18);
+        await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
+        expect(liveRegionText()).toContain("Teams from your checklist: 17 of 18 cards");
+        expect(liveRegionText()).not.toContain("18 of 18");
+      });
     });
 
     it("says nothing about checklist teams when the fetch reports none", async () => {
