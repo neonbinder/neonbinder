@@ -55,8 +55,14 @@ export async function resizeCopyPhoto(file: File): Promise<ResizedPhoto> {
     throw new Error("That file isn't a photo this browser can open. Try a JPG or PNG.");
   }
   try {
-    const image = await encode(bitmap, COPY_PHOTO_LONG_EDGE, 0.88);
-    const thumb = await encode(bitmap, COPY_PHOTO_THUMB_EDGE, 0.8);
+    // NEO-466: both encodes at once. Chromium can hold each `toBlob` for an
+    // idle moment (about a second in the app page), so one after the other
+    // waited twice. Each draws before its first await, so `close` below never
+    // runs under a draw.
+    const [image, thumb] = await Promise.all([
+      encode(bitmap, COPY_PHOTO_LONG_EDGE, 0.88),
+      encode(bitmap, COPY_PHOTO_THUMB_EDGE, 0.8),
+    ]);
     if (image.size > MAX_COPY_PHOTO_BYTES || thumb.size > MAX_COPY_THUMB_BYTES) {
       throw new Error("That photo is too detailed to save. Try another.");
     }

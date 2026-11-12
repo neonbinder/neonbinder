@@ -26,6 +26,10 @@ export async function uploadPhoto(
     method: "POST",
     headers: { "Content-Type": file.type },
     body: file,
+    // Up to 10 MB to Convex storage, which may take a while to answer once the
+    // bytes are in: no short stall window, so a slow answer never costs a
+    // second POST (and an orphaned file). Every try runs to its full timeout.
+    stallWindowsMs: [],
     file: "image",
     failureMessage: "That photo didn't upload. Try adding it again.",
   });
