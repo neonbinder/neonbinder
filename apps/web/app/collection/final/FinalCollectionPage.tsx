@@ -69,6 +69,18 @@ import InventoryListTab from "./inventory/InventoryListTab";
 // The Sales and Sync status tabs (NEO-370) load only when opened.
 const SalesTab = lazy(() => import("./inventory/listing/SalesTab"));
 const SyncStatusTab = lazy(() => import("./inventory/listing/SyncStatusTab"));
+// NEO-500 — the Pick List: the demo's fixture, or the signed-in seller's
+// orders through the Convex store mounted around it.
+const PickListTab = lazy(() => import("./pick/PickListTab"));
+const ConvexPickListTab = lazy(() =>
+  import("./pick/convexPickStore").then(({ ConvexPickListProvider }) => ({
+    default: (props: { onTitleDetail: (detail: string | null) => void }) => (
+      <ConvexPickListProvider>
+        <PickListTab {...props} />
+      </ConvexPickListProvider>
+    ),
+  })),
+);
 // The inventory Checklists' target box (`box=`, NEO-364 D8): replaced in
 // place by the picker, carried here on each drill step within Checklists
 // like the scope, and dropped on a tab change (the Inventory list's rail
@@ -165,6 +177,7 @@ const TABS: Record<Side, TabDef[]> = {
     { key: "boxes", label: "My Boxes" },
     { key: "checklists", label: "Checklists" },
     { key: "add", label: "Add cards", needs: "intake" },
+    { key: "pick", label: "Pick List", needs: "pickList" },
     // NEO-370 — orders from the marketplaces the collector lists on.
     { key: "sales", label: "Sales", needs: "marketplaceListing" },
     // NEO-370 Rev 4 — what is syncing, what waits, and each set's last result.
@@ -193,7 +206,7 @@ function redirectFor(side: Side, params: URLSearchParams): { side: Side; tab: Co
   if (side === "inventory" && tab === "inventory") return { side: "inventory", tab: "boxes" };
   if (side === "inventory" && tab === "binders") return { side: "collection", tab: "binders" };
   // NEO-370: sales are the inventory's (what sold came out of a box).
-  if (side === "collection" && (tab === "sales" || tab === "sync")) return { side: "inventory", tab };
+  if (side === "collection" && (tab === "sales" || tab === "sync" || tab === "pick")) return { side: "inventory", tab };
   return null;
 }
 
@@ -261,10 +274,16 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
   const isPublic = mode === "public";
   const { capabilities: storeCapabilities, demo, binderMemory, listing, kind: storeKind } = useCollectionStore();
   // NEO-370: listing needs the store's listing half as well as the flag.
-  const capabilities = useMemo<Capabilities>(
-    () => ({ ...storeCapabilities, marketplaceListing: storeCapabilities.marketplaceListing && listing !== undefined }),
-    [storeCapabilities, listing],
-  );
+  // NEO-500: a store that lists shows the Pick List only beside Sales (sales
+  // are what it pulls); the demo, which never lists, shows its fixture's.
+  const capabilities = useMemo<Capabilities>(() => {
+    const listingOn = storeCapabilities.marketplaceListing && listing !== undefined;
+    return {
+      ...storeCapabilities,
+      marketplaceListing: listingOn,
+      pickList: storeCapabilities.pickList && (listingOn || !storeCapabilities.marketplaceListing),
+    };
+  }, [storeCapabilities, listing]);
   const containers = useContainers();
   const tabs = tabsFor(side, capabilities);
   const [params, setParams] = useCollectionParams();
@@ -393,6 +412,8 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
     urlBox ? { ...p, [TARGET_BOX_PARAM]: urlBox } : p;
 
   // --- Page title ------------------------------------------------------------
+  // The Pick List's By the Box names the box it is on (NEO-500).
+  const [pickDetail, setPickDetail] = useState<string | null>(null);
   const titleSetId = !onChecklists ? params.get("set") : null;
   const titlePath = useSetPath(titleSetId);
   const titleSet = titlePath
@@ -417,6 +438,8 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
       )?.name ?? null;
   } else if (tab === "checklists") {
     detail = drillState.title;
+  } else if (tab === "pick") {
+    detail = pickDetail;
   }
   const label = TABS[side].find((t) => t.key === tab)?.label ?? SIDE_TITLE[side];
   const page = `${SIDE_TITLE[side]}${isPublic ? " demo" : ""}`;
@@ -687,6 +710,15 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
                 {!redirect && tab === "sales" && capabilities.marketplaceListing && (
                   <Suspense fallback={<SkeletonBars rows={4} />}>
                     <SalesTab />
+                  </Suspense>
+                )}
+                {!redirect && tab === "pick" && capabilities.pickList && (
+                  <Suspense fallback={<SkeletonBars rows={4} />}>
+                    {storeKind === "convex" ? (
+                      <ConvexPickListTab onTitleDetail={setPickDetail} />
+                    ) : (
+                      <PickListTab onTitleDetail={setPickDetail} />
+                    )}
                   </Suspense>
                 )}
                 {!redirect && tab === "sync" && capabilities.marketplaceListing && (

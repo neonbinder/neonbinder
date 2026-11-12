@@ -4,6 +4,9 @@
  * exactly those rows and production code can tell a seeded row from a real
  * one without importing `testing.ts`.
  *
+ * NEO-500: `testing.seedMyTestPickOrder` writes a BuySportsCards order for the
+ * Pick List spec whose `orderId` also carries `TEST_SALE_ORDER_PREFIX`.
+ *
  * The order poll (`listingSales.pollInput`) drops orders carrying
  * `TEST_SALE_ORDER_PREFIX`: a seeded order is not final, and the poll would
  * otherwise re-read it from the marketplace by id on every run once the

@@ -102,3 +102,4 @@
 - [LLM-operated shell queue](patterns_llm_operated_shell_queue.md) — message text typed into Bash is injected before jq --arg helps; sender binding; gh pr list --head matches forks/old PRs
 - [Neo495 scoped capped list](patterns_neo495_scoped_capped_list.md) — new arg on a capped admin list: registry must hit the new arg; filter-after-take makes `truncated` lie
 - [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start: ceiling = budget + sum of allowances; uncached gate re-arms per name; pure admin action shape
+- [Neo500 pick list](patterns_neo500_pick_list.md) — skipPollGate grep target; hashed line ids opaque not secret; sold-copy photo tokens stay live; seeds unregistered

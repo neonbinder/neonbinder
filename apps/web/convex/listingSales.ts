@@ -97,6 +97,7 @@ import { savedSignInsPassDone } from "./listingSync";
 import { bscEraForYear, isBscRawCondition, nbConditionsFor, type BscEra } from "./lib/bscConditions";
 import { bscOrderDisposition, chooseCopiesToLower, type BscOrder } from "./lib/bscOrders";
 import { parseListingSku } from "./lib/listingSku";
+import { MAX_FROM_PER_SALE, MAX_PICK_FROM, pullOpenOf, saleItemKey } from "./lib/pickLines";
 import { isTestSaleOrderId } from "./lib/testSeedMarks";
 import {
   BSC_ORDER_PAGE_SIZE,
@@ -297,9 +298,9 @@ export const pollInput = internalQuery({
       .take(OPEN_ORDER_SCAN);
     return {
       cursorAt: state.orderCursorAt ?? state._creationTime - INITIAL_CURSOR_GRACE_MS,
-      // NEO-464: an order the dashboard's test seed wrote is never the
-      // marketplace's, so the poll never asks the marketplace about it (the
-      // open-order refresh would re-read it by id on every run).
+      // A test seed's order (`testing.seedMyTestPickOrder`, the NEO-464
+      // dashboard seeds) is never the platform's: re-reading it by id would
+      // only fail.
       stored: recent
         .filter((s) => s.platform === args.platform && !isTestSaleOrderId(s.orderId))
         .map((s) => ({ orderId: s.orderId, status: s.status, orderDate: s.orderDate })),
@@ -380,92 +381,116 @@ async function pollingOn(ctx: QueryCtx, ownerId: string, platform: Doc<"marketpl
   return state !== null && pollsSales(state);
 }
 
-function itemKey(item: { platformCardId: string; condition: string; sellerSku?: string }): string {
-  return `${item.platformCardId}|${item.condition}|${item.sellerSku ?? ""}`;
+const itemKey = saleItemKey;
+
+/**
+ * NEO-500 — the one gate the test seed (`testing.seedMyTestPickOrder`) skips:
+ * whether the owner's listing state polls sales. Every other check (owner,
+ * sale status, each line's `applied`) holds for every caller.
+ */
+export interface SaleCoreOptions {
+  skipPollGate?: boolean;
 }
 
 /**
  * Upserts one order. A re-read updates status, totals and lines and NEVER
  * resets a line's `applied` (lines are matched on card id, condition and SKU;
- * a stored line the new read lacks is kept). Returns the lines still to apply:
- * only on a "sale" status, only lines not applied and not already refused.
+ * a stored line the new read lacks is kept), nor what the apply and the Pick
+ * List wrote on it (`from`, `lastOnes`, `pulledAt`). Recomputes `pullOpen`
+ * (written as an explicit `undefined` when nothing is open: a patch merges),
+ * so a SHIPPED or CANCELLED re-read takes the order off the Pick List.
+ * Returns the lines still to apply: only on a "sale" status, only lines not
+ * applied and not already refused. `saleId` null: the poll gate refused.
  */
+export async function recordOrderCore(
+  ctx: MutationCtx,
+  args: { ownerId: string; platform: Platform; order: ProjectedOrder },
+  opts: SaleCoreOptions = {},
+): Promise<{ saleId: Id<"marketplaceSales"> | null; toApply: number[] }> {
+  if (!opts.skipPollGate && !(await pollingOn(ctx, args.ownerId, args.platform))) return { saleId: null, toApply: [] };
+  const now = Date.now();
+  const { order } = args;
+  const existing = await ctx.db
+    .query("marketplaceSales")
+    .withIndex("by_owner_platform_order", (q) =>
+      q.eq("ownerId", args.ownerId).eq("platform", args.platform).eq("orderId", order.orderId),
+    )
+    .unique();
+
+  const fresh: SaleItem[] = order.items.map((item) => ({
+    platformCardId: item.platformCardId,
+    condition: item.condition,
+    quantity: item.quantity,
+    priceCents: item.priceCents,
+    ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
+    applied: false,
+    // A graded line was never NB's listing: refused at once, never applied.
+    ...(item.graded ? { problem: "unmatched" as const } : {}),
+  }));
+
+  let items: SaleItem[];
+  if (!existing) {
+    items = fresh;
+  } else {
+    // Match each fresh line to a stored one by key (in order, for repeats).
+    const pool = new Map<string, SaleItem[]>();
+    for (const old of existing.items) {
+      const list = pool.get(itemKey(old));
+      if (list) list.push(old);
+      else pool.set(itemKey(old), [old]);
+    }
+    items = fresh.map((line) => {
+      const old = pool.get(itemKey(line))?.shift();
+      if (!old) return line;
+      return {
+        ...old,
+        quantity: old.applied ? old.quantity : line.quantity,
+        priceCents: line.priceCents,
+      };
+    });
+    for (const leftover of pool.values()) items.push(...leftover);
+  }
+
+  const doc = {
+    ownerId: args.ownerId,
+    platform: args.platform,
+    orderId: order.orderId,
+    orderNo: order.orderNo,
+    orderDate: order.orderDate,
+    status: order.status,
+    totals: order.totals,
+    items,
+    lastUpdated: now,
+  };
+  const pullOpen = pullOpenOf({ platform: args.platform, status: order.status, items });
+  let saleId: Id<"marketplaceSales">;
+  if (existing) {
+    // `pullOpen` always in the patch, `undefined` included, to clear a stale `true`.
+    await ctx.db.patch(existing._id, { ...doc, pullOpen });
+    saleId = existing._id;
+  } else {
+    saleId = await ctx.db.insert("marketplaceSales", {
+      ...doc,
+      ...(pullOpen ? { pullOpen } : {}),
+      firstSeenAt: now,
+    });
+  }
+  const toApply =
+    saleDisposition(args.platform, order.status) === "sale"
+      ? items.flatMap((item, i) => (!item.applied && item.problem === undefined ? [i] : []))
+      : [];
+  return { saleId, toApply };
+}
+
+/** The poll's upsert of one order (`recordOrderCore` behind the poll gate). */
 export const recordOrder = internalMutation({
   args: { ownerId: v.string(), platform: listingPlatformValidator, order: orderValidator },
   returns: v.object({ saleId: v.union(v.id("marketplaceSales"), v.null()), toApply: v.array(v.number()) }),
-  handler: async (ctx, args) => {
-    if (!(await pollingOn(ctx, args.ownerId, args.platform))) return { saleId: null, toApply: [] };
-    const now = Date.now();
-    const { order } = args;
-    const existing = await ctx.db
-      .query("marketplaceSales")
-      .withIndex("by_owner_platform_order", (q) =>
-        q.eq("ownerId", args.ownerId).eq("platform", args.platform).eq("orderId", order.orderId),
-      )
-      .unique();
-
-    const fresh: SaleItem[] = order.items.map((item) => ({
-      platformCardId: item.platformCardId,
-      condition: item.condition,
-      quantity: item.quantity,
-      priceCents: item.priceCents,
-      ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
-      applied: false,
-      // A graded line was never NB's listing: refused at once, never applied.
-      ...(item.graded ? { problem: "unmatched" as const } : {}),
-    }));
-
-    let items: SaleItem[];
-    if (!existing) {
-      items = fresh;
-    } else {
-      // Match each fresh line to a stored one by key (in order, for repeats).
-      const pool = new Map<string, SaleItem[]>();
-      for (const old of existing.items) {
-        const list = pool.get(itemKey(old));
-        if (list) list.push(old);
-        else pool.set(itemKey(old), [old]);
-      }
-      items = fresh.map((line) => {
-        const old = pool.get(itemKey(line))?.shift();
-        if (!old) return line;
-        return {
-          ...old,
-          quantity: old.applied ? old.quantity : line.quantity,
-          priceCents: line.priceCents,
-        };
-      });
-      for (const leftover of pool.values()) items.push(...leftover);
-    }
-
-    const doc = {
-      ownerId: args.ownerId,
-      platform: args.platform,
-      orderId: order.orderId,
-      orderNo: order.orderNo,
-      orderDate: order.orderDate,
-      status: order.status,
-      totals: order.totals,
-      items,
-      lastUpdated: now,
-    };
-    let saleId: Id<"marketplaceSales">;
-    if (existing) {
-      await ctx.db.patch(existing._id, doc);
-      saleId = existing._id;
-    } else {
-      saleId = await ctx.db.insert("marketplaceSales", { ...doc, firstSeenAt: now });
-    }
-    const toApply =
-      saleDisposition(args.platform, order.status) === "sale"
-        ? items.flatMap((item, i) => (!item.applied && item.problem === undefined ? [i] : []))
-        : [];
-    return { saleId, toApply };
-  },
+  handler: async (ctx, args) => await recordOrderCore(ctx, args),
 });
 
 /** The BSC era of a card, from NB's own year row above its variant. */
-async function eraOfVariant(
+export async function eraOfVariant(
   ctx: Pick<MutationCtx, "db">,
   variantId: Id<"selectorOptions">,
   cache: Map<string, BscEra | null>,
@@ -485,6 +510,94 @@ async function eraOfVariant(
   return era;
 }
 
+type SaleItemFrom = NonNullable<SaleItem["from"]>[number];
+
+/**
+ * What one apply mutation shares across its lines: the home reads (one per
+ * home) and how many `from` entries the sale may still take
+ * (`MAX_FROM_PER_SALE`, counted from what the sale already holds).
+ */
+interface ApplyScope {
+  ctx: MutationCtx;
+  ownerId: string;
+  changes: CountChange[];
+  now: number;
+  /** Whether a home is one of the owner's boxes (any box, listed or in-person). */
+  isOwnBox: (homeId: Id<"collectionContainers">) => Promise<boolean>;
+  fromLeft: { n: number };
+}
+
+/**
+ * Lowers the chosen copies through the app's write path and reports, for the
+ * Pick List (NEO-500): where they came from (`from`, at most `MAX_PICK_FROM`,
+ * none when the sale's budget would be passed) and whether no box copy of the
+ * card is left (`lastOnes`; only when this line took a copy, and unset when
+ * `lines`, the card's copies read before lowering, was truncated, so it never
+ * claims what it did not see).
+ */
+async function lowerCopies(
+  scope: ApplyScope,
+  lines: ReadonlyArray<Doc<"collectionCopies">>,
+  candidates: ReadonlyArray<Doc<"collectionCopies">>,
+  decrements: ReadonlyArray<{ copyId: string; by: number }>,
+): Promise<{ lowered: number; from?: SaleItemFrom[]; lastOnes?: true }> {
+  const { ctx, changes, now } = scope;
+  const from: SaleItemFrom[] = [];
+  const taken = new Map<string, number>();
+  let lowered = 0;
+  for (const d of decrements) {
+    const row = candidates.find((c) => c._id === d.copyId);
+    if (!row) continue;
+    if (d.by >= row.quantity) {
+      // The sold copy's photos are kept on purpose (no `dropPhotos`, unlike
+      // a manual delete): see the module comment. A cleanup comes later.
+      await ctx.db.delete(row._id);
+      await pocketEmptied(ctx, row.homeId, row.slot);
+      changes.push(changeOf(row, counted(row), null));
+    } else {
+      const quantity = row.quantity - d.by;
+      await ctx.db.patch(row._id, { quantity, lastUpdated: now });
+      changes.push(changeOf(row, counted(row), counted({ ...row, quantity })));
+    }
+    lowered += d.by;
+    taken.set(row._id, (taken.get(row._id) ?? 0) + d.by);
+    // Every candidate carries a condition (the apply skips one without).
+    if (row.condition !== undefined) {
+      from.push({
+        homeId: row.homeId,
+        copyId: row._id,
+        quantity: d.by,
+        ...(row.slot !== undefined ? { slot: row.slot } : {}),
+        condition: row.condition,
+        ...(row.serialNumber !== undefined ? { serialNumber: row.serialNumber } : {}),
+      });
+    }
+  }
+  const recorded = from.slice(0, MAX_PICK_FROM);
+  const keepFrom = recorded.length > 0 && recorded.length <= scope.fromLeft.n;
+  if (keepFrom) scope.fromLeft.n -= recorded.length;
+
+  // Only a line that took at least one copy can have taken the last ones: a
+  // line NB held nothing for has nothing to pull ("Short N" alone).
+  let lastOnes: true | undefined;
+  if (lowered > 0 && lines.length <= MAX_LINES_PER_CARD) {
+    let left = false;
+    for (const row of lines) {
+      if (row.quantity - (taken.get(row._id) ?? 0) <= 0) continue;
+      if (await scope.isOwnBox(row.homeId)) {
+        left = true;
+        break;
+      }
+    }
+    if (!left) lastOnes = true;
+  }
+  return {
+    lowered,
+    ...(keepFrom ? { from: recorded } : {}),
+    ...(lastOnes ? { lastOnes } : {}),
+  };
+}
+
 /**
  * NEO-415 — one eBay sale line. The SKU names the NB card and condition
  * bucket; the exactly-one guard is NB's own link row for that SKU, whose
@@ -494,14 +607,12 @@ async function eraOfVariant(
  * was refused (`refuse` already wrote why).
  */
 async function applyEbayLine(
-  ctx: MutationCtx,
-  ownerId: string,
+  scope: ApplyScope,
   item: SaleItem,
   refuse: (problem: "unmatched" | "linkMismatch", cardId?: Id<"cardChecklist">) => void,
   listedHome: (homeId: Id<"collectionContainers">) => Promise<boolean>,
-  changes: CountChange[],
-  now: number,
 ): Promise<{ item: SaleItem; lowered: number } | null> {
+  const { ctx, ownerId, now } = scope;
   const sku = parseEbaySku(item.sellerSku);
   const cardId = sku ? ctx.db.normalizeId("cardChecklist", sku.cardId) : null;
   const card = cardId ? await ctx.db.get(cardId) : null;
@@ -548,22 +659,8 @@ async function applyEbayLine(
     null,
     item.quantity,
   );
-  let lowered = 0;
-  for (const d of decrements) {
-    const row = candidates.find((c) => c._id === d.copyId);
-    if (!row) continue;
-    if (d.by >= row.quantity) {
-      // Photos kept, as for BSC (see the module comment).
-      await ctx.db.delete(row._id);
-      await pocketEmptied(ctx, row.homeId, row.slot);
-      changes.push(changeOf(row, counted(row), null));
-    } else {
-      const quantity = row.quantity - d.by;
-      await ctx.db.patch(row._id, { quantity, lastUpdated: now });
-      changes.push(changeOf(row, counted(row), counted({ ...row, quantity })));
-    }
-    lowered += d.by;
-  }
+  // Photos kept, as for BSC (see the module comment).
+  const taken = await lowerCopies(scope, lines, candidates, decrements);
   return {
     item: {
       ...item,
@@ -571,8 +668,10 @@ async function applyEbayLine(
       applied: true,
       appliedAt: now,
       ...(shortfall > 0 ? { problem: "oversold" as const, shortBy: shortfall } : {}),
+      ...(taken.from ? { from: taken.from } : {}),
+      ...(taken.lastOnes ? { lastOnes: taken.lastOnes } : {}),
     },
-    lowered,
+    lowered: taken.lowered,
   };
 }
 
@@ -580,130 +679,145 @@ async function applyEbayLine(
  * Applies some of an order's lines (at most `SALE_ITEMS_PER_APPLY`), each
  * exactly once: the copies are lowered and the line flips `applied` in this
  * one transaction. Re-checks the stored status and each line's `applied`, so
- * a racing poll or a re-run is a no-op.
+ * a racing poll or a re-run is a no-op. Writes each applied line's `from` and
+ * `lastOnes` and the sale's `pullOpen` (NEO-500) in the same patch.
  */
+export async function applySaleLinesCore(
+  ctx: MutationCtx,
+  args: { ownerId: string; saleId: Id<"marketplaceSales">; indexes: ReadonlyArray<number> },
+  opts: SaleCoreOptions = {},
+): Promise<{ applied: number; lowered: number }> {
+  const sale = await ctx.db.get(args.saleId);
+  if (!sale || sale.ownerId !== args.ownerId) return { applied: 0, lowered: 0 };
+  if (saleDisposition(sale.platform, sale.status) !== "sale") return { applied: 0, lowered: 0 };
+  if (!opts.skipPollGate && !(await pollingOn(ctx, args.ownerId, sale.platform))) return { applied: 0, lowered: 0 };
+  const now = Date.now();
+  const items = [...sale.items];
+  // Which homes a sold copy may come from: a LISTED box (or the SKU's own
+  // box, checked per line below). One read per home.
+  const homes = new Map<string, boolean>();
+  const listedHome = async (homeId: Id<"collectionContainers">): Promise<boolean> => {
+    const known = homes.get(homeId);
+    if (known !== undefined) return known;
+    const home = await ctx.db.get(homeId);
+    const lists = home !== null && home.ownerId === args.ownerId && listsOnMarketplaces(home);
+    homes.set(homeId, lists);
+    return lists;
+  };
+  const kinds = new Map<string, boolean>();
+  const isOwnBox = async (homeId: Id<"collectionContainers">): Promise<boolean> => {
+    const known = kinds.get(homeId);
+    if (known !== undefined) return known;
+    const home = await ctx.db.get(homeId);
+    const box = home !== null && home.ownerId === args.ownerId && home.kind === "box";
+    kinds.set(homeId, box);
+    return box;
+  };
+  const eras = new Map<string, BscEra | null>();
+  const changes: CountChange[] = [];
+  const scope: ApplyScope = {
+    ctx,
+    ownerId: args.ownerId,
+    changes,
+    now,
+    isOwnBox,
+    fromLeft: { n: MAX_FROM_PER_SALE - items.reduce((n, item) => n + (item.from?.length ?? 0), 0) },
+  };
+  let applied = 0;
+  let lowered = 0;
+
+  for (const index of args.indexes.slice(0, SALE_ITEMS_PER_APPLY)) {
+    const item = items[index];
+    if (!item || item.applied || item.problem !== undefined) continue;
+    const refuse = (problem: "unmatched" | "linkMismatch", cardId?: Id<"cardChecklist">) => {
+      items[index] = { ...item, ...(cardId ? { cardId } : {}), problem };
+    };
+
+    if (sale.platform === "ebay") {
+      const ebay = await applyEbayLine(scope, item, refuse, listedHome);
+      if (ebay === null) continue;
+      items[index] = ebay.item;
+      lowered += ebay.lowered;
+      applied += 1;
+      continue;
+    }
+
+    // The SKU names the NB card and box; anything else is not NB's line.
+    const sku = parseListingSku(item.sellerSku);
+    const cardId = sku ? ctx.db.normalizeId("cardChecklist", sku.cardId) : null;
+    const card = cardId ? await ctx.db.get(cardId) : null;
+    if (!sku || !cardId || !card) {
+      refuse("unmatched");
+      continue;
+    }
+    // The exactly-one guard: the card must carry this very BSC card id.
+    if ((card.platformData?.bsc?.ref ?? null) !== item.platformCardId) {
+      refuse("linkMismatch", cardId);
+      continue;
+    }
+    const era = await eraOfVariant(ctx, card.selectorOptionId, eras);
+    const nbConditions =
+      era !== null && isBscRawCondition(item.condition) ? nbConditionsFor(item.condition, era) : [];
+    if (nbConditions.length === 0) {
+      refuse("unmatched", cardId);
+      continue;
+    }
+
+    const lines = await ctx.db
+      .query("collectionCopies")
+      .withIndex("by_owner_and_card", (q) => q.eq("ownerId", args.ownerId).eq("cardId", cardId))
+      .take(MAX_LINES_PER_CARD + 1);
+    const skuBoxId = ctx.db.normalizeId("collectionContainers", sku.boxId);
+    const candidates: Doc<"collectionCopies">[] = [];
+    for (const row of lines) {
+      if (row.grading !== undefined || row.condition === undefined) continue;
+      if (!nbConditions.includes(row.condition)) continue;
+      if (!(await listedHome(row.homeId))) {
+        // The SKU's own box still counts while it is a box of the owner's:
+        // it was listed when this listing was pushed.
+        if (row.homeId !== skuBoxId) continue;
+        const home = await ctx.db.get(row.homeId);
+        if (!home || home.ownerId !== args.ownerId || home.kind !== "box") continue;
+      }
+      candidates.push(row);
+    }
+    const { decrements, shortfall } = chooseCopiesToLower(
+      candidates.map((row) => ({
+        copyId: row._id,
+        homeId: row.homeId,
+        ...(row.acquiredOn !== undefined ? { acquiredOn: row.acquiredOn } : {}),
+        creationTime: row._creationTime,
+        quantity: row.quantity,
+      })),
+      skuBoxId,
+      item.quantity,
+    );
+    const taken = await lowerCopies(scope, lines, candidates, decrements);
+    lowered += taken.lowered;
+    items[index] = {
+      ...item,
+      cardId,
+      applied: true,
+      appliedAt: now,
+      ...(shortfall > 0 ? { problem: "oversold" as const, shortBy: shortfall } : {}),
+      ...(taken.from ? { from: taken.from } : {}),
+      ...(taken.lastOnes ? { lastOnes: taken.lastOnes } : {}),
+    };
+    applied += 1;
+  }
+
+  // `pullOpen` always in the patch, `undefined` included (a patch merges).
+  const pullOpen = pullOpenOf({ platform: sale.platform, status: sale.status, items });
+  await ctx.db.patch(sale._id, { items, pullOpen, lastUpdated: now });
+  if (changes.length > 0) await applyCopyChanges(ctx, args.ownerId, changes);
+  return { applied, lowered };
+}
+
+/** The poll's apply of some of an order's lines (`applySaleLinesCore` behind the poll gate). */
 export const applySaleItems = internalMutation({
   args: { ownerId: v.string(), saleId: v.id("marketplaceSales"), indexes: v.array(v.number()) },
   returns: v.object({ applied: v.number(), lowered: v.number() }),
-  handler: async (ctx, args) => {
-    const sale = await ctx.db.get(args.saleId);
-    if (!sale || sale.ownerId !== args.ownerId) return { applied: 0, lowered: 0 };
-    if (saleDisposition(sale.platform, sale.status) !== "sale") return { applied: 0, lowered: 0 };
-    if (!(await pollingOn(ctx, args.ownerId, sale.platform))) return { applied: 0, lowered: 0 };
-    const now = Date.now();
-    const items = [...sale.items];
-    // Which homes a sold copy may come from: a LISTED box (or the SKU's own
-    // box, checked per line below). One read per home.
-    const homes = new Map<string, boolean>();
-    const listedHome = async (homeId: Id<"collectionContainers">): Promise<boolean> => {
-      const known = homes.get(homeId);
-      if (known !== undefined) return known;
-      const home = await ctx.db.get(homeId);
-      const lists = home !== null && home.ownerId === args.ownerId && listsOnMarketplaces(home);
-      homes.set(homeId, lists);
-      return lists;
-    };
-    const eras = new Map<string, BscEra | null>();
-    const changes: CountChange[] = [];
-    let applied = 0;
-    let lowered = 0;
-
-    for (const index of args.indexes.slice(0, SALE_ITEMS_PER_APPLY)) {
-      const item = items[index];
-      if (!item || item.applied || item.problem !== undefined) continue;
-      const refuse = (problem: "unmatched" | "linkMismatch", cardId?: Id<"cardChecklist">) => {
-        items[index] = { ...item, ...(cardId ? { cardId } : {}), problem };
-      };
-
-      if (sale.platform === "ebay") {
-        const ebay = await applyEbayLine(ctx, args.ownerId, item, refuse, listedHome, changes, now);
-        if (ebay === null) continue;
-        items[index] = ebay.item;
-        lowered += ebay.lowered;
-        applied += 1;
-        continue;
-      }
-
-      // The SKU names the NB card and box; anything else is not NB's line.
-      const sku = parseListingSku(item.sellerSku);
-      const cardId = sku ? ctx.db.normalizeId("cardChecklist", sku.cardId) : null;
-      const card = cardId ? await ctx.db.get(cardId) : null;
-      if (!sku || !cardId || !card) {
-        refuse("unmatched");
-        continue;
-      }
-      // The exactly-one guard: the card must carry this very BSC card id.
-      if ((card.platformData?.bsc?.ref ?? null) !== item.platformCardId) {
-        refuse("linkMismatch", cardId);
-        continue;
-      }
-      const era = await eraOfVariant(ctx, card.selectorOptionId, eras);
-      const nbConditions =
-        era !== null && isBscRawCondition(item.condition) ? nbConditionsFor(item.condition, era) : [];
-      if (nbConditions.length === 0) {
-        refuse("unmatched", cardId);
-        continue;
-      }
-
-      const lines = await ctx.db
-        .query("collectionCopies")
-        .withIndex("by_owner_and_card", (q) => q.eq("ownerId", args.ownerId).eq("cardId", cardId))
-        .take(MAX_LINES_PER_CARD + 1);
-      const skuBoxId = ctx.db.normalizeId("collectionContainers", sku.boxId);
-      const candidates: Doc<"collectionCopies">[] = [];
-      for (const row of lines) {
-        if (row.grading !== undefined || row.condition === undefined) continue;
-        if (!nbConditions.includes(row.condition)) continue;
-        if (!(await listedHome(row.homeId))) {
-          // The SKU's own box still counts while it is a box of the owner's:
-          // it was listed when this listing was pushed.
-          if (row.homeId !== skuBoxId) continue;
-          const home = await ctx.db.get(row.homeId);
-          if (!home || home.ownerId !== args.ownerId || home.kind !== "box") continue;
-        }
-        candidates.push(row);
-      }
-      const { decrements, shortfall } = chooseCopiesToLower(
-        candidates.map((row) => ({
-          copyId: row._id,
-          homeId: row.homeId,
-          ...(row.acquiredOn !== undefined ? { acquiredOn: row.acquiredOn } : {}),
-          creationTime: row._creationTime,
-          quantity: row.quantity,
-        })),
-        skuBoxId,
-        item.quantity,
-      );
-      for (const d of decrements) {
-        const row = candidates.find((c) => c._id === d.copyId);
-        if (!row) continue;
-        if (d.by >= row.quantity) {
-          // The sold copy's photos are kept on purpose (no `dropPhotos`, unlike
-          // a manual delete): see the module comment. A cleanup comes later.
-          await ctx.db.delete(row._id);
-          await pocketEmptied(ctx, row.homeId, row.slot);
-          changes.push(changeOf(row, counted(row), null));
-        } else {
-          const quantity = row.quantity - d.by;
-          await ctx.db.patch(row._id, { quantity, lastUpdated: now });
-          changes.push(changeOf(row, counted(row), counted({ ...row, quantity })));
-        }
-        lowered += d.by;
-      }
-      items[index] = {
-        ...item,
-        cardId,
-        applied: true,
-        appliedAt: now,
-        ...(shortfall > 0 ? { problem: "oversold" as const, shortBy: shortfall } : {}),
-      };
-      applied += 1;
-    }
-
-    await ctx.db.patch(sale._id, { items, lastUpdated: now });
-    if (changes.length > 0) await applyCopyChanges(ctx, args.ownerId, changes);
-    return { applied, lowered };
-  },
+  handler: async (ctx, args) => await applySaleLinesCore(ctx, args),
 });
 
 /**
