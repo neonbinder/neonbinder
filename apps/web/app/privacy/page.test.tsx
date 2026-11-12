@@ -40,7 +40,7 @@ describe("PrivacyPage", () => {
 
   it("shows the last-updated date", () => {
     renderPrivacy();
-    expect(screen.getByText("November 11, 2026").getAttribute("datetime")).toBe("2026-11-11");
+    expect(screen.getByText("November 12, 2026").getAttribute("datetime")).toBe("2026-11-12");
   });
 
   it("covers eBay and lets the visitor jump to each section", () => {
@@ -48,5 +48,13 @@ describe("PrivacyPage", () => {
     screen.getByRole("heading", { level: 2, name: "eBay" });
     const nav = within(screen.getByRole("navigation", { name: "Policy sections" }));
     expect(nav.getByRole("link", { name: "eBay" }).getAttribute("href")).toBe("#ebay");
+  });
+
+  it("says a set checklist file stays in the browser and never reaches a marketplace", () => {
+    renderPrivacy();
+    const collect = within(screen.getByRole("region", { name: "What we collect" }));
+    collect.getByRole("heading", { level: 3, name: "Set checklists" });
+    collect.getByText(/the file itself is never uploaded/);
+    collect.getByText(/never sent to a marketplace/);
   });
 });
