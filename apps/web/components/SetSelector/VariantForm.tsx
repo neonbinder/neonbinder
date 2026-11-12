@@ -67,6 +67,12 @@ type RawOptionsResult = {
    */
   twinIds?: TwinIds;
   /**
+   * NEO-287 — slot sides the operator has paused (a subset of the result's
+   * `skippedSides`). Handed to Reconcile so a paused column says so.
+   * Optional: an older result reads as "none".
+   */
+  pausedSides?: string[];
+  /**
    * NEO-496 — the set's uploaded checklist, when it has a ready one: its
    * sections not linked to any row, the server's auto-matches, and the links
    * the rows under this variant type already hold. Absent without one.
@@ -885,6 +891,7 @@ export default function VariantForm({
             (reconciliationData.bscOptions.length === 0 ||
               reconciliationData.slOptions.length === 0)
           }
+          pausedSides={reconciliationData.pausedSides ?? []}
           checklist={
             reconciliationData.checklist
               ? {

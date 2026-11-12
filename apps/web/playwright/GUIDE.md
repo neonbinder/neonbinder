@@ -786,7 +786,7 @@ timeout (`selectOrCreate` does this and never hand-makes a row over a failed
 sync). Search for the brand instead and make it on "No matches found"
 (`selectOrCreate`); a brand's Sets column ends "done" with "SportLots
 skipped: no SportLots ids on this path."; the base picker's SportLots pane
-shows "SportLots returned no base set for <set>"; checklist fetches take the
+shows "SportLots wasn't asked: <set> has no SportLots link."; checklist fetches take the
 one-marketplace path ("Kept all N cards from BSC. Nothing to match, no other
 marketplace attached.") unless a publisher's checklist is in play (pasted, or
 the set's stored one): BSC plus the checklist are two sources, so Match Cards

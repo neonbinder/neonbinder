@@ -556,8 +556,14 @@ describe("CardPairingModal — checklist names (NEO-490)", () => {
       screen.queryByRole("button", { name: /^Link selected checklist row to / }),
     ).toBeNull();
 
+    // The radio wears its own mark, so "picked" is a shape and not colour
+    // alone: an empty ring, filled once picked.
+    const dot = () => select.querySelector('[aria-hidden="true"] > span');
+    expect(select.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    expect(dot()).toBeNull();
     fireEvent.click(select);
     expect(select.getAttribute("aria-checked")).toBe("true");
+    expect(dot()).not.toBeNull();
     fireEvent.click(
       screen.getByRole("button", { name: "Link selected checklist row to #A2 Card Two" }),
     );

@@ -285,6 +285,10 @@ export default function PublishedChecklistPanel({
     onStatus(`Reading ${file.name}…`);
     const read = await readChecklistFile(file, readers);
     setReading(null);
+    // The read is over: "Reading …" must not linger under the preview or the
+    // refusal. Each says its own outcome (the dialog its title, the refusal
+    // its alert), so the line is cleared, not replaced.
+    onStatus("");
     if (!read.ok) {
       setReadError(read.message);
       return;
@@ -360,10 +364,12 @@ export default function PublishedChecklistPanel({
             >
               Paste a replacement
             </button>
+            {/* The size of Replace beside it (32px, 44px on a phone). */}
             <NeonButton
               variant="negative"
               outline
-              size="1"
+              size="2"
+              className="max-sm:min-h-11"
               onClick={() => {
                 setRemoveError(null);
                 setConfirmRemove(true);

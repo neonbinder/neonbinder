@@ -183,6 +183,8 @@ describe("PublishedChecklistPanel — the preview", () => {
     await choose("Upload checklist", fileOf("topps.txt", TOPPS));
     expect(onStatus).toHaveBeenCalledWith("Reading topps.txt…");
     const dialog = await waitFor(preview);
+    // The read is over: its "Reading …" line is cleared, not left standing.
+    expect(onStatus).toHaveBeenLastCalledWith("");
     expect(within(dialog).getByText("3 sections")).toBeTruthy();
     expect(within(dialog).getByText("7 cards")).toBeTruthy();
     const table = within(dialog).getByRole("table", { name: "Sections the checklist will save" });

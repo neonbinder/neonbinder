@@ -170,7 +170,7 @@ describe("fetchRawOptions — the set's checklist (NEO-496 D7)", () => {
       {
         rowId: redId,
         sections: [
-          { sectionKey: "base red", name: "Base Red" },
+          { sectionKey: "base red", name: "Base Red", rowCount: 1 },
           { sectionKey: "red wave", name: "red wave" },
         ],
       },
@@ -191,8 +191,8 @@ describe("fetchRawOptions — the set's checklist (NEO-496 D7)", () => {
       {
         rowId: baseId,
         sections: [
-          { sectionKey: "base", name: "Base" },
-          { sectionKey: "base red", name: "Base Red" },
+          { sectionKey: "base", name: "Base", rowCount: 1 },
+          { sectionKey: "base red", name: "Base Red", rowCount: 1 },
         ],
       },
     ]);

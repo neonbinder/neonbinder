@@ -79,7 +79,7 @@ BuySportsCards alone for the whole run:
   The year rows it writes carry no SportLots id, so every level beneath skips
   SportLots for want of ids: Manufacturers holds only the pinned All Brands
   view entry over its idle empty text with no notice, the base picker's
-  SportLots pane reads "SportLots returned no base set for <set>". A brand's
+  SportLots pane reads "SportLots wasn't asked: <set> has no SportLots link." A brand's
   Sets column (a hand-made brand, or
   any brand under the pause) ends "done" with "SportLots skipped: no
   SportLots ids on this path." since NEO-237 made Sync Sets two-sided — a

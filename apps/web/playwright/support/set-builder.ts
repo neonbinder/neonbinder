@@ -358,7 +358,7 @@ export async function drillToBaseVariant(
     } else {
       // Paused: SportLots offers nothing, so the operator cancels and the
       // row stays unmapped.
-      await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+      await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
       await expect(bsc.first()).toBeVisible();
       await expect(sl).toHaveCount(0);
       await picker.getByRole("button", { name: "Cancel" }).click();

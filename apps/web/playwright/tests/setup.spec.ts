@@ -324,7 +324,7 @@ test(
         await picker.getByRole("option", { name: /^BSC base candidate: / }).first().click();
         await sl.first().click();
       } else {
-        await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+        await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
         await expect(sl).toHaveCount(0);
         await picker.getByRole("option", { name: /^BSC base candidate: / }).first().click();
       }

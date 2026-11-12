@@ -179,6 +179,34 @@ describe("ReconciliationModal — checklist column", () => {
     expect(screen.getByText(/^Ready \(0\)/)).toBeTruthy();
     expect(screen.getByText(/^Pending \(3\)/)).toBeTruthy();
   });
+
+  test("N1: a Ready set with no section carries no checklist note", () => {
+    renderModal(pending([BSC_BOMB]), { checklist: checklistOf([FUTURE]) });
+    fireEvent.click(screen.getByLabelText("Make its own set: Bomb Squad"));
+    // The row's links line: its BSC chip and the marketplaces' no-mapping
+    // note, and nothing at all for the checklist.
+    const links = within(readyRegion()).getByText("no SL mapping").parentElement as HTMLElement;
+    expect(within(links).getByText("Bomb Squad")).toBeTruthy();
+    expect(links.textContent).not.toMatch(/checklist/i);
+  });
+
+  test("a paused SportLots column says so in place of its search box, toggles and empty line", () => {
+    renderModal(pending([BSC_BOMB]), {
+      checklist: checklistOf([FUTURE]),
+      pausedSides: ["sportlots"],
+    });
+    expect(
+      screen.getByText(
+        "SportLots is on pause — no SportLots sets to pick from right now. Your existing SportLots links stay put.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("Search SportLots items")).toBeNull();
+    expect(screen.queryByLabelText("Show all SportLots items")).toBeNull();
+    expect(screen.queryByText("Nothing pending on SportLots")).toBeNull();
+    // The other columns are untouched.
+    expect(screen.getByLabelText("Filter checklist sections")).toBeTruthy();
+    expect(screen.getByLabelText("Make its own set: Bomb Squad")).toBeTruthy();
+  });
 });
 
 describe("ReconciliationModal — placing a section", () => {

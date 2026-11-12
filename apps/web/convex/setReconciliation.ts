@@ -674,7 +674,10 @@ export const rawOptionsChecklistValidator = v.object({
   rowLinks: v.array(
     v.object({
       rowId: v.id("selectorOptions"),
-      sections: v.array(v.object({ sectionKey: v.string(), name: v.string() })),
+      /** `rowCount` is absent for a key the current checklist no longer holds. */
+      sections: v.array(
+        v.object({ sectionKey: v.string(), name: v.string(), rowCount: v.optional(v.number()) }),
+      ),
     }),
   ),
   matches: v.array(
@@ -1045,6 +1048,7 @@ export function buildRawOptionsChecklist(
     { setNames: context.setNames },
   );
   const nameByKey = new Map(context.sections.map((s) => [s.sectionKey, s.name]));
+  const rowCountByKey = new Map(context.sections.map((s) => [s.sectionKey, s.rowCount]));
   const linkedKeys = new Set(context.links.map((l) => l.sectionKey));
   const baseIds = new Set(context.baseRowIds as string[]);
   const baseLinked = context.links
@@ -1079,11 +1083,21 @@ export function buildRawOptionsChecklist(
   // Base the Base row itself (Map Base Set saves its sections on it).
   const echoIds = new Set(context.siblings.map((r) => r._id as string));
   if (context.kind === "base") echoIds.add(context.variantTypeId);
-  const rowLinks = new Map<string, Array<{ sectionKey: string; name: string }>>();
+  const rowLinks = new Map<
+    string,
+    Array<{ sectionKey: string; name: string; rowCount?: number }>
+  >();
   for (const l of context.links) {
     if (!echoIds.has(l.selectorOptionId)) continue;
     const sections = rowLinks.get(l.selectorOptionId) ?? [];
-    sections.push({ sectionKey: l.sectionKey, name: nameByKey.get(l.sectionKey) ?? l.sectionKey });
+    // Its card count rides along so Map Base Set can show it on a ticked
+    // section too; a key the checklist no longer holds has none.
+    const rowCount = rowCountByKey.get(l.sectionKey);
+    sections.push({
+      sectionKey: l.sectionKey,
+      name: nameByKey.get(l.sectionKey) ?? l.sectionKey,
+      ...(rowCount !== undefined ? { rowCount } : {}),
+    });
     rowLinks.set(l.selectorOptionId, sections);
   }
 

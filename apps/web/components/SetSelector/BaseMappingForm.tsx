@@ -29,6 +29,11 @@ type RawOptionsResult = {
    */
   pausedSides?: string[];
   /**
+   * Sides the fetch never asked (paused, or no marketplace id on the chain).
+   * Handed to the picker so an empty pane says the side wasn't asked.
+   */
+  skippedSides?: string[];
+  /**
    * NEO-496 — the set's ready checklist: sections no row links (with how the
    * publisher's names classify them) and, in `rowLinks`, the sections the
    * Base row links now. Absent when the set has none.
@@ -37,7 +42,7 @@ type RawOptionsResult = {
     sections: Array<BaseChecklistSection & { sectionKey: string; name: string }>;
     rowLinks?: Array<{
       rowId: string;
-      sections: Array<{ sectionKey: string; name: string }>;
+      sections: Array<{ sectionKey: string; name: string; rowCount?: number }>;
     }>;
   };
 };
@@ -59,7 +64,12 @@ export function baseChecklistOf(
   const linkedKeys = linked.map((s) => s.sectionKey);
   const seen = new Set(linkedKeys);
   const sections: BaseChecklistSection[] = [
-    ...linked.map((s) => ({ sectionKey: s.sectionKey, name: s.name })),
+    // The count rides along, so a ticked section shows it like the rest.
+    ...linked.map((s) => ({
+      sectionKey: s.sectionKey,
+      name: s.name,
+      ...(s.rowCount !== undefined ? { rowCount: s.rowCount } : {}),
+    })),
     ...checklist.sections.filter((s) => !seen.has(s.sectionKey)),
   ];
   if (sections.length === 0) return null;
@@ -540,6 +550,7 @@ export default function BaseMappingForm({
           slOptions={pickerData?.slOptions ?? []}
           bscOptions={pickerData?.bscOptions ?? []}
           pausedSides={pickerData?.pausedSides ?? []}
+          skippedSides={pickerData?.skippedSides ?? []}
           setListing={setListing}
           checklist={pickerChecklist ?? undefined}
           setName={setNameValue || ""}

@@ -26,7 +26,7 @@ test(
       if (!env.SL_PAUSED) {
         await expect(picker.getByText(/SportLots base/).first()).toBeVisible();
       } else {
-        await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+        await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
         await expect(bsc.first()).toBeVisible();
         await expect(sl).toHaveCount(0);
       }

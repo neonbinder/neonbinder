@@ -7,7 +7,7 @@
  * never offers the list when the Base's own links did not come back.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -133,6 +133,14 @@ describe("BaseSetPicker — checklist list", () => {
     expect(option("Bomb Squad")).toBeTruthy();
   });
 
+  it("every section shows its card count, ticked or not", () => {
+    renderPicker({ checklist: { sections: [BASE, BASE_RP], linkedKeys: ["base"] } });
+    expect(option("Base").getAttribute("aria-selected")).toBe("true");
+    expect(within(option("Base")).getByText("200 cards")).toBeTruthy();
+    expect(option("Base Rated Prospects").getAttribute("aria-selected")).toBe("false");
+    expect(within(option("Base Rated Prospects")).getByText("50 cards")).toBeTruthy();
+  });
+
   it("picks several sections and confirms them with no marketplace pick", async () => {
     const { onConfirm } = renderPicker({
       checklist: { sections: [BASE, BASE_RP], linkedKeys: ["base"] },
@@ -188,6 +196,19 @@ describe("baseChecklistOf", () => {
   });
   it("offers nothing when the Base's links did not come back", () => {
     expect(baseChecklistOf({ sections: [BASE] }, "vt-base")).toBeNull();
+  });
+  it("carries a linked section's card count, so a ticked section shows it too", () => {
+    const counted = {
+      sections: [BASE_RP as BaseChecklistSection & { sectionKey: string; name: string }],
+      rowLinks: [
+        { rowId: "vt-base", sections: [{ sectionKey: "base", name: "Base", rowCount: 200 }] },
+      ],
+    };
+    expect(baseChecklistOf(counted, "vt-base")?.sections[0]).toEqual({
+      sectionKey: "base",
+      name: "Base",
+      rowCount: 200,
+    });
   });
 });
 

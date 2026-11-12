@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
@@ -129,6 +129,12 @@ type BaseSetPickerProps = {
    */
   pausedSides?: readonly string[];
   /**
+   * Slot sides the fetch never asked (the result's `skippedSides`: no
+   * marketplace id on the chain, or paused). An empty pane on a skipped side
+   * says it wasn't asked, never that it "returned no base set".
+   */
+  skippedSides?: readonly string[];
+  /**
    * PR 451 (NEO-487) — the caller's "Waiting on BuySportsCards…" line for
    * the fetch behind `loading`. The dialog covers the page's own copy while
    * it is open, so it carries the line in its footer instead. Rendered
@@ -153,6 +159,14 @@ type BaseSetPickerProps = {
  * pre-selects from — see `preselectScore`.
  */
 export const EXACT_SET_NAME_SCORE = 1000;
+
+/**
+ * A pane whose side the fetch never asked: "returned no base set" would claim
+ * an answer nobody got. `side` is the pane's own short name.
+ */
+export function unaskedBaseCopy(side: "BSC" | "SportLots", setName: string): string {
+  return `${side} wasn't asked: ${setName} has no ${side} link.`;
+}
 export const PREFIX_STRIPPED_SCORE = 950;
 
 /**
@@ -342,11 +356,20 @@ export default function BaseSetPicker({
   remapNotice,
   notice,
   pausedSides = [],
+  skippedSides = [],
   waitingSlot,
   checklist,
 }: BaseSetPickerProps) {
   const slPaused = pausedSides.includes("sportlots");
   const bscPaused = pausedSides.includes("bsc");
+  // Paused has its own pane; these are the sides skipped for want of a link.
+  const slUnasked = !slPaused && skippedSides.includes("sportlots");
+  const bscUnasked = !bscPaused && skippedSides.includes("bsc");
+  // Each list's heading names its listbox; ids from useId, so two pickers
+  // (or a test's second render) never share one.
+  const bscListLabelId = useId();
+  const checklistListLabelId = useId();
+  const slListLabelId = useId();
   // NEO-325: the SportLots pick is held by marketplace id. SportLots lists
   // distinct sets under one name, and a name-keyed pick resolved every twin
   // to the first — so choosing the 2nd "Base Set" linked the 1st one's id.
@@ -844,7 +867,7 @@ export default function BaseSetPicker({
             <div className="px-6 pt-4">
               <div
                 className="text-xs text-neon-blue-text font-medium uppercase tracking-wide mb-1.5"
-                id="bsc-base-list-label"
+                id={bscListLabelId}
               >
                 BSC base
               </div>
@@ -852,12 +875,14 @@ export default function BaseSetPicker({
                 <p className="text-sm text-ink-3">
                   {/* gray-500 measured ~3.7:1 against this dialog's bg-gray-900 —
                       under WCAG 1.4.3's 4.5:1 for normal text. */}
-                  BSC returned no base set for {setName}
+                  {bscUnasked
+                    ? unaskedBaseCopy("BSC", setName)
+                    : `BSC returned no base set for ${setName}`}
                 </p>
               ) : (
                 <div
                   role="listbox"
-                  aria-labelledby="bsc-base-list-label"
+                  aria-labelledby={bscListLabelId}
                   className="space-y-1 max-h-32 overflow-y-auto"
                 >
                   {bscCandidates.map((cand, i) => {
@@ -922,7 +947,7 @@ export default function BaseSetPicker({
             <div className="px-6 pt-3">
               <div
                 className="text-xs text-neon-teal-text font-medium uppercase tracking-wide mb-1.5"
-                id="checklist-base-list-label"
+                id={checklistListLabelId}
               >
                 Checklist base
               </div>
@@ -935,7 +960,7 @@ export default function BaseSetPicker({
                   <div
                     role="listbox"
                     aria-multiselectable="true"
-                    aria-labelledby="checklist-base-list-label"
+                    aria-labelledby={checklistListLabelId}
                     className="space-y-1 max-h-40 overflow-y-auto"
                   >
                     {shownSections.map((section, i) => {
@@ -1025,7 +1050,7 @@ export default function BaseSetPicker({
           <div className="px-6 pt-3">
             <div
               className="text-xs text-neon-purple-text font-medium uppercase tracking-wide mb-1.5"
-              id="sl-base-list-label"
+              id={slListLabelId}
             >
               SportLots base
             </div>
@@ -1070,13 +1095,15 @@ export default function BaseSetPicker({
               </>
             ) : slOptions.length === 0 ? (
               <p className="text-sm text-ink-3 py-4">
-                SportLots returned no base set for {setName}
+                {slUnasked
+                  ? unaskedBaseCopy("SportLots", setName)
+                  : `SportLots returned no base set for ${setName}`}
               </p>
             ) : (
               <>
                 <div
                   role="listbox"
-                  aria-labelledby="sl-base-list-label"
+                  aria-labelledby={slListLabelId}
                   className="space-y-1.5"
                 >
                   {filteredSlOptions.map((opt, i) => {

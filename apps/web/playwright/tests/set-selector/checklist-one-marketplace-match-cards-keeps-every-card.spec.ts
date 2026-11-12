@@ -197,7 +197,7 @@ test(
     if (!env.SL_PAUSED) {
       await expect(slCandidates.first()).toBeVisible();
     } else {
-      await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+      await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
       await expect(slCandidates).toHaveCount(0);
     }
     await expectAccessible(page, { within: picker, label: "Select Base Set picker, one marketplace offers a base" });

@@ -2457,6 +2457,37 @@ export function checklistNumberTitle(printed: string | undefined): string {
 }
 
 /**
+ * Keep and Keep all, on every column: NeonButton's green outline, the same
+ * button Reconcile's "Keep all" is (green: a kept card goes on to be saved).
+ * 28px keeps a row one line on a desk; 44px on a phone.
+ */
+const KEEP_BUTTON = "min-h-[28px] shrink-0 whitespace-nowrap max-sm:min-h-11";
+
+/**
+ * The Unlink inside a checklist chip. A solid underline: the dotted one is
+ * reserved for a name you can edit (the Matched rows' name choice).
+ */
+const CHIP_UNLINK =
+  "min-h-6 rounded-r border-l border-pick-teal-rule px-1.5 font-semibold underline underline-offset-2 hover:text-ink focus-outline";
+
+/**
+ * A pick radio's own mark: a ring, filled when picked. The picked fill and
+ * `selection-edge` alone are colour (and in dark the edge is clear), so the
+ * mark says "picked" by shape too (WCAG 1.4.1). Drawn in the button's own
+ * ink; the state itself is `aria-checked`.
+ */
+function RadioMark({ checked }: { checked: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="mr-2 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-current align-middle"
+    >
+      {checked && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+    </span>
+  );
+}
+
+/**
  * The chip, with (NEO-496) the same Unlink inside it a hand link's chip has
  * when the server's pair can be undone (`unlink`).
  */
@@ -3577,7 +3608,7 @@ export default function CardPairingModal({
       link,
       <button
         type="button"
-        className="min-h-6 rounded-r border-l border-pick-teal-rule px-1.5 font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
+        className={CHIP_UNLINK}
         onClick={() => {
           dispatch({ type: "UNLINK_SERVER_CHECKLIST", cardKey });
           announceChecklist(checklistUnlinkedAnnouncement(label(card)));
@@ -3614,7 +3645,7 @@ export default function CardPairingModal({
         </span>
         <button
           type="button"
-          className="min-h-6 rounded-r border-l border-pick-teal-rule px-1.5 font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
+          className={CHIP_UNLINK}
           onClick={() => {
             explicitUnlinkRef.current = cardKey;
             dispatch({ type: "UNLINK_CHECKLIST", cardKey });
@@ -3870,7 +3901,7 @@ export default function CardPairingModal({
               </p>
               <button
                 type="button"
-                className="min-h-8 shrink-0 rounded px-2 py-0.5 text-xs font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
+                className="min-h-8 shrink-0 rounded px-2 py-0.5 text-xs font-semibold underline underline-offset-2 hover:text-ink focus-outline"
                 onClick={() => {
                   const rowIndex = activeRow;
                   setSelectedRow(null);
@@ -4135,7 +4166,7 @@ export default function CardPairingModal({
                           {isMarketplacePair(m.card) && (
                           <button
                             type="button"
-                            className="rounded text-xs text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink px-2 py-1.5"
+                            className="rounded text-xs text-ink-2 underline underline-offset-2 hover:bg-neon-pink hover:text-on-neon-pink hover:no-underline px-2 py-1.5 focus-outline"
                             onClick={() => {
                               dispatch({ type: "UNLINK", index: i });
                               refocus(matchedToggleRef.current);
@@ -4477,9 +4508,12 @@ export default function CardPairingModal({
                   <h3 className="text-sm font-semibold text-ink-2">
                     BSC only ({state.unmatchedBsc.length})
                   </h3>
-                  <button
+                  <NeonButton
                     type="button"
-                    className="text-xs text-ink-3 hover:text-neon-blue-text disabled:opacity-40 px-2 py-1.5"
+                    variant="primary"
+                    outline
+                    size="1"
+                    className={KEEP_BUTTON}
                     disabled={state.unmatchedBsc.length === 0}
                     onClick={() => {
                       dispatch({ type: "KEEP_ALL", side: "bsc" });
@@ -4488,7 +4522,7 @@ export default function CardPairingModal({
                     aria-label="Keep all BSC-only cards"
                   >
                     Keep all
-                  </button>
+                  </NeonButton>
                 </div>
                 <Input
                   bare
@@ -4547,7 +4581,7 @@ export default function CardPairingModal({
                         data-pick-radio={candidateKey(c)}
                         data-row-primary=""
                         tabIndex={bscTabStop === candidateKey(c) ? 0 : -1}
-                        className={`flex-1 text-left text-sm rounded border px-2 py-1 ${
+                        className={`flex-1 text-left text-sm rounded border px-2 py-1 focus-outline ${
                           selectedBsc === candidateKey(c)
                             ? "bg-pick-blue border-pick-blue-rule text-pick-blue-ink selection-edge"
                             : "bg-row border-row-rule text-ink-2 hover:bg-row-hover"
@@ -4565,13 +4599,17 @@ export default function CardPairingModal({
                             : `Select BSC card ${label(c)}`
                         }
                       >
+                        <RadioMark checked={selectedBsc === candidateKey(c)} />
                         {label(c)}
                       </button>
                       {serverChip(c)}
                       {checklistLinkButton(c)}
-                      <button
+                      <NeonButton
                         type="button"
-                        className="text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
+                        variant="primary"
+                        outline
+                        size="1"
+                        className={KEEP_BUTTON}
                         onClick={() => {
                           const neighbour = neighbourOf(visibleBsc, c);
                           dispatch({
@@ -4589,7 +4627,7 @@ export default function CardPairingModal({
                         aria-label={`Keep ${label(c)} as BSC-only`}
                       >
                         Keep
-                      </button>
+                      </NeonButton>
                     </PairableRow>
                   ))}
                 </ul>
@@ -4603,9 +4641,12 @@ export default function CardPairingModal({
                   <h3 className="text-sm font-semibold text-ink-2">
                     SportLots only ({state.unmatchedSl.length})
                   </h3>
-                  <button
+                  <NeonButton
                     type="button"
-                    className="text-xs text-ink-3 hover:text-neon-blue-text disabled:opacity-40 px-2 py-1.5"
+                    variant="primary"
+                    outline
+                    size="1"
+                    className={KEEP_BUTTON}
                     disabled={state.unmatchedSl.length === 0}
                     onClick={() => {
                       dispatch({ type: "KEEP_ALL", side: "sl" });
@@ -4614,7 +4655,7 @@ export default function CardPairingModal({
                     aria-label="Keep all SportLots-only cards"
                   >
                     Keep all
-                  </button>
+                  </NeonButton>
                 </div>
                 <Input
                   bare
@@ -4645,7 +4686,7 @@ export default function CardPairingModal({
                         type="button"
                         disabled={!selectedBsc}
                         data-row-primary=""
-                        className="flex-1 text-left text-sm rounded border border-row-rule px-2 py-1 bg-row text-ink-2 enabled:hover:bg-row-hover disabled:opacity-60"
+                        className="flex-1 text-left text-sm rounded border border-row-rule px-2 py-1 bg-row text-ink-2 enabled:hover:bg-row-hover disabled:opacity-60 focus-outline"
                         onClick={() => {
                           if (!selectedBsc) return;
                           // Same operation the drag path performs — including
@@ -4660,9 +4701,12 @@ export default function CardPairingModal({
                       </button>
                       {serverChip(c)}
                       {checklistLinkButton(c)}
-                      <button
+                      <NeonButton
                         type="button"
-                        className="text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
+                        variant="primary"
+                        outline
+                        size="1"
+                        className={KEEP_BUTTON}
                         onClick={() => {
                           const neighbour = neighbourOf(visibleSl, c);
                           dispatch({
@@ -4681,7 +4725,7 @@ export default function CardPairingModal({
                         aria-label={`Keep ${label(c)} as SportLots-only`}
                       >
                         Keep
-                      </button>
+                      </NeonButton>
                     </PairableRow>
                   ))}
                 </ul>
@@ -4700,9 +4744,12 @@ export default function CardPairingModal({
                     <h3 className="text-sm font-semibold text-ink-2">
                       {checklistColumnHeading(openRowCount)}
                     </h3>
-                    <button
+                    <NeonButton
                       type="button"
-                      className="text-xs text-ink-3 hover:text-neon-blue-text disabled:opacity-40 px-2 py-1.5"
+                      variant="primary"
+                      outline
+                      size="1"
+                      className={KEEP_BUTTON}
                       disabled={openRowCount === 0}
                       onClick={() => {
                         dispatch({ type: "KEEP_ALL_CHECKLIST" });
@@ -4712,7 +4759,7 @@ export default function CardPairingModal({
                       aria-label="Keep all checklist-only cards"
                     >
                       Keep all
-                    </button>
+                    </NeonButton>
                   </div>
                   {state.checklistCards.length === 0 && (
                     <p className="text-xs text-ink-3 mb-2">{CHECKLIST_ALL_FOUND}</p>
@@ -4811,7 +4858,7 @@ export default function CardPairingModal({
                               </span>
                               <button
                                 type="button"
-                                className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink"
+                                className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-ink-2 underline underline-offset-2 hover:bg-neon-pink hover:text-on-neon-pink hover:no-underline focus-outline"
                                 onClick={() => {
                                   explicitUnlinkRef.current = linkedTo;
                                   dispatch({ type: "UNLINK_CHECKLIST", cardKey: linkedTo });
@@ -4834,7 +4881,7 @@ export default function CardPairingModal({
                             data-pick-radio={String(rowIndex)}
                             data-row-primary=""
                             tabIndex={checklistTabStop === rowIndex ? 0 : -1}
-                            className={`min-w-0 flex-1 text-left text-sm rounded border px-2 py-1 ${
+                            className={`min-w-0 flex-1 text-left text-sm rounded border px-2 py-1 focus-outline ${
                               picked
                                 ? "bg-pick-teal border-pick-teal-rule text-pick-teal-ink selection-edge"
                                 : "bg-row border-row-rule text-ink-2 hover:bg-row-hover"
@@ -4851,11 +4898,15 @@ export default function CardPairingModal({
                             aria-checked={picked}
                             aria-label={`Select ${named}`}
                           >
+                            <RadioMark checked={picked} />
                             {line}
                           </button>
-                          <button
+                          <NeonButton
                             type="button"
-                            className="shrink-0 text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
+                            variant="primary"
+                            outline
+                            size="1"
+                            className={KEEP_BUTTON}
                             onClick={() => {
                               const at = visibleRows.indexOf(rowIndex);
                               const neighbour = visibleRows[at + 1] ?? visibleRows[at - 1];
@@ -4871,7 +4922,7 @@ export default function CardPairingModal({
                             aria-label={`Keep ${named} as checklist-only`}
                           >
                             Keep
-                          </button>
+                          </NeonButton>
                         </ChecklistRowItem>
                       );
                     })}
@@ -4978,7 +5029,7 @@ export default function CardPairingModal({
                       </span>
                       <button
                         type="button"
-                        className="shrink-0 text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5"
+                        className="shrink-0 text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5 focus-outline"
                         onClick={() => {
                           dispatch({ type: "UNKEEP_CHECKLIST", rowIndex });
                           refocus(checklistFilterRef.current);
@@ -5022,7 +5073,7 @@ export default function CardPairingModal({
             </div>
             <div className="flex gap-2">
               <NeonButton
-                variant="secondary"
+                variant="negative"
                 size="2"
                 onClick={requestClose}
                 // Specific, matching every other dialog in this directory —

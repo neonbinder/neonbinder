@@ -320,8 +320,8 @@ describe("buildRawOptionsChecklist", () => {
       {
         rowId: rowId("type-base"),
         sections: [
-          { sectionKey: "base", name: "Base" },
-          { sectionKey: "base rated prospects", name: "Base Rated Prospects" },
+          { sectionKey: "base", name: "Base", rowCount: 200 },
+          { sectionKey: "base rated prospects", name: "Base Rated Prospects", rowCount: 50 },
         ],
       },
     ]);
@@ -347,7 +347,8 @@ describe("buildRawOptionsChecklist", () => {
       {
         rowId: rowId("p-red"),
         sections: [
-          { sectionKey: "base red", name: "Base Red" },
+          { sectionKey: "base red", name: "Base Red", rowCount: 150 },
+          // A key the checklist no longer holds: no count to carry.
           { sectionKey: "old red section", name: "old red section" },
         ],
       },

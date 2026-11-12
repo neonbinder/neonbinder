@@ -61,6 +61,7 @@ import {
   type RowCheck,
 } from "./base-match-probe";
 import { BASE_MATCH_COPY } from "@/lib/cards/base-match";
+import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import {
   MARKETPLACE_SOURCES,
@@ -319,6 +320,13 @@ type ReconciliationModalProps = {
   baseCheck?: { variantTypeId: Id<"selectorOptions"> };
   /** NEO-496 (C1b) — the set's checklist, a third column. See the type. */
   checklist?: ReconcileChecklist;
+  /**
+   * NEO-287 — slot sides (`"bsc"` / `"sportlots"`) the operator has paused,
+   * from the fetch result's `pausedSides`, as Map Base Set gets them. A
+   * paused side was never asked, so its column says so in place of the
+   * search box, the toggles and "Nothing pending".
+   */
+  pausedSides?: readonly string[];
   existingRows?: Array<{
     /** The row's own `_id` — see `ReadySet.existingId`. Optional so callers
      *  that predate NEO-211 (and the tests that construct rows by hand) keep
@@ -836,7 +844,7 @@ function ReadySetRow({
       <button
         type="button"
         onClick={() => onDetach(source.key, item.platformValue)}
-        className="hit-area-24 text-neon-pink-text px-0.5 rounded"
+        className="hit-area-24 text-neon-pink-text px-0.5 rounded focus-outline"
         title={source.kind === "checklist" ? "Remove this section" : "Remove this mapping"}
         aria-label={
           // NEO-496: a checklist section can share its name with a
@@ -941,16 +949,18 @@ function ReadySetRow({
         {sources.map((source) =>
           set.links[source.key].map((i) => chip(source, i)),
         )}
+        {/* N1 (Jason): a checklist section shows as its chip when one is
+            linked and says nothing when none is; the no-mapping note is the
+            marketplaces' alone. */}
         {sources.map(
           (source) =>
+            source.kind !== "checklist" &&
             set.links[source.key].length === 0 && (
               <span
                 key={`no-${source.key}`}
                 className="text-[11px] text-ink-3 italic"
               >
-                {source.kind === "checklist"
-                  ? "no checklist section"
-                  : `no ${source.badge} mapping`}
+                {`no ${source.badge} mapping`}
               </span>
             ),
         )}
@@ -1063,6 +1073,7 @@ function ReconciliationDialog({
   showAllSlInitially = false,
   baseCheck,
   checklist,
+  pausedSides = [],
   client,
 }: ReconciliationModalProps & { client: BaseMatchClient | null }) {
   // NEO-496: the columns this dialog lines up. The two marketplaces always;
@@ -1452,6 +1463,22 @@ function ReconciliationDialog({
    */
   const [discardOpen, setDiscardOpen] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  /** The Pending heading: the subtitle's "N pending" lands here. */
+  const pendingHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  /**
+   * The subtitle's "N pending": scroll the Pending heading into view and put
+   * focus on it, so the next Tab is the first column's search box. An in-view
+   * move, so nothing goes in history.
+   */
+  const jumpToPending = useCallback(() => {
+    const heading = pendingHeadingRef.current;
+    if (!heading) return;
+    const reduceMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    heading.focus({ preventScroll: true });
+    heading.scrollIntoView?.({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
+  }, []);
   /** What had focus before this opened, so it can go back there on close
    *  rather than falling to `<body>` (WCAG 2.4.3) — matches CardPairingModal. */
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -2316,6 +2343,7 @@ function ReconciliationDialog({
     // The Base check and its copy are a marketplace's; any other source's
     // column never has a verdict, so none of it renders there.
     const probeSide = isMarketplaceSource(key) ? key : null;
+    const paused = probeSide !== null && pausedSides.includes(probeSide);
     const narrowed = filtered.length !== all.length;
     // NEO-325 — the Base check's view of this column. `scoped` is what the
     // check reaches (the counter and the sleeves); `mismatched` is what the
@@ -2554,6 +2582,15 @@ function ReconciliationDialog({
             {keepAllDescription}
           </span>
         </div>
+        {paused ? (
+          // NEO-287: the side was never asked. Not the empty copy (it did not
+          // "return" nothing) and nothing to search or toggle. Amber, the
+          // house "nothing broke" colour, as Map Base Set's pane.
+          <p className="text-sm text-notice-warn-ink py-2">
+            {PAUSE_NOTICE_COPY.pane(sideLabel(key))}
+          </p>
+        ) : (
+        <>
         {checksOn && probeSide && checkTotal > 0 && (
           // NEO-325 — the column's Base check, in the run ledger's shape: a
           // counter and a sleeve per set filling as each one settles. The
@@ -2732,6 +2769,8 @@ function ReconciliationDialog({
             </p>
           )}
         </div>
+        </>
+        )}
       </div>
     );
   };
@@ -2807,7 +2846,21 @@ function ReconciliationDialog({
           </h2>
           <p className="text-sm text-ink-3 mt-1">
             {saveCount} ready
-            {pendingCount > 0 ? `, ${pendingCount} pending` : ""}
+            {pendingCount > 0 && (
+              <>
+                {", "}
+                {/* A jump down to Pending, below Ready. Solid underline: the
+                    dotted one is an editable name's. */}
+                <button
+                  type="button"
+                  onClick={jumpToPending}
+                  aria-label={`${pendingCount} pending, go to Pending`}
+                  className="hit-area-24 rounded-sm text-ink-2 underline underline-offset-2 hover:text-ink focus-outline"
+                >
+                  {pendingCount} pending
+                </button>
+              </>
+            )}
           </p>
           {twinNotice && (
             // NEO-325 — why this opened instead of saving on its own. Amber,
@@ -2929,7 +2982,11 @@ function ReconciliationDialog({
 
             {/* ── PENDING ───────────────────────────────────────────── */}
             <div>
-              <h3 className="text-sm font-medium text-ink-2 mb-1">
+              <h3
+                ref={pendingHeadingRef}
+                tabIndex={-1}
+                className="scroll-mt-2 rounded-sm text-sm font-medium text-ink-2 mb-1 focus-outline"
+              >
                 Pending ({pendingCount})
               </h3>
               <p className="text-xs text-ink-3 mb-2">
