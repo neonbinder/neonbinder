@@ -217,6 +217,39 @@ export async function shipPickOrder(page: Page, orderNo: string, redirect = PICK
   await page.goto(`/testing/seed-pick-order?${query.toString()}`);
 }
 
+/** How the list names an eBay order: "eBay <order number>" (its Order filter option and a row's order link). */
+export function ebayOrder(orderNo: string): string {
+  return `eBay ${orderNo}`;
+}
+
+/**
+ * Seeds one eBay order NeonBinder did not list (NEO-520,
+ * `/testing/seed-pick-order?platform=ebay`, testing deployments only): the
+ * caller's own order, recorded and applied exactly as the order poll does,
+ * with no marketplace call and no box touched (a line with no NeonBinder SKU
+ * is refused as unmatched). `lines` is 1-3 lines, each a `quantity` and the
+ * title eBay sent (leave `title` out for a line that sends none). It refuses
+ * an account that lists anywhere. `orderNo` must be one token. Opens `page`
+ * on the hop, so the browser does a full load (callers gate on the
+ * destination with `LAUNCH_GATE`).
+ */
+export async function seedEbayOrder(
+  page: Page,
+  order: { orderNo: string; lines: ReadonlyArray<{ quantity: number; title?: string }> },
+  redirect = PICK_LIST_PATH,
+): Promise<void> {
+  const query = new URLSearchParams({ platform: "ebay", order: order.orderNo, redirect });
+  // A repeated param, one per line, in the order given: "<quantity>:<title>" ("<quantity>:" sends no title).
+  for (const line of order.lines) query.append("line", `${line.quantity}:${line.title ?? ""}`);
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/** Marks a seeded eBay order shipped (the hop's `ship=1`): its lines leave the Pick List. */
+export async function shipEbayOrder(page: Page, orderNo: string, redirect = PICK_LIST_PATH): Promise<void> {
+  const query = new URLSearchParams({ platform: "ebay", order: orderNo, ship: "1", redirect });
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
 /** The table's group (a set, Can't find it, Sold since you started) under the heading `title`. */
 export function pickGroup(table: Locator, title: string): Locator {
   return table.getByRole("rowgroup").filter({ has: table.page().getByRole("heading", { level: 3, name: title, exact: true }) });
