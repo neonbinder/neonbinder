@@ -112,12 +112,20 @@ beforeEach(() => {
 });
 
 describe("the chrome on every screen", () => {
-  it("titles the dialog 'Tidy up this set' and never shows the old header", () => {
+  it("titles the dialog with the set it tidies and never shows the old header", () => {
+    currentRows = [row({ name: "Mike Trout" })];
+    render(wizard({ title: "Tidy up 2024 Topps Chrome" }));
+    // NEO-497: the parent's title is the dialog's accessible name.
+    expect(screen.getByRole("dialog", { name: "Tidy up 2024 Topps Chrome" })).toBeTruthy();
+    expect(screen.queryByText("Tidy up this set")).toBeNull();
+    expect(screen.queryByText("Confirm New Players & Teams")).toBeNull();
+    expect(screen.queryByText(/of \d+ reviewed/)).toBeNull();
+  });
+
+  it("falls back to 'Tidy up this set' while the parent has no title yet", () => {
     currentRows = [row({ name: "Mike Trout" })];
     render(wizard());
     expect(screen.getByRole("dialog", { name: "Tidy up this set" })).toBeTruthy();
-    expect(screen.queryByText("Confirm New Players & Teams")).toBeNull();
-    expect(screen.queryByText(/of \d+ reviewed/)).toBeNull();
   });
 
   it.each([

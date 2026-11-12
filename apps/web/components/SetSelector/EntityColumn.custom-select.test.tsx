@@ -318,4 +318,33 @@ describe("EntityColumn — '+ Custom' when two rows already carry the name (NEO-
     });
     expect(onSelectExisting).toHaveBeenCalledWith("anime-a");
   });
+
+  // NEO-499 — the buttons ARE names. A 100-character name with no space in it
+  // ran out of the column and off a 375px page, because Radix fixes a button
+  // at 32px and never breaks a word. happy-dom has no layout, so this pins the
+  // contract that lets the browser wrap it: free height, capped at the
+  // column's width, breakable anywhere. Only reachable with same-named
+  // siblings, which only a marketplace sync makes, so no E2E reaches it.
+  it("a long unbroken name wraps inside its pick button, and the button's name still contains it", async () => {
+    const longName = "X".repeat(100);
+    mockQuery.mockReturnValue([
+      { _id: "long-a" as unknown as OptionId, value: longName, platformData: { sportlots: { s0: "111" } } },
+      { _id: "long-b" as unknown as OptionId, value: longName, platformData: { sportlots: { s0: "222" } } },
+    ]);
+
+    await submitCustomValue(longName, vi.fn());
+
+    await waitFor(() => expect(pickButtons()).toHaveLength(2));
+    for (const button of pickButtons()) {
+      const visible = button.textContent ?? "";
+      expect(visible.startsWith(longName)).toBe(true);
+      // WCAG 2.5.3: the accessible name contains the words on the button.
+      expect(button.getAttribute("aria-label")).toContain(visible);
+      for (const cls of ["h-auto", "min-h-8", "max-w-full", "wrap-anywhere"]) {
+        expect(button.classList.contains(cls)).toBe(true);
+      }
+    }
+    // Back is fixed copy: it keeps Radix's fixed height.
+    expect(screen.getByText("Back").closest("button")?.classList.contains("h-auto")).toBe(false);
+  });
 });
