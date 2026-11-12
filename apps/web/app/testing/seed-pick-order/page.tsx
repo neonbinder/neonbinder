@@ -2,6 +2,7 @@ import { useConvexAuth, useMutation } from "convex/react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
+import { parseEbayLines } from "./parseEbayLines";
 
 // Test-only seed hop (NEO-500). An E2E spec visits
 //   /testing/seed-pick-order?order=<orderNo>&box=<box name>&cards=<no>:<qty>,<no>:<qty>[&bad=1][&listed=<no>:<players>]...&redirect=<final>
@@ -60,27 +61,6 @@ function parseListed(raws: readonly string[]): ListedLine[] | null {
     out.push(cardNumber ? { cardNumber, players } : { players });
   }
   return out;
-}
-
-type EbayLine = { quantity: number; title?: string };
-
-/**
- * `["1:2024 Topps Chrome #7 Thing", "2:"]` →
- * `[{quantity:1,title:"2024 Topps Chrome #7 Thing"},{quantity:2}]`: the text
- * before the first ":" is the quantity, the rest the title as given (empty =
- * none, so a title may hold ":"). Null when any entry is malformed or none is given.
- */
-function parseEbayLines(raws: readonly string[]): EbayLine[] | null {
-  const out: EbayLine[] = [];
-  for (const raw of raws) {
-    const at = raw.indexOf(":");
-    if (at <= 0) return null;
-    const quantity = Number(raw.slice(0, at));
-    if (!Number.isInteger(quantity)) return null;
-    const title = raw.slice(at + 1);
-    out.push(title.trim() ? { quantity, title } : { quantity });
-  }
-  return out.length > 0 ? out : null;
 }
 
 export default function TestingSeedPickOrderPage() {
