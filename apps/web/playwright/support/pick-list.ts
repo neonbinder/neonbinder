@@ -126,3 +126,61 @@ export async function sortBy(page: Page, isMobile: boolean, column: PickSortColu
     await expect(header).toHaveAttribute("aria-sort", "descending");
   }
 }
+
+// ---------------------------------------------------------------------------
+// The signed-in Pick List (`collection/inventory-pick-list`): its orders are
+// seeded through the test hop, since a sale cannot be made on cue (the seller
+// accounts are shared and a real order needs a real buyer).
+// ---------------------------------------------------------------------------
+
+/** The Pick List's own page in the signed-in app. */
+export const PICK_LIST_PATH = "/inventory?tab=pick";
+
+/** How the list names a BuySportsCards order: "BSC <order number>" (its Order filter option and a row's order). */
+export function bscOrder(orderNo: string): string {
+  return `BSC ${orderNo}`;
+}
+
+/**
+ * The listing title a line NB could not tie to a card reads as: "Card NB
+ * couldn't match, BSC <order>", with " (n of m)" when the order holds more
+ * than one.
+ */
+export function unmatchedLine(orderNo: string): string {
+  return `Card NB couldn't match, ${bscOrder(orderNo)}`;
+}
+
+/**
+ * Seeds one BuySportsCards order over the signed-in user's own box
+ * (`/testing/seed-pick-order`, testing deployments only): it is recorded and
+ * applied as the sales poll would, taking the copies from `box`, and lands on
+ * `redirect` (the Pick List by default). `cards` maps a card number in the
+ * box to the copies sold; `bad` adds one line NB cannot tie to a card. The
+ * hop refuses an account that lists on a marketplace, so no copy it lowers
+ * reaches one. `orderNo` must be one token. Re-seeding a number replays the
+ * stored order. Opens `page` on the hop, so the browser does a full load
+ * (callers gate on the destination with `LAUNCH_GATE`).
+ */
+export async function seedPickOrder(
+  page: Page,
+  order: { orderNo: string; box: string; cards: Readonly<Record<string, number>>; bad?: boolean },
+  redirect = PICK_LIST_PATH,
+): Promise<void> {
+  const cards = Object.entries(order.cards)
+    .map(([no, qty]) => `${no}:${qty}`)
+    .join(",");
+  const query = new URLSearchParams({ order: order.orderNo, box: order.box, cards, redirect });
+  if (order.bad) query.set("bad", "1");
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/** Marks a seeded order shipped (the hop's `ship=1`): its lines leave the Pick List. */
+export async function shipPickOrder(page: Page, orderNo: string, redirect = PICK_LIST_PATH): Promise<void> {
+  const query = new URLSearchParams({ order: orderNo, ship: "1", redirect });
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/** The table's group (a set, Can't find it, Sold since you started) under the heading `title`. */
+export function pickGroup(table: Locator, title: string): Locator {
+  return table.getByRole("rowgroup").filter({ has: table.page().getByRole("heading", { level: 3, name: title, exact: true }) });
+}
