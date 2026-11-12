@@ -207,9 +207,11 @@ comes from Jason as `pr-close` describes.
 
    The title is letters, digits, spaces and `. , : ( ) # _ / + ' -`, up to 120
    characters. Then send `PR-QUEUE JOIN NEO-123` to the owner. Mark the tab as
-   waiting in line (`cc-state queue`, where installed). Switch it to
-   `cc-state ci` on `YOUR TURN`, and `cc-state clear` on `LEAVE` or
-   `RELEASED`.
+   waiting in line (`cc-state queue`, yellow, where installed). Switch it to
+   `cc-state ci` (blue) the moment `YOUR TURN` arrives, so Jason sees at a
+   glance which ticket is actually running. Once the merge has reached
+   production (`pr-close`'s deploy check), switch it to `cc-state test`
+   (purple). `cc-state clear` on `LEAVE` or `RELEASED`.
 3. **Already have an open PR?** Join the same way. Once `QUEUED` (or
    `YOUR TURN`) arrives, run `"$Q" set-pr NEO-123 <pr>` and send
    `PR-QUEUE PR NEO-123 #<pr>`, so the queue can follow it.
