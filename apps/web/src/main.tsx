@@ -144,12 +144,18 @@ function LegacySetSelector() {
  * The old /binder-tracking demo URL (bookmarks, old links), forwarded to the demo
  * app. The old demo put its side in the query (`?demo=on&side=inventory`), so that
  * one lands on /demo/inventory, not on a bare `<Navigate to="/demo">` that drops it.
- * Anything else lands on /demo. Replaces the entry, so Back leaves the demo.
+ * Anything else lands on /demo. The rest of the query (`tab=pick`, `sorder=...`)
+ * goes along, so an old deep link still opens its tab. Replaces the entry, so Back
+ * leaves the demo.
  */
 function LegacyBinderTracking() {
   const { search } = useLocation();
-  const inventory = new URLSearchParams(search).get("side") === "inventory";
-  return <Navigate to={inventory ? "/demo/inventory" : "/demo"} replace />;
+  const params = new URLSearchParams(search);
+  const inventory = params.get("side") === "inventory";
+  params.delete("demo");
+  params.delete("side");
+  const rest = params.toString();
+  return <Navigate to={`${inventory ? "/demo/inventory" : "/demo"}${rest ? `?${rest}` : ""}`} replace />;
 }
 
 function ScrollToTop() {

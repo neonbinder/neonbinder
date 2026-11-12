@@ -57,7 +57,7 @@ test(
     const pick = pickList(page);
     const { region, table } = pick;
 
-    await page.goto("/binder-tracking?demo=on&side=inventory&tab=pick");
+    await page.goto("/demo/inventory?tab=pick");
     await expect(pick.heading).toBeVisible();
     await expect(page.getByRole("navigation", { name: "Inventory sections" }).getByRole("link", { name: "Pick List" })).toHaveAttribute(
       "aria-current",

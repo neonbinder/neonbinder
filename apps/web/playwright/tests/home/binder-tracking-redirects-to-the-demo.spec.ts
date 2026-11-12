@@ -2,7 +2,8 @@
 // visitor on the demo app at /demo, signed out, replacing the entry: browser Back
 // leaves the demo for where they came from instead of bouncing off the old address.
 // The old demo kept its side in the query: `?demo=on&side=inventory` lands on the
-// demo's Inventory (/demo/inventory), not on its dashboard with the side dropped.
+// demo's Inventory (/demo/inventory), not on its dashboard with the side dropped,
+// and the rest of the query goes along: an old `tab=pick` link opens the Pick List.
 // The demo's own depth is covered by demo-collection-and-inventory.
 import { test, expect, expectAccessible } from "../../support/fixtures";
 
@@ -36,5 +37,12 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByRole("banner").getByText("Neon Binder", { exact: true })).toBeVisible();
+
+    // An old deep link to a tab keeps the tab: the Pick List opens, not the cards.
+    await page.goto("/binder-tracking?demo=on&side=inventory&tab=pick");
+    await expect(page).toHaveURL(/\/demo\/inventory\?tab=pick$/);
+    await expect(
+      page.getByRole("region", { name: "Pick List" }).getByRole("heading", { level: 2, name: "Pick List" }),
+    ).toBeVisible();
   },
 );
