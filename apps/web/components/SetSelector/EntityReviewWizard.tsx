@@ -5525,6 +5525,11 @@ export default function EntityReviewWizard({
                                 <NeonButton
                                   key={holder.id}
                                   size="1"
+                                  // NEO-499 — the label is a team's name and era;
+                                  // a long one wraps inside the button instead of
+                                  // running out of the dialog. `min-h-6 py-1` is
+                                  // the same 24px on one line.
+                                  className="h-auto min-h-6 max-w-full py-1 wrap-anywhere"
                                   aria-disabled={busy ? true : undefined}
                                   onClick={() => {
                                     if (busy) return;

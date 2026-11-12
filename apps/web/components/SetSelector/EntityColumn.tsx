@@ -160,6 +160,18 @@ function customRefusal(
  */
 const BREADCRUMB_DEPTH = 2;
 
+/**
+ * NEO-499 — a size-2 NeonButton whose label IS a row's name (the pick-shared
+ * list). Radix fixes a button at 32px tall and never breaks a word, so a long
+ * unbroken name ran out of the column and off a 375px page. This lets it
+ * fill the column and grow taller to wrap, the house pattern NEO-424 set for
+ * the wizard's Link primary: `min-h-8 py-1.5` is the same 32px on one line,
+ * so a short name looks exactly as before. `wrap-anywhere`, not
+ * `break-words`, because only `anywhere` also shrinks the min-content width,
+ * so the token cannot widen the column it sits in.
+ */
+const NAME_BUTTON_WRAPS = "h-auto min-h-8 max-w-full py-1.5 text-left wrap-anywhere";
+
 function breadcrumbOf(
   chain: Array<{ value: string }> | undefined | null,
 ): string {
@@ -1369,7 +1381,9 @@ export default function EntityColumn({
     // typed one, or other rows' on "already exists"), never on the form, so a
     // long unbroken name breaks inside the column while the button labels
     // never break mid-word; the buttons in the `flex gap-2` rows are
-    // `shrink-0` so a squeezed row cannot narrow them either.
+    // `shrink-0` so a squeezed row cannot narrow them either. The one
+    // exception is the pick-shared list, whose buttons ARE names: those wrap
+    // inside their own border (NAME_BUTTON_WRAPS).
     <div
       className="bg-raised p-6 rounded-lg shadow"
       onKeyDown={(e) => {
@@ -1595,7 +1609,7 @@ export default function EntityColumn({
                 <NeonButton
                   variant="secondary"
                   ref={i === 0 ? confirmPrimaryRef : undefined}
-                  className={fieldClass(`btn-pick-shared-${i}`)}
+                  className={`${fieldClass(`btn-pick-shared-${i}`)} ${NAME_BUTTON_WRAPS}`}
                   aria-label={pickSharedLabel(match.label)}
                   onClick={() => handlePickShared(match)}
                   onKeyDown={(e) => activateOnEnter(e, () => handlePickShared(match))}
