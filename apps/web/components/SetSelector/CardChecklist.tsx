@@ -53,6 +53,8 @@ import ChecklistSourceFilter, {
 } from "./ChecklistSourceFilter";
 import CrossListingImportModal from "./CrossListingImportModal";
 import CardAttentionWalker from "./CardAttentionWalker";
+// NEO-497: the tidy-up dialogs name the set ("Tidy up 2024 Topps Chrome").
+import { tidyUpTitleFromChain } from "./WizardChrome";
 import SkippedNamesPanel from "./SkippedNamesPanel";
 import {
   isAwaitingTeamLookup,
@@ -778,6 +780,12 @@ export default function CardChecklist({
   const ancestorChain = useQuery(api.selectorOptions.getAncestorChain, {
     id: variantId,
   });
+  /**
+   * NEO-497 — "Tidy up 2024 Topps Chrome": the tidy-up dialogs (the
+   * pre-save wizard and the post-save walker) name the set they are tidying.
+   * The chain includes the leaf itself; "Tidy up this set" while it loads.
+   */
+  const tidyTitle = useMemo(() => tidyUpTitleFromChain(ancestorChain), [ancestorChain]);
   /**
    * NEO-345 — how this leaf's autographs are signed, when somebody has said.
    * NB data on the leaf (`features.autographFormat`); no marketplace knows.
@@ -4118,6 +4126,7 @@ export default function CardChecklist({
           // restoring to a detached node. This Sync button is always mounted.
           restoreFocusRef={syncButtonRef}
           onClose={closeAttentionWalker}
+          title={tidyTitle}
         />
       )}
 
@@ -4270,6 +4279,8 @@ export default function CardChecklist({
           // NEO-335 Phase 2 (C7): with no set-level team on this node, a long
           // teams step points at Set details instead.
           hasSetTeam={(variantRow?.teamIds?.length ?? 0) > 0}
+          // NEO-497: "Tidy up 2024 Topps Chrome", not "this set".
+          title={tidyTitle}
           // NEO-221 (D6): the whole account of what Confirm is about to do,
           // not just the card count. See `wizardSummary`.
           summary={wizardSummary}

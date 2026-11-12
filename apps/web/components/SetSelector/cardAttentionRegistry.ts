@@ -20,8 +20,8 @@ import UnreviewedNameFixer from "./UnreviewedNameFixer";
  *
  * `CardAttentionWalker` needs no change for either beyond the kind's place in
  * `WALK_RANK` and `WALK_SUBTITLE` below, which are `Record`s so the compiler
- * asks. It owns the queue, the dialog chrome ("Tidy up this set", "Step x of
- * y"), Skip and Close; a fixer owns one card's
+ * asks. It owns the queue, the dialog chrome ("Tidy up <the set>", "Step x
+ * of y"), Skip and Close; a fixer owns one card's
  * question, its own writes, and its own primary action. NEO-101 landed
  * `{ kind: "titleOverLimit"; length: number }`, `{ kind: "titleTruncated" }`
  * and `{ kind: "aspectValueOverLimit"; field: "cardVariation"; length: number }`
@@ -265,8 +265,8 @@ export function attentionWalkRank(items: AttentionItem[]): number {
 }
 
 /**
- * NEO-335 Phase 2 — the walker's subtitle: the screen type under "Tidy up this
- * set", one per QUESTION rather than one per kind, so the three title kinds
+ * NEO-335 Phase 2 — the walker's subtitle: the screen type under the "Tidy
+ * up <the set>" title, one per QUESTION rather than one per kind, so the three title kinds
  * share "Card titles" the way they share a fixer and a rank. The same words as
  * the entity review wizard's screens of the same type.
  *

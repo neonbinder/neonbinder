@@ -60,7 +60,7 @@ export type WizardStepKind =
   | "save";
 
 /**
- * The subtitle under "Tidy up this set", per screen type. Jason-approved copy,
+ * The subtitle under the "Tidy up <the set>" title, per screen type. Jason-approved copy,
  * except `autograph` (NEO-345), which is a placeholder awaiting his wording.
  */
 export const STEP_SUBTITLE: Readonly<Record<WizardStepKind, string>> = {

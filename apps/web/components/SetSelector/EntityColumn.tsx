@@ -160,6 +160,18 @@ function customRefusal(
  */
 const BREADCRUMB_DEPTH = 2;
 
+/**
+ * NEO-499 — a size-2 NeonButton whose label IS a row's name (the pick-shared
+ * list). Radix fixes a button at 32px tall and never breaks a word, so a long
+ * unbroken name ran out of the column and off a 375px page. This lets it
+ * fill the column and grow taller to wrap, the house pattern NEO-424 set for
+ * the wizard's Link primary: `min-h-8 py-1.5` is the same 32px on one line,
+ * so a short name looks exactly as before. `wrap-anywhere`, not
+ * `break-words`, because only `anywhere` also shrinks the min-content width,
+ * so the token cannot widen the column it sits in.
+ */
+const NAME_BUTTON_WRAPS = "h-auto min-h-8 max-w-full py-1.5 text-left wrap-anywhere";
+
 function breadcrumbOf(
   chain: Array<{ value: string }> | undefined | null,
 ): string {
@@ -1365,6 +1377,13 @@ export default function EntityColumn({
   // `custom-entry-survives-resync.yaml` asserts `text: "Custom"` positioned
   // rightOf a row, and a second match here is a resolution hazard.)
   const customForm = (
+    // NEO-499: `wrap-anywhere` sits only on the lines that quote a name (the
+    // typed one, or other rows' on "already exists"), never on the form, so a
+    // long unbroken name breaks inside the column while the button labels
+    // never break mid-word; the buttons in the `flex gap-2` rows are
+    // `shrink-0` so a squeezed row cannot narrow them either. The one
+    // exception is the pick-shared list, whose buttons ARE names: those wrap
+    // inside their own border (NAME_BUTTON_WRAPS).
     <div
       className="bg-raised p-6 rounded-lg shadow"
       onKeyDown={(e) => {
@@ -1422,14 +1441,14 @@ export default function EntityColumn({
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
+              className="p-2 mb-3 wrap-anywhere bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
           )}
           <div className="flex gap-2">
             <NeonButton
-              className={fieldClass("btn-add")}
+              className={`${fieldClass("btn-add")} shrink-0`}
               aria-label={addLabel}
               onClick={handleCustomSubmit}
               onKeyDown={(e) =>
@@ -1445,7 +1464,7 @@ export default function EntityColumn({
             </NeonButton>
             <NeonButton
               variant="negative"
-              className={fieldClass("btn-cancel")}
+              className={`${fieldClass("btn-cancel")} shrink-0`}
               aria-label={cancelLabel}
               onClick={closeCustomForm}
               onKeyDown={(e) => activateOnEnter(e, closeCustomForm)}
@@ -1458,12 +1477,12 @@ export default function EntityColumn({
 
       {customStage.kind === "confirm-create" && (
         <>
-          <p className={`text-sm ${rehomeSentence ? "mb-1" : "mb-3"}`}>
+          <p className={`text-sm wrap-anywhere ${rehomeSentence ? "mb-1" : "mb-3"}`}>
             {createSentence}
           </p>
           {rehomeSentence && (
             // Same dual-mode contrast as the other explanatory lines here.
-            <p className="text-xs text-ink-3 mb-3">
+            <p className="text-xs text-ink-3 mb-3 wrap-anywhere">
               {rehomeSentence}
             </p>
           )}
@@ -1471,7 +1490,7 @@ export default function EntityColumn({
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
+              className="p-2 mb-3 wrap-anywhere bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
@@ -1482,7 +1501,7 @@ export default function EntityColumn({
                 type → Enter → Enter. */}
             <NeonButton
               ref={confirmPrimaryRef}
-              className={fieldClass("btn-confirm-create")}
+              className={`${fieldClass("btn-confirm-create")} shrink-0`}
               aria-label={confirmCreateLabel}
               onClick={() => void runCreate(customStage.value, false)}
               onKeyDown={(e) =>
@@ -1498,7 +1517,7 @@ export default function EntityColumn({
             </NeonButton>
             <NeonButton
               variant="secondary"
-              className={fieldClass("btn-confirm-back")}
+              className={`${fieldClass("btn-confirm-back")} shrink-0`}
               aria-label={backToInputLabel}
               onClick={backToInput}
               onKeyDown={(e) => activateOnEnter(e, backToInput, creating)}
@@ -1512,7 +1531,7 @@ export default function EntityColumn({
 
       {customStage.kind === "confirm-exists" && firstMatch && (
         <>
-          <p className="text-sm mb-1">{existsSentence}</p>
+          <p className="text-sm mb-1 wrap-anywhere">{existsSentence}</p>
           {otherMatchCount > 0 && (
             // Same dual-mode contrast fix as the "Checking…" status line above.
             <p className="text-xs text-ink-3 mb-2">
@@ -1528,7 +1547,7 @@ export default function EntityColumn({
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
+              className="p-2 mb-3 wrap-anywhere bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
@@ -1580,7 +1599,7 @@ export default function EntityColumn({
 
       {customStage.kind === "pick-shared" && (
         <>
-          <p className="text-sm mb-2">{sharedSentence}</p>
+          <p className="text-sm mb-2 wrap-anywhere">{sharedSentence}</p>
           {/* One button per row, never a pre-picked default: the first in list
               order is exactly the coin flip this stage exists to stop. Focus
               lands on the first only so the keyboard has somewhere to start. */}
@@ -1590,7 +1609,7 @@ export default function EntityColumn({
                 <NeonButton
                   variant="secondary"
                   ref={i === 0 ? confirmPrimaryRef : undefined}
-                  className={fieldClass(`btn-pick-shared-${i}`)}
+                  className={`${fieldClass(`btn-pick-shared-${i}`)} ${NAME_BUTTON_WRAPS}`}
                   aria-label={pickSharedLabel(match.label)}
                   onClick={() => handlePickShared(match)}
                   onKeyDown={(e) => activateOnEnter(e, () => handlePickShared(match))}
@@ -1908,13 +1927,17 @@ export default function EntityColumn({
       {toast && (
         // SetAttributesPanel's pattern verbatim (NEO-47): fixed in the viewport,
         // because a background sync can land while this column is scrolled well
-        // off-screen and an in-flow banner would announce to nobody.
-        <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-raised-deep border border-notice-warn-rule rounded text-xs text-notice-warn-ink shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          {toast}
+        // off-screen and an in-flow banner would announce to nobody. NEO-499:
+        // the panel's wrapper too, so a long unbroken name wraps inside the
+        // viewport's 1rem gutters instead of in a half-width box.
+        <div className="pointer-events-none fixed inset-x-4 top-20 z-50 flex flex-col items-center">
+          <div
+            className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-notice-warn-rule rounded text-xs text-notice-warn-ink shadow-lg"
+            role="status"
+            aria-live="polite"
+          >
+            {toast}
+          </div>
         </div>
       )}
     </div>

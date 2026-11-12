@@ -326,7 +326,7 @@ test(
     const saved = page.getByText(/Saved [1-9][0-9]* cards?/);
     await expect(wizard.or(saved).first()).toBeVisible({ timeout: WIZARD_OPENS });
     if (await wizard.isVisible()) {
-      await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard, 2014 Topps Football" });
+      await expectAccessible(page, { within: wizard, label: "Tidy-up wizard, 2014 Topps Football" });
       // The names are not this spec's claim: skip every one in one press,
       // lookups included, creating nothing. The batch can still grow after the
       // wizard opens (a Wikidata career history stages teams), leaving one row

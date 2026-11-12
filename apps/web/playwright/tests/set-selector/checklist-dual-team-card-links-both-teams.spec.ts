@@ -167,7 +167,7 @@ test(
     // behind the card write (the flow's 60 s, a live round trip).
     await expect(wizard.or(saved).first()).toBeVisible({ timeout: WIZARD_OPENS });
     if (await wizard.isVisible()) {
-      await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard" });
+      await expectAccessible(page, { within: wizard, label: "Tidy-up wizard" });
 
       // Wait out the lookups first: team rows go through the same Wikidata pool
       // as players and are presented only once settled, so draining earlier

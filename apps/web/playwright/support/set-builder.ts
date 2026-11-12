@@ -265,6 +265,14 @@ export interface DrillTarget {
   expectSets?: boolean;
 }
 
+/** `drillToSet`'s ancestors when the caller names none. */
+export const DRILL_DEFAULTS = {
+  sport: "Baseball",
+  year: "2024",
+  manufacturer: "Topps",
+  set: "Topps Chrome",
+} as const;
+
 /** Variant types sync live on a set's first visit (the flow's 60 s). */
 export const VARIANT_TYPES_SYNC = 60_000;
 
@@ -275,10 +283,10 @@ export const VARIANT_TYPES_SYNC = 60_000;
  */
 export async function drillToSet(page: Page, env: FlowEnv, target: DrillTarget = {}): Promise<void> {
   const {
-    sport = "Baseball",
-    year = "2024",
-    manufacturer = "Topps",
-    set = "Topps Chrome",
+    sport = DRILL_DEFAULTS.sport,
+    year = DRILL_DEFAULTS.year,
+    manufacturer = DRILL_DEFAULTS.manufacturer,
+    set = DRILL_DEFAULTS.set,
     createManufacturer = false,
   } = target;
 
