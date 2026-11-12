@@ -83,9 +83,9 @@ describe("the Pick List demo", () => {
     expect(chip.textContent).toBe("Not in NB. NB doesn't have this copy. Go by the listing.");
     expect(within(row).queryByText("Unmatched")).toBeNull();
     expect(within(row).getAllByText("#302").length).toBeGreaterThan(0);
-    // The listing said Base, so the Base chip; and its next step stays under the variant.
+    // The listing said Base, so the Base tag. NEO-522: no note under it; the chip already says where to look.
     expect(within(row).getAllByText("Base", { exact: true }).length).toBeGreaterThan(0);
-    expect(within(row).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
+    expect(within(row).queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
     // Under the 2024 Score divider, before that set's insert, not in Can't find it.
     const group = row.closest("tbody")!;
     expect(within(group).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
@@ -111,7 +111,11 @@ describe("the Pick List demo", () => {
     renderPick();
     const trout = await screen.findByRole("button", { name: /^Pulled #27 Mike Trout/ });
     expect(trout.getAttribute("aria-pressed")).toBe("false");
-    fireEvent.click(trout.closest("tr")!.querySelectorAll("td")[4]);
+    // A click on the name's cell (the wide screen's Player column) pulls the row.
+    const name = within(trout.closest("tr")!)
+      .getAllByText("Mike Trout")
+      .find((el) => !el.closest("button"))!;
+    fireEvent.click(name);
     expect(trout.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Pulled #27 Mike Trout.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
@@ -279,6 +283,114 @@ describe("the Pick List demo", () => {
     expect(more.getAttribute("aria-expanded")).toBe("true");
     fireEvent.change(screen.getByRole("combobox", { name: "Sport" }), { target: { value: screen.getByRole("option", { name: "Hockey" }).getAttribute("value") } });
     expect(screen.getByRole("button", { name: "More filters (1 on)" })).toBeTruthy();
+  });
+});
+
+describe("NEO-522: a row read from across the room", () => {
+  /** The row's own words, outside the card picture (whose face prints the team). */
+  const rowWords = (row: HTMLElement) =>
+    [...row.querySelectorAll("td")]
+      .filter((td) => !td.querySelector(".nb-pick-thumb"))
+      .map((td) => td.textContent)
+      .join(" ");
+  const rowOf = async (name: RegExp) => (await screen.findByRole("button", { name })).closest("tr")!;
+
+  it("drops the team line: the card's picture carries it", async () => {
+    renderPick();
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    expect(within(trout).getAllByText("Mike Trout").length).toBeGreaterThan(0);
+    expect(rowWords(trout)).not.toContain("Angels");
+  });
+
+  it("tags each row with its variant's own name in its divider's colour, the kind read out first", async () => {
+    renderPick();
+    const tagOf = (row: HTMLElement, text: string) => within(row).getAllByText(text, { exact: true })[0].parentElement!;
+
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    const base = tagOf(trout, "Base");
+    expect(base.textContent).toBe("Base");
+    expect(base.getAttribute("title")).toBe("Base");
+    expect(base.className).toContain("bg-variant-base");
+
+    const ohtani = await rowOf(/^Pulled #8B-7 Shohei Ohtani/);
+    const insert = tagOf(ohtani, "8 Bit Ballers");
+    expect(insert.textContent).toBe("Insert: 8 Bit Ballers");
+    expect(insert.getAttribute("title")).toBe("Insert: 8 Bit Ballers");
+    expect(insert.className).toContain("bg-variant-insert");
+    // The generic word is gone from the row: the name replaces it.
+    expect(within(ohtani).queryByText("Insert", { exact: true })).toBeNull();
+
+    const schlittler = await rowOf(/^Pulled #111 Cam Schlittler/);
+    expect(tagOf(schlittler, "Gold Foil").textContent).toBe("Parallel: Gold Foil");
+    const judge = await rowOf(/^Pulled #8B-12 Aaron Judge/);
+    expect(tagOf(judge, "8 Bit Ballers Red").textContent).toBe("Insert parallel: 8 Bit Ballers Red");
+    // A long name wraps to two lines and trims, never pushing the row wider.
+    expect(within(judge).getAllByText("8 Bit Ballers Red", { exact: true })[0].className).toContain("line-clamp-2");
+    // The serial stays with the copy's details, not the tag.
+    expect(within(schlittler).getAllByText("1187/2026").length).toBeGreaterThan(0);
+  });
+
+  it("puts the tags on the name's line, never a line of their own", async () => {
+    renderPick();
+    const judge = await rowOf(/^Pulled #8B-12 Aaron Judge/);
+    const lastOnes = within(judge).getAllByText("Last ones", { exact: true })[0];
+    const name = within(judge)
+      .getAllByText("Aaron Judge", { exact: true })
+      .find((el) => !el.closest("button"))!;
+    // One line: the name and the tags share a parent.
+    expect(lastOnes.closest("span.flex-wrap")!.parentElement).toBe(name.parentElement);
+  });
+
+  it("rules a heavier line in the next variant's colour where the variant changes inside a set, a thin one elsewhere", async () => {
+    renderPick();
+    const firstCell = async (name: RegExp) => [...(await rowOf(name)).querySelectorAll("td")][0];
+    // 2026 Topps Series 1 walks Base (#27, #150), Gold Foil, 8 Bit Ballers, 8 Bit Ballers Red.
+    expect((await firstCell(/^Pulled #27 Mike Trout/)).className).toContain("border-rule");
+    expect((await firstCell(/^Pulled #27 Mike Trout/)).className).not.toContain("border-b-[3px]");
+    const skenes = (await firstCell(/^Pulled #150 Paul Skenes/)).className;
+    expect(skenes).toContain("border-b-[3px]");
+    expect(skenes).toContain("border-b-variant-parallel-rule");
+    expect((await firstCell(/^Pulled #111 Cam Schlittler/)).className).toContain("border-b-variant-insert-rule");
+    expect((await firstCell(/^Pulled #8B-7 Shohei Ohtani/)).className).toContain("border-b-variant-insert-parallel-rule");
+    // The set's last row: the next divider's own rule takes over.
+    expect((await firstCell(/^Pulled #8B-12 Aaron Judge/)).className).not.toContain("border-b-[3px]");
+    // Every cell of the row carries it, so the rule runs the row's full width.
+    const cells = [...(await rowOf(/^Pulled #150 Paul Skenes/)).querySelectorAll("td")];
+    expect(cells.every((td) => td.className.includes("border-b-variant-parallel-rule"))).toBe(true);
+  });
+
+  it("draws no variant rule in a flat run sorted by a column", async () => {
+    renderPick(`${PICK_URL}&psort=player`);
+    const cells = [...(await rowOf(/^Pulled #150 Paul Skenes/)).querySelectorAll("td")];
+    expect(cells.some((td) => td.className.includes("border-b-[3px]"))).toBe(false);
+  });
+
+  it("keeps the box the size of the text, the button around it the target", async () => {
+    renderPick();
+    const toggle = await screen.findByRole("button", { name: /^Pulled #27 Mike Trout/ });
+    // A phone's 44px target, 32px with a mouse; the box inside stays 20px.
+    expect(toggle.className).toContain("size-11");
+    expect(toggle.className).toContain("md:size-8");
+    const box = toggle.querySelector("span[aria-hidden='true']")!;
+    expect(box.className).toContain("size-5");
+  });
+
+  it("names the Variant column and keeps Set and Serial sorting", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    expect(within(table).getByRole("columnheader", { name: "Variant" })).toBeTruthy();
+    fireEvent.click(within(table).getByRole("button", { name: "Serial" }));
+    expect(pageUrl().get("psort")).toBe("detail");
+    fireEvent.click(within(table).getByRole("button", { name: "Set" }));
+    expect(pageUrl().get("psort")).toBe("set");
+  });
+
+  it("drops the couldn't-match note from a sale filed with its set, and keeps Can't find it's reason", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    expect(screen.queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
+    const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
+    expect(within(witt).getAllByText("NB has no 2026 Topps Heritage checklist yet.").length).toBeGreaterThan(0);
   });
 });
 

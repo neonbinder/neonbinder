@@ -86,6 +86,29 @@ export function pictureButton(scope: Locator, row: string): Locator {
 }
 
 /**
+ * NEO-522: a row's variant tag, between its picture and its number: the
+ * variant's own name ("8 Bit Ballers"; "Base" on a base row), titled with its
+ * kind when the name does not say it ("Insert: 8 Bit Ballers"), which a
+ * screen reader hears first. Only the copy in view (`seen`).
+ */
+export function variantTag(row: Locator, name: string, kind?: string): Locator {
+  return seen(row.getByTitle(kind ? `${kind}: ${name}` : name, { exact: true }));
+}
+
+/**
+ * NEO-522: the cell that names the row's player, the copy in view: the wide
+ * screen's Player column (the name, then its tags, and no team: the card's
+ * picture carries it) or a phone's one Card cell, which leads with the
+ * variant tag and the number (`Base #27 Mike Trout …`). `lead` is that
+ * phone lead ("Base #27"). Never the picture's cell, whose name is "Bigger
+ * picture of …".
+ */
+export function nameCell(row: Locator, player: string, lead: string): Locator {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s*");
+  return seen(row.getByRole("cell", { name: new RegExp(`^(${escape(lead)}\\s*)?${escape(player)}`) }));
+}
+
+/**
  * Opens "More filters" on a phone (Order, Sport, Year, Type and Condition
  * live under it); a wide screen shows them inline and has no such button.
  */

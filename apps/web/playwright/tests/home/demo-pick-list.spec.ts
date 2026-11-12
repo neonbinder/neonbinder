@@ -4,10 +4,14 @@
 //   - the pick order: Can't find it on top, one divider per set under its
 //     sport (sports A-Z, newest year first), "Sold since you started" last;
 //     a sale NB could not tie to a card but the listing describes (NEO-509)
-//     sits inline under its set, marked "Not in NB", not under Can't find it;
-//     each row says its variant in words (Base, Parallel, Insert, Insert
-//     parallel), its markers (Last ones, Short 1, New), and the same card sold
-//     on two orders is one ×2 row naming both;
+//     sits inline under its set, marked "Not in NB", not under Can't find it,
+//     with no "couldn't match" note under it (NEO-522);
+//   - each row reads from a few feet away (NEO-522): its variant is a tag with
+//     the variant's own name (Base, Gold Foil, 8 Bit Ballers, 8 Bit Ballers
+//     Red), its kind read out first; the name stands alone (no team line: the
+//     card's picture carries it), its markers (Last ones, Short 1, New) on the
+//     same line; a heavier rule marks where the variant changes inside a set;
+//     and the same card sold on two orders is one ×2 row naming both;
 //   - sorting by a column and filtering (an Order pick, the quick filters, "Only
 //     not in NB" among them), and Back to default undoing them;
 //   - marking a row pulled with a click and with Space, Undo, and "Pull these
@@ -28,6 +32,7 @@ import { test, expect, expectAccessible } from "../../support/fixtures";
 import {
   filterBy,
   openMoreFilters,
+  nameCell,
   pickGroup,
   pickList,
   pickRow,
@@ -35,6 +40,7 @@ import {
   pulledToggle,
   seen,
   sortBy,
+  variantTag,
 } from "../../support/pick-list";
 
 // The demo's sheet: 30 copies across 28 sale lines (demoPickStore.tsx).
@@ -103,15 +109,50 @@ test(
     await expect(table.getByRole("rowheader", { name: "Hockey 2023-24 Upper Deck Series 1 2 cards", exact: true })).toBeVisible();
     await expect(table.getByRole("rowheader", { name: "Non-Sport 2024 Topps Garbage Pail Kids 2 cards", exact: true })).toBeVisible();
 
-    // The variant is written out, never colour alone.
-    await expect(seen(pickRow(table, TROUT).getByText("Base", { exact: true }))).toBeVisible();
-    await expect(seen(pickRow(table, SCHLITTLER).getByText("Parallel", { exact: true }))).toBeVisible();
-    await expect(seen(pickRow(table, OHTANI_INSERT).getByText("Insert", { exact: true }))).toBeVisible();
-    await expect(seen(pickRow(table, JUDGE).getByText("Insert parallel", { exact: true }))).toBeVisible();
+    // NEO-522: the variant is a tag with its own name, never colour alone; a screen
+    // reader hears the kind first when the name does not say it.
+    await expect(variantTag(pickRow(table, TROUT), "Base")).toHaveText("Base");
+    await expect(variantTag(pickRow(table, SCHLITTLER), "Gold Foil", "Parallel")).toHaveText("Parallel: Gold Foil");
+    await expect(variantTag(pickRow(table, OHTANI_INSERT), "8 Bit Ballers", "Insert")).toHaveText("Insert: 8 Bit Ballers");
+    await expect(variantTag(pickRow(table, JUDGE), "8 Bit Ballers Red", "Insert parallel")).toHaveText(
+      "Insert parallel: 8 Bit Ballers Red",
+    );
+    // The generic word is gone: the name replaced it.
+    await expect(seen(pickRow(table, OHTANI_INSERT).getByText("Insert", { exact: true }))).toHaveCount(0);
+    if (isMobile) {
+      // A phone folds every column into one cell, the tag leading it.
+      await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toBeHidden();
+    } else {
+      await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toBeVisible();
+    }
 
-    // Markers: the sale took the last copies; NB held one fewer than sold.
+    // NEO-522: no team line; the card's picture carries it. The name stands alone.
+    const troutName = nameCell(pickRow(table, TROUT), "Mike Trout", "Base #27");
+    await expect(troutName).toHaveCount(1);
+    await expect(troutName).not.toContainText("Angels");
+    if (!isMobile) await expect(troutName).toHaveAccessibleName("Mike Trout");
+
+    // Markers: the sale took the last copies; NB held one fewer than sold. They ride the
+    // name's line: the name's cell carries them (NEO-522).
     await expect(seen(pickRow(table, JUDGE).getByText("Last ones", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(table, FIELDS).getByText("Short 1", { exact: true }))).toBeVisible();
+    await expect(nameCell(pickRow(table, JUDGE), "Aaron Judge", "Insert parallel: 8 Bit Ballers Red #8B-12")).toContainText(
+      "Last ones",
+    );
+
+    // NEO-522: where the variant changes inside a set, a heavier rule (3px) runs under the
+    // run's last row; rows of one variant keep the thin divider. 2026 Topps Series 1 walks
+    // Base (#27, #150), then Gold Foil, 8 Bit Ballers and 8 Bit Ballers Red.
+    const ruleUnder = (row: string) => pickRow(table, row).getByRole("cell").first();
+    await expect(ruleUnder(TROUT)).toHaveCSS("border-bottom-width", "1px");
+    await expect(ruleUnder(SKENES)).toHaveCSS("border-bottom-width", "3px");
+    await expect(ruleUnder(SCHLITTLER)).toHaveCSS("border-bottom-width", "3px");
+    await expect(ruleUnder(OHTANI_INSERT)).toHaveCSS("border-bottom-width", "3px");
+    // The set's last row: the next divider's own rule takes over.
+    await expect(ruleUnder(JUDGE)).toHaveCSS("border-bottom-width", "1px");
+    // In the variant's own colour: Gold Foil's rule is not Base's thin grey line.
+    const colourOf = (row: string) => ruleUnder(row).evaluate((td) => getComputedStyle(td).borderBottomColor);
+    expect(await colourOf(SKENES)).not.toBe(await colourOf(TROUT));
 
     // The same card in the same condition on two orders is ONE row: ×2, both orders.
     await expect(pulledToggle(table, SKENES)).toHaveCount(1);
@@ -140,6 +181,8 @@ test(
     await expect(seen(pickRow(score, NABERS).getByTitle("NB doesn't have this copy. Go by the listing.", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("Malik Nabers", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("#302", { exact: true }))).toBeVisible();
+    // NEO-522: no "couldn't match" note on screen; the chip says where to look (paper keeps it, below).
+    await expect(pickRow(score, NABERS).getByText("NB couldn't match this line. Check the order's photo.")).toHaveCount(0);
     await expect(pulledToggle(pickGroup(table, "Can't find it"), NABERS)).toHaveCount(0);
     await expect(seen(pickRow(score, LATHAM).getByText("Not in NB", { exact: true }))).toHaveCount(0);
     // Can't find it keeps no chip: its heading already says as much.
@@ -206,7 +249,7 @@ test(
     await expect(trout).toHaveAttribute("aria-pressed", "false");
     // The cell that names the player (the wide "Player" column, or a phone's
     // one "Card" cell), not the thumbnail, whose card face prints the name too.
-    const troutCell = pickRow(table, TROUT).getByRole("cell", { name: /^(#27 )?Mike Trout/ });
+    const troutCell = nameCell(pickRow(table, TROUT), "Mike Trout", "Base #27");
     if (isMobile) {
       // A phone pulls only on the check box: a tap on the row is a scroll, not a pull.
       await troutCell.tap();

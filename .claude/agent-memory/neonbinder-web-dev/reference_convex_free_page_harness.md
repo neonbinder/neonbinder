@@ -31,3 +31,16 @@ and `history.replaceState(null, "", BASE + start)` before render, so in-app
 Links change the real URL. One harness can then mount several routes,
 Convex-backed ones under the 3-method fake client from
 [[visual-harness-fake-convex-client]] (PrintLayout's four queries return null/[]).
+
+**Out-of-tree variant (NEO-522, shared worktree):** keep every harness file in
+the scratchpad, none beside the page. A Vite config there with `root: <apps/web>`,
+plugins imported by ABSOLUTE path (`<apps/web>/node_modules/vite/dist/node/index.js`,
+`@vitejs/plugin-react/dist/index.js`, `@tailwindcss/vite/dist/index.mjs`; bare
+names do not resolve from the scratchpad), `resolve.alias` `/^\/src\/main\.tsx$/`
+→ the scratch `harness.tsx` (index.html's entry then mounts the harness) plus
+`"@"` → apps/web, and `server.fs.allow` both dirs. Symlink
+`<scratch>/node_modules` → apps/web's, or the harness's own `react` import fails.
+A second config rooted at `main/apps/web` (its own node_modules symlink, or two
+Reacts) gives a before/after baseline at the same widths. For table layouts,
+measure `scrollWidth` and each `th` width at 768/800/1024/1280: `w-full` on one
+auto-layout column squeezes every other column to min-content.

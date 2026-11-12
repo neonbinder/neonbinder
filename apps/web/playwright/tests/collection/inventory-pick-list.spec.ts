@@ -8,6 +8,10 @@
 //   - A is marked "Last ones" (the sale took the box's only copy) and "Short 1"
 //     (it sold two), and its bigger picture is the photo of the very copy sold;
 //   - B is a plain row; the stray line waits under "Can't find it";
+//   - NEO-522: each row's variant is a tag with its own name ("Base"), its name
+//     stands alone (no team line: the card's picture carries it) with its
+//     markers on the same line, and the described line carries no "couldn't
+//     match" note (its Not in NB chip says where to look);
 //   - the described line (#208) is filed inside the 2024 Topps Chrome group
 //     between A (#205) and B (#211), wears a "Not in NB" chip and its own
 //     words, and is pulled, put back and pulled like any other row; the
@@ -64,6 +68,7 @@ import {
   bscOrder,
   filterBy,
   listedLine,
+  nameCell,
   pickGroup,
   pickList,
   pickRow,
@@ -73,6 +78,7 @@ import {
   seen,
   shipPickOrder,
   unmatchedLine,
+  variantTag,
 } from "../../support/pick-list";
 
 /** Two 2024 Topps Chrome Base cards no other spec puts in a box (SET-REGISTRY.md). */
@@ -189,6 +195,16 @@ test(
       await expect(seen(rowB.getByText(bscOrder(first), { exact: true }))).toBeVisible();
       await expect(seen(rowB.getByText("Last ones", { exact: true }))).toHaveCount(0);
       await expect(seen(rowB.getByText(/^Short \d/))).toHaveCount(0);
+      // NEO-522: the variant is a tag with its own name, between the picture and the number.
+      await expect(variantTag(rowA, "Base")).toHaveText("Base");
+      await expect(variantTag(rowB, "Base")).toHaveText("Base");
+      // The name stands alone: no team line under it (the card's picture carries the team),
+      // and A's markers ride the name's own line, in the same cell.
+      const nameB = nameCell(rowB, "Owen White", `Base #${CARD_B.no}`);
+      await expect(nameB).toHaveCount(1);
+      if (!isMobile) await expect(nameB).toHaveAccessibleName("Owen White");
+      // A sold two: a phone's one cell leads with the ×2 chip.
+      await expect(nameCell(rowA, "Shea Langeliers", `×2 copies Base #${CARD_A.no}`)).toContainText("Last ones");
       // Can't find it holds two lines: the stray (it says nothing) and the one with players but
       // no card number (too little to file), each with why.
       const cantFind = pickGroup(table, "Can't find it");
@@ -232,6 +248,8 @@ test(
       await expect(seen(rowListed.getByTitle(notInNbWhy, { exact: true }))).toBeVisible();
       await expect(seen(rowListed.getByText(listedPlayers, { exact: true }))).toBeVisible();
       await expect(seen(rowListed.getByText(`#${LISTED_NO}`, { exact: true }))).toBeVisible();
+      // NEO-522: no "couldn't match" note on a line filed with its set; the chip's title says where to look.
+      await expect(rowListed.getByText("NB couldn't match this line. Check the order's photo.")).toHaveCount(0);
       // A matched row wears no such chip.
       await expect(seen(rowB.getByText("Not in NB", { exact: true }))).toHaveCount(0);
       await expectAccessible(page, { label: "Pick List, one order to pull, a described line filed in its set, a no-number line in Can't find it" });
