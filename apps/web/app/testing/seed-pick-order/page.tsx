@@ -4,8 +4,11 @@ import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 
 // Test-only seed hop (NEO-500). An E2E spec visits
-//   /testing/seed-pick-order?order=<orderNo>&box=<box name>&cards=<no>:<qty>,<no>:<qty>[&bad=1]&redirect=<final>
-// to record and apply a BuySportsCards order over the caller's named box, or
+//   /testing/seed-pick-order?order=<orderNo>&box=<box name>&cards=<no>:<qty>,<no>:<qty>[&bad=1][&listed=<no>:<players>]...&redirect=<final>
+// to record and apply a BuySportsCards order over the caller's named box
+// (each `listed`, up to 3, repeated, adds one line NB cannot match that
+// describes card <no> by <players> in the first card's set, NEO-509; an empty
+// <no>, `listed=:<players>`, describes the card with no card number), or
 //   /testing/seed-pick-order?order=<orderNo>&ship=1&redirect=<final>
 // to mark that order shipped. This page waits for the Convex client to pick
 // up the Clerk session, calls the auth-scoped seedMyTestPickOrder mutation
@@ -32,6 +35,27 @@ function parseCards(raw: string | null): Array<{ cardNumber: string; quantity: n
   return out.length > 0 ? out : null;
 }
 
+type ListedLine = { cardNumber?: string; players: string };
+
+/**
+ * `["208:Listed Player", ":Other Player"]` →
+ * `[{cardNumber:"208",players:"Listed Player"},{players:"Other Player"}]`: the
+ * text before the first ":" is the card number (empty = none), the rest the
+ * players (required). Null when any entry is malformed.
+ */
+function parseListed(raws: readonly string[]): ListedLine[] | null {
+  const out: ListedLine[] = [];
+  for (const raw of raws) {
+    const at = raw.indexOf(":");
+    if (at < 0) return null;
+    const cardNumber = raw.slice(0, at).trim();
+    const players = raw.slice(at + 1).trim();
+    if (!players) return null;
+    out.push(cardNumber ? { cardNumber, players } : { players });
+  }
+  return out;
+}
+
 export default function TestingSeedPickOrderPage() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const seed = useMutation(api.testing.seedMyTestPickOrder);
@@ -44,6 +68,9 @@ export default function TestingSeedPickOrderPage() {
   const boxName = searchParams.get("box");
   const cardsParam = searchParams.get("cards");
   const badLine = searchParams.get("bad") === "1";
+  // Repeated params; joined into one stable string so the effect does not
+  // re-run on every render for a fresh array.
+  const listedParams = JSON.stringify(searchParams.getAll("listed"));
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 
@@ -62,6 +89,11 @@ export default function TestingSeedPickOrderPage() {
       setStatus("Missing or malformed ?box= / ?cards= parameter.");
       return;
     }
+    const listedLines = parseListed(JSON.parse(listedParams) as string[]);
+    if (!listedLines) {
+      setStatus("Malformed ?listed= parameter (want <no>:<players>, or :<players> for no number).");
+      return;
+    }
     if (isLoading) return;
     if (!isAuthenticated) {
       setStatus("Waiting for authentication...");
@@ -76,7 +108,13 @@ export default function TestingSeedPickOrderPage() {
           await seed({ orderNo, ship: true });
         } else {
           setStatus(`Seeding order ${orderNo}...`);
-          const result = await seed({ orderNo, boxName: boxName ?? "", cards: cards ?? [], badLine });
+          const result = await seed({
+            orderNo,
+            boxName: boxName ?? "",
+            cards: cards ?? [],
+            badLine,
+            ...(listedLines.length > 0 ? { listedLines } : {}),
+          });
           setStatus(`Seeded order ${orderNo}: ${result.applied} of ${result.lines} lines applied.`);
         }
         navigate(redirect);
@@ -84,7 +122,7 @@ export default function TestingSeedPickOrderPage() {
         setStatus(`Error: ${e instanceof Error ? e.message : JSON.stringify(e)}`);
       }
     })();
-  }, [badLine, boxName, cardsParam, isAuthenticated, isLoading, navigate, orderNo, redirect, seed, ship]);
+  }, [badLine, boxName, cardsParam, isAuthenticated, isLoading, listedParams, navigate, orderNo, redirect, seed, ship]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-surface">

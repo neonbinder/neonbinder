@@ -4,7 +4,8 @@
  *
  * `parseBscOrder` reads a `GET seller/order/{orderId}` payload. It keeps the
  * order's ids, date, status, totals and, per item, the BSC card id, condition,
- * quantity, unit price and seller SKU. Everything about the buyer and the
+ * quantity, unit price and seller SKU, plus (NEO-509) the card's description
+ * words and BSC's sport id (`BscListedCard`). Everything about the buyer and the
  * seller (names, emails, addresses, Stripe and payment ids, shipments,
  * tracking) is dropped here, at the boundary: none of it is ever stored.
  *
@@ -70,6 +71,25 @@ export function parseBscDate(value: unknown): number | null {
 
 // ── Orders ─────────────────────────────────────────────────────────────────
 
+/**
+ * NEO-509 — the card a line describes, as BSC listed it: the words on
+ * `orderItems[i].card` plus the item-level `sportId` (BSC's sport id, e.g.
+ * "football", which is what a sport row's `platformData.bsc` slot holds).
+ * Display text for the Pick List and one id to resolve at the sync boundary;
+ * never NB data. Each field is present only when BSC sent a readable value
+ * within `BSC_LISTED_BOUNDS`.
+ */
+export interface BscListedCard {
+  sport?: string;
+  platformSportId?: string;
+  year?: string;
+  setName?: string;
+  players?: string;
+  cardNo?: string;
+  variant?: string;
+  variantName?: string;
+}
+
 export interface BscOrderItem {
   bscCardId: string;
   condition: string;
@@ -80,6 +100,8 @@ export interface BscOrderItem {
   /** Unit price, integer cents. */
   priceCents: number | null;
   sellerSku: string | null;
+  /** NEO-509 — the card's description; null when BSC sent nothing readable. */
+  listed: BscListedCard | null;
 }
 
 export interface BscOrderTotals {
@@ -136,6 +158,76 @@ function bounded(value: unknown, max: number): string | null | undefined {
   return s.length > max ? undefined : s;
 }
 
+/**
+ * NEO-509 — the longest description values NB keeps per line. Unlike
+ * `BSC_ORDER_BOUNDS`, a value past its bound drops THAT field only: the line
+ * stays readable (it still sold), it just names less. Never truncated.
+ */
+export const BSC_LISTED_BOUNDS = {
+  sport: 32,
+  platformSportId: 32,
+  year: 16,
+  setName: 120,
+  players: 160,
+  cardNo: 32,
+  variant: 32,
+  variantName: 120,
+} as const;
+
+/**
+ * Characters that make a value not display text: C0 and C1 controls (tab and
+ * newline included), and the Unicode format characters that change how text
+ * around them reads without showing themselves. A U+202E inside a card number
+ * or set name can visually reorder what a seller reads on the Pick List or the
+ * print sheet, so they pull the wrong card. Matched:
+ * - U+200B–U+200F zero-width space/joiners and the LRM/RLM marks,
+ * - U+2028, U+2029 line and paragraph separators,
+ * - U+202A–U+202E bidi embeddings and overrides,
+ * - U+2060 word joiner,
+ * - U+2066–U+2069 bidi isolates,
+ * - U+FEFF zero-width no-break space (byte-order mark).
+ */
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
+
+/**
+ * A trimmed display string within `max`; null when absent, blank, carrying a
+ * control or format character (`CONTROL_CHARS`) or too long. Exported so the
+ * store re-checks a projected description by the same rule
+ * (`listingSales.storedListed`).
+ */
+export function bscListedText(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  if (s === "" || s.length > max || CONTROL_CHARS.test(s)) return null;
+  return s;
+}
+
+/**
+ * The card description on one order item. Reads ONLY the named keys of
+ * `item.card` (`sport`, `year`, `setName`, `players`, `cardNo`, `variant`,
+ * `variantName`) and the item's `sportId`; never image paths, prices or
+ * seller fields. A year BSC sends as an integer is read as its digits.
+ */
+function narrowListed(item: Record<string, unknown>): BscListedCard | null {
+  const card = isRecord(item.card) ? item.card : {};
+  const rawYear = typeof card.year === "number" && Number.isInteger(card.year) ? String(card.year) : card.year;
+  const out: BscListedCard = {};
+  const put = (key: keyof BscListedCard, value: unknown) => {
+    const s = bscListedText(value, BSC_LISTED_BOUNDS[key]);
+    if (s !== null) out[key] = s;
+  };
+  put("sport", card.sport);
+  put("platformSportId", item.sportId);
+  put("year", rawYear);
+  put("setName", card.setName);
+  put("players", card.players);
+  put("cardNo", card.cardNo);
+  put("variant", card.variant);
+  put("variantName", card.variantName);
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 function narrowOrderItem(value: unknown): BscOrderItem | null {
   if (!isRecord(value)) return null;
   const card = isRecord(value.card) ? value.card : null;
@@ -159,6 +251,7 @@ function narrowOrderItem(value: unknown): BscOrderItem | null {
     quantity,
     priceCents: bscDollarsToCents(value.price),
     sellerSku,
+    listed: narrowListed(value),
   };
 }
 

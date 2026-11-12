@@ -57,3 +57,4 @@
 - [Commit prelude walks teams before players](commit-prelude-walks-teams-before-players.md) — team row picked from the card's player must be a decided review row, not a commit-time inference (NEO-490)
 - [Pairing modal absorbs only teams](checklist-pairing-modal-absorbs-only-teams.md) — post-stream answers apply to PairingResult cards client-side, not candidate rows (NEO-490)
 - [Publisher checklist is a Match Cards source](publisher-checklist-is-a-match-cards-source.md) — third column in CardPairingModal; rows discardable, marketplace cards never (NEO-490)
+- [BSC poll re-reads open orders](bsc-poll-rereads-open-orders-so-sale-fields-self-fill.md) — new recordOrder fields self-fill open orders within one poll; check before planning a backfill; sportId→sport slot

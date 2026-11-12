@@ -15,9 +15,15 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** A run-time name, safe inside a regex (support/... "runtime names need escaping"). */
+/**
+ * A run-time name, safe inside a regex (support/... "runtime names need
+ * escaping"). A listing's title joins its parts with " · " on screen, and a
+ * toggle's accessible name reads those joins as pauses (", "), so `row` is
+ * converted: `2024 Score #302 · Malik Nabers` is looked for as
+ * `2024 Score #302, Malik Nabers` (NEO-509).
+ */
 function escapeRegex(text: string): RegExp {
-  return new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  return new RegExp(`^${text.split(" · ").join(", ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
 }
 
 /**
@@ -41,6 +47,12 @@ export function pickList(page: Page) {
     /** The whole list's table; By the Box has one per stop (`boxTable`). */
     table: region.getByRole("table", { name: "Cards to pull" }),
     boxTable: (boxName: string) => region.getByRole("table", { name: `Cards to pull from ${boxName}`, exact: true }),
+    /** By the Box, the "Not in a box" stop: sales NB has no card for but whose listing says what they are, by set. */
+    notInBoxTable: region.getByRole("table", { name: "Sales not in NB, by set", exact: true }),
+    /** By the Box, the last stop: sales that say too little to file. */
+    cantFindTable: region.getByRole("table", { name: "Sales NB couldn't tie to a card", exact: true }),
+    /** The "Only not in NB" quick filter (a toggle: `aria-pressed`). */
+    onlyNotInNb: region.getByRole("group", { name: "Quick filters" }).getByRole("button", { name: "Only not in NB", exact: true }),
     views: region.getByRole("navigation", { name: "Pick List views" }),
     /** The list's own filter count ("4 cards match."), always mounted, empty when unfiltered. */
     matches: region.getByRole("status"),
@@ -156,7 +168,12 @@ export function unmatchedLine(orderNo: string): string {
  * (`/testing/seed-pick-order`, testing deployments only): it is recorded and
  * applied as the sales poll would, taking the copies from `box`, and lands on
  * `redirect` (the Pick List by default). `cards` maps a card number in the
- * box to the copies sold; `bad` adds one line NB cannot tie to a card. The
+ * box to the copies sold; `bad` adds one line NB cannot tie to a card and says
+ * nothing of (it stays under Can't find it). `listed` (NEO-509,
+ * `"<card number>:<players>"`) adds one more unmatched line that DESCRIBES a
+ * card of the first card's set, so it files inline under that set with an
+ * "Unmatched" chip; its toggle reads `Pulled <set> · <players> · #<number>,
+ * unmatched, BSC <order>` (`listedLine`). The
  * hop refuses an account that lists on a marketplace, so no copy it lowers
  * reaches one. `orderNo` must be one token. Re-seeding a number replays the
  * stored order. Opens `page` on the hop, so the browser does a full load
@@ -164,7 +181,13 @@ export function unmatchedLine(orderNo: string): string {
  */
 export async function seedPickOrder(
   page: Page,
-  order: { orderNo: string; box: string; cards: Readonly<Record<string, number>>; bad?: boolean },
+  order: {
+    orderNo: string;
+    box: string;
+    cards: Readonly<Record<string, number>>;
+    bad?: boolean;
+    listed?: string | readonly string[];
+  },
   redirect = PICK_LIST_PATH,
 ): Promise<void> {
   const cards = Object.entries(order.cards)
@@ -172,7 +195,20 @@ export async function seedPickOrder(
     .join(",");
   const query = new URLSearchParams({ order: order.orderNo, box: order.box, cards, redirect });
   if (order.bad) query.set("bad", "1");
+  // A repeated param, one per described line, in the order given.
+  for (const entry of typeof order.listed === "string" ? [order.listed] : (order.listed ?? [])) query.append("listed", entry);
   await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/**
+ * How a described unmatched line (`seedPickOrder`'s `listed`) is titled on
+ * screen: "2024 Topps Chrome #208 · Listed<token>" (the set, the number, then
+ * who is on it; the page's notice reads it as is, a toggle's name reads the
+ * " · " as a comma). The set is the one the card number is filed under, a
+ * Base variant is not written.
+ */
+export function listedLine(setTitle: string, players: string, cardNumber: string): string {
+  return `${setTitle} #${cardNumber} · ${players}`;
 }
 
 /** Marks a seeded order shipped (the hop's `ship=1`): its lines leave the Pick List. */
