@@ -5,6 +5,7 @@ import { FOCUS } from "../../../prototypes/p1/ui";
 import { SkeletonBars } from "../../catalog/Skeleton";
 import { cardLabel } from "../../data/labels";
 import { useCards, useListing, type ListingExtension } from "../../data/store";
+import { useSearchParams } from "react-router";
 import type { Card, CardId, EbaySetupView, ListingPlatform, Sale, SaleItem } from "../../data/types";
 import {
   BSC_NAME,
@@ -16,11 +17,15 @@ import {
   ordersUrl,
   saleCondition,
   saleItemProblem,
+  SALE_PARAM,
   unmatchedCard,
 } from "./copy";
 
 /** The order the platforms read in, wherever more than one shows. */
 const PLATFORM_ORDER: ListingPlatform[] = ["bsc", "ebay"];
+
+/** How many more pages a one-order link loads looking for its order. */
+const SEEK_PAGES = 10;
 
 /** A store without eBay has no setup to read. */
 const noEbaySetup = (): EbaySetupView | undefined => undefined;
@@ -46,6 +51,10 @@ function either(platforms: ListingPlatform[]): string {
  * itself in Seller Hub; BSC has no link to one order, so its number is shown
  * to search for on BSC's orders page. Each platform the collector is
  * connected to (or has a sale from) gets its orders-page link up top.
+ *
+ * NEO-500: `?sorder=<sale id>` (the Pick List's link for a line NB couldn't
+ * match) brings that order into view, marked, with focus on its heading;
+ * an order past the first page loads more pages to reach it.
  *
  * Hidden in a store with no listing (the demo): the page leaves the tab out.
  */
@@ -102,6 +111,19 @@ function Sales({ listing }: { listing: ListingExtension }) {
     if (heads && heads.length > 0) heads[Math.min(ask.from, heads.length - 1)].focus();
     setMoreNote(page.canLoadMore ? `Showing ${shown} sales.` : `Showing ${shown} sales. That's every sale.`);
   }, [page.loadingMore, page.canLoadMore, shown]);
+  // A one-order link: load on until the order shows (or the pages run out).
+  const [params] = useSearchParams();
+  const wanted = params.get(SALE_PARAM);
+  const found = wanted !== null && (page.sales ?? []).some((sale) => sale.id === wanted);
+  const sought = useRef(0);
+  const { canLoadMore, loadingMore, loadMore } = page;
+  const loaded = page.sales !== undefined;
+  useEffect(() => {
+    if (!wanted || found || !loaded || !canLoadMore || loadingMore || sought.current >= SEEK_PAGES) return;
+    sought.current += 1;
+    loadMore();
+  }, [wanted, found, loaded, canLoadMore, loadingMore, loadMore]);
+
   const showMore = () => {
     if (page.loadingMore) return;
     asked.current = { from: shown, sawLoading: false };
@@ -152,7 +174,7 @@ function Sales({ listing }: { listing: ListingExtension }) {
         ) : (
           <ol ref={listRef} aria-label="Orders, newest first" className="space-y-3">
             {page.sales.map((sale) => (
-              <Order key={sale.id} sale={sale} cards={byId} sandbox={sandbox} />
+              <Order key={sale.id} sale={sale} cards={byId} sandbox={sandbox} picked={sale.id === wanted} />
             ))}
           </ol>
         )}
@@ -178,17 +200,36 @@ function Sales({ listing }: { listing: ListingExtension }) {
   );
 }
 
-function Order({ sale, cards, sandbox }: { sale: Sale; cards: ReadonlyMap<CardId, Card>; sandbox: boolean }) {
+function Order({
+  sale,
+  cards,
+  sandbox,
+  picked,
+}: {
+  sale: Sale;
+  cards: ReadonlyMap<CardId, Card>;
+  sandbox: boolean;
+  /** The order a one-order link asked for: marked, its heading focused once it shows. */
+  picked: boolean;
+}) {
   const titleId = useId();
+  const headRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (picked) headRef.current?.focus();
+  }, [picked]);
   const name = PLATFORM_NAME[sale.platform];
   const total = sale.totals.totalCents ?? sale.totals.subtotalCents;
   const copies = sale.items.reduce((n, item) => n + item.quantity, 0);
   return (
     <li>
-      <article aria-labelledby={titleId} className="rounded-lg bg-raised text-ink shadow-offset">
+      <article
+        aria-labelledby={titleId}
+        aria-current={picked || undefined}
+        className={`rounded-lg bg-raised text-ink shadow-offset ${picked ? "ring-2 ring-neon-blue" : ""}`}
+      >
         <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 pt-3 pb-2.5">
           {/* The marketplace is in the name: BSC and eBay orders share one list. */}
-          <h3 id={titleId} tabIndex={-1} className="rounded-sm text-base font-semibold tabular-nums focus-outline">
+          <h3 ref={headRef} id={titleId} tabIndex={-1} className="rounded-sm text-base font-semibold tabular-nums focus-outline">
             {name} order {sale.orderNo}
           </h3>
           <span className="rounded-full border border-rule-strong px-2 py-0.5 text-xs font-medium text-ink-2">

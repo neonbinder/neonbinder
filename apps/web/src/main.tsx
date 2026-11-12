@@ -71,6 +71,7 @@ const TestKilledDrain = lazy(() => import("@/app/testing/killed-drain/page"));
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
 const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
 const TestFailPlaceholderEntry = lazy(() => import("@/app/testing/fail-placeholder-entry/page"));
+const TestSeedPickOrder = lazy(() => import("@/app/testing/seed-pick-order/page"));
 const Dashboard = lazy(loadDashboard);
 const ProfilePublic = lazy(loadProfilePublic);
 const ProfileCredentials = lazy(() => import("@/app/profile/credentials/page"));
@@ -200,6 +201,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             path="/testing/fail-placeholder-entry"
             element={<Deferred><TestFailPlaceholderEntry /></Deferred>}
           />
+          <Route path="/testing/seed-pick-order" element={<Deferred><TestSeedPickOrder /></Deferred>} />
 
           {/* Protected routes — wrapped in binder shell */}
           <Route element={<ProtectedLayout />}>

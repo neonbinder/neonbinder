@@ -182,6 +182,25 @@ export async function photoUrlsOf(
 }
 
 /**
+ * NEO-500 — the live photos of a copy line by its id, the owner's only. It
+ * reads the photo rows, never the copy: a sale that took a line's last copy
+ * deletes the line and keeps its photos (`listingSales`), so the Pick List
+ * reaches a sold copy's photos only this way. A photo of another owner's
+ * line is left out, so a guessed id shows nothing.
+ */
+export async function ownerPhotoUrlsByCopyId(
+  ctx: Pick<QueryCtx, "db">,
+  ownerId: string,
+  copyId: Id<"collectionCopies">,
+): Promise<{ front?: PhotoUrls; back?: PhotoUrls }> {
+  const out: { front?: PhotoUrls; back?: PhotoUrls } = {};
+  for (const photo of await livePhotosOf(ctx, copyId)) {
+    if (photo.ownerId === ownerId) out[photo.side] = urlsOf(photo);
+  }
+  return out;
+}
+
+/**
  * NEO-432: a photo change queues the card only when the copy's home lists on
  * marketplaces, the test `listingDrain.variantCopiesPage` uses. Both listing
  * plans skip every other copy, so a photo on a binder or in-person box copy

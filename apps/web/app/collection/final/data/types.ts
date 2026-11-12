@@ -60,7 +60,7 @@ export type Side = "collection" | "inventory";
  * both sides. The old `"inventory"` key is retired: a `?tab=inventory` link
  * redirects (replace) to `/inventory?tab=boxes`.
  */
-export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add" | "sales" | "sync";
+export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add" | "sales" | "sync" | "pick";
 
 // ---------------------------------------------------------------------------
 // Catalog
@@ -839,6 +839,12 @@ export interface Capabilities {
    * Signed-in only: the demo never touches a marketplace.
    */
   marketplaceListing: boolean;
+  /**
+   * NEO-500 — the Pick List: every sold card still to pull from a box. The
+   * demo's runs on a fixture (`../pick/demoPickStore`), the signed-in one on
+   * the seller's orders (`../pick/convexPickStore`).
+   */
+  pickList: boolean;
 }
 
 export const ALL_CAPABILITIES: Capabilities = {
@@ -859,6 +865,7 @@ export const ALL_CAPABILITIES: Capabilities = {
   copyPhotos: true,
   // The demo never touches Convex, so it never lists anywhere.
   marketplaceListing: false,
+  pickList: true,
 };
 
 export const NO_CAPABILITIES: Capabilities = {
@@ -877,6 +884,7 @@ export const NO_CAPABILITIES: Capabilities = {
   intake: false,
   copyPhotos: false,
   marketplaceListing: false,
+  pickList: false,
 };
 
 /**
@@ -897,6 +905,7 @@ export const REAL_CAPABILITIES: Capabilities = {
   intake: true,
   copyPhotos: true,
   marketplaceListing: true,
+  pickList: true,
 };
 
 // ---------------------------------------------------------------------------

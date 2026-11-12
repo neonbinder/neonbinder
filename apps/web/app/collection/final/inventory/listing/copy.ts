@@ -8,6 +8,13 @@ import type {
 } from "../../data/types";
 import { BSC_NAME, EBAY_NAME, PLATFORM_NAME } from "@/lib/marketplace/listing-copy";
 
+/**
+ * NEO-500 — the Sales tab's one-order link (`?tab=sales&sorder=<sale id>`):
+ * the tab brings that order into view and marks it. Not `sale`, which the
+ * page retired (it redirects to the Inventory list).
+ */
+export const SALE_PARAM = "sorder";
+
 export {
   BSC_NAME,
   CONSENT_LINE,

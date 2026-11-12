@@ -275,8 +275,11 @@ function toCard(raw: CatalogCard, set: SetRef, variant: VariantRef): Card {
   };
 }
 
-/** A card that carries its own path; null when the path is gone (an orphaned row). */
-function toCardWithPath(raw: CatalogCardWithPath | null): Card | null {
+/**
+ * A card that carries its own path; null when the path is gone (an orphaned
+ * row). Exported for the Pick List's store (`../pick/convexPickStore`).
+ */
+export function toCardWithPath(raw: CatalogCardWithPath | null): Card | null {
   if (!raw || !raw.set || !raw.variant) return null;
   return toCard(raw, toSetRef(raw.set), toVariantRef(raw.variant));
 }

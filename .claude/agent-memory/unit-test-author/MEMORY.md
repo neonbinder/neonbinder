@@ -40,3 +40,4 @@
 - [XHR guard and fake XHR](xhr-guard-and-fake-xhr.md) — guard refuses XHR; installFakeXhr; R2-env convex-test needs fetch stub + cancelScheduled
 - [NEO-450 sync failure box tests](reference_neo450_sync_failure_box_tests.md) — locate via aria-describedby, stored vs fresh alert mocks, thenable for re-throw/null handlers
 - [NEO-487 lane/wait test patterns](reference_neo487_bsc_lane_wait_test_patterns.md) — stop-rule/cooldown/wait-edge recipes, ledger chain timing, safe shared-worktree mutation runner
+- [NEO-500 pick list apply tests](reference_neo500_pick_list_apply_tests.md) — truncated-read fixture + boundary control, getDocumentSize cap proof, cleared-literal check

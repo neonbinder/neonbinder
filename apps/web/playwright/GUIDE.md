@@ -268,6 +268,19 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   photo's pixel size from the file the browser downloads: a tile keeps its 5:7
   frame, so orientation is proven by the file), and `EDIT_LANDS`, the one
   signed-off longer wait for an edited photo to land (Jason, 2026-11-10).
+- `support/pick-list.ts`: the Pick List (NEO-500), one set of handles for the
+  public demo and the signed-in list: `pickList(page)` (region, table, views,
+  filters, status line, Undo), `pulledToggle` / `pickRow` / `pictureButton` by
+  how a row's name begins, `pickGroup` (a set, Can't find it, Sold since you
+  started), `seen` (the table draws each row twice, one copy hidden),
+  `openMoreFilters` / `filterBy` / `sortBy` (a phone folds filters and sorts
+  from a select), and the order seed hop: `seedPickOrder` and
+  `shipPickOrder` (`/testing/seed-pick-order`, the caller's own box, no
+  marketplace call; it refuses an account that lists anywhere), with
+  `bscOrder` / `unmatchedLine` for how the list names an order and a line NB
+  could not tie to a card. A tick is optimistic and the list shows no
+  "saved" state, so a spec that reloads or navigates after a pull first reads
+  the list in a second tab (`inventory-pick-list`'s `fromServer`).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.

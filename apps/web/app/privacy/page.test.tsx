@@ -40,7 +40,7 @@ describe("PrivacyPage", () => {
 
   it("shows the last-updated date", () => {
     renderPrivacy();
-    expect(screen.getByText("November 10, 2026").getAttribute("datetime")).toBe("2026-11-10");
+    expect(screen.getByText("November 12, 2026").getAttribute("datetime")).toBe("2026-11-12");
   });
 
   it("says a scan cropped by hand is read again by the same services (NEO-481)", () => {
