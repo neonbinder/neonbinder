@@ -35,6 +35,7 @@ import {
   nameKey,
   itemLabelParts,
   sharedTitleLabels,
+  type MarketplaceSide,
 } from "./marketplace-item-label";
 import {
   RENAME_TIP,
@@ -60,85 +61,41 @@ import {
   type BaseMatchClient,
   type RowCheck,
 } from "./base-match-probe";
-import { BASE_MATCH_COPY, type BaseMatchSide } from "@/lib/cards/base-match";
+import { BASE_MATCH_COPY } from "@/lib/cards/base-match";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import {
+  MARKETPLACE_SOURCES,
+  SOURCE_KEYS,
+  SOURCE_TOKEN,
+  bySource,
+  isMarketplaceSource,
+  linksOf,
+  reconcileSources,
+  reconciliationReducer,
+  type BySource,
+  type ItemMetadata,
+  type MarketplaceSourceKey,
+  type PlatformItem,
+  type ReadySet,
+  type ReconciliationState,
+  type SourceDescriptor,
+  type SourceKey,
+  type SourceTone,
+  type SourcedItem,
+} from "./reconciliation-sources";
 
 // ===== TYPES =====
 
-export type PlatformItem = {
-  value: string;
-  platformValue: string;
-};
+// NEO-496 (C1a): the sets, their per-source links and the reducer live in
+// `reconciliation-sources.ts`; these re-exports keep every importer's path.
+export type { PlatformItem, ItemMetadata, ReadySet };
+export { reconciliationReducer };
 
 export type MatchedPair = {
   displayName: string;
   bsc: PlatformItem;
   sl: PlatformItem;
   confidence: number;
-};
-
-/**
- * What the modal lets an operator say about a set beyond its title and its
- * marketplace mappings. NEO-291: only the card prefix. Insert/Parallel used to
- * be here as checkboxes, but which of those a row IS is a fact of where it sits
- * in the hierarchy (its level and its variant type), not a box to tick.
- */
-export type ItemMetadata = {
-  cardNumberPrefix?: string;
-};
-
-/**
- * A NeonBinder set under construction.
- *
- * NB is the system of record. A set has a title that belongs to US, and maps
- * to 0-N BSC sets and 0-N SportLots sets — the two sides completely
- * independent of each other. A marketplace id on a set records how that
- * marketplace happens to carve up the same cards; it is not an ownership claim
- * and not a scarce resource, so the same id may appear on any number of sets.
- *
- * This replaced a pair-shaped model (`{bsc, sl}`, one id per side) whose every
- * awkwardness came from treating marketplace sets as exclusive: an item with no
- * partner needed a special "keep as platform-only" shelf, and a set wanted by
- * two rows produced a winner and a loser.
- */
-export type ReadySet = {
-  /** Stable local key. Not persisted — `title` is the identity on save. */
-  key: string;
-  /**
-   * NEO-211 (plan E): the `selectorOptions` row this set ALREADY is, when it was
-   * seeded from `existingRows`. Absent for a set the operator just built here.
-   *
-   * Before this, the modal had no notion of `_id` at all and `title` WAS the
-   * identity on save — so editing a title in this dialog was a delete of the old
-   * row and an insert of a new one, taking the row's children, its checklist and
-   * every cross-listing pointed at it. Carrying the id makes that edit a rename.
-   */
-  existingId?: Id<"selectorOptions">;
-  /** The NeonBinder set name. Operator-editable; this is our data. */
-  title: string;
-  bsc: PlatformItem[];
-  sl: PlatformItem[];
-  metadata?: ItemMetadata;
-  /** Auto-match score, for display only. 0 once an operator has touched it. */
-  confidence: number;
-  /**
-   * NEO-325 — made with "Make its own set" (PROMOTE_SOLO). Saved with
-   * `identityOnly`: the store matches it by its marketplace ids or inserts it,
-   * and never folds it into a same-named row by name — which is what withheld
-   * a SportLots twin saved after its namesake. Kept through later attaches and
-   * renames: the operator still meant it as its own set.
-   */
-  ownSet?: boolean;
-};
-
-type ReconciliationState = {
-  /** Sets that will be written on save. */
-  ready: ReadySet[];
-  /** Marketplace sets not yet assigned to any NB set. NOT saved. */
-  pendingBsc: PlatformItem[];
-  pendingSl: PlatformItem[];
-  /** Monotonic source of ReadySet keys. Never rewound, so a key is never reused. */
-  seq: number;
 };
 
 /**
@@ -154,28 +111,6 @@ export type SlCandidateGroup = {
     alreadyMatched: boolean;
   }>;
 };
-
-type Side = "bsc" | "sl";
-
-type ReconciliationAction =
-  // Two pending items become a new set. The 1:1 case, which is 95%+ of real
-  // reconciliation and stays a single drag.
-  | { type: "PROMOTE_PAIR"; bsc: PlatformItem; sl: PlatformItem }
-  // One item becomes a set on its own. Replaces "keep as platform-only":
-  // a set with ids on one side only is ordinary, not special.
-  | { type: "PROMOTE_SOLO"; side: Side; item: PlatformItem }
-  // NEO-300 — "Keep all": every item a column is SHOWING becomes its own set,
-  // in ONE action. A column can list 141 BSC sets; N PROMOTE_SOLOs would be N
-  // reducer passes each copying the Ready and Pending arrays (quadratic), and
-  // one action is also one undo-able step in the operator's head.
-  | { type: "PROMOTE_SOLO_MANY"; side: Side; items: PlatformItem[] }
-  // An item joins an existing set. This is what makes 0-N per side reachable,
-  // in both directions.
-  | { type: "ATTACH"; key: string; side: Side; item: PlatformItem }
-  | { type: "DETACH"; key: string; side: Side; platformValue: string }
-  | { type: "DISBAND"; key: string }
-  | { type: "RENAME"; key: string; title: string }
-  | { type: "UPDATE_METADATA"; key: string; metadata: ItemMetadata };
 
 export type ReconciledResult = {
   items: Array<{
@@ -208,224 +143,6 @@ export type ReconciledResult = {
     identityOnly?: true;
   }>;
 };
-
-/**
- * Remove an item from a Pending column IF it is there.
- *
- * An item being mapped does NOT consume it: a marketplace set may back any
- * number of NB sets, so the same item can be mapped again later from the
- * "already mapped" reveal. Only the first mapping empties it out of Pending;
- * subsequent ones find nothing to remove and leave the column alone.
- */
-function withoutPending(
-  list: PlatformItem[],
-  item: PlatformItem,
-): PlatformItem[] {
-  return list.some((i) => i.platformValue === item.platformValue)
-    ? list.filter((i) => i.platformValue !== item.platformValue)
-    : list;
-}
-
-/**
- * Return items to a Pending column, skipping any id already there.
- *
- * NEO-325: Pending is keyed by `platformValue` (React keys, dnd ids, selection),
- * so the same id twice in one column is a key collision. It happens when a
- * marketplace set mapped by two NB sets is detached from, or disbanded out of,
- * both — each return used to append another copy.
- */
-function withPendingAdded(
-  list: PlatformItem[],
-  items: PlatformItem[],
-): PlatformItem[] {
-  const have = new Set(list.map((i) => i.platformValue));
-  const added: PlatformItem[] = [];
-  for (const item of items) {
-    if (have.has(item.platformValue)) continue;
-    have.add(item.platformValue);
-    added.push(item);
-  }
-  return added.length === 0 ? list : [...list, ...added];
-}
-
-/** Exported for its unit test; the component is the only production caller. */
-export function reconciliationReducer(
-  state: ReconciliationState,
-  action: ReconciliationAction,
-): ReconciliationState {
-  switch (action.type) {
-    case "PROMOTE_PAIR": {
-      return {
-        ...state,
-        seq: state.seq + 1,
-        ready: [
-          ...state.ready,
-          {
-            key: `set-${state.seq}`,
-            // BSC names are closer to how collectors say a set's name, so it
-            // wins the default. The operator can rename — the title is ours.
-            title: action.bsc.value,
-            bsc: [action.bsc],
-            sl: [action.sl],
-            confidence: 0,
-          },
-        ],
-        pendingBsc: withoutPending(state.pendingBsc, action.bsc),
-        pendingSl: withoutPending(state.pendingSl, action.sl),
-      };
-    }
-    case "PROMOTE_SOLO": {
-      return {
-        ...state,
-        seq: state.seq + 1,
-        ready: [
-          ...state.ready,
-          {
-            key: `set-${state.seq}`,
-            title: action.item.value,
-            bsc: action.side === "bsc" ? [action.item] : [],
-            sl: action.side === "sl" ? [action.item] : [],
-            confidence: 0,
-            ownSet: true,
-          },
-        ],
-        pendingBsc:
-          action.side === "bsc"
-            ? withoutPending(state.pendingBsc, action.item)
-            : state.pendingBsc,
-        pendingSl:
-          action.side === "sl"
-            ? withoutPending(state.pendingSl, action.item)
-            : state.pendingSl,
-      };
-    }
-    case "PROMOTE_SOLO_MANY": {
-      // Exactly PROMOTE_SOLO applied to each item in order — same title, same
-      // one-sided mapping, keys drawn from the same never-rewound `seq` — but
-      // one pass. An item listed twice becomes one set, not two.
-      const seen = new Set<string>();
-      const items = action.items.filter((i) => {
-        if (seen.has(i.platformValue)) return false;
-        seen.add(i.platformValue);
-        return true;
-      });
-      if (items.length === 0) return state;
-      const created: ReadySet[] = items.map((item, n) => ({
-        key: `set-${state.seq + n}`,
-        title: item.value,
-        bsc: action.side === "bsc" ? [item] : [],
-        sl: action.side === "sl" ? [item] : [],
-        confidence: 0,
-        // NEO-325 — "Keep all" is "Make its own set" on every row, so each
-        // set it makes is saved by identity (`identityOnly`) the same way.
-        ownSet: true,
-      }));
-      const drop = (list: PlatformItem[]) =>
-        list.filter((i) => !seen.has(i.platformValue));
-      return {
-        ...state,
-        seq: state.seq + items.length,
-        ready: [...state.ready, ...created],
-        pendingBsc: action.side === "bsc" ? drop(state.pendingBsc) : state.pendingBsc,
-        pendingSl: action.side === "sl" ? drop(state.pendingSl) : state.pendingSl,
-      };
-    }
-    case "ATTACH": {
-      const target = state.ready.find((s) => s.key === action.key);
-      if (!target) return state;
-      // Same marketplace id twice on ONE set would make two slots pointing at
-      // the same place. Across DIFFERENT sets it is fine and expected — that is
-      // the 1996 Score case, where one SportLots set legitimately backs two NB
-      // sets — so this check is per-set, never global.
-      const existing = action.side === "bsc" ? target.bsc : target.sl;
-      if (existing.some((i) => i.platformValue === action.item.platformValue)) {
-        return state;
-      }
-      return {
-        ...state,
-        ready: state.ready.map((s) =>
-          s.key === action.key
-            ? {
-                ...s,
-                bsc: action.side === "bsc" ? [...s.bsc, action.item] : s.bsc,
-                sl: action.side === "sl" ? [...s.sl, action.item] : s.sl,
-              }
-            : s,
-        ),
-        pendingBsc:
-          action.side === "bsc"
-            ? withoutPending(state.pendingBsc, action.item)
-            : state.pendingBsc,
-        pendingSl:
-          action.side === "sl"
-            ? withoutPending(state.pendingSl, action.item)
-            : state.pendingSl,
-      };
-    }
-    case "DETACH": {
-      const target = state.ready.find((s) => s.key === action.key);
-      if (!target) return state;
-      const from = action.side === "bsc" ? target.bsc : target.sl;
-      const item = from.find((i) => i.platformValue === action.platformValue);
-      if (!item) return state;
-      const remaining = from.filter(
-        (i) => i.platformValue !== action.platformValue,
-      );
-      const nextSet: ReadySet = {
-        ...target,
-        bsc: action.side === "bsc" ? remaining : target.bsc,
-        sl: action.side === "sl" ? remaining : target.sl,
-      };
-      // A set with nothing mapped has no reason to exist — it would save as a
-      // row with an empty platformData and never sync anything.
-      const emptied = nextSet.bsc.length === 0 && nextSet.sl.length === 0;
-      return {
-        ...state,
-        ready: emptied
-          ? state.ready.filter((s) => s.key !== action.key)
-          : state.ready.map((s) => (s.key === action.key ? nextSet : s)),
-        pendingBsc:
-          action.side === "bsc"
-            ? withPendingAdded(state.pendingBsc, [item])
-            : state.pendingBsc,
-        pendingSl:
-          action.side === "sl"
-            ? withPendingAdded(state.pendingSl, [item])
-            : state.pendingSl,
-      };
-    }
-    case "DISBAND": {
-      const target = state.ready.find((s) => s.key === action.key);
-      if (!target) return state;
-      return {
-        ...state,
-        ready: state.ready.filter((s) => s.key !== action.key),
-        pendingBsc: withPendingAdded(state.pendingBsc, target.bsc),
-        pendingSl: withPendingAdded(state.pendingSl, target.sl),
-      };
-    }
-    case "RENAME": {
-      return {
-        ...state,
-        ready: state.ready.map((s) =>
-          s.key === action.key ? { ...s, title: action.title } : s,
-        ),
-      };
-    }
-    case "UPDATE_METADATA": {
-      return {
-        ...state,
-        ready: state.ready.map((s) =>
-          s.key === action.key
-            ? { ...s, metadata: { ...(s.metadata ?? {}), ...action.metadata } }
-            : s,
-        ),
-      };
-    }
-    default:
-      return state;
-  }
-}
 
 // ===== PROPS =====
 
@@ -624,8 +341,50 @@ function FilterInput({
   );
 }
 
-/** Names that more than one distinct item carries, per side (NEO-325). */
-type SideDups = { bsc: ReadonlySet<string>; sl: ReadonlySet<string> };
+/** Names that more than one distinct item carries, per source (NEO-325). */
+type SourceDups = BySource<ReadonlySet<string>>;
+
+/**
+ * The side `itemLabel`/`itemLabelParts` are told. Their words never depend on
+ * it (both read `(#id)`); it only says whose `dups` the caller read, and the
+ * helper's type names its two marketplaces. Pass `dups[source]` alongside.
+ */
+const LABEL_SIDE: Record<SourceKey, MarketplaceSide> = {
+  bsc: "bsc",
+  sportlots: "sl",
+  checklist: "sl",
+};
+
+/** An item's accessible name, with its id when its source shares the name. */
+const sourceItemLabel = (
+  item: PlatformItem,
+  source: SourceKey,
+  dups: SourceDups,
+) => itemLabel(item, LABEL_SIDE[source], dups[source]);
+
+/**
+ * Each tone's classes, written out for Tailwind. `badge` is a pending row's
+ * tag and a Ready set's chip; `heading` the column heading and its checkbox
+ * tick; `idSuffix` a twin's `(#id)` beside its name — normal weight, a size
+ * down, in the badge hue at 80% (still 4.5:1+ on the row's gray-800), so
+ * "(#12345)" reads as belonging to the badge beside it without competing with
+ * the name. Unique names get no suffix.
+ */
+const TONE_CLASSES: Record<
+  SourceTone,
+  { badge: string; heading: string; idSuffix: string }
+> = {
+  blue: {
+    badge: "bg-notice-info-bg text-notice-info-ink border-notice-info-rule",
+    heading: "text-neon-blue-text",
+    idSuffix: "text-[11px] font-normal tabular-nums text-notice-info-ink",
+  },
+  purple: {
+    badge: "bg-neon-purple/15 text-neon-purple-text border-neon-purple/60",
+    heading: "text-neon-purple-text",
+    idSuffix: "text-[11px] font-normal tabular-nums text-neon-purple-text",
+  },
+};
 
 /**
  * dnd ids for marketplace items: `${side}-${platformValue}` for a Pending row,
@@ -638,24 +397,29 @@ type SideDups = { bsc: ReadonlySet<string>; sl: ReadonlySet<string> };
  */
 const MAPPED_DND_PREFIX = "mapped-";
 
+/** An item's dnd id: `${token}-${platformValue}` (see `SOURCE_TOKEN`). */
+const itemDndId = (source: SourceKey, platformValue: string) =>
+  `${SOURCE_TOKEN[source]}-${platformValue}`;
+
 /**
- * The side and marketplace id a dnd item id names, or `null` for anything
+ * The source and item id a dnd item id names, or `null` for anything
  * else (a Ready set's `ready-<key>`). Sliced, never `replace`d: replace strips
  * the first occurrence anywhere, which corrupts a BSC slug containing it.
  */
 function parseItemDndId(
   id: string,
-): { side: Side; platformValue: string } | null {
+): { source: SourceKey; platformValue: string } | null {
   const rest = id.startsWith(MAPPED_DND_PREFIX)
     ? id.slice(MAPPED_DND_PREFIX.length)
     : id;
-  const side: Side | null = rest.startsWith("bsc-")
-    ? "bsc"
-    : rest.startsWith("sl-")
-      ? "sl"
-      : null;
-  if (!side) return null;
-  return { side, platformValue: rest.slice(side.length + 1) };
+  const source = SOURCE_KEYS.find((key) =>
+    rest.startsWith(`${SOURCE_TOKEN[key]}-`),
+  );
+  if (!source) return null;
+  return {
+    source,
+    platformValue: rest.slice(SOURCE_TOKEN[source].length + 1),
+  };
 }
 
 /**
@@ -670,40 +434,36 @@ const DRAG_INSTRUCTIONS =
   "Press Space or Enter to pick up this set. Use the arrow keys to move it onto a set from the other marketplace, or onto a Ready set above, then press Space or Enter to drop it. Press Escape to put it back.";
 
 /**
- * NEO-325 — the id suffix on a twin's name. Secondary to the name: normal
- * weight, a size down, in the side's own badge hue at 80% (still 4.5:1+ on
- * the row's gray-800), so "(#12345)" reads as belonging to the SL badge
- * beside it without competing with the name. Unique names get no suffix.
- */
-const ID_SUFFIX: Record<Side, string> = {
-  bsc: "text-[11px] font-normal tabular-nums text-notice-info-ink",
-  sl: "text-[11px] font-normal tabular-nums text-neon-purple-text",
-};
-
-/**
- * An item's visible name, with the id suffix when the name is shared. The
- * suffix is real text, separated by a real space, so it is part of the
- * accessible name of whatever control wraps it (WCAG 2.5.3 label in name).
+ * An item's visible name, with the id suffix when the name is shared
+ * (NEO-325, styled `TONE_CLASSES[tone].idSuffix`). The suffix is real text,
+ * separated by a real space, so it is part of the accessible name of whatever
+ * control wraps it (WCAG 2.5.3 label in name).
  */
 function ItemName({
   item,
-  side,
+  source,
   dups,
   suffixClassName,
 }: {
   item: PlatformItem;
-  side: Side;
-  dups: SideDups;
+  source: SourceDescriptor;
+  dups: SourceDups;
   suffixClassName?: string;
 }) {
-  const { name, suffix } = itemLabelParts(item, side, dups[side]);
+  const { name, suffix } = itemLabelParts(
+    item,
+    LABEL_SIDE[source.key],
+    dups[source.key],
+  );
   return (
     <>
       {name}
       {suffix && (
         <>
           {" "}
-          <span className={suffixClassName ?? ID_SUFFIX[side]}>{suffix}</span>
+          <span className={suffixClassName ?? TONE_CLASSES[source.tone].idSuffix}>
+            {suffix}
+          </span>
         </>
       )}
     </>
@@ -713,7 +473,7 @@ function ItemName({
 function DraggableItem({
   id,
   name,
-  platform,
+  source,
   isSelected,
   onClick,
   action,
@@ -729,7 +489,8 @@ function DraggableItem({
    * handle so they are part of what the row is called.
    */
   status?: { kind: RunLineKind; srText: string };
-  platform: "bsc" | "sl";
+  /** The source the row is from: its badge's words and colour. */
+  source: SourceDescriptor;
   isSelected?: boolean;
   onClick?: () => void;
   /**
@@ -762,11 +523,8 @@ function DraggableItem({
     opacity: isDragging ? 0.4 : 1,
   };
 
-  const platformLabel = platform === "bsc" ? "BSC" : "SL";
-  const platformColor =
-    platform === "bsc"
-      ? "bg-notice-info-bg text-notice-info-ink border-notice-info-rule"
-      : "bg-neon-purple/15 text-neon-purple-text border-neon-purple/60";
+  const platformLabel = source.badge;
+  const platformColor = TONE_CLASSES[source.tone].badge;
 
   // The row's whole box is the sortable node — so it is still the drop target
   // a pairing drag lands on, button area included — while only the handle
@@ -849,6 +607,17 @@ const CHECK_SLEEVE_TONE: Record<RunLineKind, string> = {
   failed: "border-neon-pink-text bg-neon-pink",
   unfinished: "border-neon-orange-text bg-transparent",
 };
+/**
+ * The Pending grid's columns, by how many sources the dialog lines up (one
+ * column each; one column below sm whatever the count). Written out for
+ * Tailwind.
+ */
+const PENDING_GRID_COLS: Record<number, string> = {
+  1: "grid-cols-1",
+  2: "grid-cols-2",
+  3: "grid-cols-3",
+};
+
 /** The column's sleeve strip draws at most this many; the rest are "+N". */
 const SLEEVE_CAP = 200;
 
@@ -875,9 +644,6 @@ function checkSrText(check: RowCheck): string {
 const isMismatch = (check: RowCheck | undefined) =>
   check?.state === "done" && check.verdict === "mismatch";
 
-const toProbeSide = (side: Side): BaseMatchSide =>
-  side === "bsc" ? "bsc" : "sportlots";
-
 // ===== READY SET ROW =====
 
 /**
@@ -887,6 +653,7 @@ const toProbeSide = (side: Side): BaseMatchSide =>
  */
 function ReadySetRow({
   set,
+  sources,
   label,
   onRename,
   onDetach,
@@ -900,6 +667,8 @@ function ReadySetRow({
   clashMessageId,
 }: {
   set: ReadySet;
+  /** The dialog's sources, in column order: the order of the row's chips. */
+  sources: readonly SourceDescriptor[];
   /**
    * NEO-325 — what this row's controls call the set: its title, plus its
    * mapped ids when another Ready set has the same title (two promoted SL
@@ -907,7 +676,7 @@ function ReadySetRow({
    */
   label: string;
   onRename: (title: string) => void;
-  onDetach: (side: Side, platformValue: string) => void;
+  onDetach: (source: SourceKey, platformValue: string) => void;
   onDisband: () => void;
   onAttachClick?: () => void;
   /** Label for the pending item that would be attached, when one is selected. */
@@ -915,7 +684,7 @@ function ReadySetRow({
   showMetadata?: boolean;
   onUpdateMetadata?: (metadata: ItemMetadata) => void;
   /** NEO-325 — so a mapped twin's chip names its id, as its Pending row did. */
-  dups: SideDups;
+  dups: SourceDups;
   /**
    * NEO-325 — every edit of the title draft, and `null` once it is committed
    * or reverted, so the dialog can block Save on a title clash while the
@@ -965,32 +734,30 @@ function ReadySetRow({
         ? "text-neon-yellow-text"
         : "text-neon-orange-text";
 
-  const chip = (side: Side, item: PlatformItem) => (
+  const chip = (source: SourceDescriptor, item: PlatformItem) => (
     <span
-      key={`${side}-${item.platformValue}`}
+      key={itemDndId(source.key, item.platformValue)}
       className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border ${
-        side === "bsc"
-          ? "bg-notice-info-bg text-notice-info-ink border-notice-info-rule"
-          : "bg-neon-purple/15 text-neon-purple-text border-neon-purple/60"
+        TONE_CLASSES[source.tone].badge
       }`}
     >
-      <span className="opacity-70">{side === "bsc" ? "BSC" : "SL"}</span>
+      <span className="opacity-70">{source.badge}</span>
       <span className="break-words">
         {/* The chip's own "BSC"/"SL" tag is already muted with opacity-70;
             the id suffix matches it rather than adding a third tone. */}
         <ItemName
           item={item}
-          side={side}
+          source={source}
           dups={dups}
           suffixClassName="opacity-70 font-normal tabular-nums"
         />
       </span>
       <button
         type="button"
-        onClick={() => onDetach(side, item.platformValue)}
+        onClick={() => onDetach(source.key, item.platformValue)}
         className="hit-area-24 text-neon-pink-text px-0.5 rounded"
         title="Remove this mapping"
-        aria-label={`Remove ${itemLabel(item, side, dups[side])} from ${label}`}
+        aria-label={`Remove ${sourceItemLabel(item, source.key, dups)} from ${label}`}
       >
         ✕
       </button>
@@ -1084,13 +851,19 @@ function ReadySetRow({
       )}
 
       <div className="flex flex-wrap gap-1.5 mt-2">
-        {set.bsc.map((i) => chip("bsc", i))}
-        {set.sl.map((i) => chip("sl", i))}
-        {set.bsc.length === 0 && (
-          <span className="text-[11px] text-ink-3 italic">no BSC mapping</span>
+        {sources.map((source) =>
+          set.links[source.key].map((i) => chip(source, i)),
         )}
-        {set.sl.length === 0 && (
-          <span className="text-[11px] text-ink-3 italic">no SL mapping</span>
+        {sources.map(
+          (source) =>
+            set.links[source.key].length === 0 && (
+              <span
+                key={`no-${source.key}`}
+                className="text-[11px] text-ink-3 italic"
+              >
+                {`no ${source.badge} mapping`}
+              </span>
+            ),
         )}
       </div>
 
@@ -1199,13 +972,22 @@ function ReconciliationDialog({
   baseCheck,
   client,
 }: ReconciliationModalProps & { client: BaseMatchClient | null }) {
-  const usedSlSet = useMemo(
-    () => new Set(usedSlPlatformValues),
-    [usedSlPlatformValues],
+  // NEO-496 (C1a): the columns this dialog lines up. Every Reconcile dialog
+  // lines up the two marketplaces today; a checklist source (C1b) joins this
+  // list with its data, and nothing below branches on which sources it holds.
+  const sources = MARKETPLACE_SOURCES;
+  const sourceByKey = useMemo(
+    () => new Map(sources.map((source) => [source.key, source])),
+    [sources],
   );
-  const usedBscSet = useMemo(
-    () => new Set(usedBscPlatformValues),
-    [usedBscPlatformValues],
+  // Ids rows elsewhere in the set already hold, per marketplace.
+  const usedBySource = useMemo<BySource<ReadonlySet<string>>>(
+    () => ({
+      bsc: new Set(usedBscPlatformValues),
+      sportlots: new Set(usedSlPlatformValues),
+      checklist: new Set<string>(),
+    }),
+    [usedBscPlatformValues, usedSlPlatformValues],
   );
   // Build the initial state once from a snapshot of initialData + existingRows.
   //
@@ -1220,26 +1002,44 @@ function ReconciliationDialog({
   const seed = useMemo(() => {
     const ready: ReadySet[] = [];
     const savedSiblings: ClashExistingRow[] = [];
-    const usedBsc = new Set<string>();
-    const usedSl = new Set<string>();
+    const used = bySource(() => new Set<string>());
     let seq = 0;
+
+    // What the fetch handed over, per source, before any matching.
+    const unmatched: BySource<PlatformItem[]> = {
+      bsc: initialData.unmatchedBsc,
+      sportlots: initialData.unmatchedSl,
+      checklist: [],
+    };
+    // An auto-match is one item from each of two sources.
+    const halvesOf = (m: MatchedPair): [SourcedItem, SourcedItem] => [
+      { source: "bsc", item: m.bsc },
+      { source: "sportlots", item: m.sl },
+    ];
 
     // platformValue → freshest PlatformItem, so restored rows show the current
     // marketplace display name rather than the NB title we saved them under.
-    const bscByPv = new Map<string, PlatformItem>();
-    for (const item of initialData.unmatchedBsc) bscByPv.set(item.platformValue, item);
-    for (const m of initialData.autoMatched) bscByPv.set(m.bsc.platformValue, m.bsc);
-    const slByPv = new Map<string, PlatformItem>();
-    for (const item of initialData.unmatchedSl) slByPv.set(item.platformValue, item);
-    for (const m of initialData.autoMatched) slByPv.set(m.sl.platformValue, m.sl);
+    const byPv = bySource((key) => {
+      const map = new Map<string, PlatformItem>();
+      for (const item of unmatched[key]) map.set(item.platformValue, item);
+      return map;
+    });
+    for (const m of initialData.autoMatched) {
+      for (const { source, item } of halvesOf(m)) {
+        byPv[source].set(item.platformValue, item);
+      }
+    }
 
     const toIds = (v: string | string[] | undefined): string[] =>
       typeof v === "string" ? [v] : Array.isArray(v) ? v : [];
+    const savedIds = (
+      row: (typeof existingRows)[number],
+      key: SourceKey,
+    ): string[] => (isMarketplaceSource(key) ? toIds(row.platformData[key]) : []);
 
     for (const row of existingRows) {
-      const bscIds = toIds(row.platformData.bsc);
-      const slIds = toIds(row.platformData.sportlots);
-      if (bscIds.length === 0 && slIds.length === 0) {
+      const ids = bySource((key) => savedIds(row, key));
+      if (SOURCE_KEYS.every((key) => ids[key].length === 0)) {
         // Not seeded: a row with no marketplace ids has nothing to reconcile,
         // but it is still a set under this parent with this name.
         savedSiblings.push({ name: row.value, bsc: [], sportlots: [] });
@@ -1248,19 +1048,19 @@ function ReconciliationDialog({
       const key = `set-${seq++}`;
       savedSiblings.push({
         name: row.value,
-        bsc: bscIds,
-        sportlots: slIds,
+        bsc: ids.bsc,
+        sportlots: ids.sportlots,
         seededKey: key,
       });
       ready.push({
         key,
         existingId: row.existingId,
         title: row.value,
-        bsc: bscIds.map(
-          (id) => bscByPv.get(id) ?? { value: row.value, platformValue: id },
-        ),
-        sl: slIds.map(
-          (id) => slByPv.get(id) ?? { value: row.value, platformValue: id },
+        links: bySource((source) =>
+          ids[source].map(
+            (id) =>
+              byPv[source].get(id) ?? { value: row.value, platformValue: id },
+          ),
         ),
         confidence: 0,
         // NEO-291: project to the one field the modal edits. Callers hand
@@ -1271,8 +1071,9 @@ function ReconciliationDialog({
           ? { cardNumberPrefix: row.metadata.cardNumberPrefix }
           : undefined,
       });
-      for (const id of bscIds) usedBsc.add(id);
-      for (const id of slIds) usedSl.add(id);
+      for (const source of SOURCE_KEYS) {
+        for (const id of ids[source]) used[source].add(id);
+      }
     }
 
     // NEO-300: ids another NB row already holds (a grouped parallel, for
@@ -1281,10 +1082,15 @@ function ReconciliationDialog({
     // set is not handed back as a fresh Ready set — which is exactly how a
     // Sync Inserts after Group Parallels re-created every grouped row.
     // NEO-305: ids another set in the brand holds are held the same way.
-    const held = heldIdSets([
+    const heldMarketplace = heldIdSets([
       ...(heldElsewhere?.rows ?? []),
       ...(heldInBrand?.rows ?? []),
     ]);
+    const held: BySource<Set<string>> = {
+      bsc: heldMarketplace.bsc,
+      sportlots: heldMarketplace.sportlots,
+      checklist: new Set<string>(),
+    };
     // NEO-312: ids the caller says rows ELSEWHERE in the set hold
     // (`used*PlatformValues`) are held too. Before, they only trimmed Pending,
     // so after "Make insert of…" moved a SportLots link to another variant
@@ -1292,19 +1098,18 @@ function ReconciliationDialog({
     // put that one link on a second NB row. Less the ids this sync's own
     // restored rows carry: a Sub-Variants caller's list includes its own
     // parallels, and those must keep coming back as this sync's rows.
-    // `usedBsc`/`usedSl` hold exactly the restored ids at this point.
-    for (const id of usedBscPlatformValues) {
-      if (!usedBsc.has(id)) held.bsc.add(id);
+    // `used` holds exactly the restored ids at this point.
+    for (const source of SOURCE_KEYS) {
+      for (const id of usedBySource[source]) {
+        if (!used[source].has(id)) held[source].add(id);
+      }
     }
-    for (const id of usedSlPlatformValues) {
-      if (!usedSl.has(id)) held.sportlots.add(id);
+    for (const source of SOURCE_KEYS) {
+      for (const id of held[source]) used[source].add(id);
     }
-    for (const id of held.bsc) usedBsc.add(id);
-    for (const id of held.sportlots) usedSl.add(id);
     // The unheld half of an auto-match whose other half is held: an ordinary
     // unassigned marketplace set, so it goes to Pending rather than vanishing.
-    const releasedBsc: PlatformItem[] = [];
-    const releasedSl: PlatformItem[] = [];
+    const released = bySource<PlatformItem[]>(() => []);
     // Only the rows restored from `existingRows` take an attached half below;
     // the auto-match sets pushed after them are the reconciler's guesses, not
     // our data, and a second guess is not joined onto a first.
@@ -1316,19 +1121,19 @@ function ReconciliationDialog({
     // on ONE half is not skipped whole: its other half is attached or released
     // (NEO-306, below), because a skipped half is a link nobody can make.
     for (const m of initialData.autoMatched) {
-      const bscHeld = held.bsc.has(m.bsc.platformValue);
-      const slHeld = held.sportlots.has(m.sl.platformValue);
-      if (bscHeld !== slHeld) {
-        if (!bscHeld) releasedBsc.push(m.bsc);
-        if (!slHeld) releasedSl.push(m.sl);
+      const halves = halvesOf(m);
+      const isHeld = halves.map((h) => held[h.source].has(h.item.platformValue));
+      if (isHeld[0] !== isHeld[1]) {
+        halves.forEach((h, i) => {
+          if (!isHeld[i]) released[h.source].push(h.item);
+        });
       }
       // A held half is never attached anywhere, and its unheld partner was
       // just released above: the NEO-300/305 path, untouched by NEO-306.
-      if (bscHeld || slHeld) continue;
-      const bscUsed = usedBsc.has(m.bsc.platformValue);
-      const slUsed = usedSl.has(m.sl.platformValue);
-      if (bscUsed && slUsed) continue;
-      if (bscUsed || slUsed) {
+      if (isHeld[0] || isHeld[1]) continue;
+      const isUsed = halves.map((h) => used[h.source].has(h.item.platformValue));
+      if (isUsed[0] && isUsed[1]) continue;
+      if (isUsed[0] || isUsed[1]) {
         // Exactly one half is already mapped. NEO-306: the SportLots review
         // files "Blue" as a parallel holding its SL id, and the next Sync
         // Parallels auto-matches BSC "Blue" with that same SL id. Skipping
@@ -1338,48 +1143,50 @@ function ReconciliationDialog({
         // The free half joins the ONE restored row that carries the used
         // half's id — matched by id, never by name — as an ordinary attached
         // chip the operator can ✕ back to Pending. The free half is held or
-        // placed nowhere (`used*` holds every held and restored id and every
+        // placed nowhere (`used` holds every held and restored id and every
         // id placed so far), so the attach duplicates nothing. A free half the
         // caller's `used*PlatformValues` names never reaches here: it is held
         // (NEO-312, above) and took the held branch. In every case with no
         // single row to join — no restored row carries that id (an earlier
         // auto-match placed it), or two do (a shared marketplace id) — it goes
         // to Pending, where it is handled like any loose item.
-        const side: Side = bscUsed ? "sl" : "bsc";
-        const usedPv = bscUsed ? m.bsc.platformValue : m.sl.platformValue;
-        const free = side === "bsc" ? m.bsc : m.sl;
+        const usedHalf = isUsed[0] ? halves[0] : halves[1];
+        const free = isUsed[0] ? halves[1] : halves[0];
         const owners: number[] = [];
         for (let i = 0; i < restoredCount; i++) {
-          const mapped = bscUsed ? ready[i].bsc : ready[i].sl;
-          if (mapped.some((it) => it.platformValue === usedPv)) owners.push(i);
+          const mapped = ready[i].links[usedHalf.source];
+          if (mapped.some((it) => it.platformValue === usedHalf.item.platformValue)) {
+            owners.push(i);
+          }
         }
         if (owners.length === 1) {
           const row = ready[owners[0]];
-          ready[owners[0]] =
-            side === "bsc"
-              ? { ...row, bsc: [...row.bsc, free] }
-              : { ...row, sl: [...row.sl, free] };
-          (side === "bsc" ? usedBsc : usedSl).add(free.platformValue);
+          ready[owners[0]] = {
+            ...row,
+            links: {
+              ...row.links,
+              [free.source]: [...row.links[free.source], free.item],
+            },
+          };
+          used[free.source].add(free.item.platformValue);
         } else {
-          (side === "bsc" ? releasedBsc : releasedSl).push(free);
+          released[free.source].push(free.item);
         }
         continue;
       }
       ready.push({
         key: `set-${seq++}`,
         title: m.displayName,
-        bsc: [m.bsc],
-        sl: [m.sl],
+        links: linksOf(...halves),
         confidence: m.confidence,
       });
-      usedBsc.add(m.bsc.platformValue);
-      usedSl.add(m.sl.platformValue);
+      for (const h of halves) used[h.source].add(h.item.platformValue);
     }
 
-    const pendingOf = (items: PlatformItem[], used: Set<string>) => {
+    const pendingOf = (items: PlatformItem[], usedIds: Set<string>) => {
       const seen = new Set<string>();
       return items.filter((it) => {
-        if (used.has(it.platformValue) || seen.has(it.platformValue)) {
+        if (usedIds.has(it.platformValue) || seen.has(it.platformValue)) {
           return false;
         }
         seen.add(it.platformValue);
@@ -1388,8 +1195,9 @@ function ReconciliationDialog({
     };
     const state: ReconciliationState = {
       ready,
-      pendingBsc: pendingOf([...initialData.unmatchedBsc, ...releasedBsc], usedBsc),
-      pendingSl: pendingOf([...initialData.unmatchedSl, ...releasedSl], usedSl),
+      pending: bySource((source) =>
+        pendingOf([...unmatched[source], ...released[source]], used[source]),
+      ),
       seq,
     };
     return { state, savedSiblings };
@@ -1397,9 +1205,9 @@ function ReconciliationDialog({
   }, []);
   const initialState = seed.state;
   const savedSiblings = seed.savedSiblings;
-  const [state, dispatch] = useReducer(reconciliationReducer, initialState);
+  const [state, dispatch] = useReducer(reconcileSources, initialState);
 
-  // ONE selection at a time, either side. Clicking the opposite side pairs
+  // ONE selection at a time, any source. Clicking another source's item pairs
   // them; clicking a Ready set attaches to it. Drag does the same things but
   // is not keyboard-operable, so the click path is the accessible one.
   //
@@ -1407,7 +1215,7 @@ function ReconciliationDialog({
   // sets under one name, and a name-keyed selection resolved every twin to
   // the first one — so "pair the 3rd Anime" linked the 1st Anime's id.
   const [storedSelected, setSelected] = useState<{
-    side: Side;
+    source: SourceKey;
     platformValue: string;
   } | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -1448,15 +1256,23 @@ function ReconciliationDialog({
     return prefixes;
   }, [setName, manufacturer, extraSlPrefixes]);
 
-  const [slFilter, setSlFilter] = useState<string>("");
+  // Each column's search box.
+  const [filters, setFilters] = useState<BySource<string>>(() =>
+    bySource(() => ""),
+  );
+  const setFilterOf = useCallback(
+    (source: SourceKey, value: string) =>
+      setFilters((prev) => ({ ...prev, [source]: value })),
+    [],
+  );
   const [showAllSl, setShowAllSl] = useState<boolean>(showAllSlInitially);
-  const [bscFilter, setBscFilter] = useState<string>("");
   const [readyFilter, setReadyFilter] = useState<string>("");
-  // Reveal marketplace sets that some NB set already maps. NOT a sharing
-  // concept — mapping never consumed anything, this just keeps the default
-  // list short by hiding what is already accounted for.
-  const [showMappedBsc, setShowMappedBsc] = useState<boolean>(false);
-  const [showMappedSl, setShowMappedSl] = useState<boolean>(false);
+  // Reveal items that some NB set already maps. NOT a sharing concept —
+  // mapping never consumed anything, this just keeps the default list short
+  // by hiding what is already accounted for.
+  const [showMapped, setShowMapped] = useState<BySource<boolean>>(() =>
+    bySource(() => false),
+  );
 
   // The "Show all" toggle controls the SL prefix filter only. The typed
   // query is applied as a secondary contains-search on top of whatever
@@ -1466,8 +1282,10 @@ function ReconciliationDialog({
     return defaultSlPrefixes;
   }, [showAllSl, defaultSlPrefixes]);
 
-  const slQuery = useMemo(() => slFilter.trim().toLowerCase(), [slFilter]);
-  const bscQuery = useMemo(() => bscFilter.trim().toLowerCase(), [bscFilter]);
+  const queries = useMemo(
+    () => bySource((source) => filters[source].trim().toLowerCase()),
+    [filters],
+  );
 
   // Filter pending columns by platformValue only. The same display value can
   // legitimately appear across variantTypes ("Inception" exists as both a Base
@@ -1482,56 +1300,56 @@ function ReconciliationDialog({
   // and the SportLots prefix applied): that is what the check reaches. The
   // QUERIED list adds the search box: that is the check's priority. The
   // FILTERED list (below) then sets aside what does not match the Base.
-  const scopedPendingSl = useMemo(() => {
-    return state.pendingSl.filter((item) => {
-      if (usedSlSet.has(item.platformValue)) return false;
-      const v = item.value.toLowerCase();
-      if (
-        activeSlPrefixes.length > 0 &&
-        !activeSlPrefixes.some((p) => v.startsWith(p))
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [state.pendingSl, activeSlPrefixes, usedSlSet]);
+  const scopedPending = useMemo(
+    () =>
+      bySource((source) =>
+        state.pending[source].filter((item) => {
+          if (usedBySource[source].has(item.platformValue)) return false;
+          // The SportLots prefix filter: SportLots lists every variant type's
+          // sets together, so its column opens on the ones named for this set.
+          if (source === "sportlots") {
+            const v = item.value.toLowerCase();
+            if (
+              activeSlPrefixes.length > 0 &&
+              !activeSlPrefixes.some((p) => v.startsWith(p))
+            ) {
+              return false;
+            }
+          }
+          return true;
+        }),
+      ),
+    [state.pending, activeSlPrefixes, usedBySource],
+  );
 
-  const queriedPendingSl = useMemo(() => {
-    if (!slQuery) return scopedPendingSl;
-    return scopedPendingSl.filter((item) =>
-      item.value.toLowerCase().includes(slQuery),
-    );
-  }, [scopedPendingSl, slQuery]);
-
-  const scopedPendingBsc = useMemo(() => {
-    return state.pendingBsc.filter(
-      (item) => !usedBscSet.has(item.platformValue),
-    );
-  }, [state.pendingBsc, usedBscSet]);
-
-  const queriedPendingBsc = useMemo(() => {
-    if (!bscQuery) return scopedPendingBsc;
-    return scopedPendingBsc.filter((item) =>
-      item.value.toLowerCase().includes(bscQuery),
-    );
-  }, [scopedPendingBsc, bscQuery]);
+  const queriedPending = useMemo(
+    () =>
+      bySource((source) => {
+        const query = queries[source];
+        if (!query) return scopedPending[source];
+        return scopedPending[source].filter((item) =>
+          item.value.toLowerCase().includes(query),
+        );
+      }),
+    [scopedPending, queries],
+  );
 
   // NEO-325 — the Base check (see `baseCheck`). It runs over the columns
   // BEFORE anything is set aside, so a set keeps its verdict whether or not
-  // it is on screen; closing the dialog cancels it.
+  // it is on screen; closing the dialog cancels it. Marketplace sets only.
   const probeScope = useMemo(
     () => ({
-      bsc: scopedPendingBsc.map((i) => i.platformValue),
-      sportlots: scopedPendingSl.map((i) => i.platformValue),
+      bsc: scopedPending.bsc.map((i) => i.platformValue),
+      sportlots: scopedPending.sportlots.map((i) => i.platformValue),
     }),
-    [scopedPendingBsc, scopedPendingSl],
+    [scopedPending],
   );
   const probeView = useMemo(
     () => ({
-      bsc: queriedPendingBsc.map((i) => i.platformValue),
-      sportlots: queriedPendingSl.map((i) => i.platformValue),
+      bsc: queriedPending.bsc.map((i) => i.platformValue),
+      sportlots: queriedPending.sportlots.map((i) => i.platformValue),
     }),
-    [queriedPendingBsc, queriedPendingSl],
+    [queriedPending],
   );
   const probe = useBaseMatchProbe({
     client,
@@ -1542,31 +1360,27 @@ function ReconciliationDialog({
   const checksOn = probe.phase === "on";
   const probeChecks = probe.checks;
   const checkOf = useCallback(
-    (side: Side, platformValue: string): RowCheck | undefined =>
-      checksOn
-        ? probeChecks.get(checkKey(toProbeSide(side), platformValue))
+    (source: SourceKey, platformValue: string): RowCheck | undefined =>
+      checksOn && isMarketplaceSource(source)
+        ? probeChecks.get(checkKey(source, platformValue))
         : undefined,
     [checksOn, probeChecks],
   );
   // Set aside: a VIEW filter only. The rows stay in Pending (reducer state)
   // and behind each column's "Show N that don't match the Base".
-  const [showMismatched, setShowMismatched] = useState<Record<Side, boolean>>({
-    bsc: false,
-    sl: false,
-  });
-  const mismatchedSl = useMemo(
-    () =>
-      checksOn
-        ? queriedPendingSl.filter((i) => isMismatch(checkOf("sl", i.platformValue)))
-        : [],
-    [checksOn, queriedPendingSl, checkOf],
+  const [showMismatched, setShowMismatched] = useState<BySource<boolean>>(() =>
+    bySource(() => false),
   );
-  const mismatchedBsc = useMemo(
+  const mismatched = useMemo(
     () =>
-      checksOn
-        ? queriedPendingBsc.filter((i) => isMismatch(checkOf("bsc", i.platformValue)))
-        : [],
-    [checksOn, queriedPendingBsc, checkOf],
+      bySource((source) =>
+        checksOn
+          ? queriedPending[source].filter((i) =>
+              isMismatch(checkOf(source, i.platformValue)),
+            )
+          : [],
+      ),
+    [checksOn, queriedPending, checkOf],
   );
 
   // NEO-325 (a11y) — a selected Pending row the Base check sets aside while
@@ -1578,16 +1392,15 @@ function ReconciliationDialog({
   // "already mapped" reveal carrying the same id still shows it, so it stays.
   const selected = useMemo(() => {
     const sel = storedSelected;
-    if (!sel || showMismatched[sel.side]) return sel;
-    if (!isMismatch(checkOf(sel.side, sel.platformValue))) return sel;
-    const pending = sel.side === "bsc" ? state.pendingBsc : state.pendingSl;
+    if (!sel || showMismatched[sel.source]) return sel;
+    if (!isMismatch(checkOf(sel.source, sel.platformValue))) return sel;
+    const pending = state.pending[sel.source];
     if (!pending.some((i) => i.platformValue === sel.platformValue)) return sel;
-    const showMapped = sel.side === "bsc" ? showMappedBsc : showMappedSl;
-    const query = sel.side === "bsc" ? bscQuery : slQuery;
+    const query = queries[sel.source];
     const mappedShown =
-      showMapped &&
+      showMapped[sel.source] &&
       state.ready.some((set) =>
-        (sel.side === "bsc" ? set.bsc : set.sl).some(
+        set.links[sel.source].some(
           (i) =>
             i.platformValue === sel.platformValue &&
             (!query || i.value.toLowerCase().includes(query)),
@@ -1598,31 +1411,26 @@ function ReconciliationDialog({
     storedSelected,
     showMismatched,
     checkOf,
-    state.pendingBsc,
-    state.pendingSl,
+    state.pending,
     state.ready,
-    showMappedBsc,
-    showMappedSl,
-    bscQuery,
-    slQuery,
+    showMapped,
+    queries,
   ]);
 
-  const filteredPendingSl = useMemo(() => {
-    if (mismatchedSl.length === 0) return queriedPendingSl;
-    const out = new Set(mismatchedSl.map((i) => i.platformValue));
-    return queriedPendingSl.filter((i) => !out.has(i.platformValue));
-  }, [queriedPendingSl, mismatchedSl]);
-
-  const filteredPendingBsc = useMemo(() => {
-    if (mismatchedBsc.length === 0) return queriedPendingBsc;
-    const out = new Set(mismatchedBsc.map((i) => i.platformValue));
-    return queriedPendingBsc.filter((i) => !out.has(i.platformValue));
-  }, [queriedPendingBsc, mismatchedBsc]);
+  const filteredPending = useMemo(
+    () =>
+      bySource((source) => {
+        if (mismatched[source].length === 0) return queriedPending[source];
+        const out = new Set(mismatched[source].map((i) => i.platformValue));
+        return queriedPending[source].filter((i) => !out.has(i.platformValue));
+      }),
+    [queriedPending, mismatched],
+  );
 
   // A real reconcile can hold a dozen-plus Ready sets, which pushes Pending out
   // of reach — the dialog body is its own scroller, so there is no getting back
   // to it without a lot of wheel. Filtering by OUR title or by any mapped
-  // marketplace name keeps both halves usable, and it is how an operator finds
+  // item's name keeps both halves usable, and it is how an operator finds
   // the one set they came to fix.
   const readyQuery = useMemo(
     () => readyFilter.trim().toLowerCase(),
@@ -1633,18 +1441,19 @@ function ReconciliationDialog({
     return state.ready.filter(
       (set) =>
         set.title.toLowerCase().includes(readyQuery) ||
-        set.bsc.some((i) => i.value.toLowerCase().includes(readyQuery)) ||
-        set.sl.some((i) => i.value.toLowerCase().includes(readyQuery)),
+        SOURCE_KEYS.some((source) =>
+          set.links[source].some((i) => i.value.toLowerCase().includes(readyQuery)),
+        ),
     );
   }, [state.ready, readyQuery]);
 
-  // One entry per marketplace id already mapped by some NB set, carrying the
-  // titles that map it so the operator can see where it is in use.
+  // One entry per item already mapped by some NB set, carrying the titles
+  // that map it so the operator can see where it is in use.
   const mappedItems = useCallback(
-    (side: Side): Array<{ item: PlatformItem; usedBy: string[] }> => {
+    (source: SourceKey): Array<{ item: PlatformItem; usedBy: string[] }> => {
       const byPv = new Map<string, { item: PlatformItem; usedBy: string[] }>();
       for (const set of state.ready) {
-        for (const item of side === "bsc" ? set.bsc : set.sl) {
+        for (const item of set.links[source]) {
           const hit = byPv.get(item.platformValue);
           if (hit) hit.usedBy.push(set.title);
           else byPv.set(item.platformValue, { item, usedBy: [set.title] });
@@ -1655,37 +1464,40 @@ function ReconciliationDialog({
     [state.ready],
   );
 
-  // Resolve a dragged/clicked item by its marketplace id, whether it is still
-  // pending or already mapped somewhere. NEO-325: by id ONLY — a name is not
-  // an identity, and SportLots reuses names across distinct sets.
+  // Resolve a dragged/clicked item by its id, whether it is still pending or
+  // already mapped somewhere. NEO-325: by id ONLY — a name is not an
+  // identity, and SportLots reuses names across distinct sets.
   const resolveItem = useCallback(
-    (side: Side, platformValue: string): PlatformItem | undefined => {
-      const pending = (side === "bsc" ? state.pendingBsc : state.pendingSl).find(
+    (source: SourceKey, platformValue: string): PlatformItem | undefined => {
+      const pending = state.pending[source].find(
         (i) => i.platformValue === platformValue,
       );
       if (pending) return pending;
       for (const set of state.ready) {
-        const hit = (side === "bsc" ? set.bsc : set.sl).find(
+        const hit = set.links[source].find(
           (i) => i.platformValue === platformValue,
         );
         if (hit) return hit;
       }
       return undefined;
     },
-    [state.pendingBsc, state.pendingSl, state.ready],
+    [state.pending, state.ready],
   );
 
-  // NEO-325 (D2) — which names more than one distinct item on a side carries,
-  // so only those rows show their id. Computed over the WHOLE side (Pending
-  // plus every item mapped in Ready), never the filtered view: a suffix that
-  // came and went as the operator typed would make the same row read
-  // differently from one keystroke to the next.
-  const dups = useMemo<SideDups>(() => {
-    const allBsc = [...state.pendingBsc, ...state.ready.flatMap((set) => set.bsc)];
-    const allSl = [...state.pendingSl, ...state.ready.flatMap((set) => set.sl)];
+  // NEO-325 (D2) — which names more than one distinct item in a source
+  // carries, so only those rows show their id. Computed over the WHOLE source
+  // (Pending plus every item mapped in Ready), never the filtered view: a
+  // suffix that came and went as the operator typed would make the same row
+  // read differently from one keystroke to the next.
+  const dups = useMemo<SourceDups>(() => {
     // NEO-325 — plus every name the FETCH called a twin, judged on the
     // marketplace's whole list: a twin whose namesake never reached this
     // dialog still needs its id to be told from that namesake elsewhere.
+    const twins: BySource<readonly string[] | undefined> = {
+      bsc: twinIds?.bsc,
+      sportlots: twinIds?.sportlots,
+      checklist: undefined,
+    };
     const withTwins = (
       items: PlatformItem[],
       ids: readonly string[] | undefined,
@@ -1698,17 +1510,33 @@ function ReconciliationDialog({
       }
       return out;
     };
-    return {
-      bsc: withTwins(allBsc, twinIds?.bsc),
-      sl: withTwins(allSl, twinIds?.sportlots),
-    };
-  }, [state.pendingBsc, state.pendingSl, state.ready, twinIds]);
+    return bySource((source) =>
+      withTwins(
+        [...state.pending[source], ...state.ready.flatMap((set) => set.links[source])],
+        twins[source],
+      ),
+    );
+  }, [state.pending, state.ready, twinIds]);
+
+  // The Ready sets as the title-clash and shared-title helpers read them:
+  // their marketplace links under the helpers' `bsc`/`sl` names.
+  const clashView = useMemo(
+    () =>
+      state.ready.map((set) => ({
+        key: set.key,
+        title: set.title,
+        ownSet: set.ownSet,
+        bsc: set.links.bsc,
+        sl: set.links.sportlots,
+      })),
+    [state.ready],
+  );
 
   // NEO-325 — Ready rows' names for their own controls. Over EVERY Ready set,
   // never the filtered view, for the same reason as `dups` above.
   const readyLabels = useMemo(
-    () => sharedTitleLabels(state.ready),
-    [state.ready],
+    () => sharedTitleLabels(clashView),
+    [clashView],
   );
   const readyLabelOf = useCallback(
     (set: ReadySet) => readyLabels.get(set.key) ?? set.title,
@@ -1729,8 +1557,8 @@ function ReconciliationDialog({
     ReadonlyMap<string, string>
   >(() => new Map());
   const titleClashes = useMemo(
-    () => readyTitleClashes(state.ready, titleDraftView, savedSiblings),
-    [state.ready, titleDraftView, savedSiblings],
+    () => readyTitleClashes(clashView, titleDraftView, savedSiblings),
+    [clashView, titleDraftView, savedSiblings],
   );
   const handleTitleDraft = useCallback(
     (key: string, draft: string | null) => {
@@ -1743,7 +1571,7 @@ function ReconciliationDialog({
         drafts.set(key, draft);
       }
       const answerOf = (view: ReadonlyMap<string, string>) =>
-        titleClashSignature(readyTitleClashes(state.ready, view, savedSiblings));
+        titleClashSignature(readyTitleClashes(clashView, view, savedSiblings));
       if (draft !== null && answerOf(shownDraftsRef.current) === answerOf(drafts)) {
         return;
       }
@@ -1751,7 +1579,7 @@ function ReconciliationDialog({
       shownDraftsRef.current = next;
       setTitleDraftView(next);
     },
-    [state.ready, savedSiblings],
+    [clashView, savedSiblings],
   );
   const clashBaseId = useId();
   const clashMessageIdOf = (index: number) => `${clashBaseId}-title-clash-${index}`;
@@ -1788,8 +1616,8 @@ function ReconciliationDialog({
     const labelOf = (id: UniqueIdentifier): string | null => {
       const ref = parseItemDndId(String(id));
       if (!ref) return null;
-      const item = resolveItem(ref.side, ref.platformValue);
-      return item ? itemLabel(item, ref.side, dups[ref.side]) : null;
+      const item = resolveItem(ref.source, ref.platformValue);
+      return item ? sourceItemLabel(item, ref.source, dups) : null;
     };
     const readySetOf = (id: UniqueIdentifier): ReadySet | undefined => {
       const raw = String(id);
@@ -1809,16 +1637,17 @@ function ReconciliationDialog({
       const set = readySetOf(over.id);
       const ref = parseItemDndId(String(active.id));
       if (set && ref) {
-        const mapped = ref.side === "bsc" ? set.bsc : set.sl;
         return {
           kind: "attach",
           set,
-          already: mapped.some((i) => i.platformValue === ref.platformValue),
+          already: set.links[ref.source].some(
+            (i) => i.platformValue === ref.platformValue,
+          ),
         };
       }
       const overRef = parseItemDndId(String(over.id));
       const other = labelOf(over.id);
-      if (ref && overRef && other && overRef.side !== ref.side) {
+      if (ref && overRef && other && overRef.source !== ref.source) {
         return { kind: "pair", other };
       }
       return { kind: "none", other };
@@ -1883,8 +1712,8 @@ function ReconciliationDialog({
 
       const activeRef = parseItemDndId(activeId);
       if (!activeRef) return;
-      const activeSide = activeRef.side;
-      const activeItem = resolveItem(activeSide, activeRef.platformValue);
+      const activeSource = activeRef.source;
+      const activeItem = resolveItem(activeSource, activeRef.platformValue);
       if (!activeItem) return;
 
       // Dropped on a Ready set → join it.
@@ -1892,22 +1721,22 @@ function ReconciliationDialog({
         dispatch({
           type: "ATTACH",
           key: overId.slice("ready-".length),
-          side: activeSide,
+          source: activeSource,
           item: activeItem,
         });
         return;
       }
 
-      // Dropped on the opposite side's pending item → the two become a set.
+      // Dropped on another source's pending item → the two become a set.
       const overRef = parseItemDndId(overId);
-      if (!overRef || overRef.side === activeSide) return;
-      const overItem = resolveItem(overRef.side, overRef.platformValue);
+      if (!overRef || overRef.source === activeSource) return;
+      const overItem = resolveItem(overRef.source, overRef.platformValue);
       if (!overItem) return;
 
       dispatch({
         type: "PROMOTE_PAIR",
-        bsc: activeSide === "bsc" ? activeItem : overItem,
-        sl: activeSide === "sl" ? activeItem : overItem,
+        a: { source: activeSource, item: activeItem },
+        b: { source: overRef.source, item: overItem },
       });
     },
     [resolveItem],
@@ -1915,15 +1744,15 @@ function ReconciliationDialog({
 
   // Click-to-link, the keyboard-reachable mirror of the drags above.
   const handlePendingClick = useCallback(
-    (side: Side, platformValue: string) => {
-      if (selected && selected.side !== side) {
-        const here = resolveItem(side, platformValue);
-        const there = resolveItem(selected.side, selected.platformValue);
+    (source: SourceKey, platformValue: string) => {
+      if (selected && selected.source !== source) {
+        const here = resolveItem(source, platformValue);
+        const there = resolveItem(selected.source, selected.platformValue);
         if (here && there) {
           dispatch({
             type: "PROMOTE_PAIR",
-            bsc: side === "bsc" ? here : there,
-            sl: side === "sl" ? here : there,
+            a: { source, item: here },
+            b: { source: selected.source, item: there },
           });
         }
         setSelected(null);
@@ -1931,10 +1760,10 @@ function ReconciliationDialog({
       }
       setSelected(
         selected &&
-          selected.side === side &&
+          selected.source === source &&
           selected.platformValue === platformValue
           ? null
-          : { side, platformValue },
+          : { source, platformValue },
       );
     },
     [selected, resolveItem],
@@ -1943,15 +1772,17 @@ function ReconciliationDialog({
   const handleAttachClick = useCallback(
     (key: string) => {
       if (!selected) return;
-      const item = resolveItem(selected.side, selected.platformValue);
-      if (item) dispatch({ type: "ATTACH", key, side: selected.side, item });
+      const item = resolveItem(selected.source, selected.platformValue);
+      if (item) dispatch({ type: "ATTACH", key, source: selected.source, item });
       setSelected(null);
     },
     [selected, resolveItem],
   );
 
-  const bscFilterRef = useRef<HTMLInputElement | null>(null);
-  const slFilterRef = useRef<HTMLInputElement | null>(null);
+  // Each column's search box, so focus can be put back there.
+  const [filterRefs] = useState(() =>
+    bySource(() => React.createRef<HTMLInputElement>()),
+  );
 
   /**
    * NEO-300 — keep focus in the column after its row (or all its rows) leave.
@@ -1961,18 +1792,21 @@ function ReconciliationDialog({
    * every press. Next row's button (the one that slid into the pressed one's
    * place), else the last one, else the column's filter.
    */
-  const refocusColumn = useCallback((side: Side, index: number) => {
-    requestAnimationFrame(() => {
-      const buttons = dialogRef.current?.querySelectorAll<HTMLElement>(
-        `button[data-own-set="${side}"]`,
-      );
-      const next =
-        buttons && buttons.length > 0
-          ? buttons[Math.min(index, buttons.length - 1)]
-          : (side === "bsc" ? bscFilterRef : slFilterRef).current;
-      next?.focus();
-    });
-  }, []);
+  const refocusColumn = useCallback(
+    (source: SourceKey, index: number) => {
+      requestAnimationFrame(() => {
+        const buttons = dialogRef.current?.querySelectorAll<HTMLElement>(
+          `button[data-own-set="${SOURCE_TOKEN[source]}"]`,
+        );
+        const next =
+          buttons && buttons.length > 0
+            ? buttons[Math.min(index, buttons.length - 1)]
+            : filterRefs[source].current;
+        next?.focus();
+      });
+    },
+    [filterRefs],
+  );
 
   /**
    * NEO-325 (a11y, WCAG 2.4.3) — a verdict that sets a row aside takes the
@@ -1982,47 +1816,47 @@ function ReconciliationDialog({
    * Base", which just appeared or grew and says where the row went. Only when
    * focus really was dropped; anywhere else, the operator put it there.
    */
-  const mismatchCountsRef = useRef<Record<Side, number>>({ bsc: 0, sl: 0 });
-  /** The column focus was last in (`onFocusCapture`), for when both grew. */
-  const lastFocusSideRef = useRef<Side | null>(null);
+  const mismatchCountsRef = useRef<BySource<number>>(bySource(() => 0));
+  /** The column focus was last in (`onFocusCapture`), for when several grew. */
+  const lastFocusSourceRef = useRef<SourceKey | null>(null);
   useEffect(() => {
     const prev = mismatchCountsRef.current;
-    const grewSl = mismatchedSl.length > prev.sl;
-    const grewBsc = mismatchedBsc.length > prev.bsc;
-    const grew: Side | null =
-      grewSl && grewBsc
-        ? (lastFocusSideRef.current ?? "sl")
-        : grewSl
-          ? "sl"
-          : grewBsc
-            ? "bsc"
-            : null;
-    mismatchCountsRef.current = {
-      bsc: mismatchedBsc.length,
-      sl: mismatchedSl.length,
-    };
+    const grown = SOURCE_KEYS.filter(
+      (source) => mismatched[source].length > prev[source],
+    );
+    // Several at once: the column focus was last in, else the last of them.
+    const lastFocus = lastFocusSourceRef.current;
+    const grew: SourceKey | null =
+      grown.length > 1
+        ? lastFocus && grown.includes(lastFocus)
+          ? lastFocus
+          : grown[grown.length - 1]
+        : (grown[0] ?? null);
+    mismatchCountsRef.current = bySource((source) => mismatched[source].length);
     if (!grew || !isOpen) return;
     if (document.activeElement !== document.body) return;
     dialogRef.current
-      ?.querySelector<HTMLElement>(`button[data-base-toggle="${grew}"]`)
+      ?.querySelector<HTMLElement>(
+        `button[data-base-toggle="${SOURCE_TOKEN[grew]}"]`,
+      )
       ?.focus();
-  }, [mismatchedBsc.length, mismatchedSl.length, isOpen]);
+  }, [mismatched, isOpen]);
 
   const mismatchGroupBaseId = useId();
   const reasonBaseId = useId();
   /** A row's reason line id. Marketplace ids are made safe for an IDREF list. */
-  const reasonIdOf = (side: Side, platformValue: string) =>
-    `${reasonBaseId}-reason-${side}-${platformValue.replace(
+  const reasonIdOf = (source: SourceKey, platformValue: string) =>
+    `${reasonBaseId}-reason-${SOURCE_TOKEN[source]}-${platformValue.replace(
       /[^A-Za-z0-9_-]/g,
       (c) => `_${c.charCodeAt(0)}_`,
     )}`;
 
   const handlePromoteSolo = useCallback(
-    (side: Side, platformValue: string, index: number) => {
-      const item = resolveItem(side, platformValue);
-      if (item) dispatch({ type: "PROMOTE_SOLO", side, item });
+    (source: SourceKey, platformValue: string, index: number) => {
+      const item = resolveItem(source, platformValue);
+      if (item) dispatch({ type: "PROMOTE_SOLO", source, item });
       setSelected(null);
-      refocusColumn(side, index);
+      refocusColumn(source, index);
     },
     [resolveItem, refocusColumn],
   );
@@ -2041,32 +1875,38 @@ function ReconciliationDialog({
     setConfirming(true);
     try {
       const items: ReconciledResult["items"] = state.ready.map((set) => {
-        const bscLabels: Record<string, string> = {};
-        for (const i of set.bsc) bscLabels[i.platformValue] = i.value;
-        const slLabels: Record<string, string> = {};
-        for (const i of set.sl) slLabels[i.platformValue] = i.value;
+        // Marketplace ids go to `platformData`, one key per marketplace with
+        // any, and each id's display name to `platformLabels`.
+        const platformData: ReconciledResult["items"][number]["platformData"] = {};
+        const platformLabels: Partial<
+          Record<MarketplaceSourceKey, Record<string, string>>
+        > = {};
+        for (const source of sources) {
+          if (source.kind !== "marketplace") continue;
+          const linked = set.links[source.key];
+          if (linked.length === 0) continue;
+          platformData[source.key] = linked.map((i) => i.platformValue);
+          const labels: Record<string, string> = {};
+          for (const i of linked) labels[i.platformValue] = i.value;
+          platformLabels[source.key] = labels;
+        }
+        // A set whose title was cleared takes its first linked item's name.
+        let fallbackTitle = "";
+        for (const source of sources) {
+          const first = set.links[source.key][0]?.value;
+          if (first) {
+            fallbackTitle = first;
+            break;
+          }
+        }
 
         return {
           // Undefined for a set built in this dialog, which is exactly right:
           // the store then falls through to its id/value matcher.
           existingId: set.existingId,
-          value: set.title.trim() || set.bsc[0]?.value || set.sl[0]?.value || "",
-          platformData: {
-            ...(set.bsc.length > 0
-              ? { bsc: set.bsc.map((i) => i.platformValue) }
-              : {}),
-            ...(set.sl.length > 0
-              ? { sportlots: set.sl.map((i) => i.platformValue) }
-              : {}),
-          },
-          ...(set.bsc.length > 0 || set.sl.length > 0
-            ? {
-                platformLabels: {
-                  ...(set.bsc.length > 0 ? { bsc: bscLabels } : {}),
-                  ...(set.sl.length > 0 ? { sportlots: slLabels } : {}),
-                },
-              }
-            : {}),
+          value: set.title.trim() || fallbackTitle,
+          platformData,
+          ...(Object.keys(platformLabels).length > 0 ? { platformLabels } : {}),
           metadata: set.metadata,
           // NEO-325: a set the operator made its own is matched by identity
           // only, so a SportLots twin saved after its namesake is stored as
@@ -2081,7 +1921,7 @@ function ReconciliationDialog({
     } finally {
       setConfirming(false);
     }
-  }, [state, onConfirm, saveBlockedByTitles]);
+  }, [state, onConfirm, saveBlockedByTitles, sources]);
 
   /**
    * NEO-220 — how much of this session a dismissal would throw away.
@@ -2089,12 +1929,20 @@ function ReconciliationDialog({
    * A diff against the seeded state, not a counter: the modal opens with a
    * screenful of Ready sets restored from `existingRows`, so "the list is not
    * empty" says nothing about whether the operator has done anything.
-   * `countReconciliationEdits` is pure and separately tested.
+   * `countReconciliationEdits` is pure and separately tested; it reads each
+   * set's links as one list per source.
    */
-  const pendingEdits = useMemo(
-    () => countReconciliationEdits(initialState, state),
-    [initialState, state],
-  );
+  const pendingEdits = useMemo(() => {
+    const editView = (s: ReconciliationState) => ({
+      ready: s.ready.map((set) => ({
+        key: set.key,
+        title: set.title,
+        metadata: set.metadata,
+        ...set.links,
+      })),
+    });
+    return countReconciliationEdits(editView(initialState), editView(state));
+  }, [initialState, state]);
 
   /**
    * The single door out. Backdrop click, footer Cancel and root Escape all come
@@ -2140,17 +1988,18 @@ function ReconciliationDialog({
     if (!activeDragId) return null;
     const ref = parseItemDndId(activeDragId);
     if (!ref) return null;
-    const item = resolveItem(ref.side, ref.platformValue);
-    return item ? { item, side: ref.side } : null;
-  }, [activeDragId, resolveItem]);
+    const item = resolveItem(ref.source, ref.platformValue);
+    const source = sourceByKey.get(ref.source);
+    return item && source ? { item, source } : null;
+  }, [activeDragId, resolveItem, sourceByKey]);
 
   // The item a Ready row's "Add … to this set" would attach, for its label.
   const selectedItem = selected
-    ? resolveItem(selected.side, selected.platformValue)
+    ? resolveItem(selected.source, selected.platformValue)
     : undefined;
   const attachHint =
     selected && selectedItem
-      ? itemLabel(selectedItem, selected.side, dups[selected.side])
+      ? sourceItemLabel(selectedItem, selected.source, dups)
       : undefined;
 
   if (!isOpen) return null;
@@ -2164,22 +2013,29 @@ function ReconciliationDialog({
         : level);
 
   const saveCount = state.ready.length;
-  const pendingCount = state.pendingBsc.length + state.pendingSl.length;
+  const pendingCount = sources.reduce(
+    (n, source) => n + state.pending[source.key].length,
+    0,
+  );
 
-  const renderPendingColumn = (side: Side) => {
-    const isBsc = side === "bsc";
-    const filtered = isBsc ? filteredPendingBsc : filteredPendingSl;
-    const all = isBsc ? state.pendingBsc : state.pendingSl;
-    const query = isBsc ? bscQuery : slQuery;
-    const sideName = isBsc ? "BSC" : "SportLots";
-    const probeSide = toProbeSide(side);
+  const renderPendingColumn = (source: SourceDescriptor) => {
+    const key = source.key;
+    const token = SOURCE_TOKEN[key];
+    const filtered = filteredPending[key];
+    const all = state.pending[key];
+    const query = queries[key];
+    const sideName = source.label;
+    // The Base check and its copy are a marketplace's; any other source's
+    // column never has a verdict, so none of it renders there.
+    const probeSide = isMarketplaceSource(key) ? key : null;
     const narrowed = filtered.length !== all.length;
     // NEO-325 — the Base check's view of this column. `scoped` is what the
     // check reaches (the counter and the sleeves); `mismatched` is what the
     // search box shows of the sets set aside.
-    const scoped = isBsc ? scopedPendingBsc : scopedPendingSl;
-    const mismatched = isBsc ? mismatchedBsc : mismatchedSl;
-    const revealMismatched = checksOn && mismatched.length > 0 && showMismatched[side];
+    const scoped = scopedPending[key];
+    const columnMismatched = mismatched[key];
+    const revealMismatched =
+      checksOn && columnMismatched.length > 0 && showMismatched[key];
     // NEO-300 — Keep all acts on exactly the rows that carry a "Make its own
     // set" button: `filtered`, i.e. after the search box, the SportLots
     // prefix filter ("Show all" off) and the other-level exclusion. The
@@ -2190,9 +2046,10 @@ function ReconciliationDialog({
     // match the Base (revealed or not) or one still being checked: Keep all
     // promotes only what has been checked. A set-aside row is promoted only
     // by its own "Make its own set".
-    const keepable = checksOn
-      ? filtered.filter((i) => checkOf(side, i.platformValue)?.state === "done")
-      : filtered;
+    const keepable =
+      checksOn && probeSide
+        ? filtered.filter((i) => checkOf(key, i.platformValue)?.state === "done")
+        : filtered;
     const stillChecking = filtered.length - keepable.length;
     const keepNarrowed = keepable.length !== all.length;
     //
@@ -2211,23 +2068,20 @@ function ReconciliationDialog({
         : `Make every pending ${sideName} set its own NeonBinder set.`
     }${
       checksOn
-        ? BASE_MATCH_COPY.keepAllLeftOut(stillChecking, mismatched.length)
+        ? BASE_MATCH_COPY.keepAllLeftOut(stillChecking, columnMismatched.length)
         : ""
     }`;
     const keepAll = () => {
       if (keepable.length === 0) return;
-      dispatch({ type: "PROMOTE_SOLO_MANY", side, items: keepable });
+      dispatch({ type: "PROMOTE_SOLO_MANY", source: key, items: keepable });
       setSelected(null);
       // The list this emptied took the focused button with it.
-      requestAnimationFrame(() =>
-        (isBsc ? bscFilterRef : slFilterRef).current?.focus(),
-      );
+      requestAnimationFrame(() => filterRefs[key].current?.focus());
     };
-    // Already-mapped sets, revealed on request. Mapping never consumed them —
+    // Already-mapped items, revealed on request. Mapping never consumed them —
     // this toggle only keeps the default list to what still needs attention.
-    const showMapped = isBsc ? showMappedBsc : showMappedSl;
-    const mapped = showMapped
-      ? mappedItems(side).filter(
+    const mapped = showMapped[key]
+      ? mappedItems(key).filter(
           ({ item }) =>
             !query || item.value.toLowerCase().includes(query),
         )
@@ -2240,7 +2094,7 @@ function ReconciliationDialog({
     let unverifiable = 0;
     if (checksOn) {
       for (const item of scoped) {
-        const check = checkOf(side, item.platformValue);
+        const check = checkOf(key, item.platformValue);
         if (check?.state !== "done") continue;
         settled++;
         if (check.verdict === "match") matched++;
@@ -2255,27 +2109,27 @@ function ReconciliationDialog({
         : BASE_MATCH_COPY.checkedHeader(matched, notMatched, unverifiable);
     // The check is SPOKEN once for the whole dialog (`probe.announcement`,
     // rendered under the Pending heading), never per column.
-    const toggleVisible = BASE_MATCH_COPY.mismatchedToggle(mismatched.length);
-    const mismatchGroupId = `${mismatchGroupBaseId}-${side}`;
-    const toggleTextId = `${mismatchGroupBaseId}-${side}-toggle`;
-    const keepAllDescId = `${mismatchGroupBaseId}-${side}-keep-all`;
+    const toggleVisible = BASE_MATCH_COPY.mismatchedToggle(columnMismatched.length);
+    const mismatchGroupId = `${mismatchGroupBaseId}-${token}`;
+    const toggleTextId = `${mismatchGroupBaseId}-${token}-toggle`;
+    const keepAllDescId = `${mismatchGroupBaseId}-${token}-keep-all`;
     const toggleMismatched = () => {
       // Whichever way it goes, a selected set-aside row of this column stops
       // being selected: hidden, it would pair unseen; revealed, it would come
       // back selected without the operator having seen it chosen.
       setSelected((prev) =>
         prev &&
-        prev.side === side &&
-        isMismatch(checkOf(side, prev.platformValue))
+        prev.source === key &&
+        isMismatch(checkOf(key, prev.platformValue))
           ? null
           : prev,
       );
-      setShowMismatched((prev) => ({ ...prev, [side]: !prev[side] }));
+      setShowMismatched((prev) => ({ ...prev, [key]: !prev[key] }));
     };
 
     /** A row's check, for its glyph and words; undefined with the check off. */
     const statusOf = (item: PlatformItem) => {
-      const check = checkOf(side, item.platformValue);
+      const check = checkOf(key, item.platformValue);
       return check ? { kind: checkKind(check), srText: checkSrText(check) } : undefined;
     };
 
@@ -2287,24 +2141,24 @@ function ReconciliationDialog({
      * it — the handle's description, so the reason is read with the row.
      */
     const pendingRow = (item: PlatformItem, buttonIndex: number) => {
-      const check = checkOf(side, item.platformValue);
+      const check = checkOf(key, item.platformValue);
       const reason =
         check?.state === "done" && check.verdict !== "match" ? check : undefined;
-      const reasonId = reason ? reasonIdOf(side, item.platformValue) : undefined;
+      const reasonId = reason ? reasonIdOf(key, item.platformValue) : undefined;
       const row = (
         // NEO-325: keyed and dnd-identified by marketplace id. Keyed by
         // name, two same-named SportLots sets shared a React key, and
         // filtering the column left a stale twin on screen.
         <DraggableItem
-          key={`${side}-${item.platformValue}`}
-          id={`${side}-${item.platformValue}`}
-          name={<ItemName item={item} side={side} dups={dups} />}
-          platform={side}
+          key={itemDndId(key, item.platformValue)}
+          id={itemDndId(key, item.platformValue)}
+          name={<ItemName item={item} source={source} dups={dups} />}
+          source={source}
           isSelected={
-            selected?.side === side &&
+            selected?.source === key &&
             selected.platformValue === item.platformValue
           }
-          onClick={() => handlePendingClick(side, item.platformValue)}
+          onClick={() => handlePendingClick(key, item.platformValue)}
           status={statusOf(item)}
           describedBy={reasonId}
           action={
@@ -2313,9 +2167,9 @@ function ReconciliationDialog({
               variant="primary"
               outline
               size="1"
-              data-own-set={side}
+              data-own-set={token}
               onClick={() =>
-                handlePromoteSolo(side, item.platformValue, buttonIndex)
+                handlePromoteSolo(key, item.platformValue, buttonIndex)
               }
               className={OWN_SET_BUTTON}
               // WCAG 2.5.3: the name begins with the visible text, then
@@ -2324,7 +2178,7 @@ function ReconciliationDialog({
               // bowman-insert-grouping-builds-parallels.yaml taps this by
               // id (Maestro id: is a full-string regex match), so a
               // unique name must stay exactly `Make its own set: <name>`.
-              aria-label={`Make its own set: ${itemLabel(item, side, dups[side])}`}
+              aria-label={`Make its own set: ${sourceItemLabel(item, key, dups)}`}
             >
               Make its own set
             </NeonButton>
@@ -2336,7 +2190,7 @@ function ReconciliationDialog({
       // element type and remount it, dropping focus to <body>.
       if (!baseCheck) return row;
       return (
-        <div key={`${side}-${item.platformValue}`}>
+        <div key={itemDndId(key, item.platformValue)}>
           {row}
           {reason && (
             // amber-300: the dialog's "a person should look at this" tone
@@ -2357,18 +2211,19 @@ function ReconciliationDialog({
     // "Make its own set" buttons are found again by DOM order after a
     // promote (`refocusColumn`), so the index counts the revealed rows, which
     // render first.
-    const revealedCount = revealMismatched ? mismatched.length : 0;
+    const revealedCount = revealMismatched ? columnMismatched.length : 0;
 
     return (
       <div
+        key={key}
         onFocusCapture={() => {
-          lastFocusSideRef.current = side;
+          lastFocusSourceRef.current = key;
         }}
       >
         <div className="flex items-center justify-between gap-2 mb-2">
           <div
             className={`text-xs font-medium uppercase tracking-wide ${
-              isBsc ? "text-neon-blue-text" : "text-neon-purple-text"
+              TONE_CLASSES[source.tone].heading
             }`}
           >
             {sideName} ({filtered.length}
@@ -2397,7 +2252,7 @@ function ReconciliationDialog({
             {keepAllDescription}
           </span>
         </div>
-        {checksOn && checkTotal > 0 && (
+        {checksOn && probeSide && checkTotal > 0 && (
           // NEO-325 — the column's Base check, in the run ledger's shape: a
           // counter and a sleeve per set filling as each one settles. The
           // sleeves are decorative (aria-hidden); the counter and the rows say
@@ -2408,8 +2263,8 @@ function ReconciliationDialog({
             </p>
             <SleeveStrip
               items={scoped.slice(0, SLEEVE_CAP).map((item) => {
-                const check = checkOf(side, item.platformValue);
-                const label = itemLabel(item, side, dups[side]);
+                const check = checkOf(key, item.platformValue);
+                const label = sourceItemLabel(item, key, dups);
                 return {
                   key: item.platformValue,
                   kind: check ? checkKind(check) : "waiting",
@@ -2425,7 +2280,7 @@ function ReconciliationDialog({
             />
           </div>
         )}
-        {checksOn && probe.stopped[probeSide] && (
+        {checksOn && probeSide && probe.stopped[probeSide] && (
           // NEO-325 (security F1) — the column's check stopped because the
           // marketplace answered a whole batch "signed out". The dialog's
           // live line says it to a screen reader; this says it to everyone,
@@ -2436,14 +2291,14 @@ function ReconciliationDialog({
           </p>
         )}
         <FilterInput
-          value={isBsc ? bscFilter : slFilter}
-          onChange={isBsc ? setBscFilter : setSlFilter}
-          placeholder={isBsc ? "Filter BSC items..." : "Search SportLots items..."}
-          ariaLabel={isBsc ? "Filter BSC items" : "Search SportLots items"}
-          inputRef={isBsc ? bscFilterRef : slFilterRef}
+          value={filters[key]}
+          onChange={(next) => setFilterOf(key, next)}
+          placeholder={`${source.filterLabel}...`}
+          ariaLabel={source.filterLabel}
+          inputRef={filterRefs[key]}
         />
-        {isBsc ? (
-          // Spacer keeps the two lists' tops aligned; only SL has a prefix
+        {key !== "sportlots" ? (
+          // Spacer keeps the lists' tops aligned; only SL has a prefix
           // filter worth toggling.
           <div className="mb-2 h-[18px]" aria-hidden="true" />
         ) : (
@@ -2461,20 +2316,19 @@ function ReconciliationDialog({
         <label className="flex items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
           <input
             type="checkbox"
-            checked={showMapped}
-            onChange={(e) =>
-              (isBsc ? setShowMappedBsc : setShowMappedSl)(e.target.checked)
-            }
-            aria-label={`Show ${isBsc ? "BSC" : "SportLots"} sets already mapped`}
+            checked={showMapped[key]}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setShowMapped((prev) => ({ ...prev, [key]: checked }));
+            }}
+            aria-label={`Show ${sideName} sets already mapped`}
             className={`h-3.5 w-3.5 rounded border-control bg-raised focus-outline ${
-              isBsc
-                ? "text-neon-blue-text"
-                : "text-neon-purple-text"
+              TONE_CLASSES[source.tone].heading
             }`}
           />
           Show sets already mapped
         </label>
-        {checksOn && mismatched.length > 0 && (
+        {checksOn && probeSide && columnMismatched.length > 0 && (
           // NEO-325 — the sets the Base check set aside, never silently gone.
           // A disclosure: its words (constant) say how many, and its state is
           // `aria-expanded` alone — the name never flips Show/Hide. Enter is
@@ -2483,9 +2337,9 @@ function ReconciliationDialog({
           // aria-label`): the group is labelled by the span inside it.
           <button
             type="button"
-            data-base-toggle={side}
-            aria-expanded={showMismatched[side]}
-            aria-controls={showMismatched[side] ? mismatchGroupId : undefined}
+            data-base-toggle={token}
+            aria-expanded={showMismatched[key]}
+            aria-controls={showMismatched[key] ? mismatchGroupId : undefined}
             aria-label={BASE_MATCH_COPY.toggleName(toggleVisible, probeSide)}
             onClick={toggleMismatched}
             onKeyDown={(event) => activateOnEnter(event, toggleMismatched)}
@@ -2494,7 +2348,7 @@ function ReconciliationDialog({
             <ChevronRightIcon
               aria-hidden="true"
               className={`h-3.5 w-3.5 shrink-0 motion-safe:transition-transform ${
-                showMismatched[side] ? "rotate-90" : ""
+                showMismatched[key] ? "rotate-90" : ""
               }`}
             />
             <span id={toggleTextId}>{toggleVisible}</span>
@@ -2510,23 +2364,23 @@ function ReconciliationDialog({
               aria-labelledby={toggleTextId}
               className="space-y-1.5 border-l-2 border-notice-warn-rule pl-2 pb-1"
             >
-              {mismatched.map((item, index) => pendingRow(item, index))}
+              {columnMismatched.map((item, index) => pendingRow(item, index))}
             </div>
           )}
           {filtered.map((item, index) => pendingRow(item, revealedCount + index))}
           {mapped.map(({ item, usedBy }) => (
-            <div key={`mapped-${side}-${item.platformValue}`}>
+            <div key={`${MAPPED_DND_PREFIX}${itemDndId(key, item.platformValue)}`}>
               <DraggableItem
                 // Its own dnd id: the same marketplace id can be a Pending
                 // row above at the same time (see MAPPED_DND_PREFIX).
-                id={`${MAPPED_DND_PREFIX}${side}-${item.platformValue}`}
-                name={<ItemName item={item} side={side} dups={dups} />}
-                platform={side}
+                id={`${MAPPED_DND_PREFIX}${itemDndId(key, item.platformValue)}`}
+                name={<ItemName item={item} source={source} dups={dups} />}
+                source={source}
                 isSelected={
-                  selected?.side === side &&
+                  selected?.source === key &&
                   selected.platformValue === item.platformValue
                 }
-                onClick={() => handlePendingClick(side, item.platformValue)}
+                onClick={() => handlePendingClick(key, item.platformValue)}
               />
               {/* gray-400: gray-500 on the gray-900 panel is 3.67:1. */}
               <p className="text-[11px] text-ink-3 mt-0.5 px-1 truncate">
@@ -2536,14 +2390,14 @@ function ReconciliationDialog({
           ))}
           {all.length === 0 && mapped.length === 0 && (
             <p className="text-xs text-ink-3 italic py-2">
-              Nothing pending on {isBsc ? "BSC" : "SportLots"}
+              Nothing pending on {sideName}
             </p>
           )}
-          {all.length > 0 && filtered.length === 0 && mismatched.length === 0 && (
+          {all.length > 0 && filtered.length === 0 && columnMismatched.length === 0 && (
             <p className="text-xs text-ink-3 italic py-2">
               {query
-                ? `No ${isBsc ? "BSC" : "SL"} items contain "${query}"`
-                : !isBsc && activeSlPrefixes.length > 0
+                ? `No ${source.badge} items contain "${query}"`
+                : key === "sportlots" && activeSlPrefixes.length > 0
                   ? `No SL items start with ${activeSlPrefixes
                       .map((p) => `"${p}"`)
                       .join(" or ")}`
@@ -2707,6 +2561,7 @@ function ReconciliationDialog({
                   <ReadySetRow
                     key={set.key}
                     set={set}
+                    sources={sources}
                     label={readyLabelOf(set)}
                     showMetadata={showMetadata}
                     dups={dups}
@@ -2719,8 +2574,8 @@ function ReconciliationDialog({
                     onRename={(title) =>
                       dispatch({ type: "RENAME", key: set.key, title })
                     }
-                    onDetach={(side, platformValue) =>
-                      dispatch({ type: "DETACH", key: set.key, side, platformValue })
+                    onDetach={(source, platformValue) =>
+                      dispatch({ type: "DETACH", key: set.key, source, platformValue })
                     }
                     onDisband={() => dispatch({ type: "DISBAND", key: set.key })}
                     onUpdateMetadata={(metadata) =>
@@ -2762,9 +2617,8 @@ function ReconciliationDialog({
               {/* NEO-341: one column below sm. Side by side in a phone-width
                   dialog each column was ~170px, and a row's "Make its own
                   set" button left the item name one letter wide. */}
-              <div className="grid grid-cols-2 max-sm:grid-cols-1 gap-4">
-                {renderPendingColumn("bsc")}
-                {renderPendingColumn("sl")}
+              <div className={`grid ${PENDING_GRID_COLS[sources.length] ?? "grid-cols-2"} max-sm:grid-cols-1 gap-4`}>
+                {sources.map((source) => renderPendingColumn(source))}
               </div>
             </div>
           </div>
@@ -2775,7 +2629,7 @@ function ReconciliationDialog({
                 <span className="text-ink-2">
                   <ItemName
                     item={activeDragItem.item}
-                    side={activeDragItem.side}
+                    source={activeDragItem.source}
                     dups={dups}
                   />
                 </span>
