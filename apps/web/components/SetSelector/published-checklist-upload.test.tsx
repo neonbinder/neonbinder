@@ -13,7 +13,6 @@ import {
   BATCH_MAX_BYTES,
   BATCH_MAX_ROWS,
   BATCH_MAX_SECTIONS,
-  MAX_SECTION_ROWS,
   storedRowBytes,
 } from "../../convex/lib/publishedChecklistSections";
 import type { ChecklistSection, ChecklistSectionRow } from "@/lib/checklists/checklist-sections";
@@ -111,22 +110,14 @@ describe("planChecklistBatches", () => {
   });
 
   test("with the real BATCH_MAX_BYTES, a section filling it exactly takes a call and the next section a second", () => {
-    // Pad one row's player name until the section is exactly BATCH_MAX_BYTES.
-    const rows: ChecklistSectionRow[] = [];
-    let used = 0;
-    while (used + 3_000 < BATCH_MAX_BYTES && rows.length < MAX_SECTION_ROWS - 1) {
-      const r = row(rows.length + 1, "x".repeat(2_000));
-      rows.push(r);
-      used += sizeOf(r);
-    }
-    let pad = 1;
-    let last = row(rows.length + 1, "y".repeat(pad));
-    while (used + sizeOf(last) < BATCH_MAX_BYTES) {
-      pad += 1;
-      last = row(rows.length + 1, "y".repeat(pad));
-    }
-    expect(used + sizeOf(last)).toBe(BATCH_MAX_BYTES);
-    const big = section("Big", [...rows, last]);
+    // One row padded so the section is exactly BATCH_MAX_BYTES. ASCII size is
+    // linear in the string length, so measure the empty row once and pad by
+    // the difference (a handful of size calls, not thousands).
+    const bare = sizeOf(row(1, ""));
+    const only = row(1, "x".repeat(BATCH_MAX_BYTES - bare));
+    expect(sizeOf(only)).toBe(BATCH_MAX_BYTES);
+    const rows = [only];
+    const big = section("Big", rows);
     const batches = planChecklistBatches([big, section("Tiny", [row(1)])]);
     expect(batches.map((b) => [b.firstOrdinal, b.sections.length, b.byteSize])).toEqual([
       [0, 1, BATCH_MAX_BYTES],
