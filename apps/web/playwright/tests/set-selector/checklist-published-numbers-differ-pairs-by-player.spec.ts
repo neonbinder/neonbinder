@@ -41,7 +41,8 @@
 //     first visit rides "Base Red" and "Base Rated Prospects Red" on BSC's bare
 //     "Red"; Sync Inserts pairs "Donruss Ballpark Stars Signatures" with BSC's
 //     "Donruss Ballparks Stars Signatures" (near name); Unleashed's fetch leaves
-//     BSC's two football cards (SG-CO, SG-TB) unkept and commits the file's 20;
+//     BSC's two football cards (SG-CO, SG-TB) unkept, keeps the file's two
+//     checklist-only rows with Keep all, and commits the file's 22;
 //     the same checklist as a CSV replaces it with Unleashed's 20 cards unchanged;
 //     Remove.
 //
@@ -102,7 +103,8 @@ const BALLPARK_BSC = "Donruss Ballparks Stars Signatures";
  * PHASE C's whole-set checklist, in Panini's spreadsheet layout (fixtures/checklists/build-fixtures.mjs),
  * cut down from Panini's published 2026 Donruss sheet to the sections this spec reads: the Base and
  * its Rated Prospects (both the base, Map Base Set), their Red runs (BSC's one bare "Red" parallel),
- * Ballpark Stars Signatures (the near-miss insert) and Unleashed whole (20 cards; BSC lists 22).
+ * Ballpark Stars Signatures (the near-miss insert) and Unleashed's 20 cards plus two rows BSC does not
+ * list (21, 22); BSC lists 22, two of them (SG-CO, SG-TB) football cards the file does not.
  */
 const DONRUSS = {
   credit: "Spreadsheet made available by Panini America.",
@@ -172,12 +174,16 @@ const DONRUSS = {
         { number: "18", player: "Chase DeLauter", team: "Cleveland Guardians" },
         { number: "19", player: "Matt Shaw", team: "Chicago Cubs" },
         { number: "20", player: "Nick Kurtz", team: "Oakland A's" },
+        // Two rows BSC does not list: checklist-only cards, kept with "Keep all" (C4).
+        { number: "21", player: "Roman Anthony", team: "Boston Red Sox" },
+        { number: "22", player: "Kristian Campbell", team: "Boston Red Sox" },
       ],
     },
   ],
 };
 const DONRUSS_CARDS = DONRUSS.sections.reduce((n, s) => n + s.rows.length, 0);
-/** Unleashed's rows in the file: the cards its fetch saves (BSC's two extra cards are left unkept). */
+/** Unleashed's rows in the file: the cards its fetch saves (its two checklist-only rows kept with Keep all,
+ * BSC's two football cards left unkept). */
 const UNLEASHED_ROWS = DONRUSS.sections.find((s) => s.name === UNLEASHED)?.rows.length ?? 0;
 /** Match Cards' subtitle when a column holds anything (NEO-496). */
 const CHECKLIST_SOURCES_SUBTITLE =
@@ -246,6 +252,9 @@ test(
     await expect(matchCards.getByText(`Matched (${WITHOUT_LOWELL.suggested})`)).toBeVisible();
     const thomasUnlink = matchCards.getByRole("button", { name: /^Unlink card #SIG-FT Frank Thomas from checklist row / });
     await expect(thomasUnlink).toBeVisible();
+    // The Unlink sits inside the chip; on a phone (e2e-mobile, 412 px) it must still be reachable on screen.
+    await thomasUnlink.scrollIntoViewIfNeeded();
+    await expect(thomasUnlink).toBeInViewport();
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, checklist name pairs linked" });
 
     // Unlink one pair: its row returns to "Checklist only" and the card, BSC's alone now, waits on the
@@ -448,6 +457,19 @@ test(
     ).toHaveAttribute("aria-selected", "true");
     // Their Red runs are parallels of the base, never the base itself.
     await expect(checklistBase.getByRole("option", { name: /^Checklist base section: .* Red$/ })).toHaveCount(0);
+    // It is a multi-select the operator can work, on a phone too: take Base Rated Prospects off and
+    // put it back, and both are selected again.
+    const ratedProspects = checklistBase.getByRole("option", { name: "Checklist base section: Base Rated Prospects", exact: true });
+    await ratedProspects.scrollIntoViewIfNeeded();
+    await expect(ratedProspects).toBeInViewport();
+    await ratedProspects.click();
+    await expect(ratedProspects).toHaveAttribute("aria-selected", "false");
+    await expect(checklistBase.getByRole("option", { name: "Checklist base section: Base", exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await ratedProspects.click();
+    await expect(ratedProspects).toHaveAttribute("aria-selected", "true");
     await expectAccessible(page, { within: picker, label: "Select Base Set with two checklist base sections" });
     await picker.getByRole("button", { name: "Confirm Base Set" }).click();
     await expect(picker).toBeHidden();
@@ -495,14 +517,30 @@ test(
     await expect(matchCards.getByRole("heading", { name: "BSC only (2)" })).toBeVisible();
     await expect(matchCards.getByRole("button", { name: "Keep #SG-CO Chris Olave as BSC-only" })).toBeVisible();
     await expect(matchCards.getByRole("button", { name: "Keep #SG-TB Treylon Burks as BSC-only" })).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
+    // The file's rows 21 and 22 have no BSC card: two checklist-only rows, each with its own Keep.
+    await expect(matchCards.getByRole("heading", { name: "Checklist only (2)" })).toBeVisible();
+    const keepAnthony = matchCards.getByRole("button", { name: /^Keep #21 Roman Anthony.* as checklist-only$/ });
+    await expect(keepAnthony).toBeVisible();
+    await expect(matchCards.getByRole("button", { name: /^Keep #22 Kristian Campbell.* as checklist-only$/ })).toBeVisible();
     await expect(matchCards.getByRole("heading", { name: "Keeping (0)" })).toBeVisible();
-    await expectAccessible(page, { within: matchCards, label: "Match Cards for Unleashed, two BSC-only football cards" });
-    // Left unkept: confirming discards them.
+    await expectAccessible(page, { within: matchCards, label: "Match Cards for Unleashed, BSC-only and checklist-only cards" });
+    // Phone width (e2e-mobile, 412 px) too: a row's Keep and the column's Keep all are on screen.
+    await keepAnthony.scrollIntoViewIfNeeded();
+    await expect(keepAnthony).toBeInViewport();
+    const keepAllRows = matchCards.getByRole("button", { name: "Keep all checklist-only cards" });
+    await keepAllRows.scrollIntoViewIfNeeded();
+    await expect(keepAllRows).toBeInViewport();
+    // Keep all keeps both rows; BSC's two football cards stay unkept.
+    await keepAllRows.click();
+    await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "Keeping (2)" })).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "BSC only (2)" })).toBeVisible();
+    await expectAccessible(page, { within: matchCards, label: "Match Cards for Unleashed, two checklist rows kept" });
+    // Left unkept: confirming discards the football cards and saves the kept rows.
     await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
     await expect(matchCards).toBeHidden();
-    // The wizard: every name is skipped (no player or team is minted), then Save. The two football
-    // cards were left unkept, so 20 cards save, and neither is among them.
+    // The wizard: every name is skipped (no player or team is minted), then Save. The 20 paired cards
+    // and the 2 kept rows save (22); neither football card is among them.
     await expect(wizard).toBeVisible();
     const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
     await expect(skipRemaining.or(nextStepButton(page)).or(confirmSaveButton(page)).first()).toBeVisible();
@@ -513,6 +551,12 @@ test(
     await expect(page.getByText(new RegExp(`Saved ${UNLEASHED_ROWS} cards`)).first()).toBeVisible();
     await expect(editCardButton(page, "1")).toBeVisible();
     await expect(page.getByRole("button", { name: /^Edit card SG-(CO|TB)(, .*)?$/ })).toHaveCount(0);
+    // The two kept rows are cards of their own, found by number the way a collector would.
+    for (const [number, player] of [["21", "Roman Anthony"], ["22", "Kristian Campbell"]] as const) {
+      await search.fill(player);
+      await expect(page.getByRole("button", { name: `Edit card ${number}, ${player}` })).toBeVisible();
+    }
+    await search.fill("");
 
     // ── C5. Replace with the same checklist as a plain CSV: nothing changes ──
     // Back through the picks to the set (Unleashed -> the Insert type -> Parallel -> Base -> the set),
