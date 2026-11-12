@@ -108,3 +108,6 @@
 - [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
 - [Checklist upload team claim blocks career prefill](patterns_checklist_upload_team_claim_blocks_career_prefill.md) — NEO-478: an uploaded row's team is a permanent claim; Roanoke spec cannot take the upload; aria-disabled Use via Enter; burst 429s
 - [Name-fallback Match Cards solo + cancel confirm](patterns_name_fallback_match_cards_solo_and_modal_cancel_confirm.md) — NEO-490: nameFallbackFacts, Cancel opens a discard confirm, virtualized list, two-phase fresh-only spec
+- [Probe Vite from a HEAD snapshot](patterns_probe_vite_from_a_head_snapshot.md) — builders' edits HMR-crash a worktree Vite (multiple ClerkProvider, black PNG); git-archive snapshot, hmr off, preserveSymlinks
+- [Compare a publisher checklist with BSC facets](reference_compare_a_publisher_checklist_with_bsc_facets.md) — one aggregation call lists every BSC section; insert parallels are inserts; Base parallels bare; ®/™ on PDF teams
+- [Checklist is a Match Cards source](patterns_checklist_is_a_match_cards_source.md) — NEO-496: BSC + checklist opens Match Cards paused; keep left-out cards; teams line only while open; token headings two words

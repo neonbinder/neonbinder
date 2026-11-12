@@ -72,3 +72,7 @@
 - [Checklist row field rides five hops](reference_checklist_row_field_rides_five_hops.md) — compare → apply → validator → Match Cards request → action args/answer fold; the link path drops unknown fields silently
 - [Wall-clock unit tests red under load](reference_wall_clock_unit_tests_red_under_load.md) — parser 2 MB bound and theme-allowlist scan time out at load ~30+; rerun alone, never raise the bound
 - [Scratch probe via a sibling test's header](reference_scratch_probe_via_sibling_test_header.md) — copy a test file's pre-describe header into convex/zz*.test.ts, probe, rm in the same call
+- [Id-less items in stores and commits](reference_id_less_items_in_stores_and_commits.md) — id-less store lines need a section-link identity; NNO cards match by number + folded name
+- [zsh file list runs nothing](reference_zsh_file_list_runs_nothing.md) — unquoted $LIST is one arg in zsh; vitest matches nothing and stays green; use xargs, check the file count
+- [Vitest cache holds a stale glob](reference_vitest_cache_holds_stale_glob.md) — "Could not find module" for a module on disk = cached import.meta.glob; edit the test or --no-cache
+- [Preview query shares the action's block rules](patterns_preview_query_shares_the_actions_block_rules.md) — one set of pure block functions for list + action, pause threaded into both; list-then-build agreement test

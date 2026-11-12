@@ -195,3 +195,13 @@
 - [Sticky header in a padded scroller](reference_sticky_header_in_a_padded_scroller.md) — sticks at the padding edge; thead bg does not paint; sticky+bg per th, border-separate, overflow-clip
 - [Wait line mounting breaks test mocks](reference_wait_line_mounting_breaks_test_mocks.md) — useQuery/watchQuery stubs, one-status pins, waitKey toEqual; 50 rows per key
 - [Playwright harness mirrors the checklist parser](playwright-harness-mirrors-checklist-parser.md) — checklistFacts must share lib/checklists rules; check it on parser changes (NEO-489)
+- [pdf.js 6 quirks](reference_pdfjs_6_driver_quirks.md) — no isEvalSupported/eval path; task.destroy(); legacy build in Node; TextItem from types/src/display/api
+- [Browser-probe a lib through Vite](reference_browser_probe_a_lib_through_vite.md) — spare-port Vite, goto /robots.txt (not /), page.evaluate(import("/lib/…ts"))
+- [Lockfile peer-flag churn](reference_lockfile_peer_flag_churn.md) — npm install drops stale @esbuild "peer": true flags; restore by script; install with .nvmrc Node
+- [Folded key growth needs NFC expansion](reference_folded_key_growth_needs_nfc_expansion.md) — lower-case grows ≤2x; U+FB2C NFC grows 1→3, use it to exceed a folded-key cap
+- [SetAttributesPanel children route status via showToast](reference_set_attributes_panel_children_route_status_through_showtoast.md) — one role=status in the panel (NEO-412); add the child's api namespace to the test's api mock
+- [Replace-list writes: unknown is not empty](reference_replace_semantics_need_unknown_not_empty.md) — absent=untouched/[]=clear args need a per-row "links unknown" state; refuse attach, never send
+- [Differential check against HEAD](reference_differential_check_against_head.md) — prove a bounds/perf rewrite changes no answer: HEAD copy in scratchpad + tsx .mts driver + seeded random diff, or real checklist files row-dumped; `.default` interop
+- [Status after a dialog closes](reference_status_after_a_dialog_closes.md) — say it from a parent effect after the inert release, not in the closing handler; sr-only text breaks anchored Playwright getByText
+- [Checklist section kinds read card numbers](reference_checklist_section_kinds_read_card_numbers.md) — numbered fixtures 1,2,3… turn parallels into base-subsets; parallels repeat the base numbers
+- [Duplicate React key regression test](reference_duplicate_react_key_regression_test.md) — spy console.error for "same key"; text assertions pass with the bug

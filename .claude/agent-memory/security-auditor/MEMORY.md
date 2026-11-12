@@ -98,3 +98,4 @@
 - [Playwright WebSocket route proxy](patterns_playwright_websocket_route_proxy.md) — route-group calls never reach reporters; local trace holds the JWT; close-code 1005 remap; forward before side work
 - [Neo478 operator checklist ingest](patterns_neo478_operator_checklist_ingest.md) — pasted-file ingest: bounds after the gate, quadratic \s+ split, uncapped pair list, CSV injection only with an export
 - [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start: ceiling = budget + sum of allowances; uncached gate re-arms per name; pure admin action shape
+- [Neo496 client file readers](patterns_neo496_client_file_readers.md) — xlsx/pdf in browser: inflate cap ≠ derived-string cap (shared-string amplification), unclosed-tag quadratic regex, pdf.js checklist
