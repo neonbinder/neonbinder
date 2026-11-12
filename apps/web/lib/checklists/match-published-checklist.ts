@@ -92,6 +92,10 @@
  * name pass. So a card #6 against two "#6" rows stays unmatched even when its
  * player is on exactly one of them: the card keeps its marketplace lookup and
  * both rows are left over for the operator (rule 8, a tie stays unmatched).
+ * The same holds the other way round (rule 8): a number the marketplace
+ * lists on two or more cards (as printed) is a tie too, so those cards, and
+ * every row bearing that number (as printed or case-folded), sit the name
+ * passes out and are left for the operator in Match Cards.
  * NNO rows and cards are not numbered, so the NNO pass is unaffected.
  *
  * A name pair never touches the card's number (the card keeps the number it
@@ -472,21 +476,31 @@ export function matchPublishedChecklist(
   }
 
   // D2 (Jason, 2026-11-10) — a number printed on two or more rows is one the
-  // checklist cannot pin down. Every row bearing it, and every card with that
-  // number (as printed or case-folded), sits out the name passes below: the
-  // players never rescue a pair the number refused (rule 8, a tie stays
-  // unmatched). Such a card keeps its marketplace lookup; such rows are left
-  // for the operator.
+  // checklist cannot pin down, and (rule 8, the same tie on the other side) a
+  // number the marketplace lists on two or more cards is one the marketplace
+  // cannot. Either way, every card and every row bearing that number (as
+  // printed, or case-folded against the other side) sits out the name passes
+  // below: the players never rescue a pair the number refused. Such a card
+  // keeps its marketplace lookup; such rows are left for the operator.
   const rowsByExact = groupByKey(rowExact);
+  const cardsByExact = groupByKey(cardExact);
   const repeatedRows = new Set<number>();
+  const repeatedNumberCards = new Set<number>();
   for (const list of rowsByExact.values()) {
     if (list.length > 1) for (const i of list) repeatedRows.add(i);
   }
-  const repeatedNumberCards = new Set<number>();
+  for (const list of cardsByExact.values()) {
+    if (list.length > 1) for (const i of list) repeatedNumberCards.add(i);
+  }
   for (const [i, folded] of cardNumbers) {
     const exactRows = rowsByExact.get(cardExact.get(i) ?? "")?.length ?? 0;
     const foldedRowCount = foldedRows.get(folded)?.length ?? 0;
     if (exactRows > 1 || foldedRowCount > 1) repeatedNumberCards.add(i);
+  }
+  for (const [i, folded] of rowNumbers) {
+    const exactCards = cardsByExact.get(rowExact.get(i) ?? "")?.length ?? 0;
+    const foldedCardCount = foldedCards.get(folded)?.length ?? 0;
+    if (exactCards > 1 || foldedCardCount > 1) repeatedRows.add(i);
   }
 
   // NEO-496 — the leftovers pair by players, within their kind (see the

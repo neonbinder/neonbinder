@@ -323,10 +323,11 @@ describe("fetchCardChecklist with a publisher checklist: who gets looked up", ()
     expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
   });
 
-  // NEO-496: the number cannot pair a duplicate (rule 7), but the row's
-  // player names exactly one of the two cards, so that card pairs by name;
-  // the other keeps its BSC lookup.
-  test("a duplicate number on the marketplace side: the number pairs neither, the player name pairs one", async () => {
+  // Rule 8 (the marketplace-side mirror of D2): BSC lists #5 twice, so the
+  // number pins neither card down, and the row's player naming exactly one of
+  // them does not rescue it. Both cards keep their BSC lookup; the row is left
+  // over as checklist-only for the operator.
+  test("a duplicate number on the marketplace side: neither card pairs, by number or by name; both are looked up", async () => {
     mockState.bscCards = [
       bsc("5", { players: ["A One"], platformRef: "bsc-5a" }),
       bsc("5", { players: ["B Two"], platformRef: "bsc-5b" }),
@@ -334,9 +335,16 @@ describe("fetchCardChecklist with a publisher checklist: who gets looked up", ()
     const { result } = await run({
       rows: [{ number: "5", players: ["A One"], teams: ["Cincinnati Reds"] }],
     });
-    expect(mockState.teamLookupCalls.flat().sort()).toEqual(["bsc-5b"]);
-    expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
-    expect(result.checklistMatch).toMatchObject({ byNumber: 0, byPlayerName: 1 });
+    expect(mockState.teamLookupCalls.flat().sort()).toEqual(["bsc-5a", "bsc-5b"]);
+    expect(result.checklistTeams).toEqual({ matched: 0, total: 2 });
+    expect(result.checklistMatch).toMatchObject({
+      byNumber: 0,
+      byPlayerName: 0,
+      byPlayerFuzzy: 0,
+      unusedRowIndices: [0],
+      checklistOnlyCount: 1,
+    });
+    expect([...(result.checklistMatch?.leftoverCardKeys ?? [])].sort()).toEqual(["bsc-5a", "bsc-5b"]);
   });
 
   test("a row that names no team is no claim: the card keeps its BSC lookup and is not counted (B1)", async () => {

@@ -748,16 +748,17 @@ describe("matchPublishedChecklist: NEO-489 No Team × NEO-496 name pairs", () =>
     expect(r.unmatchedCardIndices).toEqual([]);
   });
 
-  test("case-only twin numbers pair nothing by number; the unique name then pairs", () => {
+  test("case-only twin numbers pair nothing by number, and the name does not rescue the tie (rule 8)", () => {
     // Cards "x1a" and "X1A" against one row "X1a": the folded key names two
-    // cards, so no number pair; "A One" is one card and one row.
+    // cards, so no number pair, and the row bearing that number sits the name
+    // passes out even though "A One" is one card and one row.
     const r = matchPublishedChecklist(
       [card("x1a", ["A One"]), card("X1A", ["B Two"])],
       [noTeamRow("X1a", ["A One"])],
     );
-    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via, m.checklistNumber])).toEqual([
-      [0, 0, "playerName", "X1a"],
-    ]);
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+    expect(r.unusedRowIndices).toEqual([0]);
   });
 });
 
@@ -834,6 +835,78 @@ describe("matchPublishedChecklist: D2 a number repeated on the checklist pins no
     const nno = (players: string[]) => ({ number: "NNO", players, teams: [] as string[], noNumber: true });
     const r = matchPublishedChecklist(
       [card("NNO", ["A One"]), card("", ["B Two"])],
+      [nno(["A One"]), nno(["B Two"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "player"],
+      [1, 1, "player"],
+    ]);
+  });
+});
+
+describe("matchPublishedChecklist: rule 8 a number the marketplace lists twice pins nothing down", () => {
+  test("two cards share a number, one row names one card's player: nothing pairs, exact or near", () => {
+    const exact = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["B Two"])],
+      [row("5", ["A One"])],
+    );
+    expect(exact.matches).toEqual([]);
+    expect(exact.unmatchedCardIndices).toEqual([0, 1]);
+    expect(exact.unusedRowIndices).toEqual([0]);
+    expect(exact.needsOperator).toBe(true);
+    const near = matchPublishedChecklist(
+      [card("5", ["Shohei Ohtani"]), card("5", ["B Two"])],
+      [row("5", ["Shohei Otani"])],
+    );
+    expect(near.matches).toEqual([]);
+  });
+
+  test("the repeated cards sit the name passes out entirely: a row at another number does not take them", () => {
+    const r = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["B Two"])],
+      [row("50", ["A One"]), row("51", ["B Two"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+    expect(r.unusedRowIndices).toEqual([0, 1]);
+  });
+
+  test("a row bearing the repeated number sits out too: a card at another number does not take it", () => {
+    const r = matchPublishedChecklist(
+      [card("5", ["X Ray"]), card("5", ["Y Zed"]), card("SIG-A", ["A One"])],
+      [row("5", ["A One"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1, 2]);
+    expect(r.unusedRowIndices).toEqual([0]);
+  });
+
+  test("the same player on both repeated cards: still nothing pairs", () => {
+    const r = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["A One"])],
+      [row("5", ["A One"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+  });
+
+  test("unrepeated numbers beside a repeated one pair as before, by number and by name", () => {
+    const r = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["B Two"]), card("1", ["C Three"]), card("SIG-D", ["D Four"])],
+      [row("5", ["A One"]), row("1", ["C Three"]), row("2", ["D Four"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [2, 1, "number"],
+      [3, 2, "playerName"],
+    ]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+    expect(r.unusedRowIndices).toEqual([0]);
+  });
+
+  test("two no-number cards are not a repeated number: NNO pairing is unchanged", () => {
+    const nno = (players: string[]) => ({ number: "NNO", players, teams: [] as string[], noNumber: true });
+    const r = matchPublishedChecklist(
+      [card("NNO", ["A One"]), card("NNO", ["B Two"])],
       [nno(["A One"]), nno(["B Two"])],
     );
     expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
