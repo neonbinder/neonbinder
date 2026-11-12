@@ -28,8 +28,8 @@ const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
 
-const ADMIN = { subject: "admin_a", role: "admin" };
-const ADMIN_B = { subject: "admin_b", role: "admin" };
+const ADMIN = { subject: "user_admin_a", role: "admin" };
+const ADMIN_B = { subject: "user_admin_b", role: "admin" };
 const MEMBER = { subject: "member", role: "member" };
 const NOW = 1_700_000_000_000;
 
@@ -137,7 +137,7 @@ async function upload(
 }
 
 const link = (t: T, rowId: SO, setId: SO, keys: string[]) =>
-  t.run((ctx) => setRowChecklistSections(ctx, { rowId, setId, keys, userId: "admin_a" }));
+  t.run((ctx) => setRowChecklistSections(ctx, { rowId, setId, keys, userId: "user_admin_a" }));
 
 const headers = (t: T) =>
   t.run(async (ctx) => await ctx.db.query("publishedChecklists").collect());
@@ -186,7 +186,7 @@ describe("upload: start → addSections → finish", () => {
       fileName: "checklist.csv",
       sectionCount: 2,
       rowCount: 7,
-      createdByUserId: "admin_a",
+      createdByUserId: "user_admin_a",
     });
     expect(stored.sections.map((s) => [s.ordinal, s.name, s.sectionKey, s.group])).toEqual([
       [0, "Base   Cards", "base cards", undefined],
@@ -615,7 +615,7 @@ describe("clean-up", () => {
           status: "retired",
           fileName: "x.csv",
           format: "csv",
-          createdByUserId: "admin_a",
+          createdByUserId: "user_admin_a",
           startedAt: NOW,
           lastActivityAt: NOW,
           retiredAt: NOW,
@@ -666,7 +666,7 @@ describe("clean-up", () => {
         status: "uploading",
         fileName: "x.csv",
         format: "csv",
-        createdByUserId: "admin_a",
+        createdByUserId: "user_admin_a",
         startedAt: NOW,
         lastActivityAt: Date.now() - ABANDON_MS - 1,
         sectionCount: 0,
@@ -900,7 +900,7 @@ describe("D9: rowsForLeaf", () => {
         selectorOptionId: f.insA,
         sectionKey: "future stars",
         createdAt: NOW,
-        createdByUserId: "admin_a",
+        createdByUserId: "user_admin_a",
       }),
     );
     expect(await leaf(t, f.insA)).toEqual({ kind: "none" });
@@ -1210,5 +1210,22 @@ describe("account deletion: forgetUploader", () => {
         more: false,
       });
     }
+  });
+
+  test("refuses an id that is not a Clerk user id before it touches a row", async () => {
+    const t = convexTest(schema, modules);
+    const f = await seedTree(t);
+    await upload(t, f.set, [{ name: "Base", rows: rows(2) }]);
+    await link(t, f.insA, f.set, [sectionKeyOf("Base")]);
+    const before = [...(await headers(t)), ...(await allLinks(t))].map((r) => r.createdByUserId);
+
+    for (const userId of ["admin_x", "  user_x", ` ${ADMIN.subject}`, "User_x"]) {
+      await expect(
+        t.mutation(internal.publishedChecklists.forgetUploader, { userId }),
+      ).rejects.toThrow(/Not a user id/);
+    }
+    const after = [...(await headers(t)), ...(await allLinks(t))].map((r) => r.createdByUserId);
+    expect(after).toEqual(before);
+    expect(after.includes(DELETED_UPLOADER)).toBe(false);
   });
 });

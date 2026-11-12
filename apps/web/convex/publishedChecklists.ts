@@ -788,17 +788,31 @@ export const purge = internalMutation({
  *
  *   npx convex run publishedChecklists:forgetUploader '{"userId":"user_..."}'
  *
+ * The id must be a Clerk user id (`user_…`, exactly as the account carries
+ * it). Anything else is refused with an error before a row is read, so a
+ * mistyped or padded id (" user_…", "admin_…") can never anonymise rows that
+ * belong to a live admin. An empty id and `DELETED_UPLOADER` itself stay
+ * quiet no-ops: there is nothing of theirs to forget.
+ *
  * Per run: at most `FORGET_UPLOADER_PER_RUN` headers and as many links,
  * through each table's `by_created_by_user_id` index. A patched row leaves
  * the index range, so a full page means more may remain and the job runs
  * again; a short page on both tables ends the chain.
  */
+/** A Clerk user id, as `createdByUserId` holds it: `user_` then the rest. */
+const CLERK_USER_ID = /^user_/;
+
 export const forgetUploader = internalMutation({
   args: { userId: v.string() },
   returns: v.object({ headers: v.number(), links: v.number(), more: v.boolean() }),
   handler: async (ctx, args) => {
     if (args.userId.length === 0 || args.userId === DELETED_UPLOADER) {
       return { headers: 0, links: 0, more: false };
+    }
+    if (!CLERK_USER_ID.test(args.userId)) {
+      throw new ConvexError(
+        `Not a user id: ${JSON.stringify(args.userId)}. Pass the account's Clerk id exactly, starting "user_".`,
+      );
     }
     const headerRows = await ctx.db
       .query("publishedChecklists")
