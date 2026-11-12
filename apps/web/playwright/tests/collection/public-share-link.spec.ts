@@ -153,10 +153,16 @@ test(
     await page.getByRole("button", { name: nextName, exact: true }).click();
     await page.getByRole("button", { name: "Empty pocket 1 on page 2. Fill it from the pack", exact: true }).click();
     await page.getByRole("searchbox", { name: "Hunt for one of your cards" }).fill(`${raw.player} ${raw.number}`);
+    // The hunt finds the base card and its parallels. A parallel puts its name
+    // after the team, or in the team's place when the copy has none, so its button
+    // can read like the base card's. The base card is the one whose caption is the
+    // plain checklist, "2024 Topps Chrome".
     await page
+      .getByRole("region", { name: "Card hunt" })
+      .getByRole("listitem")
+      .filter({ has: page.getByText("2024 Topps Chrome", { exact: true }) })
       .getByRole("button", {
-        // The hunt finds the base card and its parallels: the base card's name stops at the team.
-        name: new RegExp(`^Put here: 2024 Topps Chrome #${escapeRegExp(raw.number)} ${escapeRegExp(raw.player)}, [^,]+$`),
+        name: new RegExp(`^Put here: 2024 Topps Chrome #${escapeRegExp(raw.number)} ${escapeRegExp(raw.player)}(,|$)`),
       })
       .click();
     await expect(
@@ -219,10 +225,10 @@ test(
         pageOne,
         pageTwo,
         graded: pageOne.getByRole("button", {
-          name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(card.number)} ${escapeRegExp(card.player)}, .*, PSA 10, up for trade, pocket \\d+ on page 1$`),
+          name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(card.number)} ${escapeRegExp(card.player)}(, .*)?, PSA 10, up for trade, pocket \\d+ on page 1$`),
         }),
         rawCopy: pageTwo.getByRole("button", {
-          name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(raw.number)} ${escapeRegExp(raw.player)}, [^,]+, pocket 1 on page 2$`),
+          name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(raw.number)} ${escapeRegExp(raw.player)}(, [^,]+)?, pocket 1 on page 2$`),
         }),
         next: p.getByRole("button", { name: nextName, exact: true }),
         previous: p.getByRole("button", { name: previousName, exact: true }),

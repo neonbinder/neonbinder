@@ -6,6 +6,7 @@
  */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installFakeXhr } from "@/lib/testing/fake-xhr";
 import { EMPTY_DRILL } from "../catalog/drill";
 
 const calls = vi.hoisted(() => [] as { name: string; args: unknown }[]);
@@ -119,8 +120,9 @@ describe("Request a card's photos (NEO-431)", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("holds them, uploads nothing until Send, then sends both and clears the box", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ storageId: `st${fetchMock.mock.calls.length}` }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+    const xhrs = installFakeXhr((xhr) =>
+      queueMicrotask(() => xhr.respond(200, JSON.stringify({ storageId: `st${xhrs.all.length}` }))),
+    );
     answers.set("collectionRequests:generateUploadUrl", "https://upload.example/1");
     open();
     const form = screen.getByRole("form", { name: "Request a card" });
@@ -130,13 +132,13 @@ describe("Request a card's photos (NEO-431)", () => {
     pick(form, "Front", jpeg());
     pick(form, "Back", jpeg());
     await within(box).findByRole("img", { name: /^Back of this card/ });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(xhrs.all).toHaveLength(0);
     expect(calls).toEqual([]);
 
     fill(form);
     fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
     await waitFor(() => expect(calls.some((c) => c.name === "collectionRequests:requestCard")).toBe(true));
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(xhrs.all).toHaveLength(2);
     expect(calls.find((c) => c.name === "collectionRequests:requestCard")?.args).toMatchObject({
       frontImageId: "st1",
       backImageId: "st2",
@@ -177,7 +179,7 @@ describe("Request a card's photos (NEO-431)", () => {
   });
 
   it("while it sends with a photo, the box says the photos are going", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ storageId: "st1" }), { status: 200 })));
+    installFakeXhr((xhr) => queueMicrotask(() => xhr.respond(200, JSON.stringify({ storageId: "st1" }))));
     answers.set("collectionRequests:generateUploadUrl", "https://upload.example/1");
     let answer: (value: unknown) => void = () => {};
     answers.set("collectionRequests:requestCard", () => new Promise((resolve) => (answer = resolve)));
