@@ -11,12 +11,23 @@
  *     shared strings and the FIRST sheet) with fflate's streaming `Inflate`,
  *     counting the real output and stopping at the cap. A part's declared
  *     size is checked first and its real size is never trusted to match: a
- *     zip bomb that lies about its size is stopped by the count, not by the
+ *     part that inflates past its cap is stopped by the count, not by the
  *     header;
  *  3. tokenises the XML as it arrives, one `<si>` or `<row>` at a time,
- *     so the whole sheet is never held as one string;
+ *     so the whole sheet is never held as one string, and finds the elements
+ *     inside one with a forward-only cursor (never a lazy `[\s\S]*?` regex),
+ *     so an unclosed tag costs a single pass, not one pass per tag;
  *  4. refuses any part carrying a DTD (`<!DOCTYPE`, `<!ENTITY`) and decodes
  *     only the five XML entities and numeric character references itself.
+ *
+ * The inflate count alone does NOT bound the output: a sheet of a few hundred
+ * bytes can reference one huge shared string from every cell, and each
+ * reference would be a fresh copy once cleaned. So every shared string and
+ * every cell is cut to `XLSX_MAX_CELL_CHARS` as it is cleaned (the parser
+ * refuses anything over 120 characters anyway, so a cut cell is still
+ * refused, never shortened into a real-looking name), and the characters
+ * kept across all rows are capped at `XLSX_MAX_KEPT_CHARS`; past it the file
+ * is refused as `part-too-big`.
  *
  * Cells are returned as trimmed text by column: shared strings (`t="s"`),
  * inline strings (`t="inlineStr"`, rich-text runs joined), formula strings
@@ -44,6 +55,15 @@ export const XLSX_MAX_ROWS = 100_000;
 export const XLSX_MAX_COLUMNS = 50;
 /** The longest single row element or shared string read, in characters. */
 const XLSX_MAX_ELEMENT_CHARS = 1024 * 1024;
+/**
+ * The most characters one cell (or one shared string) keeps once cleaned.
+ * Far past any name the parser takes (120), so a longer cell is still read
+ * as too long, but small enough that a shared string referenced from every
+ * cell cannot multiply into gigabytes.
+ */
+export const XLSX_MAX_CELL_CHARS = 1024;
+/** The most cell characters kept across every row; past it the file is refused. */
+export const XLSX_MAX_KEPT_CHARS = 64 * 1024 * 1024;
 /** Compressed bytes handed to the inflater at a time, so a bomb is caught early. */
 const INFLATE_SLICE = 16 * 1024;
 
@@ -208,13 +228,14 @@ function refuseDtd(text: string): void {
   if (DTD.test(text)) throw new XlsxError("dtd");
 }
 
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-};
+/** A Map, so `&constructor;` or `&__proto__;` is never read off a prototype. */
+const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map([
+  ["amp", "&"],
+  ["lt", "<"],
+  ["gt", ">"],
+  ["quot", '"'],
+  ["apos", "'"],
+]);
 
 /**
  * Decode the five XML entities and numeric references. Anything else is left
@@ -229,7 +250,7 @@ function decodeXml(text: string): string {
       if (code >= 0xd800 && code <= 0xdfff) return whole;
       return String.fromCodePoint(code);
     }
-    return NAMED_ENTITIES[ref] ?? whole;
+    return NAMED_ENTITIES.get(ref) ?? whole;
   });
 }
 
@@ -240,12 +261,101 @@ function attr(tag: string, name: string): string | null {
   return decodeXml(match[1] ?? match[2] ?? "");
 }
 
+/**
+ * One element found by `elementsIn`: where it starts and ends in the text,
+ * its start tag, and its body (`undefined` when self-closed).
+ */
+type FoundElement = { start: number; end: number; tag: string; body?: string };
+
+const TOKENS = new Map<string, RegExp>();
+/** `<name` or `</name` (any namespace prefix), the name ending at a space, `/` or `>`. */
+function tokenRegex(name: string): RegExp {
+  let re = TOKENS.get(name);
+  if (!re) {
+    re = new RegExp(`<(\\/?)(?:\\w+:)?${name}(?=[\\s/>])`, "g");
+    TOKENS.set(name, re);
+  }
+  return re;
+}
+const TAG_END = /[<>]/g;
+const CLOSE_TAIL = /\s*>/y;
+
+/**
+ * Every `<name …>…</name>` and `<name …/>` in `xml`, in order, found with one
+ * forward cursor so the work is linear in `xml` whatever it holds. An element
+ * whose start tag never ends, or that is not closed before the next `<name`
+ * opens, is passed over (it is malformed, and is never allowed to swallow the
+ * element after it). Elements of the same name are not nested in a sheet.
+ */
+function elementsIn(xml: string, name: string): FoundElement[] {
+  const token = tokenRegex(name);
+  const out: FoundElement[] = [];
+  let pos = 0;
+  for (;;) {
+    token.lastIndex = pos;
+    const open = token.exec(xml);
+    if (!open) break;
+    pos = open.index + open[0].length;
+    if (open[1] === "/") continue; // a stray close
+    TAG_END.lastIndex = pos;
+    const end = TAG_END.exec(xml);
+    if (!end || end[0] === "<") continue; // a start tag that never ends
+    const tagEnd = end.index;
+    const tag = xml.slice(open.index, tagEnd + 1);
+    if (xml[tagEnd - 1] === "/") {
+      out.push({ start: open.index, end: tagEnd + 1, tag });
+      pos = tagEnd + 1;
+      continue;
+    }
+    // The body runs to the first well-formed close; a new open first means
+    // this one is unclosed, and the scan resumes AT that open.
+    let closeStart = -1;
+    let closeEnd = -1;
+    let resumeAt = -1;
+    token.lastIndex = tagEnd + 1;
+    for (let next = token.exec(xml); next; next = token.exec(xml)) {
+      if (next[1] !== "/") {
+        resumeAt = next.index;
+        break;
+      }
+      CLOSE_TAIL.lastIndex = next.index + next[0].length;
+      const tail = CLOSE_TAIL.exec(xml);
+      if (tail) {
+        closeStart = next.index;
+        closeEnd = tail.index + tail[0].length;
+        break;
+      }
+      token.lastIndex = next.index + next[0].length;
+    }
+    if (closeStart === -1) {
+      if (resumeAt === -1) break; // nothing after it can open or close
+      pos = resumeAt;
+      continue;
+    }
+    out.push({ start: open.index, end: closeEnd, tag, body: xml.slice(tagEnd + 1, closeStart) });
+    pos = closeEnd;
+  }
+  return out;
+}
+
+/** The body of the first `<name>…</name>` in `xml` that has one, or null. */
+function firstBody(xml: string, name: string): string | null {
+  for (const el of elementsIn(xml, name)) if (el.body !== undefined) return el.body;
+  return null;
+}
+
 /** The text of every `<t>` inside `xml` (an `<si>` or an `<is>`), phonetic runs dropped. */
 function textRuns(xml: string): string {
-  const withoutPhonetic = xml.replace(/<(?:\w+:)?rPh\b[\s\S]*?<\/(?:\w+:)?rPh>/g, "");
+  let withoutPhonetic = "";
+  let at = 0;
+  for (const el of elementsIn(xml, "rPh")) {
+    if (el.body === undefined) continue;
+    withoutPhonetic += xml.slice(at, el.start);
+    at = el.end;
+  }
+  withoutPhonetic += xml.slice(at);
   let out = "";
-  const run = /<(?:\w+:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:\w+:)?t>/g;
-  for (let m = run.exec(withoutPhonetic); m; m = run.exec(withoutPhonetic)) out += m[1];
+  for (const el of elementsIn(withoutPhonetic, "t")) if (el.body !== undefined) out += el.body;
   return decodeXml(out);
 }
 
@@ -331,7 +441,7 @@ type Relationship = { id: string; type: string; target: string };
 
 function relationships(xml: string): Relationship[] {
   const out: Relationship[] = [];
-  const tag = /<(?:\w+:)?Relationship\b[^>]*>/g;
+  const tag = /<(?:\w+:)?Relationship\b[^<>]*>/g;
   for (let m = tag.exec(xml); m; m = tag.exec(xml)) {
     out.push({
       id: attr(m[0], "Id") ?? "",
@@ -361,7 +471,7 @@ function locateParts(
   const rels = relsEntry ? relationships(readSmallEntry(bytes, relsEntry)) : [];
 
   let sheet: string | null = null;
-  const firstSheet = /<(?:\w+:)?sheet\b[^>]*>/.exec(workbookXml);
+  const firstSheet = /<(?:\w+:)?sheet\b[^<>]*>/.exec(workbookXml);
   if (firstSheet) {
     const id = /\s(?:\w+:)?id\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(firstSheet[0]);
     const relId = id ? decodeXml(id[1] ?? id[2] ?? "") : null;
@@ -404,20 +514,47 @@ export function numberText(raw: string): string {
   return String(Number(value.toPrecision(15)));
 }
 
-/** Control characters become spaces; runs of whitespace become one space. */
-function cleanCellText(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+// eslint-disable-next-line no-control-regex
+const SPACE_OR_CONTROL = /[\s\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Control characters become spaces; runs of whitespace become one space;
+ * trimmed; and never more than `XLSX_MAX_CELL_CHARS` kept. A text within the
+ * cap is cleaned whole; a longer one is walked only until the cap is filled,
+ * so its result is the whole clean cut to `XLSX_MAX_CELL_CHARS` characters
+ * (and trimmed), and no full-length copy is ever made.
+ */
+export function cleanCellText(text: string): string {
+  if (text.length <= XLSX_MAX_CELL_CHARS) {
+    // eslint-disable-next-line no-control-regex
+    return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  let out = "";
+  let space = false;
+  for (let i = 0; i < text.length && out.length < XLSX_MAX_CELL_CHARS; i++) {
+    const ch = text[i];
+    if (SPACE_OR_CONTROL.test(ch)) {
+      space = out.length > 0;
+      continue;
+    }
+    if (space) {
+      out += " ";
+      space = false;
+      if (out.length >= XLSX_MAX_CELL_CHARS) break;
+    }
+    out += ch;
+  }
+  return out.trimEnd();
 }
 
-function cellValue(cellXml: string, startTag: string, shared: readonly string[]): string {
+function cellValue(body: string, startTag: string, shared: readonly string[]): string {
   const type = attr(startTag, "t") ?? "n";
   if (type === "inlineStr") {
-    const is = /<(?:\w+:)?is\b[^>]*>([\s\S]*?)<\/(?:\w+:)?is>/.exec(cellXml);
-    return is ? textRuns(is[1]) : "";
+    const is = firstBody(body, "is");
+    return is === null ? "" : textRuns(is);
   }
-  const v = /<(?:\w+:)?v(?:\s[^>]*)?>([\s\S]*?)<\/(?:\w+:)?v>/.exec(cellXml);
-  const raw = v ? decodeXml(v[1]) : "";
+  const v = firstBody(body, "v");
+  const raw = v === null ? "" : decodeXml(v);
   if (raw === "") return "";
   switch (type) {
     case "s": {
@@ -444,15 +581,13 @@ function parseRow(
   const row = Number.isInteger(r) && r > 0 ? r : fallbackRow;
   const cells: string[] = [];
   if (startTag.endsWith("/>")) return { row, cells };
-  const cell = /<(?:\w+:)?c(?=[\s/>])[^>]*?(?:\/>|>([\s\S]*?)<\/(?:\w+:)?c\s*>)/g;
   let next = 0;
-  for (let m = cell.exec(rowXml); m; m = cell.exec(rowXml)) {
-    const tag = /^<[^>]*>/.exec(m[0])?.[0] ?? "";
-    const ref = attr(tag, "r");
+  for (const cell of elementsIn(rowXml, "c")) {
+    const ref = attr(cell.tag, "r");
     const col = ref === null ? next : (columnIndex(ref) ?? next);
     next = col + 1;
     if (col >= XLSX_MAX_COLUMNS) continue;
-    const value = m[1] === undefined ? "" : cleanCellText(cellValue(m[0], tag, shared));
+    const value = cell.body === undefined ? "" : cleanCellText(cellValue(cell.body, cell.tag, shared));
     while (cells.length < col) cells.push("");
     cells[col] = value;
   }
@@ -486,6 +621,7 @@ export function readXlsx(input: Uint8Array | ArrayBuffer): XlsxRead {
     const rows: XlsxRow[] = [];
     let truncatedAfterRow: number | undefined;
     let lastRow = 0;
+    let keptChars = 0;
     const sheetRows = elementStream("row", (xml) => {
       const row = parseRow(xml, lastRow + 1, shared);
       lastRow = row.row;
@@ -494,6 +630,8 @@ export function readXlsx(input: Uint8Array | ArrayBuffer): XlsxRead {
         truncatedAfterRow = rows[rows.length - 1].row;
         return false;
       }
+      for (const cell of row.cells) keptChars += cell.length;
+      if (keptChars > XLSX_MAX_KEPT_CHARS) throw new XlsxError("part-too-big");
       rows.push(row);
     });
     streamEntry(bytes, entries.get(parts.sheet)!, XLSX_MAX_PART_BYTES, (text) =>

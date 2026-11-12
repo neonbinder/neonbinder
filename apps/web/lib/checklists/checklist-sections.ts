@@ -13,7 +13,10 @@
  *    out whole, with the reason, rather than cut;
  *  - past `SET_CHECKLIST_MAX_SECTIONS` sections, or once the next section
  *    would take the checklist past `SET_CHECKLIST_MAX_ROWS` rows, the rest
- *    are left out whole, with the reason.
+ *    are left out whole, with the reason;
+ *  - a section whose name, or whose group's name, holds a hidden direction
+ *    or zero-width character (`hasHiddenNameChars`, the server's own test)
+ *    is left out whole, with the reason, since the server refuses that name.
  *
  * A section's `key` is its name folded for case and spacing
  * (`checklistSectionKey`): the stable handle a variant row links to (plan
@@ -28,6 +31,7 @@ import {
   MAX_CHECKLIST_ROWS,
   MAX_SECTION_ROWS,
   MAX_SECTIONS,
+  hasHiddenNameChars,
   sectionKeyOf,
 } from "../../convex/lib/publishedChecklistSections";
 import {
@@ -99,6 +103,11 @@ export function pastSectionLimitReason(limit = SET_CHECKLIST_MAX_SECTIONS): stri
   return `Past the ${limit.toLocaleString("en-US")}-section limit`;
 }
 
+/** A section left out because its own name holds a hidden character. */
+export const HIDDEN_CHARS_IN_NAME = "Hidden characters in the section name";
+/** A section left out because its group heading holds a hidden character. */
+export const HIDDEN_CHARS_IN_GROUP = "Hidden characters in the section's group name";
+
 /** "Past the 50,000-card limit for one checklist". */
 export function pastRowLimitReason(limit = SET_CHECKLIST_MAX_ROWS): string {
   return `Past the ${limit.toLocaleString("en-US")}-card limit for one checklist`;
@@ -127,9 +136,23 @@ export function checklistSections(parse: PublishedChecklistParse): ChecklistSect
       tooBig: true,
     };
   }
-  type Draft = { name: string; key: string; group?: string; rows: ChecklistSectionRow[] };
+  type Draft = {
+    name: string;
+    key: string;
+    group?: string;
+    rows: ChecklistSectionRow[];
+    /** Set when the section is left out whatever the limits say. */
+    refused?: string;
+  };
   const byKey = new Map<string, Draft>();
   const order: Draft[] = [];
+  // `groups` is keyed by publisher text: read only its own keys, so a
+  // section named "constructor" or "__proto__" is never handed a prototype's.
+  const groups = parse.groups;
+  const groupOf = (subset: string): string | undefined =>
+    groups && Object.hasOwn(groups, subset) && typeof groups[subset] === "string"
+      ? groups[subset]
+      : undefined;
   for (const row of parse.rows) {
     if (row.subset === undefined) continue;
     const name = cleanSectionName(row.subset);
@@ -137,8 +160,20 @@ export function checklistSections(parse: PublishedChecklistParse): ChecklistSect
     const key = checklistSectionKey(name);
     let draft = byKey.get(key);
     if (!draft) {
-      const group = parse.groups?.[row.subset];
-      draft = { name, key, ...(group ? { group: cleanSectionName(group) } : {}), rows: [] };
+      const rawGroup = groupOf(row.subset);
+      const group = rawGroup === undefined ? "" : cleanSectionName(rawGroup);
+      const refused = hasHiddenNameChars(name)
+        ? HIDDEN_CHARS_IN_NAME
+        : hasHiddenNameChars(group)
+          ? HIDDEN_CHARS_IN_GROUP
+          : undefined;
+      draft = {
+        name,
+        key,
+        ...(group ? { group } : {}),
+        rows: [],
+        ...(refused ? { refused } : {}),
+      };
       byKey.set(key, draft);
       order.push(draft);
     }
@@ -148,9 +183,11 @@ export function checklistSections(parse: PublishedChecklistParse): ChecklistSect
   const sections: ChecklistSection[] = [];
   const skippedSections: SkippedSection[] = [];
   let rowCount = 0;
-  for (const draft of order) {
+  for (const { refused, ...draft } of order) {
     const rowsHere = draft.rows.length;
-    if (rowsHere > SET_CHECKLIST_MAX_SECTION_ROWS) {
+    if (refused !== undefined) {
+      skippedSections.push({ name: draft.name, rowCount: rowsHere, reason: refused });
+    } else if (rowsHere > SET_CHECKLIST_MAX_SECTION_ROWS) {
       skippedSections.push({ name: draft.name, rowCount: rowsHere, reason: sectionTooBigReason() });
     } else if (sections.length >= SET_CHECKLIST_MAX_SECTIONS) {
       skippedSections.push({ name: draft.name, rowCount: rowsHere, reason: pastSectionLimitReason() });

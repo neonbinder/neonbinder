@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { sectionKeyOf } from "../../convex/lib/publishedChecklistSections";
 import {
+  HIDDEN_CHARS_IN_GROUP,
+  HIDDEN_CHARS_IN_NAME,
   SET_CHECKLIST_MAX_ROWS,
   SET_CHECKLIST_MAX_SECTION_ROWS,
   SET_CHECKLIST_MAX_SECTIONS,
@@ -100,6 +102,61 @@ describe("checklistSections", () => {
     for (const name of ["Bomb Squad", "  BOMB\tSQUAD ", "Café Ñ", "CAFÉ"]) {
       expect(checklistSectionKey(name)).toBe(sectionKeyOf(name));
     }
+  });
+
+  it("never reads a group off the prototype for a section named constructor, toString or __proto__", () => {
+    const names = ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"];
+    const out = checklistSections(
+      parseOf(
+        names.flatMap((n, i) => rowsIn(n, 1, i + 1)),
+        { groups: { INSERT: "AUTOGRAPH" } },
+      ),
+    );
+    expect(out.sections.map((s) => [s.name, s.group, s.rows.length])).toEqual(
+      names.map((n) => [n, undefined, 1]),
+    );
+  });
+
+  it("reads a group the parse really holds under a prototype-shaped name", () => {
+    const groups: Record<string, string> = Object.create(null);
+    groups["__proto__"] = "AUTOGRAPH";
+    groups["constructor"] = "INSERT";
+    const out = checklistSections(
+      parseOf([...rowsIn("__proto__", 1), ...rowsIn("constructor", 1, 2)], { groups }),
+    );
+    expect(out.sections.map((s) => [s.name, s.group])).toEqual([
+      ["__proto__", "AUTOGRAPH"],
+      ["constructor", "INSERT"],
+    ]);
+  });
+
+  it("writes the parse's groups with no prototype", () => {
+    const parse = parsePublishedChecklist(["INSERT", "CONSTRUCTOR", "1 A Guy - Team"].join("\n"), {
+      mode: "set",
+    });
+    expect(parse.groups).toEqual({ CONSTRUCTOR: "INSERT" });
+    expect(Object.getPrototypeOf(parse.groups)).toBeNull();
+  });
+
+  it("leaves out whole, with the reason, a section whose name or group hides a direction or zero-width character", () => {
+    const out = checklistSections(
+      parseOf(
+        [
+          ...rowsIn("Bomb\u200bSquad", 2),
+          ...rowsIn("Future Stars", 1, 3),
+          ...rowsIn("Helix\u202e", 1, 4),
+          ...rowsIn("Base", 1, 5),
+        ],
+        { groups: { "Future Stars": "INSERT\u2066" } },
+      ),
+    );
+    expect(out.sections.map((s) => s.name)).toEqual(["Base"]);
+    expect(out.rowCount).toBe(1);
+    expect(out.skippedSections).toEqual([
+      { name: "Bomb\u200bSquad", rowCount: 2, reason: HIDDEN_CHARS_IN_NAME },
+      { name: "Future Stars", rowCount: 1, reason: HIDDEN_CHARS_IN_GROUP },
+      { name: "Helix\u202e", rowCount: 1, reason: HIDDEN_CHARS_IN_NAME },
+    ]);
   });
 
   it("cleans control characters out of a section name", () => {

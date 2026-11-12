@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { strToU8, zipSync, type Zippable } from "fflate";
 import {
+  XLSX_MAX_CELL_CHARS,
   XLSX_MAX_COLUMNS,
   XLSX_MAX_FILE_BYTES,
+  XLSX_MAX_KEPT_CHARS,
   XLSX_MAX_PART_BYTES,
+  cleanCellText,
   numberText,
   readXlsx,
 } from "./read-xlsx";
@@ -137,6 +140,23 @@ describe("readXlsx — cells", () => {
       ),
     );
     expect(rows[0].cells).toEqual(["Oakland A's & José Ramírez", "&unknown; stays"]);
+  });
+
+  it("never reads an entity name off the prototype (&constructor;, &__proto__;)", () => {
+    const rows = rowsOf(
+      workbook([
+        '<row r="1">' +
+          '<c r="A1" t="inlineStr"><is><t>&constructor;</t></is></c>' +
+          '<c r="B1" t="inlineStr"><is><t>&__proto__; &toString; &hasOwnProperty;</t></is></c>' +
+          '<c r="C1" t="str"><v>&valueOf;</v></c>' +
+          "</row>",
+      ]),
+    );
+    expect(rows[0].cells).toEqual([
+      "&constructor;",
+      "&__proto__; &toString; &hasOwnProperty;",
+      "&valueOf;",
+    ]);
   });
 
   it("turns line breaks and control characters in a cell into single spaces", () => {
@@ -280,5 +300,112 @@ describe("readXlsx — refusals", () => {
       "xl/styles.xml": "x".repeat(2 * 1024 * 1024),
     });
     expect(rowsOf(zip)).toEqual([{ row: 1, cells: ["1"] }]);
+  });
+});
+
+describe("readXlsx — hostile shapes stay bounded", () => {
+  /** A sheet of `rows` rows, each `cols` cells all pointing at shared string 0. */
+  function amplifier(rows: number, cols = 50): Uint8Array {
+    const row = '<c t="s"><v>0</v></c>'.repeat(cols);
+    const body = Array.from({ length: rows }, (_, i) => `<row r="${i + 1}">${row}</row>`).join("");
+    return workbook([body], [`<t>${"A B ".repeat(100_000)}</t>`]);
+  }
+
+  it("cuts one 400,000-character shared string referenced by 50 cells a row, 1,000 rows, to the cell cap", () => {
+    const zip = amplifier(1000);
+    expect(zip.length).toBeLessThan(8 * 1024);
+    const heapBefore = process.memoryUsage().heapUsed;
+    const started = performance.now();
+    const read = readXlsx(zip);
+    const ms = performance.now() - started;
+    const heapGrowth = process.memoryUsage().heapUsed - heapBefore;
+    if (!read.ok) throw new Error(`refused: ${read.reason}`);
+    expect(read.rows).toHaveLength(1000);
+    expect(read.rows[0].cells).toHaveLength(50);
+    for (const cell of read.rows[999].cells) {
+      // Cut, but still far over the parser's 120-character name cap, so the
+      // cell is refused as too long rather than read as a short name.
+      expect(cell.length).toBeLessThanOrEqual(XLSX_MAX_CELL_CHARS);
+      expect(cell.length).toBeGreaterThan(120);
+      expect(cell.startsWith("A B A B")).toBe(true);
+    }
+    // Before the cap this shape took ~18 s and ~1 GB of heap at 50 rows.
+    expect(ms).toBeLessThan(5_000);
+    expect(heapGrowth).toBeLessThan(400 * 1024 * 1024);
+  });
+
+  it("refuses as part-too-big once the cells kept across rows pass the character cap", () => {
+    const rowsToPass = Math.ceil(XLSX_MAX_KEPT_CHARS / (50 * XLSX_MAX_CELL_CHARS)) + 20;
+    const started = performance.now();
+    expect(readXlsx(amplifier(rowsToPass))).toEqual({ ok: false, reason: "part-too-big" });
+    expect(performance.now() - started).toBeLessThan(10_000);
+  });
+
+  it("cleans a long cell exactly as a short one, then cuts it to the cap", () => {
+    expect(cleanCellText(`${" ".repeat(5000)}Mike\n\u0001 Trout${"\t".repeat(5000)}`)).toBe("Mike Trout");
+    const long = cleanCellText(`  ${"word\u0000 ".repeat(2000)}`);
+    expect(long).toHaveLength(XLSX_MAX_CELL_CHARS);
+    expect(long).toBe("word ".repeat(2000).slice(0, XLSX_MAX_CELL_CHARS).trimEnd());
+    const rows = rowsOf(
+      workbook([`<row r="1"><c r="A1" t="inlineStr"><is><t>${"x".repeat(5000)}</t></is></c></row>`]),
+    );
+    expect(rows[0].cells[0]).toBe("x".repeat(XLSX_MAX_CELL_CHARS));
+    // A cut that lands just after a space never keeps the space.
+    expect(cleanCellText(`${"x".repeat(XLSX_MAX_CELL_CHARS - 1)} yyyy${"z".repeat(10)}`)).toBe(
+      "x".repeat(XLSX_MAX_CELL_CHARS - 1),
+    );
+  });
+
+  /** Reads `zip` and returns how long it took; it must read, not throw. */
+  function timed(zip: Uint8Array): { ms: number; read: ReturnType<typeof readXlsx> } {
+    const started = performance.now();
+    const read = readXlsx(zip);
+    return { ms: performance.now() - started, read };
+  }
+
+  // 100,000 unclosed tags: before the cursor scan each one re-scanned the
+  // rest of the row (80,000 unclosed <c> took ~4.9 s); now one pass.
+  const UNCLOSED = 100_000;
+
+  it("reads a row of 100,000 unclosed <c> tags in one pass", () => {
+    const { ms, read } = timed(workbook([`<row r="1">${"<c>".repeat(UNCLOSED)}</row>`]));
+    expect(read.ok).toBe(true);
+    expect(ms).toBeLessThan(1_500);
+  });
+
+  it("reads a cell of 100,000 unclosed <v>, <is> or <t> tags in one pass", () => {
+    for (const body of [
+      `<c r="A1">${"<v>".repeat(UNCLOSED)}</c>`,
+      `<c r="A1" t="inlineStr">${"<is>".repeat(UNCLOSED)}</c>`,
+      `<c r="A1" t="inlineStr"><is>${"<t>".repeat(UNCLOSED)}</is></c>`,
+    ]) {
+      const { ms, read } = timed(workbook([`<row r="1">${body}<c r="B1"><v>7</v></c></row>`]));
+      expect(read).toEqual({ ok: true, rows: [{ row: 1, cells: ["", "7"] }] });
+      expect(ms).toBeLessThan(1_500);
+    }
+  });
+
+  it("reads a shared string of 100,000 unclosed <rPh> or <t> tags in one pass", () => {
+    for (const si of [`${"<rPh>".repeat(UNCLOSED)}<t>Ohtani</t>`, `${"<t>".repeat(UNCLOSED)}`]) {
+      const { ms, read } = timed(workbook(['<row r="1"><c r="A1" t="s"><v>0</v></c></row>'], [si]));
+      expect(read.ok).toBe(true);
+      expect(ms).toBeLessThan(1_500);
+    }
+  });
+
+  it("passes over an unclosed cell without swallowing the cell after it", () => {
+    const rows = rowsOf(
+      workbook(['<row r="1"><c r="A1"><v>1</v><c r="B1"><v>2</v></c><c r="C1"><v>3</v></c></row>']),
+    );
+    expect(rows).toEqual([{ row: 1, cells: ["", "2", "3"] }]);
+  });
+
+  it("reads a self-closed <t/> as empty rather than as the start of a run", () => {
+    const rows = rowsOf(
+      workbook([
+        '<row r="1"><c r="A1" t="inlineStr"><is><r><t xml:space="preserve"/></r><r><t>Trout</t></r></is></c></row>',
+      ]),
+    );
+    expect(rows[0].cells).toEqual(["Trout"]);
   });
 });

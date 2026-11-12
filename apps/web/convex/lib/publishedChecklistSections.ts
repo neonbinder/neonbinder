@@ -83,9 +83,26 @@ export function sectionKeyOf(name: string): string {
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
+ * Characters that print nothing yet change what a name shows or how it
+ * compares: zero-width space, non-joiner and joiner, the left-to-right and
+ * right-to-left marks (U+200B–U+200F), and the bidi embeddings, overrides
+ * and isolates (U+202A–U+202E, U+2066–U+2069) that can make a name read
+ * differently from what it holds ("Trojan Source"). A section, group or file
+ * name carrying one is refused here and skipped by the client's grouping
+ * (`hasHiddenNameChars`), so the two always agree.
+ */
+const HIDDEN_FORMAT_CHARS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/;
+
+/** True when `name` holds a character `HIDDEN_FORMAT_CHARS` refuses. Client-safe. */
+export function hasHiddenNameChars(name: string): boolean {
+  return HIDDEN_FORMAT_CHARS.test(name);
+}
+
+/**
  * A section (or group) name as stored: trimmed, 1–`MAX_SECTION_NAME`
- * characters, no control characters, and a key within `MAX_SECTION_KEY`.
- * `what` names it in the refusal ("Section 3's name").
+ * characters, no control characters, no hidden direction or zero-width
+ * characters, and a key within `MAX_SECTION_KEY`. `what` names it in the
+ * refusal ("Section 3's name").
  */
 export function checkSectionName(name: string, what: string): string {
   const trimmed = name.trim();
@@ -95,6 +112,9 @@ export function checkSectionName(name: string, what: string): string {
   }
   if (CONTROL_CHARS.test(trimmed)) {
     throw new ConvexError(`${what} has a control character in it.`);
+  }
+  if (hasHiddenNameChars(trimmed)) {
+    throw new ConvexError(`${what} has a hidden direction or zero-width character in it.`);
   }
   if (sectionKeyOf(trimmed).length > MAX_SECTION_KEY) {
     throw new ConvexError(`${what} is too long once folded.`);
@@ -111,6 +131,9 @@ export function checkFileName(fileName: string): string {
   }
   if (CONTROL_CHARS.test(trimmed)) {
     throw new ConvexError("The file name has a control character in it.");
+  }
+  if (hasHiddenNameChars(trimmed)) {
+    throw new ConvexError("The file name has a hidden direction or zero-width character in it.");
   }
   return trimmed;
 }

@@ -254,27 +254,28 @@ function isTokenSubsetOrSuperset(a: string, b: string): boolean {
   return true;
 }
 
+/**
+ * Edit distance between two strings. Two rolling rows rather than the whole
+ * (m+1) × (n+1) table: the same answer, in O(n) memory instead of O(m·n).
+ */
 function levenshteinDistance(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    Array(n + 1).fill(0),
-  );
-
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  let prev = new Int32Array(n + 1);
+  let curr = new Int32Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
 
   for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    const ai = a[i - 1];
     for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1];
-      } else {
-        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
-      }
+      curr[j] =
+        ai === b[j - 1] ? prev[j - 1] : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
     }
+    [prev, curr] = [curr, prev];
   }
 
-  return dp[m][n];
+  return prev[n];
 }
 
 type PlatformItem = { value: string; platformValue: string };
@@ -826,6 +827,13 @@ function stripFoldedPrefix(folded: string, prefixes: readonly string[]): string 
 }
 
 type SectionMatchInput = { sectionKey: string; name: string; kind: "base" | "base-child" | "other" };
+
+/**
+ * A section's candidate is offered at confidence 0.3 or more: an edit ratio
+ * of 0.7 or less. Pass 3 skips a pair only past this plus a margin, so float
+ * rounding can never drop a pair that would have been offered.
+ */
+const CANDIDATE_MAX_RATIO = 0.7;
 type TargetInput = { target: ChecklistTarget; labels: string[]; blocked?: boolean };
 
 /**
@@ -879,6 +887,8 @@ export function matchChecklistSections(
   };
 
   const targetForms = targets.map((t) => [...new Set(t.labels.flatMap((l) => formsOf(l)))]);
+  // Each target form's word bag, once, rather than once per section.
+  const targetBags = targetForms.map((tf) => tf.map(bag));
   const matches: Array<{ sectionKey: string; target: ChecklistTarget; confidence: number }> = [];
   const candidates: Array<{ sectionKey: string; candidates: Array<{ target: ChecklistTarget; confidence: number }> }> = [];
   const unmatchedSectionKeys: string[] = [];
@@ -905,8 +915,8 @@ export function matchChecklistSections(
     if (found === null) {
       const sectionBags = new Set(forms.map(bag));
       const bagHits = new Set<number>();
-      targetForms.forEach((tf, i) => {
-        if (tf.some((f) => sectionBags.has(bag(f)))) bagHits.add(i);
+      targetBags.forEach((tb, i) => {
+        if (tb.some((b) => sectionBags.has(b))) bagHits.add(i);
       });
       const b = unique(bagHits);
       if (b === "tie") found = "tie";
@@ -914,7 +924,20 @@ export function matchChecklistSections(
     }
 
     // Pass 3: near name, one name's words inside the other's. Best ratio per
-    // target over every pair of forms; a tied best is no match.
+    // target over every pair of forms; a tied best is no match. Scored only
+    // when no earlier pass matched (the ratios then feed pass 3 and the
+    // unmatched section's candidates). A pair whose lengths alone put its
+    // ratio past `CANDIDATE_MAX_RATIO` is never scored: the edit distance is
+    // at least the length difference, so it could neither match (< 0.4) nor
+    // be offered (confidence ≥ 0.3), and skipping it changes no answer.
+    if (found !== null && found !== "tie") {
+      matches.push({
+        sectionKey: section.sectionKey,
+        target: targets[found.index].target,
+        confidence: found.confidence,
+      });
+      continue;
+    }
     const scored = targetForms.map((tf, i) => {
       let best = Infinity;
       let guarded = false;
@@ -922,6 +945,7 @@ export function matchChecklistSections(
         for (const s of forms) {
           const maxLen = Math.max(f.length, s.length);
           if (maxLen === 0) continue;
+          if (Math.abs(f.length - s.length) / maxLen > CANDIDATE_MAX_RATIO + 0.01) continue;
           const ratio = levenshteinDistance(s, f) / maxLen;
           if (ratio < best) {
             best = ratio;

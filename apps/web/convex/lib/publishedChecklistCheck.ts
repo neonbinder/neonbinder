@@ -54,6 +54,14 @@ export type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
 /** NEO-496 — what the re-check returns, and what a stored chunk holds. */
 export type PublishedChecklistStoredRow = Infer<typeof publishedChecklistStoredRowValidator>;
 
+/**
+ * The most player or team strings one row may send, blanks included, before
+ * any is trimmed or dropped. Generous next to a card's caps (20 players,
+ * 8 teams) so a real row is never near it, but small enough that a row
+ * padded with thousands of blank strings is refused before any is read.
+ */
+export const MAX_PUBLISHED_ROW_NAMES = 40;
+
 /** The characters a publisher checklist's card number may hold. */
 const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
 
@@ -61,7 +69,9 @@ const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
  * The server's re-check of a publisher checklist (the client's parser applies
  * the same limits): at most `MAX_PUBLISHED_CHECKLIST_ROWS` rows, every number,
  * player and team within the stored-name cap, players and teams within a
- * card's caps. Refused whole, never trimmed, and named by row position only.
+ * card's caps, and no row sending more than `MAX_PUBLISHED_ROW_NAMES` player
+ * or team strings before blanks are dropped. Refused whole, never trimmed, and
+ * named by row position only.
  * Strings are trimmed; empty names dropped. A row is a no-number row
  * (`noNumber: true`) when the client flagged it or its number is blank or
  * "NNO", by the matcher's own test (`rowHasNoNumber`), so the client's parse
@@ -109,6 +119,11 @@ export function checkPublishedChecklist(
       throw new ConvexError(`${where} has a set name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
     }
     const clean = (names: string[], max: number, unit: string) => {
+      if (names.length > MAX_PUBLISHED_ROW_NAMES) {
+        throw new ConvexError(
+          `${where} sends ${names.length} ${unit} names; the limit is ${MAX_PUBLISHED_ROW_NAMES}.`,
+        );
+      }
       const kept = names.map((n) => n.trim()).filter(Boolean);
       if (kept.length > max) {
         throw new ConvexError(`${where} names ${kept.length} ${unit}s; the limit is ${max}.`);

@@ -929,7 +929,9 @@ class ParseCollector {
     if (subsets) out.subsets = subsets;
     if (this.sections.groups.size > 0) {
       const kept = new Set(subsets ?? []);
-      const groups: Record<string, string> = {};
+      // Keyed by publisher text: no prototype, so a section named
+      // "__proto__" is an own key like any other.
+      const groups: Record<string, string> = Object.create(null);
       for (const [subset, group] of this.sections.groups) if (kept.has(subset)) groups[subset] = group;
       if (Object.keys(groups).length > 0) out.groups = groups;
     }

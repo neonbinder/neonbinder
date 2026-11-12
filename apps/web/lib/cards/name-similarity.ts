@@ -106,10 +106,69 @@ export function playerNameScore(a: string, b: string): number {
 export type NamePair = { leftIndex: number; rightIndex: number; score: number };
 
 /**
+ * The most name pairs (non-empty left × non-empty right) the fuzzy pass
+ * scores. Past it only identical names pair, and every other name is left
+ * unmatched for the operator: the safe answer under rule 8, never a guess.
+ */
+export const NAME_PAIRING_MAX_CELLS = 250_000;
+
+/**
+ * The most character comparisons the fuzzy pass may spend, estimated as
+ * |a| × |b| summed over the pairs the length bound keeps. Real player names
+ * (a few hundred by a few hundred, ~15 characters) use a small part of it;
+ * a matrix of 120-character names does not fit, and is treated as over
+ * `NAME_PAIRING_MAX_CELLS`.
+ */
+export const NAME_PAIRING_MAX_WORK = 500_000_000;
+
+/**
+ * The highest Jaro-Winkler two strings of lengths `a` and `b` (both > 0) can
+ * score, from their lengths alone. At most `s = min(a, b)` characters match,
+ * so Jaro ≤ (s/a + s/b + 1) / 3 = (2 + s/L) / 3 with `L = max(a, b)`, and the
+ * Winkler bonus (a shared prefix of at most min(4, s)) only grows with Jaro.
+ * A pair whose bound is under the threshold cannot pair and is not scored.
+ */
+export function jaroWinklerLengthBound(a: number, b: number): number {
+  const s = Math.min(a, b);
+  const l = Math.max(a, b);
+  const jaro = (2 + s / l) / 3;
+  const prefix = Math.min(4, s);
+  return jaro + prefix * 0.1 * (1 - jaro);
+}
+
+/** Pairs every name that appears exactly once on each side with its twin, at score 1. */
+function pairIdenticalNames(
+  left: ReadonlyArray<string | undefined>,
+  right: ReadonlyArray<string | undefined>,
+): NamePair[] {
+  const once = (names: ReadonlyArray<string | undefined>) => {
+    const at = new Map<string, number>();
+    names.forEach((n, i) => {
+      if (!n) return;
+      at.set(n, at.has(n) ? -1 : i);
+    });
+    return at;
+  };
+  const rightAt = once(right);
+  const pairs: NamePair[] = [];
+  for (const [name, l] of once(left)) {
+    const r = rightAt.get(name);
+    if (l >= 0 && r !== undefined && r >= 0) pairs.push({ leftIndex: l, rightIndex: r, score: 1 });
+  }
+  return pairs.sort((a, b) => a.leftIndex - b.leftIndex);
+}
+
+/**
  * Pair two lists of ALREADY-FOLDED names by Jaro-Winkler under the rule in
  * the header: a pair is each side's unique best at or above `threshold`,
  * rounds repeat over the leftovers, ties stay unmatched. `undefined` or an
  * empty name takes part in nothing. Indexes are positions in the lists given.
+ *
+ * Bounded: a pair whose lengths alone cannot reach the threshold
+ * (`jaroWinklerLengthBound`) is never scored, and past
+ * `NAME_PAIRING_MAX_CELLS` pairs (or `NAME_PAIRING_MAX_WORK` characters)
+ * only identical names pair, each the one copy on its side. Those are pairs
+ * the full pass would make too, so the cap only ever leaves names unmatched.
  *
  * Returned in left order.
  */
@@ -118,24 +177,47 @@ export function pairNamesBySimilarity(
   right: ReadonlyArray<string | undefined>,
   threshold: number = PLAYER_NAME_AUTO_LINK,
 ): NamePair[] {
+  const lefts: number[] = [];
+  const rights: number[] = [];
+  left.forEach((ln, l) => {
+    if (ln) lefts.push(l);
+  });
+  right.forEach((rn, r) => {
+    if (rn) rights.push(r);
+  });
+  if (lefts.length * rights.length > NAME_PAIRING_MAX_CELLS) return pairIdenticalNames(left, right);
+
+  // The pairs worth scoring: those whose lengths can reach the threshold.
+  // The tiny margin keeps float rounding from ever skipping a real pair.
+  const candidates: number[] = []; // flat [l, r, l, r, …]
+  let work = 0;
+  for (const l of lefts) {
+    const la = left[l]!.length;
+    for (const r of rights) {
+      const lb = right[r]!.length;
+      if (jaroWinklerLengthBound(la, lb) < threshold - 1e-9) continue;
+      candidates.push(l, r);
+      work += la * lb;
+    }
+  }
+  if (work > NAME_PAIRING_MAX_WORK) return pairIdenticalNames(left, right);
+
   // Every score at or above the threshold, once. Sparse: a real set has a
   // handful of leftovers with a candidate each, not a full matrix.
   const byLeft = new Map<number, Array<{ r: number; score: number }>>();
   const byRight = new Map<number, Array<{ l: number; score: number }>>();
-  left.forEach((ln, l) => {
-    if (!ln) return;
-    right.forEach((rn, r) => {
-      if (!rn) return;
-      const score = jaroWinkler(ln, rn);
-      if (score < threshold) return;
-      const ls = byLeft.get(l);
-      if (ls) ls.push({ r, score });
-      else byLeft.set(l, [{ r, score }]);
-      const rs = byRight.get(r);
-      if (rs) rs.push({ l, score });
-      else byRight.set(r, [{ l, score }]);
-    });
-  });
+  for (let i = 0; i < candidates.length; i += 2) {
+    const l = candidates[i];
+    const r = candidates[i + 1];
+    const score = jaroWinkler(left[l]!, right[r]!);
+    if (score < threshold) continue;
+    const ls = byLeft.get(l);
+    if (ls) ls.push({ r, score });
+    else byLeft.set(l, [{ r, score }]);
+    const rs = byRight.get(r);
+    if (rs) rs.push({ l, score });
+    else byRight.set(r, [{ l, score }]);
+  }
 
   const takenLeft = new Set<number>();
   const takenRight = new Set<number>();

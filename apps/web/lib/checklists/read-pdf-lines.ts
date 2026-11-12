@@ -36,6 +36,18 @@ export const PDF_MAX_FILE_BYTES = 20 * 1024 * 1024;
 export const PDF_MAX_PAGES = 300;
 /** The most lines kept; past it the document is not read further. */
 export const PDF_MAX_LINES = 100_000;
+/**
+ * The most text items grouped from one page. A real checklist page has a few
+ * thousand; past this the rest of the page is not grouped and the document is
+ * not read further (`truncatedAfterPage` says where it stopped).
+ */
+export const PDF_MAX_PAGE_ITEMS = 50_000;
+/**
+ * How long one read may take. Past it the pdf.js task (and its worker) is
+ * destroyed and the file is refused as `malformed`, so a PDF built to spin
+ * the parser cannot hold the dialog forever.
+ */
+export const PDF_READ_TIMEOUT_MS = 60_000;
 
 /**
  * One line of a page: its cells left to right and the x (pt) each starts at.
@@ -79,12 +91,13 @@ export type PdfPageLine = { cells: string[]; xs: number[] };
 
 /**
  * Group one page's text items into lines of cells. Pure: the unit tests feed
- * it items by hand, and `readPdfLines` feeds it pdf.js's own.
+ * it items by hand, and `readPdfLines` feeds it pdf.js's own. Only the first
+ * `PDF_MAX_PAGE_ITEMS` items are read.
  */
 export function groupPageItems(items: readonly PdfTextItem[]): PdfPageLine[] {
   type Placed = { x: number; end: number; y: number; size: number; text: string };
   const placed: Placed[] = [];
-  for (const item of items) {
+  for (const item of items.length > PDF_MAX_PAGE_ITEMS ? items.slice(0, PDF_MAX_PAGE_ITEMS) : items) {
     if (typeof item.str !== "string" || item.str.trim() === "") continue;
     const [a, b, , d, x, y] = item.transform;
     if (![a, b, d, x, y].every(Number.isFinite)) continue;
@@ -110,7 +123,9 @@ export function groupPageItems(items: readonly PdfTextItem[]): PdfPageLine[] {
   const out: PdfPageLine[] = [];
   for (const line of lines) {
     line.sort((p, q) => p.x - q.x);
-    const size = Math.max(...line.map((p) => p.size));
+    // A loop, not Math.max(...line): a spread of a huge line overflows the stack.
+    let size = 0;
+    for (const p of line) if (p.size > size) size = p.size;
     const gap = cellGap(size);
     const cells: string[] = [];
     const xs: number[] = [];
@@ -158,51 +173,83 @@ export async function loadPdfjs(): Promise<PdfjsModule> {
 
 /**
  * Read every page's lines. Never throws: a file it cannot read comes back
- * `{ ok: false, reason }`. `pdfjs` is injectable so a Node probe can hand in
- * the same module the browser loads.
+ * `{ ok: false, reason }`, and a read that runs past `timeoutMs` (default
+ * `PDF_READ_TIMEOUT_MS`) is stopped, its task destroyed, and refused as
+ * `malformed`. `pdfjs` is injectable so a Node probe can hand in the same
+ * module the browser loads.
  */
 export async function readPdfLines(
   input: Uint8Array | ArrayBuffer,
-  options: { pdfjs?: PdfjsModule } = {},
+  options: { pdfjs?: PdfjsModule; timeoutMs?: number } = {},
 ): Promise<PdfRead> {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.length > PDF_MAX_FILE_BYTES) return { ok: false, reason: "too-big" };
   let task: Pdfjs.PDFDocumentLoadingTask | null = null;
+  let stopped = false;
+  let destroyed: Promise<unknown> | null = null;
+  // Ends the worker's copy of the document too. Once only, whichever of the
+  // read and the timeout gets there first.
+  const destroy = () => {
+    if (!task) return Promise.resolve();
+    destroyed ??= task.destroy().catch(() => undefined);
+    return destroyed;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<PdfRead>((resolve) => {
+    timer = setTimeout(() => {
+      stopped = true;
+      resolve({ ok: false, reason: "malformed" });
+    }, options.timeoutMs ?? PDF_READ_TIMEOUT_MS);
+  });
   try {
-    const pdfjs = options.pdfjs ?? (await loadPdfjs());
-    task = pdfjs.getDocument({
-      // pdf.js may transfer the buffer to its worker: hand it a copy.
-      data: bytes.slice(),
-      disableFontFace: true,
-      enableXfa: false,
-      useSystemFonts: false,
-      stopAtErrors: false,
-    });
-    const doc = await task.promise;
-    if (doc.numPages > PDF_MAX_PAGES) return { ok: false, reason: "too-many-pages" };
-    const lines: PdfLine[] = [];
-    let truncatedAfterPage: number | undefined;
-    for (let page = 1; page <= doc.numPages; page++) {
-      const content = await (await doc.getPage(page)).getTextContent();
-      const items = content.items.filter((item): item is TextItem => "str" in item);
-      for (const { cells, xs } of groupPageItems(items)) {
-        if (lines.length >= PDF_MAX_LINES) break;
-        lines.push({ page, line: lines.length + 1, cells, xs });
-      }
-      if (lines.length >= PDF_MAX_LINES && page < doc.numPages) {
-        truncatedAfterPage = page;
-        break;
-      }
-    }
-    return truncatedAfterPage === undefined
-      ? { ok: true, lines, pages: doc.numPages }
-      : { ok: true, lines, pages: doc.numPages, truncatedAfterPage };
-  } catch (error) {
-    const name = (error as { name?: string } | null)?.name;
-    if (name === "PasswordException") return { ok: false, reason: "password" };
-    return { ok: false, reason: "malformed" };
+    return await Promise.race([readAll(), timeout]);
   } finally {
-    // Ends the worker's copy of the document too.
-    await task?.destroy().catch(() => undefined);
+    clearTimeout(timer);
+    stopped = true;
+    await destroy();
+  }
+
+  async function readAll(): Promise<PdfRead> {
+    try {
+      const pdfjs = options.pdfjs ?? (await loadPdfjs());
+      if (stopped) return { ok: false, reason: "malformed" };
+      task = pdfjs.getDocument({
+        // pdf.js may transfer the buffer to its worker: hand it a copy.
+        data: bytes.slice(),
+        disableFontFace: true,
+        enableXfa: false,
+        useSystemFonts: false,
+        stopAtErrors: false,
+      });
+      const doc = await task.promise;
+      if (stopped) return { ok: false, reason: "malformed" };
+      if (doc.numPages > PDF_MAX_PAGES) return { ok: false, reason: "too-many-pages" };
+      const lines: PdfLine[] = [];
+      let truncatedAfterPage: number | undefined;
+      for (let page = 1; page <= doc.numPages; page++) {
+        const content = await (await doc.getPage(page)).getTextContent();
+        if (stopped) return { ok: false, reason: "malformed" };
+        const items = content.items.filter((item): item is TextItem => "str" in item);
+        for (const { cells, xs } of groupPageItems(items)) {
+          if (lines.length >= PDF_MAX_LINES) break;
+          lines.push({ page, line: lines.length + 1, cells, xs });
+        }
+        // A page past the item cap was grouped only in part: nothing after it
+        // is read, and the read says where it stopped.
+        if (items.length > PDF_MAX_PAGE_ITEMS || (lines.length >= PDF_MAX_LINES && page < doc.numPages)) {
+          truncatedAfterPage = page;
+          break;
+        }
+      }
+      return truncatedAfterPage === undefined
+        ? { ok: true, lines, pages: doc.numPages }
+        : { ok: true, lines, pages: doc.numPages, truncatedAfterPage };
+    } catch (error) {
+      const name = (error as { name?: string } | null)?.name;
+      if (name === "PasswordException") return { ok: false, reason: "password" };
+      return { ok: false, reason: "malformed" };
+    } finally {
+      await destroy();
+    }
   }
 }

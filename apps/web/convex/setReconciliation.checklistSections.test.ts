@@ -412,3 +412,56 @@ describe("buildRawOptionsChecklist", () => {
     expect(result.sections.length).toBeGreaterThan(0);
   });
 });
+
+describe("matchChecklistSections: bounded pass 3 (NEO-496 security audit)", () => {
+  /** A deterministic lower-case word string of about `length` characters. */
+  const words = (seed: number, length: number) => {
+    let x = seed >>> 0;
+    let out = "";
+    while (out.length < length) {
+      x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+      out += String.fromCharCode(97 + ((x >>> 16) % 26));
+      if (out.length % 7 === 6) out += " ";
+    }
+    return out.trim();
+  };
+  const longTargets = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      target: bscItem(`bsc-${i}`),
+      labels: [words(i + 1, 120)],
+    }));
+
+  test("a section an exact name matched is never scored against every target", () => {
+    const name = words(77_777, 120);
+    const targets = [{ target: bscItem("bsc-exact"), labels: [name] }, ...longTargets(2_000)];
+    const sections = Array.from({ length: 50 }, (_, i) => ({ ...sec(name), sectionKey: `s-${i}` }));
+    const started = performance.now();
+    const result = matchChecklistSections(sections, targets);
+    // Before, every one of 50 × 2,000 pairs of 120 characters was scored (~3 s).
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(result.matches).toHaveLength(50);
+    expect(result.matches.every((m) => m.confidence === 1 && m.target.kind === "item")).toBe(true);
+  });
+
+  test("a pair whose lengths alone rule out a candidate is not scored, and nothing is offered", () => {
+    const sections = Array.from({ length: 200 }, (_, i) => ({
+      ...sec(words(i + 90_000, 20)),
+      sectionKey: `s-${i}`,
+    }));
+    const started = performance.now();
+    const result = matchChecklistSections(sections, longTargets(2_000));
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(result.matches).toEqual([]);
+    expect(result.unmatchedSectionKeys).toHaveLength(200);
+    expect(result.candidates.every((c) => c.candidates.length === 0)).toBe(true);
+  });
+
+  test("a candidate exactly at the 0.3 floor is still offered (the length skip has a margin)", () => {
+    // "abc" → "abcdefghij" is 7 edits over 10: ratio 0.7, confidence 0.3.
+    const result = matchChecklistSections([sec("abc")], [{ target: bscItem("bsc-a"), labels: ["abcdefghij"] }]);
+    expect(result.matches).toEqual([]);
+    expect(result.candidates).toEqual([
+      { sectionKey: "abc", candidates: [{ target: bscItem("bsc-a"), confidence: 1 - 0.7 }] },
+    ]);
+  });
+});

@@ -5,7 +5,9 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   PDF_MAX_FILE_BYTES,
+  PDF_MAX_PAGE_ITEMS,
   PDF_MAX_PAGES,
+  PDF_READ_TIMEOUT_MS,
   cellGap,
   groupPageItems,
   readPdfLines,
@@ -79,14 +81,29 @@ describe("groupPageItems — Topps columns by x-gap", () => {
 
 type FakeDoc = { numPages: number; getPage: (n: number) => Promise<{ getTextContent: () => Promise<{ items: unknown[] }> }> };
 
-function fakePdfjs(doc: FakeDoc | Error) {
+function fakePdfjs(doc: FakeDoc | Error | "never") {
   const destroy = vi.fn(async () => undefined);
   const getDocument = vi.fn(() => ({
-    promise: doc instanceof Error ? Promise.reject(doc) : Promise.resolve(doc),
+    promise:
+      doc === "never"
+        ? new Promise<never>(() => undefined)
+        : doc instanceof Error
+          ? Promise.reject(doc)
+          : Promise.resolve(doc),
     destroy,
   }));
   return { pdfjs: { getDocument } as never, getDocument, destroy };
 }
+
+describe("groupPageItems — a hostile page stays bounded", () => {
+  it("groups a page of 200,000 items on one baseline without overflowing the stack", () => {
+    const items = Array.from({ length: 200_000 }, (_, i) => item("x", i * 30, 700));
+    const lines = groupPageItems(items);
+    expect(lines).toHaveLength(1);
+    // Only the first PDF_MAX_PAGE_ITEMS are read: one cell each (30 pt apart).
+    expect(lines[0].cells).toHaveLength(PDF_MAX_PAGE_ITEMS);
+  });
+});
 
 describe("readPdfLines — with pdf.js stood in", () => {
   it("opens the document with font faces and XFA off, and destroys it after", async () => {
@@ -124,6 +141,47 @@ describe("readPdfLines — with pdf.js stood in", () => {
       ok: false,
       reason: "malformed",
     });
+  });
+
+  it("gives up on a read past the time limit: the task is destroyed and the file refused as malformed", async () => {
+    expect(PDF_READ_TIMEOUT_MS).toBe(60_000);
+    // A document that never finishes opening.
+    const stuck = fakePdfjs("never");
+    const started = performance.now();
+    expect(await readPdfLines(new Uint8Array(1), { pdfjs: stuck.pdfjs, timeoutMs: 30 })).toEqual({
+      ok: false,
+      reason: "malformed",
+    });
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(stuck.destroy).toHaveBeenCalledTimes(1);
+
+    // A page that never gives its text: no later page is asked for.
+    const getPage = vi.fn(async () => ({ getTextContent: () => new Promise<never>(() => undefined) }));
+    const slow = fakePdfjs({ numPages: 3, getPage });
+    expect(await readPdfLines(new Uint8Array(1), { pdfjs: slow.pdfjs, timeoutMs: 30 })).toEqual({
+      ok: false,
+      reason: "malformed",
+    });
+    expect(getPage).toHaveBeenCalledTimes(1);
+    expect(slow.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("groups only the first 50,000 items of a page and stops reading there", async () => {
+    expect(PDF_MAX_PAGE_ITEMS).toBe(50_000);
+    // One item per line, top to bottom, and more of them than the cap.
+    const items = Array.from({ length: PDF_MAX_PAGE_ITEMS + 5_000 }, (_, i) =>
+      item(String(i + 1), 50, 1_000_000 - i * 20),
+    );
+    const getPage = vi.fn(async () => ({ getTextContent: async () => ({ items }) }));
+    const fake = fakePdfjs({ numPages: 2, getPage });
+    const started = performance.now();
+    const out = await readPdfLines(new Uint8Array(1), { pdfjs: fake.pdfjs });
+    expect(performance.now() - started).toBeLessThan(5_000);
+    if (!out.ok) throw new Error(out.reason);
+    expect(out.lines).toHaveLength(PDF_MAX_PAGE_ITEMS);
+    expect(out.lines[out.lines.length - 1].cells).toEqual([String(PDF_MAX_PAGE_ITEMS)]);
+    expect(out.truncatedAfterPage).toBe(1);
+    expect(getPage).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a file over 20 MB before loading pdf.js", async () => {

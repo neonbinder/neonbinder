@@ -10,6 +10,7 @@ import {
   checkFileName,
   checkSectionName,
   chunkRowsByBytes,
+  hasHiddenNameChars,
   sectionKeyOf,
   storedRowBytes,
 } from "./publishedChecklistSections";
@@ -50,6 +51,38 @@ describe("checkSectionName", () => {
     expect(() => checkFileName(" ")).toThrow(/blank/);
     expect(() => checkFileName("a".repeat(201))).toThrow(/over 200/);
     expect(() => checkFileName("a\nb")).toThrow(/control character/);
+  });
+
+  // Zero-width and bidi format characters print nothing, so a name holding
+  // one can show as another ("Base" with a ZWSP, or an RLO flipping a file
+  // name's extension). Each range end is pinned, and its neighbours pass.
+  const HIDDEN = [
+    "\u200b", "\u200c", "\u200d", "\u200e", "\u200f",
+    "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+    "\u2066", "\u2067", "\u2068", "\u2069",
+  ];
+  test.each(HIDDEN.map((ch) => [ch.codePointAt(0)!.toString(16), ch]))(
+    "refuses U+%s in a section, group or file name",
+    (_, ch) => {
+      expect(hasHiddenNameChars(`Base${ch}`)).toBe(true);
+      expect(() => checkSectionName(`Bomb${ch} Squad`, "Section 2's name")).toThrow(
+        "Section 2's name has a hidden direction or zero-width character in it.",
+      );
+      expect(() => checkSectionName(`AUTO${ch}GRAPH`, "The group of section “X”")).toThrow(
+        /hidden direction or zero-width character/,
+      );
+      expect(() => checkFileName(`checklist${ch}fdp.xlsx`)).toThrow(
+        "The file name has a hidden direction or zero-width character in it.",
+      );
+    },
+  );
+  test("lets the characters either side of those ranges through", () => {
+    for (const ch of ["\u200a", "\u2010", "\u2029", "\u202f", "\u2065", "\u206a", "é", "—"]) {
+      expect(hasHiddenNameChars(`Base${ch}x`)).toBe(false);
+    }
+    // U+200A (hair space) and U+202F are whitespace: trimmed and folded, not refused.
+    expect(checkSectionName("Bomb\u200aSquad", "Name")).toBe("Bomb\u200aSquad");
+    expect(checkFileName("Topps — 2026.pdf")).toBe("Topps — 2026.pdf");
   });
 });
 
