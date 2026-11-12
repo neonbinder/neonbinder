@@ -3252,3 +3252,39 @@ describe("NEO-500: the pick-order seed is locked like the other testing seeds", 
     expect(await written(t)).toBe(0);
   });
 });
+
+/**
+ * NEO-520 — `testing.seedMyTestEbayOrder`, the unmatched-eBay-sale spec's seed
+ * hop, by the same two locks as `seedMyTestPickOrder`: an anonymous caller is
+ * refused, and a deployment without `TESTING_RESET_SECRET` (every production
+ * deployment) throws having written nothing. Its behaviour is pinned in
+ * `testing.ebayOrder.test.ts`.
+ */
+describe("NEO-520: the eBay order seed is locked like the other testing seeds", () => {
+  const args = { orderNo: "E1", lines: [{ title: "A lot", quantity: 1 }] };
+  const written = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => (await ctx.db.query("marketplaceSales").collect()).length);
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test("refuses an anonymous caller", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.seedMyTestEbayOrder, args)).rejects.toThrow(/Not authenticated/);
+    expect(await written(t)).toBe(0);
+  });
+
+  test("throws and writes nothing when TESTING_RESET_SECRET is unset", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    const t = convexTest(schema, modules);
+    await expect(t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestEbayOrder, args)).rejects.toThrow(
+      /not enabled on this deployment/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestEbayOrder, { orderNo: "E1", ship: true }),
+    ).rejects.toThrow(/not enabled on this deployment/);
+    expect(await written(t)).toBe(0);
+  });
+});

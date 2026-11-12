@@ -246,6 +246,9 @@ describe("NEO-509: a sale's own words for its card", () => {
       2021, 2023, 2023, undefined, undefined, undefined, undefined,
     ]);
     expect(toListedCard({ sport: " ", players: "" }, undefined)).toBeUndefined();
+    // NEO-520: a title alone is a listed card (a label); a blank one is nothing.
+    expect(toListedCard({ title: "Lot of 10" }, undefined)).toEqual({ title: "Lot of 10" });
+    expect(toListedCard({ title: "  " }, undefined)).toBeUndefined();
   });
 });
 
@@ -358,6 +361,25 @@ describe("NEO-509: the sports a sale names", () => {
     // Every control name is the title plus its order: unique across the list.
     const names = store!.data!.lines.map((l) => `${l.listingTitle}|${l.order.id}`);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("NEO-520: an eBay line with only a title is named by it, carries it as listed, and keeps its next step", async () => {
+    await mountWith([lostLine(1, { title: "  Vintage   binder lot " }, { platform: "ebay", orderNo: "27-1" })]);
+    const [only] = store!.data!.lines;
+    expect(only.listingTitle).toBe("Vintage binder lot");
+    expect(only.listed).toEqual({ title: "Vintage binder lot" });
+    expect(only.order.venue).toBe("eBay");
+    expect(only.problem).toMatch(/couldn't match/);
+  });
+
+  it("NEO-520: lines of one order with the same title are numbered like any other twins", async () => {
+    await mountWith([lostLine(1, { title: "Same lot" }), lostLine(2, { title: "Same lot" })]);
+    expect(store!.data!.lines.map((l) => l.listingTitle)).toEqual(["Same lot (1 of 2)", "Same lot (2 of 2)"]);
+  });
+
+  it("NEO-520: card words keep naming the line when a title rides along", async () => {
+    await mountWith([lostLine(1, { title: "Eight cards", year: "2021", setName: "Score", cardNo: "5" })]);
+    expect(store!.data!.lines[0].listingTitle).toBe("2021 Score #5");
   });
 
   it("keeps the described line's listed card and its next step, and an undescribed one carries none", async () => {

@@ -510,6 +510,29 @@ describe("the signed-in Pick List's ways out", () => {
     expect(within(thin).getAllByText("Hockey", { exact: true }).length).toBeGreaterThan(0);
   });
 
+  it("NEO-520: an eBay line known only by its title sits under Can't find it, named by the title and its order, with no Not in NB chip", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const title = "Vintage binder lot";
+    const extra = {
+      id: "x-title",
+      quantity: 1,
+      condition: "",
+      order: { id: "oe", venue: "eBay", number: "27-11111-22222" },
+      card: null,
+      sportCode: null,
+      listingTitle: title,
+      listed: { title },
+      problem: "NB couldn't match this line. Check the order's photo.",
+    };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
+    const toggle = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` });
+    const row = toggle.closest("tr")!;
+    expect(row.closest("tbody")!.textContent).toContain("Can't find it");
+    // The seller sees the title; the Not in NB chip belongs to rows the listing describes as a card.
+    expect(within(row).getAllByText(title).length).toBeGreaterThan(0);
+    expect(within(row).queryByText("Not in NB", { exact: true })).toBeNull();
+  });
+
   it("a line NB couldn't match names its order, and its order opens that sale on the Sales tab", async () => {
     const region = await show({}, true);
     // The toggle carries the order: two orders' strays never read alike.

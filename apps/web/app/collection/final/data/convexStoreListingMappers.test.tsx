@@ -185,6 +185,17 @@ describe("toSale", () => {
     expect(item).toMatchObject({ cardId: "card1", problem: "oversold", shortBy: 2, applied: true });
   });
 
+  it("NEO-520: an item's title is carried, and absent when the sale has none", () => {
+    const [titled, plain] = toSale(
+      sale([
+        { condition: "", quantity: 1, priceCents: 1, applied: false, problem: "unmatched", title: "A lot" },
+        { condition: "", quantity: 1, priceCents: 1, applied: false, problem: "unmatched" },
+      ]),
+    ).items;
+    expect(titled.title).toBe("A lot");
+    expect(plain).not.toHaveProperty("title");
+  });
+
   it("a shortBy of 0 is still carried (only undefined is dropped)", () => {
     const [item] = toSale(
       sale([{ cardId: "c", condition: "NM", quantity: 1, priceCents: 1, applied: true, shortBy: 0 }]),

@@ -264,6 +264,78 @@ describe("the Sales tab", () => {
     expect(screen.getByRole("link", { name: "Open BuySportsCards orders (opens in a new tab)" })).toBeTruthy();
   });
 
+  describe("NEO-520: eBay lines NB didn't list", () => {
+    const foreign = (over: Record<string, unknown> = {}) => ({
+      condition: "",
+      quantity: 1,
+      priceCents: 499,
+      applied: false,
+      problem: "unmatched" as const,
+      ...over,
+    });
+    const ebay = (items: Sale["items"], id = "e1") =>
+      sale({ id, platform: "ebay", orderNo: "27-11111-22222", status: "NOT_STARTED", totals: { totalCents: 499 }, items });
+    const orderOf = (name: string) => screen.getByRole("article", { name });
+
+    it("names a line with no card by eBay's own title, shows the eBay problem line, and hides the empty condition", () => {
+      setup({ sales: [ebay([foreign({ title: "2024 Topps Chrome #205 Some Player RC" })])] });
+      const line = within(orderOf("eBay order 27-11111-22222")).getAllByRole("listitem")[0];
+      expect(line.textContent).toBe(
+        "1× 2024 Topps Chrome #205 Some Player RC$4.99 eachNeonBinder didn't list this one, so your boxes stayed put. Pull it by hand.",
+      );
+      expect(line.textContent).not.toContain("()");
+      expect(line.textContent).not.toMatch(/\bcard\b/i);
+    });
+
+    it("a line with no title says where it sold, never calling it a card", () => {
+      setup({ sales: [ebay([foreign()])] });
+      expect(within(orderOf("eBay order 27-11111-22222")).getByText("Sold on eBay, not listed by NeonBinder")).toBeTruthy();
+    });
+
+    it("a blank title falls back to the plain words", () => {
+      setup({ sales: [ebay([foreign({ title: "   " })])] });
+      expect(within(orderOf("eBay order 27-11111-22222")).getByText("Sold on eBay, not listed by NeonBinder")).toBeTruthy();
+    });
+
+    it("the header counts items when any line has no NB card, and the singular is item", () => {
+      setup({ sales: [ebay([foreign({ title: "One thing" })])] });
+      expect(orderOf("eBay order 27-11111-22222").textContent).toContain("1 item, $4.99");
+      cleanup();
+      setup({
+        sales: [
+          ebay([
+            { cardId: "c1", condition: "NM", quantity: 2, priceCents: 100, applied: true },
+            foreign({ quantity: 3, title: "Lot" }),
+          ]),
+        ],
+      });
+      expect(orderOf("eBay order 27-11111-22222").textContent).toContain("5 items");
+    });
+
+    it("an order whose every line has an NB card still counts cards", () => {
+      setup({ sales: [ebay([{ cardId: "c1", condition: "NM", quantity: 2, priceCents: 100, applied: true }])] });
+      expect(orderOf("eBay order 27-11111-22222").textContent).toContain("2 cards");
+    });
+
+    it("a BuySportsCards line with no card says items in the header but keeps its own name and problem words", () => {
+      setup({ sales: [sale({ id: "b1", orderNo: "77", items: [{ condition: "excellent", quantity: 1, priceCents: 250, applied: false, problem: "unmatched" }] })] });
+      const order = orderOf("BuySportsCards order 77");
+      expect(order.textContent).toContain("1 item");
+      expect(order.textContent).toContain("A BuySportsCards card we can't match");
+      expect(order.textContent).toContain("We couldn't match this to a card in NeonBinder");
+    });
+
+    it("a line whose card left the catalog keeps its words even with a title", () => {
+      setup({ sales: [ebay([foreign({ cardId: "gone", problem: undefined, title: "Some title" })])] });
+      expect(within(orderOf("eBay order 27-11111-22222")).getByText("A card that has left the catalog")).toBeTruthy();
+    });
+
+    it("passes axe in both modes", async () => {
+      const { view, rerender } = setup({ sales: [ebay([foreign({ title: "Binder lot" }), foreign({ title: undefined })])] });
+      await expectAccessibleInBothModes(view.container, { label: "Sales tab, eBay unmatched lines", rerender: () => rerender() });
+    });
+  });
+
   it("NEO-500: a one-order link (?sorder=) marks that order and focuses its heading", () => {
     setup(
       { sales: [sale({ id: "o1", orderNo: "1" }), sale({ id: "o2", orderNo: "2" })] },

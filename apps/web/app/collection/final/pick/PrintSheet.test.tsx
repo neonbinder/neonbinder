@@ -143,6 +143,21 @@ describe("the printed sheet's lines for sales NB has no card for", () => {
     }
   });
 
+  it("NEO-520: prints an eBay line known only by its title under Can't find it, the title where the players go, and its order", () => {
+    const EBAY: PickOrder = { id: "o9", venue: "eBay", number: "27-11111-22222" };
+    const title = "2024 Topps Chrome #205 Some Player RC";
+    const { table } = sheet([stray({ title }, { listingTitle: title, order: EBAY })]);
+    const headers = within(table).getAllByRole("rowheader").map((h) => h.textContent);
+    expect(headers).toHaveLength(1);
+    expect(headers[0]).toContain("Can't find it");
+    const row = rowOf(table, title);
+    const cells = [...row.querySelectorAll("td")].map((td) => td.textContent);
+    expect(cells[2]).toBe("");
+    expect(cells[3]).toContain(title);
+    expect(cells[4]).toBe(PROBLEM);
+    expect(cells[6]).toBe("eBay 27-11111-22222");
+  });
+
   it("ticks a pulled described line and counts its copies", () => {
     const line = stray(LISTED, { quantity: 2 });
     const { table } = sheet([line], new Set([line.id]));
