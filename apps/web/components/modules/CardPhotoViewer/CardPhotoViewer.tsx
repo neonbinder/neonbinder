@@ -94,7 +94,10 @@ export default function CardPhotoViewer({
   const headingId = useId();
   const helpId = useId();
   const sides = (["front", "back"] as const).filter((s) => source[s]);
-  const [side, setSide] = useState<ViewerSide>(source[initialSide] ? initialSide : (sides[0] ?? "front"));
+  const [chosenSide, setSide] = useState<ViewerSide>(source[initialSide] ? initialSide : (sides[0] ?? "front"));
+  // A side with no photo gives way to one that has one: photos that came in after the viewer
+  // opened (a saved line's, NEO-481) may not hold the side it opened on.
+  const side: ViewerSide = source[chosenSide] ? chosenSide : (sides[0] ?? chosenSide);
   const current: PhotoSideSource | undefined = source[side];
 
   const [loaded, setLoaded] = useState<Partial<Record<ViewerSide, Loaded>>>({});

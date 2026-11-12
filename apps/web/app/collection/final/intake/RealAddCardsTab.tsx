@@ -1719,6 +1719,9 @@ function RunWorkspace({
     () => new Map((linePhotoRows ?? []).map((r) => [r.copyId as string, linePhotosOf(r)])),
     [linePhotoRows],
   );
+  /** A saved line's photos not answered yet: its tile still opens them, and the viewer follows them in. */
+  const linePhotosLoading = (copyId: string | undefined) =>
+    linePhotoArgs !== "skip" && linePhotoRows === undefined && !!copyId && (savedCopyIds as readonly string[]).includes(copyId);
   const editNews = useEditNews(images, labels);
   // NEO-481 — each card's own price, on a box run only: a binder card never shows one.
   const priced = run.homeKind === "box";
@@ -2211,6 +2214,7 @@ function RunWorkspace({
                   jobId={run.jobId}
                   image={byIndex.get(row.frontIndex)}
                   photos={row.savedCopyId ? linePhotos.get(row.savedCopyId) : undefined}
+                  photosLoading={linePhotosLoading(row.savedCopyId)}
                   onOpen={(target, opener) => openPhoto(target, opener, row.frontIndex)}
                 />
                 <span className={TILE_WORDS}>
@@ -2302,6 +2306,7 @@ function RunWorkspace({
           copyId={viewing.copyId}
           label={viewing.label}
           photos={linePhotos.get(viewing.copyId)}
+          loading={linePhotosLoading(viewing.copyId)}
           side={viewer.side ?? "front"}
           onClose={viewer.close}
         />
@@ -2622,17 +2627,23 @@ function useViewOnlyLine(_copy: { id: string }, label: string, photos: CopyPhoto
   return viewOnlySource(label, { front: photos?.front?.imageUrl, back: photos?.back?.imageUrl }, LINE_VIEW_ONLY_LINE);
 }
 
-/** NEO-481 — the viewer on a saved line's own photos (the collection's copy-photo source). */
+/**
+ * NEO-481 — the viewer on a saved line's own photos (the collection's copy-photo
+ * source). Opened before they are answered (`loading`), it shows the side
+ * asked for as loading, with no tools yet; they come once the photos do.
+ */
 function LinePhotoViewer({
   copyId,
   label,
   photos,
+  loading,
   side,
   onClose,
 }: {
   copyId: string;
   label: string;
   photos: CopyPhotos | undefined;
+  loading: boolean;
   side: PhotoSideName;
   onClose: () => void;
 }) {
@@ -2640,7 +2651,12 @@ function LinePhotoViewer({
   // A store either has a viewer source or it does not, for its whole life: the hook order never changes.
   const usePhotoSourceOf = ext?.usePhotoSource ?? useViewOnlyLine;
   const copy = useMemo(() => ({ id: copyId }), [copyId]);
-  const source = usePhotoSourceOf(copy, label, photos);
+  const answered = usePhotoSourceOf(copy, label, photos);
+  const source = useMemo((): PhotoSource => {
+    if (!loading) return answered;
+    const waiting = { imageUrl: undefined, previewKey: copyPreviewKey(copyId, side) };
+    return side === "front" ? { label, front: waiting } : { label, back: waiting };
+  }, [loading, label, side, copyId, answered]);
   return <CardPhotoViewer source={source} initialSide={side} onClose={onClose} />;
 }
 
@@ -2654,19 +2670,22 @@ function SavedPhoto({
   jobId,
   image,
   photos,
+  photosLoading,
   onOpen,
 }: {
   row: IntakeMatchRow;
   jobId: string;
   image: IntakeImage | undefined;
   photos: CopyPhotos | undefined;
+  /** The line's photos aren't answered yet: the scan shows meanwhile, but a click opens the line's photos. */
+  photosLoading: boolean;
   onOpen: (target: PhotoViewerTarget, opener: HTMLElement) => void;
 }) {
   const card = cardLabel(row.card);
   const name = `Open saved photo of ${card}`;
   const side: PhotoSideName = photos?.front ? "front" : "back";
   const shown = photos?.[side];
-  const target = savedPhotoTarget(row, !!shown, ON_THE_WAY_REASON);
+  const target = savedPhotoTarget(row, shown ? true : photosLoading ? "loading" : false, ON_THE_WAY_REASON);
   if (shown && target.kind === "copy") {
     return (
       <button

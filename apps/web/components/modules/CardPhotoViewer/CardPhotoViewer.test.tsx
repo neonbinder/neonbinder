@@ -138,6 +138,28 @@ describe("opening", () => {
     await within(dialog).findByRole("button", { name: "Crop by hand" });
     expect(load).toHaveBeenCalledTimes(2);
   });
+
+  it("opened on a side still loading, it follows the photos in, onto the side they hold", async () => {
+    const waiting: PhotoSource = { label: "a card", front: { imageUrl: undefined, previewKey: "test:front" } };
+    const view = render(
+      <Theme>
+        <CardPhotoViewer source={waiting} initialSide="front" onClose={vi.fn()} />
+      </Theme>,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Loading the photo…")).toBeTruthy();
+    expect(within(dialog).queryByRole("toolbar")).toBeNull();
+    // The photos came in with a back only: the viewer shows the back and reads where its edit starts.
+    const back = side({ imageUrl: "blob:back-image", previewKey: "test:back" });
+    view.rerender(
+      <Theme>
+        <CardPhotoViewer source={{ label: "a card", back }} initialSide="front" onClose={vi.fn()} />
+      </Theme>,
+    );
+    expect(within(dialog).getByRole("heading", { name: "Back of a card" })).toBeTruthy();
+    await within(dialog).findByRole("button", { name: "Turn left" });
+    expect(back.load).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("turning and saving", () => {

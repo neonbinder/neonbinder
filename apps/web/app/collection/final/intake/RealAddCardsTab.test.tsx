@@ -25,6 +25,7 @@ import {
   LEAVE_INTAKE_LINE,
   PHOTO_NEWS_QUIET_MS,
   RUN_CLOSED_LINE,
+  SAVED_SCANS_LINE,
   waitingForPriceLine,
 } from "./realLanes";
 import RealAddCardsTab from "./RealAddCardsTab";
@@ -66,7 +67,7 @@ const mocks = vi.hoisted(() => {
       /** What the Cascade stand-in picks when "Pick it" is pressed. */
       pick: { variantId: "v1", title: "1988 Topps Base" },
       /** NEO-481 — the saved lines' own photos (`copyPhotos.photosOf`). */
-      linePhotos: [] as unknown[],
+      linePhotos: [] as unknown[] | undefined,
       /** NEO-481 — the store's copy-photo extension; undefined = none (the viewer opens view-only). */
       copyPhotos: undefined as unknown,
       /** The collector's usual condition (Profile → Settings); undefined = none set. */
@@ -3689,15 +3690,66 @@ describe("NEO-481: every photo opens the card photo viewer", () => {
     expect(screen.queryByRole("button", { name: "Crop by hand: scan-2.jpg" })).toBeNull();
   });
 
-  it("a Saved tile opens its scans until the line's photos show; while they are on their way, the viewer says so", () => {
+  it("a Saved tile opens the line's photos even before they are answered; while they are on their way, the viewer says so", async () => {
+    // The line's photos (`photosOf`) haven't answered: the tile shows the front scan, but opens the line's photos.
+    mocks.data.linePhotos = undefined;
     showPair({ savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "attached" });
     fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
-    expect(viewerHeading(`Front of ${CARD}`)).toBeTruthy();
-    expect(screen.queryByText("Photos are on their way.")).toBeNull();
+    const viewer = viewerOf(`Front of ${CARD}`)!;
+    expect(within(viewer).getByText("Loading the photo…")).toBeTruthy();
+    // Never the scans' view-only answer (the server refuses a saved pair's scans).
+    expect(mocks.mutation("photoEdits.photoEditSource")).not.toHaveBeenCalled();
+    expect(screen.queryByText("Just looking.")).toBeNull();
+    expect(screen.queryByText(SAVED_SCANS_LINE)).toBeNull();
     cleanup();
+    mocks.data.linePhotos = [];
     showPair({ savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "pending" });
     fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
     expect(screen.getByText("Photos are on their way.")).toBeTruthy();
+  });
+
+  it("a Saved tile whose line has no photo of its own opens the scans to look at, and says where its photos change", async () => {
+    // Answered, and the line isn't in it: its photos were taken off in its drawer.
+    mocks.data.linePhotos = [];
+    showPair({ savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "attached" });
+    fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
+    const viewer = viewerOf(`Front of ${CARD}`)!;
+    expect(within(viewer).getByText(SAVED_SCANS_LINE)).toBeTruthy();
+    expect(within(viewer).queryByRole("toolbar", { name: "Photo tools" })).toBeNull();
+    // Decided here: the server is never asked (its answer sends the collector back to this same tile).
+    await Promise.resolve();
+    expect(mocks.mutation("photoEdits.photoEditSource")).not.toHaveBeenCalled();
+  });
+
+  it("a Saved tile pressed before the line's photos answer gets the tools once they do", async () => {
+    const urls = { imageUrl: "https://photos.example/image.jpg", thumbUrl: "https://photos.example/thumb.jpg" };
+    const start = {
+      mode: "original" as const,
+      sourceUrl: "https://photos.example/source.jpg",
+      srcW: 1000,
+      srcH: 1400,
+      opening: { turns: 0 as const, crop: null },
+      reset: { turns: 0 as const, crop: null },
+    };
+    const load = vi.fn(async () => start);
+    const usePhotoSource = vi.fn((_copy: { id: string }, label: string, photos: { front?: typeof urls } | undefined) => ({
+      label,
+      ...(photos?.front ? { front: { imageUrl: photos.front.imageUrl, previewKey: "copy:copy1:front", load } } : {}),
+    }));
+    mocks.data.copyPhotos = { usePhotoSource };
+    mocks.data.linePhotos = undefined;
+    const { runId, rerender } = showPair({ savedCopyId: "copy1", savedQuantity: 1, savedAt: 5, photos: "attached" });
+    fireEvent.click(screen.getByRole("button", { name: `Open saved photo of ${CARD}` }));
+    const viewer = viewerOf(`Front of ${CARD}`)!;
+    expect(within(viewer).getByText("Loading the photo…")).toBeTruthy();
+    expect(within(viewer).queryByRole("button", { name: "Turn left" })).toBeNull();
+    expect(load).not.toHaveBeenCalled();
+    // The answer arrives with the viewer still open.
+    mocks.data.linePhotos = [{ copyId: "copy1", front: urls, back: urls }];
+    rerender(<Tab runId={runId} />);
+    expect(await within(viewer).findByRole("button", { name: "Turn left" })).toBeTruthy();
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(viewerOf(`Front of ${CARD}`)).toBe(viewer);
   });
 
   describe("a Saved tile with the line's own photos", () => {

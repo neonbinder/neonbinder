@@ -610,24 +610,36 @@ export function loneTarget(entryIndex: number, label: string): PhotoViewerTarget
 }
 
 /**
- * What a Saved tile's photo opens: the saved line's own photos once they are
- * there (`linePhotos`: the line has a photo to show); view-only while they are
- * on their way (`onTheWay` is what the viewer says); else the scans (the
- * server says whether they are still there to edit).
+ * Said in the viewer on a Saved tile's scans when the saved line has no photo
+ * of its own to show here (taken off in its drawer): a saved card's photos are
+ * changed from the collection, so the scans only look.
+ */
+export const SAVED_SCANS_LINE =
+  "This card's saved, so these scans can't be turned or cropped here. Change its photos in your collection.";
+
+/**
+ * What a Saved tile's photo opens. `linePhotos` is whether the saved line has
+ * a photo to show: `true`, `false` (the answer came and it has none), or
+ * `"loading"` (no answer yet).
+ *
+ * - An attached line opens its own photos, also while they load: the viewer
+ *   follows them in, so a click before the answer still gets the tools.
+ * - A pending line opens the scans view-only (`onTheWay` is what the viewer says).
+ * - An attached line with no photo of its own opens the scans view-only
+ *   (`SAVED_SCANS_LINE`): the server refuses a saved pair's scans anyway.
+ * - Anything else opens the scans, and the server says whether they edit.
  */
 export function savedPhotoTarget(
   row: Pick<IntakeMatchRow, "photos" | "savedCopyId" | "frontIndex" | "backIndex" | "card">,
-  linePhotos: boolean,
+  linePhotos: boolean | "loading",
   onTheWay: string,
 ): PhotoViewerTarget {
   const label = cardLabel(row.card);
-  if (row.photos === "attached" && row.savedCopyId && linePhotos) {
+  if (row.photos === "attached" && row.savedCopyId && linePhotos !== false) {
     return { kind: "copy", copyId: row.savedCopyId, label, side: "front" };
   }
-  return {
-    ...pairTarget(row, label, "front"),
-    ...(row.photos === "pending" ? { viewOnly: onTheWay } : {}),
-  };
+  const viewOnly = row.photos === "pending" ? onTheWay : row.photos === "attached" ? SAVED_SCANS_LINE : undefined;
+  return { ...pairTarget(row, label, "front"), ...(viewOnly ? { viewOnly } : {}) };
 }
 
 

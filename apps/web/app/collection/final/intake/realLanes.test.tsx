@@ -38,6 +38,7 @@ import {
   pricePrefill,
   PRICE_INVALID_LINE,
   PRICE_TOO_HIGH_LINE,
+  SAVED_SCANS_LINE,
   savedPhotoTarget,
   type RawLinePhotos,
   tilePrice,
@@ -720,7 +721,7 @@ describe("NEO-481: a scan's hand edit on the tiles", () => {
     expect(loneTarget(7, "scan-7.jpg")).toEqual({ kind: "scan", label: "scan-7.jpg", front: 7, side: "front" });
   });
 
-  test("a Saved tile opens the line's photos once they show, view-only while on their way, else the scans", () => {
+  test("a Saved tile opens the line's photos once they show or while they load, view-only while on their way, else the scans", () => {
     const card = { _id: "c1", cardNumber: "47", cardName: "Le'Veon Bell" } as IntakeMatchRow["card"];
     const row = (photos: IntakeMatchRow["photos"]) =>
       ({ photos, savedCopyId: "copy1", frontIndex: 4, backIndex: 5, card }) as Pick<
@@ -734,16 +735,29 @@ describe("NEO-481: a scan's hand edit on the tiles", () => {
       label: "#47 Le'Veon Bell",
       side: "front",
     });
-    // Attached, but the line's photos haven't loaded (or it has none): the scans.
+    // Attached and the line's photos not answered yet: still the line's photos (the viewer follows them in).
+    expect(savedPhotoTarget(row("attached"), "loading", WAY)).toEqual({
+      kind: "copy",
+      copyId: "copy1",
+      label: "#47 Le'Veon Bell",
+      side: "front",
+    });
+    // Attached, but the answer says the line has no photo of its own: the scans, to look at only.
     expect(savedPhotoTarget(row("attached"), false, WAY)).toEqual({
       kind: "scan",
       label: "#47 Le'Veon Bell",
       front: 4,
       back: 5,
       side: "front",
+      viewOnly: SAVED_SCANS_LINE,
     });
+    expect(SAVED_SCANS_LINE).not.toMatch(/Saved tile/);
+    // A line with no copy to open: the scans, even while photos load.
+    expect(savedPhotoTarget({ ...row("attached"), savedCopyId: undefined }, "loading", WAY)).toMatchObject({ kind: "scan" });
     expect(savedPhotoTarget(row("pending"), false, WAY)).toMatchObject({ kind: "scan", front: 4, back: 5, viewOnly: WAY });
+    expect(savedPhotoTarget(row("pending"), "loading", WAY)).toMatchObject({ kind: "scan", viewOnly: WAY });
     expect(savedPhotoTarget(row("failed"), false, WAY)).not.toHaveProperty("viewOnly");
+    expect(savedPhotoTarget(row("failed"), "loading", WAY)).toMatchObject({ kind: "scan" });
   });
 
   test("a line's photos carry each side's newest edit in flight", () => {
