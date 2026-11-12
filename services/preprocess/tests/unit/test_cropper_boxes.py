@@ -19,7 +19,7 @@ from PIL import Image
 
 from app import cropper
 from app.classify import ClassifyResult
-from app.cropper import boxes, frame_content, haiku_bbox, pil_trim, quad, sam, tiered
+from app.cropper import birefnet, boxes, frame_content, haiku_bbox, pil_trim, quad, sam, tiered
 from app.cropper.boxes import CropBox
 from app.edit import EditCrop, PhotoEdit, opening_turns, render_edit
 from app.orient import OrientationResult
@@ -158,7 +158,7 @@ def _no_birefnet(monkeypatch):
         raise AssertionError("no model in these tests")
 
     monkeypatch.setattr(tiered, "birefnet_mask", _boom)
-    monkeypatch.setattr(tiered, "_get_session", _boom)
+    monkeypatch.setattr(birefnet, "predict_alpha", _boom)
 
 
 @pytest.mark.usefixtures("_no_birefnet")
