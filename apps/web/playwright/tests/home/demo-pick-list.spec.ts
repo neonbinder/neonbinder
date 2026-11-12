@@ -189,7 +189,7 @@ test(
     // BSC 88213 filled 8 copies (Skenes' ×2 row counts whole: it fills that order too).
     await filterBy(page, isMobile, "Order", "BSC 88213");
     await expect(page).toHaveURL(/[?&]porder=/);
-    await expect(pick.matches).toHaveText("8 cards match.");
+    await expect(pick.matches).toHaveText("8 match.");
     await expect(pulledToggle(table, TROUT)).toBeVisible();
     await expect(pulledToggle(table, WEMBANYAMA)).toHaveCount(0);
     // Back to default clears it, and the keyboard lands in Find (the button switches off).
@@ -241,7 +241,7 @@ test(
     const onlySlabs = pick.quickFilters.getByRole("button", { name: "Only slabs", exact: true });
     await onlySlabs.click();
     await expect(onlySlabs).toHaveAttribute("aria-pressed", "true");
-    await expect(pick.matches).toHaveText("2 cards match.");
+    await expect(pick.matches).toHaveText("2 match.");
     await expect(pulledToggle(table, OHTANI_SLAB)).toBeVisible();
     await expect(pulledToggle(table, SANDERS_SLAB)).toBeVisible();
     await expect(pulledToggle(table, TROUT)).toHaveCount(0);
@@ -265,7 +265,7 @@ test(
     await pick.onlyNotInNb.click();
     await expect(pick.onlyNotInNb).toHaveAttribute("aria-pressed", "true");
     await expect(page).toHaveURL(/[?&]pnotnb=1(&|$)/);
-    await expect(pick.matches).toHaveText("3 cards match.");
+    await expect(pick.matches).toHaveText("3 match.");
     await expect(pulledToggle(table, NABERS)).toBeVisible();
     await expect(pulledToggle(table, WITT)).toBeVisible();
     await expect(pulledToggle(table, BCP)).toBeVisible();
@@ -347,7 +347,7 @@ test(
     const stop = region.getByRole("heading", { level: 3 });
     await expect(stop).toHaveText("Box 1 of 5 · 2026 Baseball · 5 to pull");
     await expect(pick.boxTable("2026 Baseball")).toBeVisible();
-    await expect(region.getByText("Plus 3 sales NB couldn't tie to a card. They wait after the boxes.", { exact: true })).toBeVisible();
+    await expect(region.getByText("Plus 3 sales NB couldn't place. They wait after the boxes.", { exact: true })).toBeVisible();
     const previous = region.getByRole("button", { name: "Previous box", exact: true });
     const next = region.getByRole("button", { name: "Next box", exact: true });
     await expect(previous).toBeDisabled();

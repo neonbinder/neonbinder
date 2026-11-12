@@ -41,20 +41,20 @@ export function pickList(page: Page) {
   return {
     region,
     heading: region.getByRole("heading", { level: 2, name: "Pick List" }),
-    /** "3 of 29 cards pulled". */
+    /** "3 of 29 pulled". */
     progress: (got: number, total: number) =>
-      region.getByText(`${got} of ${total} ${total === 1 ? "card" : "cards"} pulled`, { exact: true }),
+      region.getByText(`${got} of ${total} pulled`, { exact: true }),
     /** The whole list's table; By the Box has one per stop (`boxTable`). */
     table: region.getByRole("table", { name: "Cards to pull" }),
     boxTable: (boxName: string) => region.getByRole("table", { name: `Cards to pull from ${boxName}`, exact: true }),
     /** By the Box, the "Not in a box" stop: sales NB has no card for but whose listing says what they are, by set. */
     notInBoxTable: region.getByRole("table", { name: "Sales not in NB, by set", exact: true }),
     /** By the Box, the last stop: sales that say too little to file. */
-    cantFindTable: region.getByRole("table", { name: "Sales NB couldn't tie to a card", exact: true }),
+    cantFindTable: region.getByRole("table", { name: "Sales NB couldn't place", exact: true }),
     /** The "Only not in NB" quick filter (a toggle: `aria-pressed`). */
     onlyNotInNb: region.getByRole("group", { name: "Quick filters" }).getByRole("button", { name: "Only not in NB", exact: true }),
     views: region.getByRole("navigation", { name: "Pick List views" }),
-    /** The list's own filter count ("4 cards match."), always mounted, empty when unfiltered. */
+    /** The list's own filter count ("4 match."), always mounted, empty when unfiltered. */
     matches: region.getByRole("status"),
     find: region.getByRole("textbox", { name: "Find a card" }),
     quickFilters: region.getByRole("group", { name: "Quick filters" }),

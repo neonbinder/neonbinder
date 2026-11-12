@@ -5,12 +5,12 @@
 //     a card), says plainly it did not list it and left the boxes alone, and
 //     counts the order in "items", not "cards";
 //   - puts it on the Pick List under "Can't find it" with eBay's title and the
-//     "NB couldn't match this line" words, wearing NO "Not in NB" chip
+//     "NB didn't list this one" words, wearing NO "Not in NB" chip
 //     (Jason's J2: that chip is for a line NB can describe as a card);
 //   - never files it by reading the title: the title here names a REAL card
 //     that sits in the seller's own box, and the box keeps its copy;
 //   - lets the seller pull it (and it stays pulled), and a line eBay sends no
-//     title for reads "Sold on eBay, not listed by NeonBinder";
+//     title for reads "A sale with no title";
 //   - takes it off the list once the order ships.
 //
 // Orders come from `/testing/seed-pick-order?platform=ebay` (support/pick-list.ts,
@@ -55,9 +55,9 @@ import {
 const CARD = { no: "215", short: "#215 Nolan Arenado" };
 const SET_TITLE = "2024 Topps Chrome";
 
-const WHY_PICK = "NB couldn't match this line. Check the order's photo.";
-const WHY_SALES = "NeonBinder didn't list this one, so your boxes stayed put. Pull it by hand.";
-const NO_TITLE_NAME = "Sold on eBay, not listed by NeonBinder";
+const WHY_PICK = "NB didn't list this one. Check the order's photo.";
+const WHY_SALES = "NeonBinder didn't list this one. Boxes untouched. Pull it by hand.";
+const NO_TITLE_NAME = "A sale with no title";
 
 test(
   "Sales and Pick List: an eBay sale NeonBinder did not list shows under eBay's title, unmatched, with no Not in NB chip, and the box keeps its card",
@@ -116,7 +116,7 @@ test(
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
       await filterBy(page, isMobile, "Order", ebayOrder(titled));
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("1 card matches.");
+      await expect(pick.matches).toHaveText("1 match.");
 
       // --- Pick List: under Can't find it, eBay's title, the unmatched words, no chip ---------------
       const cantFind = pickGroup(table, "Can't find it");
@@ -153,7 +153,7 @@ test(
       await page.goBack();
       await expect(pick.heading).toBeVisible();
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("1 card matches.");
+      await expect(pick.matches).toHaveText("1 match.");
       await expect(pulledToggle(cantFind, title)).toBeVisible();
 
       // --- Pull it: the pull sticks ---------------------------------------------------------------
@@ -179,9 +179,9 @@ test(
       await tabs.getByRole("link", { name: "Pick List", exact: true }).click();
       await expect(pick.heading).toBeVisible();
       await filterBy(page, isMobile, "Order", ebayOrder(untitled));
-      await expect(pick.matches).toHaveText("1 card matches.");
-      // No title to show: the row is "Unmatched sale", named for its order (as a BuySportsCards stray is).
-      const bareName = `Unmatched sale, ${ebayOrder(untitled)}`;
+      await expect(pick.matches).toHaveText("1 match.");
+      // No title to show: the row reads "A sale with no title", named for its order.
+      const bareName = `${NO_TITLE_NAME}, ${ebayOrder(untitled)}`;
       const bareToggle = pulledToggle(cantFind, bareName);
       await expect(bareToggle).toHaveCount(1);
       await expect(bareToggle).toHaveAttribute("aria-pressed", "false");
