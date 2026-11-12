@@ -21,6 +21,8 @@
  *  - an empty SYNCED row IS deletable and reports syncedBack
  *  - non-admin rejected
  *  - getSelectorOptionHoldings mirrors the mutation's view, non-destructively
+ *  - NEO-496: a row's checklist-section links, and a set's publisher
+ *    checklists, go with the row (never a holding)
  */
 
 import { convexTest } from "convex-test";
@@ -30,6 +32,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1392,5 +1395,126 @@ describe("commitCardChecklistChunk — deleted parent row", () => {
     );
 
     expect(result.storedIds).toHaveLength(1);
+  });
+});
+
+describe("NEO-496: the publisher checklist state goes with the row", () => {
+  async function checklistFor(
+    t: ReturnType<typeof convexTest>,
+    setId: Id<"selectorOptions">,
+    status: "uploading" | "ready" | "retired",
+  ) {
+    return t.run(async (ctx) => {
+      const checklistId = await ctx.db.insert("publishedChecklists", {
+        setId,
+        status,
+        fileName: "c.csv",
+        format: "csv",
+        createdByUserId: "admin",
+        startedAt: SENTINEL_LAST_UPDATED,
+        lastActivityAt: SENTINEL_LAST_UPDATED,
+        sectionCount: 1,
+        rowCount: 1,
+        byteSize: 10,
+      });
+      const sectionId = await ctx.db.insert("publishedChecklistSections", {
+        checklistId,
+        ordinal: 0,
+        name: "Base",
+        sectionKey: "base",
+        rowCount: 1,
+        byteSize: 10,
+        chunkCount: 1,
+      });
+      await ctx.db.insert("publishedChecklistChunks", {
+        checklistId,
+        sectionId,
+        seq: 0,
+        firstRow: 0,
+        rows: [{ number: "1", players: ["A"], teams: [] }],
+      });
+      return checklistId;
+    });
+  }
+  const linkRow = (
+    t: ReturnType<typeof convexTest>,
+    setId: Id<"selectorOptions">,
+    selectorOptionId: Id<"selectorOptions">,
+    sectionKey: string,
+  ) =>
+    t.run((ctx) =>
+      ctx.db.insert("publishedChecklistLinks", {
+        setId,
+        selectorOptionId,
+        sectionKey,
+        createdAt: SENTINEL_LAST_UPDATED,
+        createdByUserId: "admin",
+      }),
+    );
+
+  test("a variant row's own links are deleted with it; its siblings' stay", async () => {
+    const t = convexTest(schema, modules);
+    const setId = await insertRow(t, "setName", "Set");
+    const vt = await insertRow(t, "variantType", "Insert", { parentId: setId });
+    const insert = await insertRow(t, "insert", "Future Stars", { parentId: vt });
+    const sibling = await insertRow(t, "insert", "Bomb Squad", { parentId: vt });
+    await linkRow(t, setId, insert, "future stars");
+    await linkRow(t, setId, insert, "future stars red");
+    const kept = await linkRow(t, setId, sibling, "bomb squad");
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.selectorOptions.deleteSelectorOption, {
+      id: insert,
+    });
+
+    const left = await t.run((ctx) => ctx.db.query("publishedChecklistLinks").collect());
+    expect(left.map((l) => l._id)).toEqual([kept]);
+  });
+
+  test("a set row's checklists are retired and purged, and links written under it deleted", async () => {
+    const t = convexTest(schema, modules);
+    const brand = await insertRow(t, "manufacturer", "Brand");
+    const setId = await insertRow(t, "setName", "Set", { parentId: brand });
+    const otherSet = await insertRow(t, "setName", "Other", { parentId: brand });
+    await checklistFor(t, setId, "ready");
+    await checklistFor(t, setId, "uploading");
+    const otherChecklist = await checklistFor(t, otherSet, "ready");
+    // A stale link left under the set by a row that has since moved.
+    await linkRow(t, setId, otherSet, "base");
+    const otherLink = await linkRow(t, otherSet, otherSet, "base");
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.selectorOptions.deleteSelectorOption, {
+      id: setId,
+    });
+    const statuses = await t.run(async (ctx) =>
+      (await ctx.db.query("publishedChecklists").collect()).map((h) => [h.setId, h.status]),
+    );
+    expect(statuses).toEqual([
+      [setId, "retired"],
+      [setId, "retired"],
+      [otherSet, "ready"],
+    ]);
+    await drainScheduled(t);
+
+    const left = await t.run(async (ctx) => ({
+      headers: (await ctx.db.query("publishedChecklists").collect()).map((h) => h._id),
+      sections: (await ctx.db.query("publishedChecklistSections").collect()).length,
+      chunks: (await ctx.db.query("publishedChecklistChunks").collect()).length,
+      links: (await ctx.db.query("publishedChecklistLinks").collect()).map((l) => l._id),
+    }));
+    expect(left).toEqual({ headers: [otherChecklist], sections: 1, chunks: 1, links: [otherLink] });
+  });
+
+  test("a checklist is never a holding: the set's holdings ignore it", async () => {
+    const t = convexTest(schema, modules);
+    const setId = await insertRow(t, "setName", "Set");
+    await checklistFor(t, setId, "ready");
+    const holds = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .query(api.selectorOptions.getSelectorOptionHoldings, { id: setId });
+    expect(holds).toMatchObject({ holds: [] });
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.selectorOptions.deleteSelectorOption, {
+      id: setId,
+    });
+    await drainScheduled(t);
   });
 });

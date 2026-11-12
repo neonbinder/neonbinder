@@ -127,6 +127,12 @@ export const SELECTOR_DEPENDANT_TABLES = [
   // NEO-402 — a fetch's stored player answers (selectorOptionId, sportId).
   // Drained by the reset (`resetChecklistNameResolutionsBatch`).
   "checklistNameResolutions",
+  // NEO-496 — a set's publisher checklist (setId) and the rows' section links
+  // (setId, selectorOptionId). Both drained by the reset, before the selector
+  // rows; the sections and chunks hold no selector id. None of the four is
+  // ever in the reference-seed bundle.
+  "publishedChecklists",
+  "publishedChecklistLinks",
 ];
 export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = ["entityReviewSkips"];
 const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];

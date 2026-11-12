@@ -280,6 +280,21 @@ async function seed(t: T): Promise<Fixture> {
       updatedAt: NOW,
     });
 
+    // ── NEO-496 checklist-section links: two on subtree rows (wiped with
+    //    them), one on the kept variant type, one on the sibling ─────────────
+    const checklistLink = (selectorOptionId: SO, sectionKey: string) =>
+      ctx.db.insert("publishedChecklistLinks", {
+        setId: set,
+        selectorOptionId,
+        sectionKey,
+        createdAt: NOW,
+        createdByUserId: "admin",
+      });
+    const linkInsA = await checklistLink(insA, "star rookies");
+    const linkParA2 = await checklistLink(parA2, "star rookies gold");
+    await checklistLink(insertVt, "inserts");
+    await checklistLink(baseP, "base refractor");
+
     return {
       sport,
       year,
@@ -311,6 +326,7 @@ async function seed(t: T): Promise<Fixture> {
         checklistCandidates: [cand],
         entityReviewSkips: [skipIn],
         selectorSyncStatus: [statusIn, statusVt],
+        publishedChecklistLinks: [linkInsA, linkParA2],
       },
     };
   });
@@ -387,6 +403,10 @@ async function danglingReferences(t: T): Promise<string[]> {
     }
     for (const row of await ctx.db.query("checklistCandidates").collect()) {
       await check(`checklistCandidates ${row._id}.selectorOptionId`, row.selectorOptionId);
+    }
+    for (const row of await ctx.db.query("publishedChecklistLinks").collect()) {
+      await check(`publishedChecklistLinks ${row._id}.selectorOptionId`, row.selectorOptionId);
+      await check(`publishedChecklistLinks ${row._id}.setId`, row.setId);
     }
     for (const table of [
       "players",

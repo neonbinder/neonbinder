@@ -1020,6 +1020,34 @@ export const listingSyncProgressValidator = v.object({
 });
 
 /**
+ * NEO-496 — one stored row of a publisher checklist (`publishedChecklistChunks`).
+ * The server re-check (`convex/lib/publishedChecklistCheck.ts`) is the only
+ * thing that builds one: `noNumber` / `noTeam` are only ever stored as `true`.
+ */
+export const publishedChecklistStoredRowValidator = v.object({
+  number: v.string(),
+  players: v.array(v.string()),
+  teams: v.array(v.string()),
+  noNumber: v.optional(v.boolean()),
+  noTeam: v.optional(v.boolean()),
+});
+/** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
+export const publishedChecklistStatusValidator = v.union(
+  v.literal("uploading"),
+  v.literal("ready"),
+  v.literal("retired"),
+);
+/** NEO-496 — what the operator uploaded. */
+export const publishedChecklistFormatValidator = v.union(
+  v.literal("xlsx"),
+  v.literal("pdf"),
+  v.literal("csv"),
+  v.literal("tsv"),
+  v.literal("txt"),
+  v.literal("paste"),
+);
+
+/**
  * PR 451 (NEO-478) — where the operator's publisher checklist disagrees with
  * the marketplace on one card. `marketplace` is what the card carries (the
  * merged marketplace answer), `checklist` what the publisher's row says. Each
@@ -3423,6 +3451,27 @@ export default defineSchema({
       v.literal("matched"),
       v.literal("bscOnly"),
       v.literal("slOnly"),
+      // NEO-496 — a publisher checklist row no marketplace card matched
+      // (`platformData: {}`). Widening only: no existing row changes.
+      v.literal("checklistOnly"),
+    ),
+    // NEO-496 — how a card paired with a publisher-checklist row, for Match
+    // Cards' badge. Optional; absent on every existing row.
+    checklistLink: v.optional(
+      v.object({
+        via: v.union(
+          v.literal("number"),
+          v.literal("caseFolded"),
+          v.literal("prefixStripped"),
+          v.literal("player"),
+          v.literal("playerName"),
+          v.literal("playerFuzzy"),
+        ),
+        // playerFuzzy only, 0.92..1.
+        confidence: v.optional(v.number()),
+        // A name pair with a numbered row: the row's number as printed.
+        checklistNumber: v.optional(v.string()),
+      }),
     ),
     // Pairing confidence for a matched row; the modal surfaces a fuzzy match
     // differently from an exact one.
@@ -5347,4 +5396,76 @@ export default defineSchema({
     // A sale line's exactly-one guard: the link whose SKU the order names
     // (all three, `.unique()`), then its `listingId` must equal the line's.
     .index("by_owner_platform_sku", ["ownerId", "platform", "sku"]),
+
+  // ── NEO-496: the set's publisher checklist ───────────────────────────────
+  // One READY checklist per set (the header), its sections in file order,
+  // the sections' rows in byte-bounded chunks, and the M:N links from a
+  // variant row to the section names it uses. Sections and chunks are
+  // written once and never patched; a replace retires the old header and a
+  // scheduled purge (`publishedChecklists.purge`) deletes it. Links name a
+  // section KEY (`sectionKeyOf`, a stored format) and are resolved against
+  // the set's current ready checklist at read time, so a replace or remove
+  // never touches them (rule 5). All limits live in
+  // `convex/lib/publishedChecklistSections.ts`.
+  publishedChecklists: defineTable({
+    // A `setName` selector row, checked at start.
+    setId: v.id("selectorOptions"),
+    status: publishedChecklistStatusValidator,
+    fileName: v.string(),
+    format: publishedChecklistFormatValidator,
+    // Only the uploader may send batches to, or finish, an upload.
+    createdByUserId: v.string(),
+    startedAt: v.number(),
+    lastActivityAt: v.number(),
+    finishedAt: v.optional(v.number()),
+    retiredAt: v.optional(v.number()),
+    sectionCount: v.number(),
+    rowCount: v.number(),
+    byteSize: v.number(),
+  })
+    // The set's ready checklist (`.order("desc").first()`); finish / remove
+    // retire the ready one; start retires the caller's own unfinished upload.
+    .index("by_set_and_status", ["setId", "status"])
+    // The purge's next retired checklist, and abandoned uploads (idle 1 h).
+    .index("by_status_and_activity", ["status", "lastActivityAt"]),
+
+  publishedChecklistSections: defineTable({
+    checklistId: v.id("publishedChecklists"),
+    // 0..n-1 in file order, no gaps.
+    ordinal: v.number(),
+    // The publisher's section name as written, and its folded key.
+    name: v.string(),
+    sectionKey: v.string(),
+    group: v.optional(v.string()),
+    rowCount: v.number(),
+    byteSize: v.number(),
+    chunkCount: v.number(),
+    // The first / last NUMBERED row's card number, display only.
+    firstNumber: v.optional(v.string()),
+    lastNumber: v.optional(v.string()),
+  })
+    .index("by_checklist_and_ordinal", ["checklistId", "ordinal"])
+    .index("by_checklist_and_key", ["checklistId", "sectionKey"]),
+
+  publishedChecklistChunks: defineTable({
+    checklistId: v.id("publishedChecklists"),
+    sectionId: v.id("publishedChecklistSections"),
+    seq: v.number(),
+    // Index of this chunk's first row within its section.
+    firstRow: v.number(),
+    rows: v.array(publishedChecklistStoredRowValidator),
+  }).index("by_section_and_seq", ["sectionId", "seq"]),
+
+  publishedChecklistLinks: defineTable({
+    // The set the link was written under; a link counts only while it is
+    // the row's own set.
+    setId: v.id("selectorOptions"),
+    // A variantType / insert / parallel row under `setId`.
+    selectorOptionId: v.id("selectorOptions"),
+    sectionKey: v.string(),
+    createdAt: v.number(),
+    createdByUserId: v.string(),
+  })
+    .index("by_selector_option_and_key", ["selectorOptionId", "sectionKey"])
+    .index("by_set_and_key", ["setId", "sectionKey"]),
 });

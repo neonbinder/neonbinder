@@ -136,6 +136,7 @@ import {
   removeCardRow,
 } from "./cardRowDelete";
 import { createCardCountLedger } from "./cardCounts";
+import { MAX_LINKS_PER_ROW } from "./lib/publishedChecklistSections";
 
 // ───────────────────────────────────────────────────────────────────────────
 // The reference graph
@@ -307,6 +308,16 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "year- and brand-level only (NEO-306); a subtree row is never a year or a brand. Untouched",
   },
+  publishedChecklists: {
+    fields: ["setId"],
+    handling:
+      "NEO-496 the set's publisher checklist: set-level, above the subtree. Untouched (its sections and chunks name only the checklist)",
+  },
+  publishedChecklistLinks: {
+    fields: ["setId", "selectorOptionId"],
+    handling:
+      "NEO-496 a row's links to checklist sections: links on wiped rows are deleted with the row, in the same transaction (at most 50 per row). The variant type's own links stay with it; setId is set-level",
+  },
 } as const;
 
 /** The tables this wipe deletes rows from. */
@@ -322,6 +333,8 @@ export const WIPED_TABLES = [
   "checklistCandidates",
   "entityReviewSkips",
   "selectorSyncStatus",
+  // NEO-496 — a wiped row's checklist-section links, deleted with the row.
+  "publishedChecklistLinks",
 ] as const;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1525,6 +1538,7 @@ export const deleteEmptyNodes = internalMutation({
     const notEmpty: Id<"selectorOptions">[] = [];
     const deletedIds = new Set<string>();
     const deletedRows: Array<Record<string, unknown>> = [];
+    const linkIds: string[] = [];
     const parents = new Set<Id<"selectorOptions">>();
 
     for (const nodeId of args.nodeIds) {
@@ -1582,6 +1596,18 @@ export const deleteEmptyNodes = internalMutation({
       }
 
       await ctx.db.delete(nodeId);
+      // NEO-496 — the row's checklist-section links go with it. The link
+      // writer keeps at most MAX_LINKS_PER_ROW per row; the take is a belt.
+      const links = await ctx.db
+        .query("publishedChecklistLinks")
+        .withIndex("by_selector_option_and_key", (q) =>
+          q.eq("selectorOptionId", nodeId),
+        )
+        .take(MAX_LINKS_PER_ROW * 2);
+      for (const link of links) {
+        await ctx.db.delete(link._id);
+        linkIds.push(link._id);
+      }
       deletedIds.add(nodeId);
       deletedRows.push({
         id: nodeId,
@@ -1627,6 +1653,7 @@ export const deleteEmptyNodes = internalMutation({
 
     logDeleted(args.variantTypeId, "selectorOptions", deletedRows);
     logDeleted(args.variantTypeId, "selectorSyncStatus", statusIds);
+    logDeleted(args.variantTypeId, "publishedChecklistLinks", linkIds);
     return { ...counts, selectorSyncStatus: statusIds.length, notEmpty };
   },
 });
