@@ -1,0 +1,18 @@
+# pytest for the mask-parity `check` image (tests/parity/Dockerfile), on top of
+# the PR's preprocess image, which already has `packaging`. Installed with
+#   pip install --no-deps --require-hashes --only-binary=:all: -r <this file>
+#   pip check
+# pytest matches requirements-dev.txt; the rest are its dependencies at the
+# versions the unit suite runs with.
+pytest==9.1.1 \
+    --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
+    # pytest-9.1.1-py3-none-any.whl
+pluggy==1.7.0 \
+    --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec
+    # pluggy-1.7.0-py3-none-any.whl
+iniconfig==2.3.1 \
+    --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7
+    # iniconfig-2.3.1-py3-none-any.whl
+pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+    # pygments-2.21.0-py3-none-any.whl

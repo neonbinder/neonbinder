@@ -1634,7 +1634,8 @@ class TestFrameContentStage:
             raise AssertionError("model-backed code ran under escalate_only")
 
         monkeypatch.setattr("app.cropper.tiered.birefnet_mask", _boom)
-        monkeypatch.setattr("app.cropper.tiered._get_session", _boom)
+        monkeypatch.setattr("app.cropper.birefnet.get_session", _boom)
+        monkeypatch.setattr("app.cropper.birefnet.predict_alpha", _boom)
         monkeypatch.setattr("app.cropper.tiered.tiered_crop", _boom)
         monkeypatch.setattr("app.cropper.sam.sam_crop", _boom)
         monkeypatch.setattr("app.cropper.haiku_bbox.haiku_bbox_crop", _boom)

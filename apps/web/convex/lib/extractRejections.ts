@@ -37,6 +37,13 @@ export const MAX_REJECTION_EXAMPLE_CHARS = 80;
  */
 export const ENTRY_TOO_MANY_PIXELS = "ENTRY_TOO_MANY_PIXELS";
 
+/**
+ * NEO-484: the error code `/process-entry` sends (HTTP 422) for an entry that
+ * is not a decodable image. Terminal like the pixel ceiling: the same bytes
+ * can never decode, so the photo says so and offers no Try again.
+ */
+export const ENTRY_UNDECODABLE = "ENTRY_UNDECODABLE";
+
 // Reasons come from services/preprocess: `_prepare_member` in app/main.py and
 // `_name_rejection` / `_metadata_rejection` / `iter_zip_members` in
 // app/jobs/zipsafe.py. HEIC lands in `unsupported_image_type`.
@@ -145,5 +152,15 @@ export function unknownRejectionReasons(
  * settle cannot import.
  */
 export function isRasterTooLargeError(error: string): boolean {
-  return /\bpreprocess ENTRY_TOO_MANY_PIXELS \(HTTP \d+\)/.test(error);
+  return terminalEntryErrorCode(error) === ENTRY_TOO_MANY_PIXELS;
+}
+
+/**
+ * NEO-484: the terminal per-entry code in a settled photo's error, or
+ * undefined when it carries none. Covers the pixel ceiling's 413 and the
+ * not-an-image 422; read the same way as `isRasterTooLargeError`, anywhere in
+ * the (possibly wrapped) text.
+ */
+export function terminalEntryErrorCode(error: string): string | undefined {
+  return /\bpreprocess (ENTRY_TOO_MANY_PIXELS|ENTRY_UNDECODABLE) \(HTTP \d+\)/.exec(error)?.[1];
 }

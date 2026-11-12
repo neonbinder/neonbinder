@@ -358,6 +358,22 @@ describe("retryPlaceholderImage (Try again)", () => {
     expect((await getJob(t))!.failedImages).toBe(1);
   });
 
+  test("NEO-484: a photo that is not an image is never sent again, even at the try cap", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, { failedImages: 1 });
+    const id = await seedImage(t, 0, { status: "failed", errorCode: "ENTRY_UNDECODABLE", retries: 0 });
+    expect(await retry(t)).toEqual({ retried: false, reason: "not an image" });
+    // At the cap the answer is still the real reason, not "too many tries".
+    await t.run(async (ctx) => ctx.db.patch(id, { retries: PLACEHOLDER_MAX_IMAGE_RETRIES }));
+    expect(await retry(t)).toEqual({ retried: false, reason: "not an image" });
+    expect(enqueueCalls).toHaveLength(0);
+    const image = (await getImage(t, id))!;
+    expect(image.status).toBe("failed");
+    expect(image.errorCode).toBe("ENTRY_UNDECODABLE");
+    expect(image.retries).toBe(PLACEHOLDER_MAX_IMAGE_RETRIES);
+    expect((await getJob(t))!.failedImages).toBe(1);
+  });
+
   test("a photo that is not failed is not sent again", async () => {
     const t = convexTest(schema, modules);
     await seedJob(t);

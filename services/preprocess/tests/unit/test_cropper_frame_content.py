@@ -172,7 +172,8 @@ def _forbid_birefnet(monkeypatch):
         raise AssertionError("the FAST frame-content path must not touch BiRefNet")
 
     monkeypatch.setattr(tiered, "birefnet_mask", _boom)
-    monkeypatch.setattr(tiered, "_get_session", _boom)
+    monkeypatch.setattr("app.cropper.birefnet.get_session", _boom)
+    monkeypatch.setattr("app.cropper.birefnet.predict_alpha", _boom)
     for target in (
         "app.cropper.tiered.tiered_crop",
         "app.cropper.sam.sam_crop",
