@@ -1,6 +1,6 @@
 /**
  * NEO-335 Phase 2 — the shared "Tidy up …" header. NEO-497 — its title names
- * the set ("Tidy up 2024 Topps Chrome Base").
+ * the set ("Tidy up 2024 Topps Chrome"), never with a trailing "Base".
  */
 import { render, screen } from "@testing-library/react";
 import React from "react";
@@ -178,14 +178,45 @@ void React;
 
 describe("tidyUpTitle (NEO-497)", () => {
   it("joins year, set and variant after 'Tidy up'", () => {
-    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "Base" })).toBe(
-      "Tidy up 2026 Donruss Unleashed Base",
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss", variant: "Unleashed" })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
     );
   });
 
+  it("drops a trailing whole word 'Base', case-folded", () => {
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "Base" })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
+    );
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "base" })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
+    );
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "BASE " })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
+    );
+    // A set's own name ending in Base loses it too: the rule reads the joined name.
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Base" })).toBe("Tidy up 2024 Topps");
+  });
+
+  it("leaves 'Base' alone when it is not the last whole word", () => {
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Baseball" })).toBe(
+      "Tidy up 2024 Topps Chrome Baseball",
+    );
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Base Set Gold" })).toBe(
+      "Tidy up 2024 Topps Chrome Base Set Gold",
+    );
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Rebase" })).toBe(
+      "Tidy up 2024 Topps Chrome Rebase",
+    );
+  });
+
+  it("falls back to 'Tidy up this set' when 'Base' is all there is", () => {
+    expect(tidyUpTitle({ variant: "Base" })).toBe(WIZARD_TITLE);
+    expect(tidyUpTitle({ year: " ", setName: "", variant: " base " })).toBe(WIZARD_TITLE);
+  });
+
   it("skips the year when the set name already opens with it as its own word", () => {
-    expect(tidyUpTitle({ year: "2024", setName: "2024 Topps Chrome", variant: "Base" })).toBe(
-      "Tidy up 2024 Topps Chrome Base",
+    expect(tidyUpTitle({ year: "2024", setName: "2024 Topps Chrome", variant: "Refractor" })).toBe(
+      "Tidy up 2024 Topps Chrome Refractor",
     );
     expect(tidyUpTitle({ year: " 2024 ", setName: "2024 Topps Chrome" })).toBe(
       "Tidy up 2024 Topps Chrome",
@@ -200,8 +231,8 @@ describe("tidyUpTitle (NEO-497)", () => {
   });
 
   it("skips any part that is missing or blank", () => {
-    expect(tidyUpTitle({ setName: "Donruss Unleashed", variant: "Base" })).toBe(
-      "Tidy up Donruss Unleashed Base",
+    expect(tidyUpTitle({ setName: "Donruss", variant: "Unleashed" })).toBe(
+      "Tidy up Donruss Unleashed",
     );
     expect(tidyUpTitle({ year: "2026", setName: null, variant: "Gold" })).toBe("Tidy up 2026 Gold");
     expect(tidyUpTitle({ year: "  ", setName: " Donruss ", variant: "" })).toBe("Tidy up Donruss");
@@ -221,10 +252,30 @@ describe("tidyUpTitleFromChain (NEO-497)", () => {
     { level: "setName", value: "Topps Chrome" },
   ];
 
-  it("reads the year and set by level, never the manufacturer, and the leaf as the variant", () => {
+  it("reads the year and set by level, never the manufacturer, and drops a Base leaf", () => {
     expect(tidyUpTitleFromChain([...chain, { level: "variantType", value: "Base" }])).toBe(
-      "Tidy up 2024 Topps Chrome Base",
+      "Tidy up 2024 Topps Chrome",
     );
+  });
+
+  it("names an insert under Insert by its own value, unchanged by the Base rule", () => {
+    expect(
+      tidyUpTitleFromChain([
+        ...chain,
+        { level: "variantType", value: "Insert" },
+        { level: "insert", value: "Future Stars" },
+      ]),
+    ).toBe("Tidy up 2024 Topps Chrome Future Stars");
+  });
+
+  it("drops an insert-level Base leaf the same way (a Base row under Insert)", () => {
+    expect(
+      tidyUpTitleFromChain([
+        ...chain,
+        { level: "variantType", value: "Insert" },
+        { level: "insert", value: "Base" },
+      ]),
+    ).toBe("Tidy up 2024 Topps Chrome");
   });
 
   it("names an insert leaf by its own value, never the variant type", () => {
@@ -275,7 +326,7 @@ describe("tidyUpTitleFromChain (NEO-497)", () => {
       row.level === "setName" ? { ...row, value: "2024 Topps Chrome" } : row,
     );
     expect(tidyUpTitleFromChain([...yearInName, { level: "variantType", value: "Base" }])).toBe(
-      "Tidy up 2024 Topps Chrome Base",
+      "Tidy up 2024 Topps Chrome",
     );
   });
 

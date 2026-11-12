@@ -52,9 +52,10 @@ export const LOOKUPS = 180_000;
 /**
  * NEO-497 — the name every tidy-up dialog (the pre-save wizard and the
  * post-save attention walker) starts with. The title goes on to name the set
- * it tidies, "Tidy up 2024 Topps Chrome Base" (`tidyUpName`), and reads
- * "Tidy up this set" only while the set's names are still loading. Find the
- * dialog or its heading by this; assert the full name with `tidyUpName`.
+ * it tidies, "Tidy up 2024 Topps Chrome" for its Base checklist (`tidyUpName`),
+ * and reads "Tidy up this set" only while the set's names are still loading.
+ * Find the dialog or its heading by this; assert the full name with
+ * `tidyUpName`.
  */
 export const TIDY_UP_NAME = /^Tidy up /;
 
@@ -66,9 +67,19 @@ export const TIDY_UP_NAME = /^Tidy up /;
  * "<insert> <parallel>" (the insert's name first, unless the parallel's own
  * name already starts with it), so the caller passes that whole text; this
  * helper does not re-derive the rule, so it cannot agree with a broken one.
+ *
+ * A Base checklist's title does not say "Base" (Jason, 2026-11-11): leave
+ * `variant` out for it ("Tidy up 2024 Topps Chrome"). Passing "Base" throws,
+ * so an expectation cannot quietly bring the word back; the helper never
+ * strips it itself.
  */
-export function tidyUpName({ year, set, variant }: { year: string; set: string; variant: string }): string {
-  return `Tidy up ${year} ${set} ${variant}`;
+export function tidyUpName({ year, set, variant }: { year: string; set: string; variant?: string }): string {
+  if (variant?.trim().toLowerCase() === "base") {
+    throw new Error(
+      'tidyUpName: a Base checklist\'s title does not say "Base" (NEO-497); leave `variant` out for it',
+    );
+  }
+  return variant === undefined ? `Tidy up ${year} ${set}` : `Tidy up ${year} ${set} ${variant}`;
 }
 
 /**
@@ -270,7 +281,7 @@ export async function walkToAutographStep(page: Page): Promise<void> {
  * marketplaces answered, and land in the entity-review wizard.
  *
  * Contract: EXIT the tidy-up dialog is open, named for the set it fetched
- * ("Tidy up 2024 Topps Stars of MLB Network Base" by default, NEO-497) and
+ * ("Tidy up 2024 Topps Stars of MLB Network" by default, NEO-497) and
  * axe-clean, every row undecided ("Step 1 of N"; callers assert that themselves). Live, the
  * pairing session is PARKED behind it ("Back to Match Cards" is offered);
  * with SportLots paused it is the one-marketplace solo path and there is no
@@ -316,12 +327,12 @@ export async function fetchChecklistToWizard(
   }
   await expect(reviewWizard(page)).toBeVisible({ timeout: FETCH });
   // NEO-497: the dialog names the checklist it is tidying, read off the NB rows
-  // this drill picked (the year, the set, its Base).
+  // this drill picked (the year and the set; a Base checklist's title leaves
+  // "Base" out).
   await expect(reviewWizard(page)).toHaveAccessibleName(
     tidyUpName({
       year: drilled.year ?? DRILL_DEFAULTS.year,
       set: drilled.set ?? DRILL_DEFAULTS.set,
-      variant: "Base",
     }),
   );
   if (facts !== undefined) await expectTeamsFromChecklist(page, facts);
@@ -413,8 +424,9 @@ export async function openOneMarketplaceSetBase(
  * (after `advanceToSave`) for the set's sole writer (SET-REGISTRY.md).
  *
  * Contract: ENTRY the set is registered one-marketplace and never fetched.
- * EXIT the tidy-up dialog is open, named for the set ("Tidy up 1995 <set>
- * Base" by default, NEO-497), and axe-clean. NEO-335: a
+ * EXIT the tidy-up dialog is open, named for the set ("Tidy up 1995 <set>"
+ * by default, NEO-497; a Base checklist's title leaves "Base" out), and
+ * axe-clean. NEO-335: a
  * one-sided fetch with unknown names (every current caller) opens on a name
  * step; one whose only open question is teams or titles opens the same dialog
  * straight onto "Cards with no team" / "Card titles", so the title gate holds
@@ -448,7 +460,7 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   // on the wizard's title, which names the set since NEO-497.
   await expect(reviewWizard(page)).toBeVisible({ timeout: 60_000 });
   await expect(reviewWizard(page)).toHaveAccessibleName(
-    tidyUpName({ year: target.year ?? ONE_MARKETPLACE_DEFAULTS.year, set: target.set, variant: "Base" }),
+    tidyUpName({ year: target.year ?? ONE_MARKETPLACE_DEFAULTS.year, set: target.set }),
   );
   if (facts !== undefined) await expectTeamsFromChecklist(page, facts);
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });

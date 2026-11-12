@@ -379,10 +379,10 @@ describe("CardAttentionWalker — presentation", () => {
   });
 
   it("is named by the parent's title, the set it tidies (NEO-497)", () => {
-    renderWalker([needsTeamRow()], { title: "Tidy up 2024 Topps Chrome Base" });
+    renderWalker([needsTeamRow()], { title: "Tidy up 2024 Topps Chrome" });
 
     expect(
-      screen.getByRole("dialog", { name: "Tidy up 2024 Topps Chrome Base" }),
+      screen.getByRole("dialog", { name: "Tidy up 2024 Topps Chrome" }),
     ).toBeTruthy();
     expect(screen.queryByText("Tidy up this set")).toBeNull();
     expect(counter()).toBe("Step 1 of 1");

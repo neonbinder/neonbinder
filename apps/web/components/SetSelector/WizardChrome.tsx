@@ -7,10 +7,12 @@ import { useState, type ReactNode } from "react";
  * Jason, 2026-10-10: one title, each screen type its own subtitle, and ONE
  * "Step x of y" counter that sums every screen still to come. No per-type
  * counts anywhere. NEO-497: the title names the set it is tidying ("Tidy up
- * 2024 Topps Chrome Base", `tidyUpTitleFromChain`) instead of "this set".
+ * 2024 Topps Chrome", `tidyUpTitleFromChain`) instead of "this set". A
+ * trailing "Base" is dropped (Jason, 2026-11-11): the Base checklist reads as
+ * the set itself.
  *
  *   ┌──────────────────────────────────────────────┐
- *   │ Tidy up 2024 Topps Chrome Base  Step 3 of 12 │
+ *   │ Tidy up 2024 Topps Chrome       Step 3 of 12 │
  *   │ New team         2 more steps: teams for Jim │
  *   ├██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░┤  ← the rail IS the header's edge
  *
@@ -68,13 +70,28 @@ function startsWithToken(text: string, token: string): boolean {
 }
 
 /**
- * NEO-497 — "Tidy up 2026 Donruss Unleashed Base": the year, the set and the
- * variant the checklist belongs to, so the operator always knows which set
- * the dialog is tidying. Each part is skipped when it is missing or blank,
- * and with none known (the chain still loading) the title stays
+ * `text` without its last word when that word is `token` as a whole word,
+ * case-folded: "Topps Chrome Base" and "Topps Chrome base" lose it; "Topps
+ * Baseball" and "Base Set Gold" come back unchanged. `text` arrives trimmed.
+ */
+function withoutTrailingToken(text: string, token: string): string {
+  const lastSpace = text.search(/\s\S*$/);
+  const lastWord = text.slice(lastSpace + 1);
+  if (lastWord.toLowerCase() !== token.toLowerCase()) return text;
+  return lastSpace < 0 ? "" : text.slice(0, lastSpace).trimEnd();
+}
+
+/**
+ * NEO-497 — "Tidy up 2026 Donruss Unleashed Blue Ice": the year, the set and
+ * the variant the checklist belongs to, so the operator always knows which
+ * set the dialog is tidying. Each part is skipped when it is missing or
+ * blank, and with none known (the chain still loading) the title stays
  * `WIZARD_TITLE`. A set whose own name already opens with the year ("2024
- * Topps Chrome") does not get the year twice. Display only: nothing reads
- * this string back.
+ * Topps Chrome") does not get the year twice. When the joined name ends in
+ * the whole word "Base" (case-folded) that word is dropped (Jason,
+ * 2026-11-11): the Base checklist reads "Tidy up 2026 Donruss Unleashed",
+ * and a name that was only "Base" falls back to `WIZARD_TITLE`. Display only:
+ * nothing reads this string back, and no behaviour keys on it.
  */
 export function tidyUpTitle({
   year,
@@ -89,7 +106,8 @@ export function tidyUpTitle({
   const setText = setName?.trim() ?? "";
   const parts = [startsWithToken(setText, yearText) ? "" : yearText, setText, variant?.trim() ?? ""]
     .filter((part) => part !== "");
-  return parts.length > 0 ? `Tidy up ${parts.join(" ")}` : WIZARD_TITLE;
+  const name = withoutTrailingToken(parts.join(" "), "Base");
+  return name !== "" ? `Tidy up ${name}` : WIZARD_TITLE;
 }
 
 /** The levels a checklist leaf can sit at below its set. */
@@ -149,7 +167,7 @@ export interface WizardChromeProps {
   total: number;
   /** The screen type — "New team", "Cards with no team", "Ready to save". */
   subtitle: string;
-  /** "Tidy up 2024 Topps Chrome Base" (`tidyUpTitle`); defaults to `WIZARD_TITLE`. */
+  /** "Tidy up 2024 Topps Chrome" (`tidyUpTitle`); defaults to `WIZARD_TITLE`. Also the h2's `title` attribute. */
   title?: string;
   /** Id for the title, so the host dialog can be `aria-labelledby` it. */
   titleId?: string;

@@ -98,8 +98,9 @@ test(
 
     // ── Walk it to a fix: opened by hand from the pill (the walker never opens itself) ──
     await pill.click();
-    // NEO-497: named for the checklist it tidies (year, set, the Base row under Insert).
-    const fixer = page.getByRole("dialog", { name: tidyUpName({ year: "2024", set, variant: "Base" }), exact: true });
+    // NEO-497: named for the checklist it tidies (year and set; the checklist is
+    // the Base row under Insert, and a Base checklist's title leaves "Base" out).
+    const fixer = page.getByRole("dialog", { name: tidyUpName({ year: "2024", set }), exact: true });
     await expect(fixer).toBeVisible();
     // The walker and the wizard share title and counter; its own Skip control
     // says which this is, and the subtitle names the question.

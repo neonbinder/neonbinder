@@ -357,7 +357,7 @@ test(
 
     // First run: confirm every new player/team/league the checklist names.
     // NEO-335: the wizard's dialog name starts "Tidy up" ("Tidy up 2024 Topps
-    // Chrome Base" since NEO-497); "Confirm New Players & Teams" is gone.
+    // Chrome" since NEO-497); "Confirm New Players & Teams" is gone.
     const wizard = reviewWizard(page);
     if (await wizard.isVisible()) {
       // The file is BSC's own answers, so it cannot disagree with BSC: a "Checklist says

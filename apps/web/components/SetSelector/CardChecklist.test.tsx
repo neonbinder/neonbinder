@@ -2026,8 +2026,9 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
       expect(screen.getByText(/Wizard summary: 2 cards/)).toBeTruthy();
       // NEO-497: the wizard is titled with the set and variant off the chain
-      // (this chain has no year row, so the title simply leaves it out).
-      expect(screen.getByText("Wizard title: Tidy up Test Set Base")).toBeTruthy();
+      // (this chain has no year row, so the title simply leaves it out, and
+      // the leaf is Base, which the title drops).
+      expect(screen.getByText("Wizard title: Tidy up Test Set")).toBeTruthy();
       expect(mockCommitChecklist).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByText("Answer every card with no team"));
@@ -3582,10 +3583,10 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
 
     fireEvent.click(needsYou());
 
-    // The title is the dialog's accessible name, and the manufacturer row is
-    // not part of it.
+    // The title is the dialog's accessible name; neither the manufacturer row
+    // nor the trailing "Base" is part of it.
     expect(
-      await screen.findByRole("dialog", { name: "Tidy up 2024 Topps Chrome Base" }),
+      await screen.findByRole("dialog", { name: "Tidy up 2024 Topps Chrome" }),
     ).toBeTruthy();
   });
 
@@ -3604,8 +3605,8 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
 
     fireEvent.click(needsYou());
 
-    // NEO-497: titled off the chain (this one has no year row).
-    const dialog = await screen.findByRole("dialog", { name: "Tidy up Test Set Base" });
+    // NEO-497: titled off the chain (this one has no year row; Base is dropped).
+    const dialog = await screen.findByRole("dialog", { name: "Tidy up Test Set" });
     expect(dialog).toBeTruthy();
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
       "#1 AL Leaders ERA LL",

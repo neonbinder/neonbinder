@@ -1,6 +1,8 @@
 // NEO-497: the tidy-up dialog's title names the checklist it tidies
-// ("Tidy up <year> <set> <variant>"). The Base case is proved wherever a wizard
-// or walker opens on "Base"; this spec proves the two other shapes against the
+// ("Tidy up <year> <set> <variant>"; a Base checklist's title leaves "Base"
+// out). The Base case is proved wherever a wizard or walker opens on "Base"
+// (the fetch-to-wizard helpers, the attention-walker spec); this spec proves
+// the two other shapes against the
 // product: an INSERT other than Base reads as its own name, and a PARALLEL
 // (a sub-variant under an insert) carries its insert's name first, because
 // "Gold" alone does not say which insert's Gold.
