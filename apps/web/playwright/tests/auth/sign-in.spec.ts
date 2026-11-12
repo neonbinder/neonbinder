@@ -11,5 +11,9 @@ test("Sign In", { tag: ["@smoke", "@auth"] }, async ({ page, signIn }) => {
   const signedIn = page.getByRole("button", { name: "Sign out" });
   await expect(signedIn).toBeVisible({ timeout: LAUNCH_GATE });
   await expect(page.getByRole("banner").getByText("Neon Binder", { exact: true })).toBeVisible();
+  // NEO-464: the header draws before the dashboard's data lands, so wait for the
+  // dashboard itself (its one h1; the loading skeleton has none). Otherwise axe can
+  // measure the shelf's spines mid fade-in, before settle() has seen the animation.
+  await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible({ timeout: LAUNCH_GATE });
   await expectAccessible(page, { label: "Dashboard, signed in" });
 });
