@@ -156,7 +156,12 @@ export function unmatchedLine(orderNo: string): string {
  * (`/testing/seed-pick-order`, testing deployments only): it is recorded and
  * applied as the sales poll would, taking the copies from `box`, and lands on
  * `redirect` (the Pick List by default). `cards` maps a card number in the
- * box to the copies sold; `bad` adds one line NB cannot tie to a card. The
+ * box to the copies sold; `bad` adds one line NB cannot tie to a card and says
+ * nothing of (it stays under Can't find it). `listed` (NEO-509,
+ * `"<card number>:<players>"`) adds one more unmatched line that DESCRIBES a
+ * card of the first card's set, so it files inline under that set with an
+ * "Unmatched" chip; its toggle reads `Pulled <set> · <players> · #<number>,
+ * unmatched, BSC <order>` (`listedLine`). The
  * hop refuses an account that lists on a marketplace, so no copy it lowers
  * reaches one. `orderNo` must be one token. Re-seeding a number replays the
  * stored order. Opens `page` on the hop, so the browser does a full load
@@ -164,7 +169,7 @@ export function unmatchedLine(orderNo: string): string {
  */
 export async function seedPickOrder(
   page: Page,
-  order: { orderNo: string; box: string; cards: Readonly<Record<string, number>>; bad?: boolean },
+  order: { orderNo: string; box: string; cards: Readonly<Record<string, number>>; bad?: boolean; listed?: string },
   redirect = PICK_LIST_PATH,
 ): Promise<void> {
   const cards = Object.entries(order.cards)
@@ -172,7 +177,17 @@ export async function seedPickOrder(
     .join(",");
   const query = new URLSearchParams({ order: order.orderNo, box: order.box, cards, redirect });
   if (order.bad) query.set("bad", "1");
+  if (order.listed) query.set("listed", order.listed);
   await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/**
+ * How a described unmatched line (`seedPickOrder`'s `listed`) is titled, and
+ * so how its toggle begins: "2024 Topps Chrome · Listed<token> · #208". The
+ * set is the one the card number is filed under, a Base variant is not written.
+ */
+export function listedLine(setTitle: string, players: string, cardNumber: string): string {
+  return `${setTitle} · ${players} · #${cardNumber}`;
 }
 
 /** Marks a seeded order shipped (the hop's `ship=1`): its lines leave the Pick List. */

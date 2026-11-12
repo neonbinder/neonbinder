@@ -3,6 +3,8 @@
 // are walked. This spec proves that sheet as a seller uses it:
 //   - the pick order: Can't find it on top, one divider per set under its
 //     sport (sports A-Z, newest year first), "Sold since you started" last;
+//     a sale NB could not tie to a card but the listing describes (NEO-509)
+//     sits inline under its set, marked "Unmatched", not under Can't find it;
 //     each row says its variant in words (Base, Parallel, Insert, Insert
 //     parallel), its markers (Last ones, Short 1, New), and the same card sold
 //     on two orders is one ×2 row naming both;
@@ -25,6 +27,7 @@ import { test, expect, expectAccessible } from "../../support/fixtures";
 import {
   filterBy,
   openMoreFilters,
+  pickGroup,
   pickList,
   pickRow,
   pictureButton,
@@ -33,8 +36,8 @@ import {
   sortBy,
 } from "../../support/pick-list";
 
-// The demo's sheet: 29 copies across 27 sale lines (demoPickStore.tsx).
-const TOTAL = 29;
+// The demo's sheet: 30 copies across 28 sale lines (demoPickStore.tsx).
+const TOTAL = 30;
 
 // The rows the spec reads, by how each row's name begins.
 const TROUT = "#27 Mike Trout, 2026 Topps Series 1";
@@ -49,6 +52,9 @@ const SANDERS_SLAB = "#257 Barry Sanders, 1989 Score, SGC 9.5";
 const FLAGG = "#1 Cooper Flagg, 2025-26 Topps Chrome";
 const WITT = "2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr. #CCR-BW";
 const BCP = "2025 Bowman Chrome Prospects #BCP-77 Auto";
+// NEO-509: no NB card, but the listing says set, number and player, so it files with its set.
+const NABERS = "2024 Score · Malik Nabers · #302";
+const LATHAM = "#7 JC Latham, 2024 Score";
 
 test(
   "Pick List demo: pick order, markers, sort and filter, mark pulled with Undo, pull a filter, then walk it By the Box",
@@ -119,6 +125,20 @@ test(
     await expect(pickRow(table, BCP).getByRole("link")).toHaveCount(0);
     await expect(seen(pickRow(table, WITT).getByText("NB has no 2026 Topps Heritage checklist yet.", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(table, BCP).getByText("#BCP-77 fits two cards in that set. Check the photo.", { exact: true }))).toBeVisible();
+
+    // A sale NB could not tie to a card, described by its listing: filed inline under
+    // its set (2024 Score, with the card that is tied), marked Unmatched, never under Can't find it.
+    const score = pickGroup(table, "2024 Score");
+    await expect(table.getByRole("rowheader", { name: "Football 2024 Score 2 cards", exact: true })).toBeVisible();
+    await expect(pulledToggle(score, NABERS)).toHaveAccessibleName(`Pulled ${NABERS}, unmatched, BSC 88240`);
+    await expect(pulledToggle(score, LATHAM)).toBeVisible();
+    await expect(seen(pickRow(score, NABERS).getByText("Unmatched", { exact: true }))).toBeVisible();
+    await expect(seen(pickRow(score, NABERS).getByText("Malik Nabers", { exact: true }))).toBeVisible();
+    await expect(seen(pickRow(score, NABERS).getByText("#302", { exact: true }))).toBeVisible();
+    await expect(pulledToggle(pickGroup(table, "Can't find it"), NABERS)).toHaveCount(0);
+    await expect(seen(pickRow(score, LATHAM).getByText("Unmatched", { exact: true }))).toHaveCount(0);
+    // Base before Insert in the set: the described Base line leads.
+    await expect(score.getByRole("button", { name: /^Pulled / }).first()).toHaveAccessibleName(/^Pulled 2024 Score · Malik Nabers/);
 
     // Sold mid-pull: flagged New, under "Sold since you started".
     await expect(pulledToggle(table, `${FLAGG}, NM, sold since you started`)).toBeVisible();
@@ -253,7 +273,7 @@ test(
     await expect(sheet.getByRole("columnheader")).toHaveText(["Pulled", "Qty", "No.", "Player", "Card", "Cond.", "Order"]);
     // One divider per set group (the sheet carries the same 16 as the screen), one line per sale line.
     await expect(sheet.getByRole("rowheader")).toHaveCount(16);
-    await expect(sheet.getByRole("row")).toHaveCount(1 + 16 + 27);
+    await expect(sheet.getByRole("row")).toHaveCount(1 + 16 + 28);
     const sheetRow = (text: string) => sheet.getByRole("row").filter({ hasText: text });
     const troutLine = sheetRow("Mike Trout");
     await expect(troutLine.getByRole("cell", { name: "✓", exact: true })).toBeVisible();
@@ -262,6 +282,10 @@ test(
     await expect(sheetRow("Paul Skenes").getByRole("cell", { name: "BSC 88213, eBay 12-3456", exact: true })).toBeVisible();
     await expect(sheetRow("Paul Skenes").getByRole("cell", { name: "✓", exact: true })).toHaveCount(0);
     await expect(sheetRow("Shohei Ohtani").filter({ hasText: "PSA 10" }).getByRole("cell", { name: "✓", exact: true })).toBeVisible();
+    // The described line prints like a card, number and player in their columns, marked Unmatched.
+    const nabers = sheetRow("Malik Nabers");
+    await expect(nabers.getByRole("cell", { name: "#302", exact: true })).toBeVisible();
+    await expect(nabers.filter({ hasText: "Unmatched" })).toHaveCount(1);
     // A line NB could not match prints its title and why, under Can't find it.
     const witt = sheetRow("Bobby Witt Jr.");
     await expect(witt.getByRole("cell", { name: /^2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./ })).toBeVisible();
@@ -297,7 +321,7 @@ test(
     const stop = region.getByRole("heading", { level: 3 });
     await expect(stop).toHaveText("Box 1 of 5 · 2026 Baseball · 5 to pull");
     await expect(pick.boxTable("2026 Baseball")).toBeVisible();
-    await expect(region.getByText("Plus 2 sales NB couldn't tie to a card. They're the last stop, after the boxes.", { exact: true })).toBeVisible();
+    await expect(region.getByText("Plus 3 sales NB couldn't tie to a card. They're the last stop, after the boxes.", { exact: true })).toBeVisible();
     const previous = region.getByRole("button", { name: "Previous box", exact: true });
     const next = region.getByRole("button", { name: "Next box", exact: true });
     await expect(previous).toBeDisabled();
@@ -336,11 +360,13 @@ test(
     await expect(stop).toHaveText("Box 5 of 5 · Unsorted · 3 to pull");
 
     // The last box's Next names the last stop and how many wait there.
-    await region.getByRole("button", { name: "Can't find it (2)", exact: true }).click();
-    await expect(stop).toHaveText("Last stop · Can't find it · 2 to pull");
+    await region.getByRole("button", { name: "Can't find it (3)", exact: true }).click();
+    await expect(stop).toHaveText("Last stop · Can't find it · 3 to pull");
     await expect(region.getByRole("table", { name: "Sales NB couldn't tie to a card", exact: true })).toBeVisible();
     await expect(pulledToggle(region, WITT)).toBeVisible();
     await expect(pulledToggle(region, BCP)).toBeVisible();
+    // No box holds a sale NB never tied to a card, the described one too: it waits here as well.
+    await expect(pulledToggle(region, NABERS)).toBeVisible();
     await expect(next).toBeDisabled();
     await expect(region.getByRole("button", { name: "All found", exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Pick List demo, By the Box, the Can't find it stop" });

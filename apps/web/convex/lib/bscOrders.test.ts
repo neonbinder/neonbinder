@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import {
   BSC_LISTED_BOUNDS,
   BSC_ORDER_BOUNDS,
+  bscListedText,
   bscOrderDisposition,
   chooseCopiesToLower,
   parseBscDate,
@@ -418,6 +419,53 @@ describe("NEO-509 — the card a line describes (listed)", () => {
     const o = base();
     o.orderItems[0].card.cardNo = "TB\u00072";
     expect(listedOf(o)?.cardNo).toBeUndefined();
+  });
+
+  // A format character can reorder or hide what a seller reads on the Pick
+  // List (U+202E turns "TB2" into a visually different number), so each range
+  // is absent like a control character. Escapes only: no literal format chars.
+  test.each([
+    ["U+200B zero-width space", "\u200b"],
+    ["U+200C zero-width non-joiner", "\u200c"],
+    ["U+200D zero-width joiner", "\u200d"],
+    ["U+200E left-to-right mark", "\u200e"],
+    ["U+200F right-to-left mark", "\u200f"],
+    ["U+2028 line separator", "\u2028"],
+    ["U+2029 paragraph separator", "\u2029"],
+    ["U+202A left-to-right embedding", "\u202a"],
+    ["U+202B right-to-left embedding", "\u202b"],
+    ["U+202C pop directional formatting", "\u202c"],
+    ["U+202D left-to-right override", "\u202d"],
+    ["U+202E right-to-left override", "\u202e"],
+    ["U+2060 word joiner", "\u2060"],
+    ["U+2066 left-to-right isolate", "\u2066"],
+    ["U+2067 right-to-left isolate", "\u2067"],
+    ["U+2068 first strong isolate", "\u2068"],
+    ["U+2069 pop directional isolate", "\u2069"],
+    ["U+FEFF zero-width no-break space", "\ufeff"],
+  ])("a format character (%s) inside a value drops it", (_name, ch) => {
+    const o = base();
+    o.orderItems[0].card.cardNo = `TB${ch}2`;
+    o.orderItems[0].card.players = `Justin${ch} Fields`;
+    o.orderItems[0].card.setName = `2021 ${ch}Score`;
+    const listed = listedOf(o);
+    expect(listed?.cardNo).toBeUndefined();
+    expect(listed?.players).toBeUndefined();
+    expect(listed?.setName).toBeUndefined();
+    expect(listed?.year).toBe("2021");
+    // At an edge: trim() removes U+2028, U+2029 and U+FEFF (JS whitespace),
+    // which leaves clean text; every other one still drops the value.
+    const atEdge = /\s/.test(ch) ? "TB2" : null;
+    expect(bscListedText(`${ch}TB2`, BSC_LISTED_BOUNDS.cardNo)).toBe(atEdge);
+    expect(bscListedText(`TB2${ch}`, BSC_LISTED_BOUNDS.cardNo)).toBe(atEdge);
+  });
+
+  test("the neighbours of the format ranges are still display text", () => {
+    // One past each range edge (U+2010, U+2027, U+202F, U+205F, U+2070, U+FEFE),
+    // plus U+00A0 no-break space and U+00E9 (e acute): readable, so kept.
+    for (const ch of ["\u2010", "\u2027", "\u202f", "\u205f", "\u2070", "\ufefe", "\u00a0", "\u00e9"]) {
+      expect(bscListedText(`TB${ch}2`, BSC_LISTED_BOUNDS.cardNo)).toBe(`TB${ch}2`);
+    }
   });
 
   test("an integer year is read as its digits; other number shapes are not", () => {

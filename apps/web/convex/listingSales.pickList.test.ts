@@ -27,6 +27,7 @@ import {
   MAX_LISTED_BYTES_PER_SALE,
   MAX_SALE_ITEMS,
   type ProjectedOrder,
+  SPORT_ROW_SCAN,
 } from "./listingSales";
 import { BSC_LISTED_BOUNDS } from "./lib/bscOrders";
 import { MAX_FROM_PER_SALE, MAX_PICK_FROM, saleLineKeys } from "./lib/pickLines";
@@ -721,6 +722,44 @@ describe("NEO-509 — the card a line describes (listed) on the stored sale", ()
     expect((await sale(s)).items[0].listed?.sportId).toBeUndefined();
   });
 
+  /** Pads the sport level to `total` rows, each holding a distinct BSC id. */
+  const padSportRows = (s: S, total: number) =>
+    s.t.run(async (ctx) => {
+      const have = (await ctx.db.query("selectorOptions").withIndex("by_level", (q) => q.eq("level", "sport")).collect())
+        .length;
+      for (let i = have; i < total; i += 1) {
+        await ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: `Pad Sport ${i}`,
+          platformData: { bsc: { b0: `pad-sport-${i}` } },
+          isCustom: false,
+          children: [],
+          lastUpdated: NOW,
+        } as never);
+      }
+    });
+
+  test("a full sport scan resolves nothing: a duplicate past the bound would be invisible (fail closed)", async () => {
+    const s = await setup();
+    await sportRow(s, "Football (NB)", "football");
+    await padSportRows(s, SPORT_ROW_SCAN);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await record(s, order(s, { lines: [unmatched(LISTED)] }));
+    const listed = (await sale(s)).items[0].listed;
+    expect(listed?.sportId).toBeUndefined();
+    expect(listed?.sport).toBe("Football");
+    expect(warn.mock.calls.some(([m]) => String(m).includes("sport resolve skipped"))).toBe(true);
+    warn.mockRestore();
+  });
+
+  test("one row under the bound still resolves (control for the full-scan test)", async () => {
+    const s = await setup();
+    const football = await sportRow(s, "Football (NB)", "football");
+    await padSportRows(s, SPORT_ROW_SCAN - 1);
+    await record(s, order(s, { lines: [unmatched(LISTED)] }));
+    expect((await sale(s)).items[0].listed?.sportId).toBe(football);
+  });
+
   test("the sport is never resolved by name", async () => {
     const s = await setup();
     // The setup's sport row is named "Football" but its bsc slot is not "football".
@@ -762,6 +801,21 @@ describe("NEO-509 — the card a line describes (listed) on the stored sale", ()
     expect(listed?.players).toBeUndefined();
     expect(listed?.cardNo).toBeUndefined();
     expect(listed?.setName).toBe("2021 Score");
+  });
+
+  test("the store re-checks format characters too: a bidi override or zero-width char drops that field", async () => {
+    const s = await setup();
+    await record(
+      s,
+      order(s, {
+        lines: [unmatched({ ...LISTED, cardNo: "TB\u202e2", players: "Justin\u200b Fields", setName: "2021 \u2066Score" })],
+      }),
+    );
+    const listed = (await sale(s)).items[0].listed;
+    expect(listed?.cardNo).toBeUndefined();
+    expect(listed?.players).toBeUndefined();
+    expect(listed?.setName).toBeUndefined();
+    expect(listed?.variantName).toBe("1991 Throwback");
   });
 
   test("a description with nothing readable left is not stored", async () => {

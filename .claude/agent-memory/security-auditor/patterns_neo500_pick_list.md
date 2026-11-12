@@ -30,3 +30,20 @@ What held, and what to re-check when this area changes:
   that those test files are committed rather than left untracked.
 
 Related: [[patterns-testing-endpoint-gate]], [[public-function-auth-registry]].
+
+NEO-509 added `items[].listed` (the platform's card description) to sales:
+
+- **Two re-checks held:** the parser reads only named `card.*` keys and the
+  item `sportId` through `bscListedText` (trim, bound, reject C0/C1), and
+  `recordOrderCore.storedListed` re-applies the same rule, so the testing
+  seed and any future caller get the parser's bounds. The platform sport id
+  is resolved to NB's sport row (exactly-one over `slotIds`) and never
+  stored or returned.
+- **Every other public reader of `marketplaceSales` projects explicitly**
+  (`listingSync.publicSale`), so a new stored line field does not leak there.
+  Grep `query("marketplaceSales")` for public readers on each new field.
+- **Gaps left as notes:** `CONTROL_CHARS` does not reject bidi or
+  zero-width format characters (U+200B-U+200F, U+202A-U+202E, U+2066-U+2069).
+  The client also files an unmatched line behind an NB set by folded-name
+  equality with an exactly-one guard. That is display-only, but it is a
+  name-keyed behaviour under invariant 4.

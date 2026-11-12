@@ -13,8 +13,8 @@ first, even when their status has not changed, and each read goes through
 recent open order within one poll after deploy. Only open orders older than
 that window need a backfill.
 
-**Why:** NEO-509 asked for a backfill to fill one open 80-line order. The
-regular poll would have filled it anyway. Say so in the plan before anyone
+**Why:** NEO-509 asked for a backfill the regular poll would likely do anyway. The
+poll re-reads open orders each run. Say so in the plan before anyone
 builds a one-shot script ([[prod-data-scripts]] in coordinator memory: one-shot
 scripts are deleted once they have run).
 

@@ -303,7 +303,7 @@ export const pollInput = internalQuery({
  * sport id (`platformSportId`, BSC's item-level `sportId`, e.g. "football").
  * `recordOrderCore` turns that id into NB's `sportId` and never stores it.
  */
-const projectedListedValidator = saleItemListedValidator.omit("sportId").extend({
+export const projectedListedValidator = saleItemListedValidator.omit("sportId").extend({
   platformSportId: v.optional(v.string()),
 });
 
@@ -395,7 +395,12 @@ const itemKey = saleItemKey;
  * (`listingSales.pickList.test.ts`).
  */
 export const MAX_LISTED_BYTES_PER_SALE = 100_000;
-/** Sport rows the resolver reads (NB has a handful; the bound only stops a runaway read). */
+/**
+ * Sport rows the resolver reads (NB has a handful; the bound only stops a
+ * runaway read). A scan that comes back full resolves nothing: a second row
+ * holding the same id could sit past the bound, so the exactly-one guard
+ * cannot be trusted (`sportResolver`).
+ */
 export const SPORT_ROW_SCAN = 200;
 
 type StoredListed = NonNullable<SaleItem["listed"]>;
@@ -467,8 +472,10 @@ export function capListed<T extends { listed?: StoredListed }>(items: readonly T
  * sport row whose `platformData.<platform>` slots hold it (`slotIds`). The
  * sport rows are read once per resolver (`by_level` "sport", bounded) and only
  * when a line carries an id. No row, or two rows holding the same id: null,
- * and the line keeps only the platform's sport word as a label. BSC only;
- * another platform's lines resolve nothing.
+ * and the line keeps only the platform's sport word as a label. A full scan
+ * (`SPORT_ROW_SCAN` rows) fails closed: every id resolves to null, since a
+ * duplicate past the bound would be invisible. BSC only; another platform's
+ * lines resolve nothing.
  */
 export function sportResolver(
   ctx: Pick<QueryCtx, "db">,
@@ -483,11 +490,18 @@ export function sportResolver(
         .query("selectorOptions")
         .withIndex("by_level", (q) => q.eq("level", "sport"))
         .take(SPORT_ROW_SCAN);
-      for (const row of rows) {
-        for (const id of slotIds(row, "bsc")) {
-          const set = index.get(id) ?? new Set<Id<"selectorOptions">>();
-          set.add(row._id);
-          index.set(id, set);
+      if (rows.length >= SPORT_ROW_SCAN) {
+        // Fail closed: the index stays empty, so every id resolves to null.
+        console.warn(
+          `[listingSales] sport resolve skipped: platform=bsc op=sportResolver sportRows>=${SPORT_ROW_SCAN}, scan full`,
+        );
+      } else {
+        for (const row of rows) {
+          for (const id of slotIds(row, "bsc")) {
+            const set = index.get(id) ?? new Set<Id<"selectorOptions">>();
+            set.add(row._id);
+            index.set(id, set);
+          }
         }
       }
       byId = index;
@@ -506,7 +520,7 @@ const LISTED_TEXT_KEYS = ["sport", "year", "setName", "players", "cardNo", "vari
  * rule), the platform's sport id swapped for NB's `sportId` when exactly one
  * sport row holds it. Undefined when nothing readable is left.
  */
-async function storedListed(
+export async function storedListed(
   projected: ProjectedListed,
   resolveSport: (platformSportId: string) => Promise<Id<"selectorOptions"> | null>,
 ): Promise<StoredListed | undefined> {

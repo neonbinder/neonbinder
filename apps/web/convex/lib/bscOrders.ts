@@ -174,14 +174,27 @@ export const BSC_LISTED_BOUNDS = {
   variantName: 120,
 } as const;
 
-/** C0 and C1 control characters (tab and newline included): such a value is not display text. */
+/**
+ * Characters that make a value not display text: C0 and C1 controls (tab and
+ * newline included), and the Unicode format characters that change how text
+ * around them reads without showing themselves. A U+202E inside a card number
+ * or set name can visually reorder what a seller reads on the Pick List or the
+ * print sheet, so they pull the wrong card. Matched:
+ * - U+200B–U+200F zero-width space/joiners and the LRM/RLM marks,
+ * - U+2028, U+2029 line and paragraph separators,
+ * - U+202A–U+202E bidi embeddings and overrides,
+ * - U+2060 word joiner,
+ * - U+2066–U+2069 bidi isolates,
+ * - U+FEFF zero-width no-break space (byte-order mark).
+ */
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
 
 /**
  * A trimmed display string within `max`; null when absent, blank, carrying a
- * control character or too long. Exported so the store re-checks a projected
- * description by the same rule (`listingSales.recordOrderCore`).
+ * control or format character (`CONTROL_CHARS`) or too long. Exported so the
+ * store re-checks a projected description by the same rule
+ * (`listingSales.storedListed`).
  */
 export function bscListedText(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;

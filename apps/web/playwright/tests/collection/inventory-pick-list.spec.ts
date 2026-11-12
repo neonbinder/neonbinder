@@ -1,16 +1,21 @@
 // NEO-500 (R1): the signed-in Pick List (Inventory → Pick List) lists what sold
 // and still sits in a box, so the seller can pull it. A collector stocks a
 // minted box through the inventory's Checklists (one copy of card A with a front
-// photo, three of card B), and a BuySportsCards order sells A ×2, B ×1 and one
-// line NB cannot tie to a card. On the list, scoped to that order:
+// photo, three of card B), and a BuySportsCards order sells A ×2, B ×1, one line
+// NB cannot tie to a card and says nothing of, and one NB cannot tie to a card
+// but DESCRIBES (NEO-509: set, a card number, players). On the list, scoped to
+// that order:
 //   - A is marked "Last ones" (the sale took the box's only copy) and "Short 1"
 //     (it sold two), and its bigger picture is the photo of the very copy sold;
 //   - B is a plain row; the stray line waits under "Can't find it";
+//   - the described line (#208) is filed inside the 2024 Topps Chrome group
+//     between A (#205) and B (#211), wears an "Unmatched" chip and its own
+//     words, and is pulled, put back and pulled like any other row;
 //   - By the Box names the box (Back returns to the list);
 //   - the stray line's order links to that order on the Sales tab, focused (Back returns);
 //   - a pull survives a refresh taken the moment "Pulled …" shows (the line is
 //     gone; the notice reads "Saving…" until the server has it), an Undo puts
-//     a pull back;
+//     a pull back (the described line's too);
 //   - an order that lands while the page is open shows at the bottom, New,
 //     and "Pull these 2" (with its confirm) pulls it under an Order filter;
 //   - shipping the first order takes its lines off the list.
@@ -25,7 +30,10 @@
 // other spec boxes, so "Last ones" is this spec's alone; SET-REGISTRY.md), a
 // `collectionCopyPhotos` front on #205's copy (its R2 objects expire in the dev
 // bucket), and two `marketplaceSales` orders (`<token>a` and `<token>b`), both
-// shipped by the end. Self-cleaning: B's last copy is typed back to 0 and the
+// shipped by the end. The described line is part of the first order and takes
+// no card, box or set row of its own: "208" is a number NO spec boxes (the
+// line is never matched), so only its position between #205 and #211 matters.
+// Self-cleaning: B's last copy is typed back to 0 and the
 // box deleted; on a failure the finally block ships whatever order is still
 // open, on a second page so the failing one stays as the screenshot saw it (the
 // bootstrap's per-user reset clears the rest).
@@ -47,6 +55,7 @@ import {
   PICK_LIST_PATH,
   bscOrder,
   filterBy,
+  listedLine,
   pickGroup,
   pickList,
   pickRow,
@@ -61,6 +70,9 @@ import {
 /** Two 2024 Topps Chrome Base cards no other spec puts in a box (SET-REGISTRY.md). */
 const CARD_A = { no: "205", short: "#205 Shea Langeliers" };
 const CARD_B = { no: "211", short: "#211 Owen White" };
+/** The set's divider, and the card number the described line gives (between #205 and #211, boxed by no spec). */
+const SET_TITLE = "2024 Topps Chrome";
+const LISTED_NO = "208";
 
 test(
   "Pick List: a sold order lists its cards to pull (Last ones, Short, the sold copy's photo, Can't find it), pulls stick, a new order lands New, shipping clears it",
@@ -71,6 +83,9 @@ test(
     const first = `${env.ATTEMPT_TOKEN}a`;
     const second = `${env.ATTEMPT_TOKEN}b`;
     const advance = isMobile ? "Enter" : "Tab";
+    // The described line: a single-token player, so its title is one stable string (R: minted names).
+    const listedPlayers = `Listed${env.ATTEMPT_TOKEN}`;
+    const listedTitle = listedLine(SET_TITLE, listedPlayers, LISTED_NO);
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const pick = pickList(page);
     const { region, table } = pick;
@@ -129,15 +144,22 @@ test(
       await expect(drawer).toBeHidden();
       await expect(fieldA).toHaveValue("1");
 
-      // --- An order sells A ×2, B ×1 and a line NB can't tie to a card ---------------------
-      await seedPickOrder(page, { orderNo: first, box: boxName, cards: { [CARD_A.no]: 2, [CARD_B.no]: 1 }, bad: true });
+      // --- An order sells A ×2, B ×1, a line NB can't tie to a card, and one it can only describe ---
+      await seedPickOrder(page, {
+        orderNo: first,
+        box: boxName,
+        cards: { [CARD_A.no]: 2, [CARD_B.no]: 1 },
+        bad: true,
+        listed: `${LISTED_NO}:${listedPlayers}`,
+      });
       open.add(first);
       // The hop is a full page load: the launch gate.
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
       await expect(tabs.getByRole("link", { name: "Pick List", exact: true })).toHaveAttribute("aria-current", "page");
       await filterBy(page, isMobile, "Order", bscOrder(first));
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("3 cards match.");
+      // A, B, the stray line and the described line.
+      await expect(pick.matches).toHaveText("4 cards match.");
 
       // A: the sale took the box's last copy, and NB held one fewer than sold.
       const rowA = pickRow(table, CARD_A.short);
@@ -161,7 +183,24 @@ test(
           ),
         ),
       ).toBeVisible();
-      await expectAccessible(page, { label: "Pick List, one order to pull" });
+      // The described line: filed in the set's own group, between #205 and #211, never
+      // under Can't find it; it says Unmatched, and the listing's words are its label.
+      const inSet = pickGroup(table, SET_TITLE).getByRole("button", { name: /^Pulled / });
+      await expect(inSet).toHaveCount(3);
+      await expect(inSet.nth(0)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(CARD_A.short)}`));
+      await expect(inSet.nth(1)).toHaveAccessibleName(
+        new RegExp(`^Pulled ${escapeRe(listedTitle)}, unmatched, ${escapeRe(bscOrder(first))}$`),
+      );
+      await expect(inSet.nth(2)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(CARD_B.short)}`));
+      await expect(pulledToggle(cantFind, listedTitle)).toHaveCount(0);
+      await expect(pulledToggle(table, listedTitle)).toHaveAttribute("aria-pressed", "false");
+      const rowListed = pickRow(table, listedTitle);
+      await expect(seen(rowListed.getByText("Unmatched", { exact: true }))).toBeVisible();
+      await expect(seen(rowListed.getByText(listedPlayers, { exact: true }))).toBeVisible();
+      await expect(seen(rowListed.getByText(`#${LISTED_NO}`, { exact: true }))).toBeVisible();
+      // A matched row wears no such chip.
+      await expect(seen(rowB.getByText("Unmatched", { exact: true }))).toHaveCount(0);
+      await expectAccessible(page, { label: "Pick List, one order to pull, an unmatched line filed in its set" });
 
       // A's bigger picture is the photo of the copy that sold, and it really loads.
       await pictureButton(table, CARD_A.short).click();
@@ -186,7 +225,7 @@ test(
       await page.goBack();
       await expect(pick.views.getByRole("link", { name: "Whole list", exact: true })).toHaveAttribute("aria-current", "page");
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("3 cards match.");
+      await expect(pick.matches).toHaveText("4 cards match.");
 
       // --- The stray line's order opens on the Sales tab, that order focused; Back returns -----
       const toSales = pickRow(cantFind, unmatchedLine(first)).getByRole("link", {
@@ -208,10 +247,10 @@ test(
       await page.goBack();
       await expect(pick.heading).toBeVisible();
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("3 cards match.");
+      await expect(pick.matches).toHaveText("4 cards match.");
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toHaveAttribute("aria-pressed", "false");
 
-      // --- Pull B and Undo it; pull A ------------------------------------------------------
+      // --- Pull B and Undo it; pull the described line and Undo it; pull A -------------------
       // A tick reads "Saving…" on the status line and turns into "Pulled …" only
       // once the server has the pull (the unit tests hold the Saving… state; a
       // fast save would pass it before an assertion could look). Undo's own save
@@ -222,18 +261,31 @@ test(
       await expect(pick.notice(`Pulled ${CARD_B.short}.`)).toBeVisible();
       await pick.undo.click();
       await expect(pulledToggle(table, CARD_B.short)).toHaveAttribute("aria-pressed", "false");
+      // The described line pulls and puts back like a matched row, under its own words.
+      await pulledToggle(table, listedTitle).click();
+      await expect(pulledToggle(table, listedTitle)).toHaveAttribute("aria-pressed", "true");
+      await expect(pick.notice(`Pulled ${listedTitle}.`)).toBeVisible();
+      await pick.undo.click();
+      await expect(pulledToggle(table, listedTitle)).toHaveAttribute("aria-pressed", "false");
       await pulledToggle(table, CARD_A.short).click();
       await expect(pulledToggle(table, CARD_A.short)).toHaveAttribute("aria-pressed", "true");
       await expect(pick.notice(`Pulled ${CARD_A.short}.`)).toBeVisible();
 
       // A refresh straight after that confirmation starts the pull over with what is
-      // left (no second tab, no wait on the server): A is gone, B (put back) stays.
+      // left (no second tab, no wait on the server): A is gone, B and the described
+      // line (both put back) stay, the described line still in its set.
       await page.reload();
       await expect(pick.heading).toBeVisible();
-      await expect(pick.matches).toHaveText("2 cards match.");
+      await expect(pick.matches).toHaveText("3 cards match.");
       await expect(pulledToggle(table, CARD_B.short)).toHaveAttribute("aria-pressed", "false");
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toBeVisible();
       await expect(pulledToggle(table, CARD_A.short)).toHaveCount(0);
+      await expect(pulledToggle(pickGroup(table, SET_TITLE), listedTitle)).toHaveAttribute("aria-pressed", "false");
+      await expect(seen(pickRow(table, listedTitle).getByText("Unmatched", { exact: true }))).toBeVisible();
+      // Now pull it for good: the notice waits for the server, so a second tab sees it gone below.
+      await pulledToggle(table, listedTitle).click();
+      await expect(pulledToggle(table, listedTitle)).toHaveAttribute("aria-pressed", "true");
+      await expect(pick.notice(`Pulled ${listedTitle}.`)).toBeVisible();
 
       // --- A second order lands while the page is open: at the bottom, New -----------------
       await pick.backToDefault.click();
@@ -263,9 +315,11 @@ test(
       await expect(pick.notice("Pulled all 2 that match.")).toBeVisible();
       await expect(pulledToggle(table, unmatchedLine(second))).toHaveAttribute("aria-pressed", "true");
       // Saved ("Pulled …" waits for the server): a second tab's list has the first
-      // order's B and stray line and nothing of the second's.
+      // order's B and stray line and nothing of the second's (nor of the first's pulled
+      // described line).
       await fromServer(async (list) => {
         await expect(pulledToggle(list.table, unmatchedLine(first))).toBeVisible();
+        await expect(pulledToggle(list.table, listedTitle)).toHaveCount(0);
         await expect(pulledToggle(list.table, CARD_B.short)).toHaveCount(1);
         await expect(pulledToggle(list.table, unmatchedLine(second))).toHaveCount(0);
       });
@@ -280,6 +334,7 @@ test(
       open.delete(first);
       await expect(region.getByText("Nothing to pull. Go sell something rad.", { exact: true })).toBeVisible();
       await expect(pulledToggle(region, unmatchedLine(first))).toHaveCount(0);
+      await expect(pulledToggle(region, listedTitle)).toHaveCount(0);
       await expect(pulledToggle(region, CARD_B.short)).toHaveCount(0);
       // The empty state points on: to what sold, and to the inventory.
       const sawSold = region.getByRole("link", { name: "See what sold", exact: true });
