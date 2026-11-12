@@ -15,7 +15,11 @@ markers = [
 
 [tool.coverage.run]
 source = ["app"]
-branch = true
+# Line coverage only. Branch tracing forces coverage's slow C tracer; line-only
+# can use the low-overhead sys.monitoring core (CI sets COVERAGE_CORE=sysmon),
+# which cost ~1.0x on the numpy/Pillow-heavy cropper tests where the tracer
+# cost ~2.4x (NEO-484). The 80% floor below still applies.
+branch = false
 
 [tool.coverage.report]
 fail_under = 80

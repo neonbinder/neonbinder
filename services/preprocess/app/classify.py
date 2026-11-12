@@ -13,9 +13,13 @@ import logging
 import threading
 from dataclasses import dataclass, replace
 from io import BytesIO
+from types import ModuleType
+from typing import TYPE_CHECKING
 
-import anthropic
 from PIL import Image
+
+if TYPE_CHECKING:
+    import anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +84,19 @@ RETRY_PROMPT_SUFFIX = (
 # its connection pool; constructing one per call threw both away every time.
 # The SDK client is thread-safe, so a single lazily built instance serves every
 # concurrent request; the lock only guards construction.
+#
+# The SDK itself is imported on first use too (NEO-484 C6): `anthropic` was the
+# slowest import in `app.main` on a cold gen2 instance, and nothing at boot
+# needs it. `app.prewarm` imports it in the background after the startup hook.
 _anthropic_client: anthropic.Anthropic | None = None
 _anthropic_client_lock = threading.Lock()
+
+
+def anthropic_sdk() -> ModuleType:
+    """The `anthropic` package, imported on first use (NEO-484 C6)."""
+    import anthropic
+
+    return anthropic
 
 
 def get_anthropic_client() -> anthropic.Anthropic:
@@ -90,7 +105,7 @@ def get_anthropic_client() -> anthropic.Anthropic:
     if _anthropic_client is None:
         with _anthropic_client_lock:
             if _anthropic_client is None:
-                _anthropic_client = anthropic.Anthropic()
+                _anthropic_client = anthropic_sdk().Anthropic()
     return _anthropic_client
 
 

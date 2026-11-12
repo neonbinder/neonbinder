@@ -18,3 +18,10 @@ CLAUDE.md's "pytest cannot run on an arm64 Mac" is not a reason to skip it. A ne
 route changes `tests/unit/openapi_snapshot.json`; regenerate it with this venv per
 the docstring in `test_openapi_snapshot.py`, and the pinned fastapi and pydantic
 give the same output CI compares against.
+
+Python 3.12 is available through `uv venv -p 3.12` (no system 3.12 on the Mac);
+re-verified 2026-11-10 with 984 passed. `rembg==2.0.78` and `onnxruntime` install on
+arm64 too, so a real-model BiRefNet check runs locally: the lite model (224 MB,
+rembg's release URL, md5 pinned in its session class) is enough to prove a
+transcription byte-identical. `NUMBA_DISABLE_JIT=1` skips pymatting's compile on
+`import rembg` without touching any mask.

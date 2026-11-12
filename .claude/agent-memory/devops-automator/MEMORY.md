@@ -9,3 +9,8 @@
 - [Reference terraform gcs backend prefix required](reference_terraform_gcs_backend_prefix_required.md) — terraform init needs -backend-config="prefix=terraform/state/<env>" — a bare init reads an empty root prefix and the plan shows dozens of phantom "to add" resources
 - [Stale selectorSyncStatus breaks seed on reused deployments](seed-dev-stale-sync-status.md) — reset never drains it; clear via empty convex import
 - [Patterns convex run long action budget](patterns_convex_run_long_action_budget.md) — `npx convex run` waits ~5 min then exits 1 with a bare Error while the action continues; page-everything actions need a time budget + resume and a looping caller; reading a deployment through internal functions instead of `convex export`
+- [Cloud Run cold-start measurement](patterns_cloud_run_cold_start_measurement.md) — unset exec env can be gen1/gVisor; rembg import = numba compile; numba/ORT caches need generic CPU / EXTENDED->ALL to be portable; redeploy A/B, n=5 too noisy
+- [Terraform local plan auth](patterns_terraform_local_plan_auth.md) — access-token env when ADC fails; USER_PROJECT_OVERRIDE fixes the prod budget 403; fmt -recursive
+- [Cloud Run Terraform config](patterns_cloud_run_terraform_config.md) — validateOnly API check, gen2 annotation, removed-by-lane env vars as dynamic blocks, no-traffic revision on template change
+- [Workflow + gcloud gotchas](patterns_workflow_gcloud_gotchas.md) — deploy-cloudrun merges env (use --remove-env-vars), checkout after auth deletes creds, logging --freshness ignored ascending, gcr.io list path, index children
+- [CI unit suite slow with heavy deps installed](ci-unit-suite-slow-when-heavy-deps-installed.md) — unguarded model load per test in CI; per-test log gaps find it; sysmon coverage

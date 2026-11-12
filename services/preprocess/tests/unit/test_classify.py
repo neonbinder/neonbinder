@@ -538,7 +538,7 @@ class TestSharedAnthropicClient:
             return client
 
         monkeypatch.setattr(classify, "_anthropic_client", None)
-        monkeypatch.setattr(classify.anthropic, "Anthropic", _factory)
+        monkeypatch.setattr(classify.anthropic_sdk(), "Anthropic", _factory)
 
         barrier = threading.Barrier(4)
         clients: list[object] = []
@@ -567,7 +567,7 @@ class TestSharedAnthropicClient:
             raise AssertionError("shared client must not be built when one is injected")
 
         monkeypatch.setattr(classify, "_anthropic_client", None)
-        monkeypatch.setattr(classify.anthropic, "Anthropic", _refuse)
+        monkeypatch.setattr(classify.anthropic_sdk(), "Anthropic", _refuse)
         client = _mock_client(
             _response_with_text('{"players":[],"team":null,"card_number":null,"side":"back"}')
         )

@@ -19,16 +19,37 @@ from __future__ import annotations
 
 import base64
 import io
+from urllib.parse import urlsplit
 
 import httpx
 from PIL import Image
 
+# NEO-484: every mode `app.devcache.policy.resolve` can report.
+DEV_CACHE_MODES = {
+    "on",
+    "off:not_dev",
+    "off:no_bucket",
+    "off:tagged_host",
+    "off:no_host",
+    "off:error",
+}
+
 
 class TestHealthz:
-    def test_health_returns_ok(self, client: httpx.Client, auth_headers: dict[str, str]) -> None:
+    def test_health_returns_ok(
+        self, client: httpx.Client, auth_headers: dict[str, str], target_url: str
+    ) -> None:
         response = client.get("/health", headers=auth_headers)
         assert response.status_code == 200, response.text
-        assert response.json() == {"status": "ok"}
+        body = response.json()
+        assert set(body) == {"status", "dev_cache"}, body
+        assert body["status"] == "ok"
+        assert body["dev_cache"] in DEV_CACHE_MODES, body
+        # The smokes run against tagged revision URLs (`pr-N---…`, `sha-…---…`):
+        # code that is not yet the dev base must never use the dev cache.
+        first_label = (urlsplit(target_url).hostname or "").split(".", 1)[0]
+        if "---" in first_label:
+            assert body["dev_cache"].startswith("off:"), body
 
 
 class TestProcessAuth:
