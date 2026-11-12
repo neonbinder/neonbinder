@@ -62,6 +62,14 @@ export const PURGE_CHUNKS_PER_RUN = 24;
 export const PURGE_SECTIONS_PER_RUN = 200;
 /** The uploaded file's name, in characters. */
 export const MAX_FILE_NAME = 200;
+/**
+ * What `createdByUserId` reads once its account is deleted
+ * (`publishedChecklists.forgetUploader`). Never a Clerk subject (those start
+ * `user_`), so no signed-in caller ever matches it.
+ */
+export const DELETED_UPLOADER = "deleted-user";
+/** One `forgetUploader` run: at most this many headers and this many links. */
+export const FORGET_UPLOADER_PER_RUN = 200;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure helpers

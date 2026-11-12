@@ -51,6 +51,8 @@ import {
   BATCH_MAX_BYTES,
   BATCH_MAX_ROWS,
   BATCH_MAX_SECTIONS,
+  DELETED_UPLOADER,
+  FORGET_UPLOADER_PER_RUN,
   LEAF_READ_MAX_BYTES,
   LEAF_READ_MAX_ROWS,
   MAX_CHECKLIST_BYTES,
@@ -771,6 +773,55 @@ export const purge = internalMutation({
       checklistId: targetId,
     });
     return null;
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Account deletion
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Forget who uploaded: every header and link `userId` wrote gets
+ * `createdByUserId: DELETED_UPLOADER`. The checklist itself stays, because it
+ * belongs to the set, not to the person. Run it while deleting an account
+ * (the privacy policy's "we delete it and the data tied to it"):
+ *
+ *   npx convex run publishedChecklists:forgetUploader '{"userId":"user_..."}'
+ *
+ * Per run: at most `FORGET_UPLOADER_PER_RUN` headers and as many links,
+ * through each table's `by_created_by_user_id` index. A patched row leaves
+ * the index range, so a full page means more may remain and the job runs
+ * again; a short page on both tables ends the chain.
+ */
+export const forgetUploader = internalMutation({
+  args: { userId: v.string() },
+  returns: v.object({ headers: v.number(), links: v.number(), more: v.boolean() }),
+  handler: async (ctx, args) => {
+    if (args.userId.length === 0 || args.userId === DELETED_UPLOADER) {
+      return { headers: 0, links: 0, more: false };
+    }
+    const headerRows = await ctx.db
+      .query("publishedChecklists")
+      .withIndex("by_created_by_user_id", (q) => q.eq("createdByUserId", args.userId))
+      .take(FORGET_UPLOADER_PER_RUN);
+    for (const header of headerRows) {
+      await ctx.db.patch(header._id, { createdByUserId: DELETED_UPLOADER });
+    }
+    const linkRows = await ctx.db
+      .query("publishedChecklistLinks")
+      .withIndex("by_created_by_user_id", (q) => q.eq("createdByUserId", args.userId))
+      .take(FORGET_UPLOADER_PER_RUN);
+    for (const link of linkRows) {
+      await ctx.db.patch(link._id, { createdByUserId: DELETED_UPLOADER });
+    }
+    const more =
+      headerRows.length === FORGET_UPLOADER_PER_RUN || linkRows.length === FORGET_UPLOADER_PER_RUN;
+    if (more) {
+      await ctx.scheduler.runAfter(0, internal.publishedChecklists.forgetUploader, {
+        userId: args.userId,
+      });
+    }
+    return { headers: headerRows.length, links: linkRows.length, more };
   },
 });
 

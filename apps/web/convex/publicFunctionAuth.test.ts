@@ -3277,7 +3277,7 @@ describe("NEO-496: the set's publisher checklist surface is admin-gated", () => 
 
   test("clean-up and the fetch's reads are internal, never public", () => {
     const src = readFileSync(join(__dirname, "publishedChecklists.ts"), "utf8");
-    for (const name of ["expireUpload", "purge"]) {
+    for (const name of ["expireUpload", "purge", "forgetUploader"]) {
       expect(src).toContain(`export const ${name} = internalMutation({`);
     }
     for (const name of ["sectionsForSet", "linksForSet", "rowsForLeaf"]) {

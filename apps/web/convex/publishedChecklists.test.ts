@@ -14,6 +14,8 @@ import type { Id } from "./_generated/dataModel";
 import {
   ABANDON_MS,
   CHUNK_ROW_BYTES,
+  DELETED_UPLOADER,
+  FORGET_UPLOADER_PER_RUN,
   LEAF_READ_MAX_BYTES,
   MAX_CHECKLIST_BYTES,
   MAX_CHECKLIST_ROWS,
@@ -1114,5 +1116,99 @@ describe("setRowChecklistSections, the one link writer", () => {
   test("sectionKeyOf is NFC, trimmed, whitespace-collapsed, lower-cased", () => {
     expect(sectionKeyOf("  Café   Stars\t")).toBe("café stars");
     expect(sectionKeyOf("BASE")).toBe(sectionKeyOf("base"));
+  });
+});
+
+describe("account deletion: forgetUploader", () => {
+  test("a deleted admin's id leaves every header and link; the checklists and links stay", async () => {
+    const t = convexTest(schema, modules);
+    const f = await seedTree(t);
+    await upload(t, f.set, [
+      { name: "Base", rows: rows(3) },
+      { name: "Future Stars", rows: rows(2, "FS-") },
+    ]);
+    await upload(t, f.otherSet, [{ name: "Base", rows: rows(2) }], ADMIN_B);
+    await link(t, f.insA, f.set, [sectionKeyOf("Future Stars")]);
+    await t.run((ctx) =>
+      ctx.db.insert("publishedChecklistLinks", {
+        setId: f.set,
+        selectorOptionId: f.parA,
+        sectionKey: sectionKeyOf("Future Stars"),
+        createdAt: NOW,
+        createdByUserId: ADMIN_B.subject,
+      }),
+    );
+    const sizesBefore = await tableSizes(t);
+    const rowsBefore = await t.run(async (ctx) =>
+      (await ctx.db.query("publishedChecklistChunks").collect()).flatMap((c) => c.rows),
+    );
+
+    const result = await t.mutation(internal.publishedChecklists.forgetUploader, {
+      userId: ADMIN.subject,
+    });
+    expect(result).toEqual({ headers: 1, links: 1, more: false });
+
+    const after = await headers(t);
+    const links = await allLinks(t);
+    expect([...after, ...links].some((r) => r.createdByUserId === ADMIN.subject)).toBe(false);
+    expect(after.map((h) => [h.setId, h.createdByUserId]).sort()).toEqual(
+      [
+        [f.set, DELETED_UPLOADER],
+        [f.otherSet, ADMIN_B.subject],
+      ].sort(),
+    );
+    expect(links.map((l) => [l.selectorOptionId, l.createdByUserId]).sort()).toEqual(
+      [
+        [f.insA, DELETED_UPLOADER],
+        [f.parA, ADMIN_B.subject],
+      ].sort(),
+    );
+    // The checklist belongs to the set: nothing else moved.
+    expect(after.every((h) => h.status === "ready")).toBe(true);
+    expect(await tableSizes(t)).toEqual(sizesBefore);
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("publishedChecklistChunks").collect()).flatMap((c) => c.rows),
+      ),
+    ).toEqual(rowsBefore);
+    expect(
+      await t.withIdentity(ADMIN_B).query(api.publishedChecklists.getForSet, { setId: f.set }),
+    ).toMatchObject({ fileName: "checklist.csv", sectionCount: 2, rowCount: 5 });
+    await settle(t);
+  });
+
+  test("pages a full run and chains itself until none are left", async () => {
+    const t = convexTest(schema, modules);
+    const f = await seedTree(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < FORGET_UPLOADER_PER_RUN + 1; i += 1) {
+        await ctx.db.insert("publishedChecklistLinks", {
+          setId: f.set,
+          selectorOptionId: f.insA,
+          sectionKey: `section ${i}`,
+          createdAt: NOW,
+          createdByUserId: ADMIN.subject,
+        });
+      }
+    });
+    const first = await t.mutation(internal.publishedChecklists.forgetUploader, {
+      userId: ADMIN.subject,
+    });
+    expect(first).toEqual({ headers: 0, links: FORGET_UPLOADER_PER_RUN, more: true });
+    await settle(t);
+    const links = await allLinks(t);
+    expect(links).toHaveLength(FORGET_UPLOADER_PER_RUN + 1);
+    expect(links.every((l) => l.createdByUserId === DELETED_UPLOADER)).toBe(true);
+  });
+
+  test("refuses an empty id and the sentinel itself", async () => {
+    const t = convexTest(schema, modules);
+    for (const userId of ["", DELETED_UPLOADER]) {
+      expect(await t.mutation(internal.publishedChecklists.forgetUploader, { userId })).toEqual({
+        headers: 0,
+        links: 0,
+        more: false,
+      });
+    }
   });
 });

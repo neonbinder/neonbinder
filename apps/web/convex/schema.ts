@@ -5520,7 +5520,9 @@ export default defineSchema({
     // retire the ready one; start retires the caller's own unfinished upload.
     .index("by_set_and_status", ["setId", "status"])
     // The purge's next retired checklist, and abandoned uploads (idle 1 h).
-    .index("by_status_and_activity", ["status", "lastActivityAt"]),
+    .index("by_status_and_activity", ["status", "lastActivityAt"])
+    // Account deletion: `forgetUploader` pages the deleted user's headers.
+    .index("by_created_by_user_id", ["createdByUserId"]),
 
   publishedChecklistSections: defineTable({
     checklistId: v.id("publishedChecklists"),
@@ -5560,5 +5562,7 @@ export default defineSchema({
     createdByUserId: v.string(),
   })
     .index("by_selector_option_and_key", ["selectorOptionId", "sectionKey"])
-    .index("by_set_and_key", ["setId", "sectionKey"]),
+    .index("by_set_and_key", ["setId", "sectionKey"])
+    // Account deletion: `forgetUploader` pages the deleted user's links.
+    .index("by_created_by_user_id", ["createdByUserId"]),
 });
