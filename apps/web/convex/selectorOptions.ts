@@ -348,6 +348,8 @@ import {
   cardPlatformWireDataValidator,
   cardTeamLookupValidator,
   checklistConflictValidator,
+  checklistPairRevertValidator,
+  checklistPairedRowValidator,
   selectorOptionFields,
   selectorOptionLevelValidator,
 } from "./schema";
@@ -14770,7 +14772,30 @@ type ChecklistLink = {
   via: "number" | "caseFolded" | "prefixStripped" | "player" | "playerName" | "playerFuzzy";
   confidence?: number;
   checklistNumber?: string;
+  row?: Infer<typeof checklistPairedRowValidator>;
+  revert?: Infer<typeof checklistPairRevertValidator>;
 };
+
+/**
+ * NEO-496 — a paired row as Match Cards lists one (`ChecklistLinkRow`), from
+ * the card the row would be on its own (`checklistOnlyCard`), so an Unlink
+ * puts back exactly the checklist-only card the fetch would have published.
+ */
+export function checklistPairedRow(
+  row: PublishedChecklistStoredRow,
+  resolveText: (text: string) => readonly string[] | null,
+): Infer<typeof checklistPairedRowValidator> {
+  const own = checklistOnlyCard(row, resolveText);
+  const teams = own.teams ?? [];
+  return {
+    number: own.cardNumber,
+    players: own.players ?? [],
+    teams,
+    ...(row.noNumber || isNoNumber(own.cardNumber) ? { noNumber: true as const } : {}),
+    ...(own.teamLookup === "checklist" && teams.length === 0 ? { noTeam: true as const } : {}),
+    cardName: own.cardName,
+  };
+}
 
 /**
  * NEO-496 (D10) — a publisher-checklist row no fetched card paired, as a
@@ -16278,12 +16303,29 @@ export const fetchCardChecklist = action({
         let noTeamFromChecklist = 0;
         for (const m of match.matches) {
           const card = out[m.cardIndex];
-          checklistLinkByCard.set(card, {
+          // NEO-496 — the card before the row touches it, for Match Cards'
+          // Unlink. "Would have been looked up" mirrors `needsTeamLookup`
+          // below exactly: a card the row answers skips that lookup, so
+          // unlinked it has no answer at all ("failed": the operator picks,
+          // nothing guesses, rule 8).
+          const ownPlayers = card.players ? [...card.players] : undefined;
+          const ownTeams = card.teams?.length ? [...card.teams] : undefined;
+          const wouldLookUp = !card.teams?.length && !card.team && !!card.platformData.bsc?.ref;
+          const link: ChecklistLink = {
             via: m.via,
             ...(m.confidence !== undefined ? { confidence: m.confidence } : {}),
             ...(m.checklistNumber !== undefined ? { checklistNumber: m.checklistNumber } : {}),
-          });
+            row: checklistPairedRow(published.rows[m.rowIndex], resolveText),
+          };
+          checklistLinkByCard.set(card, link);
           const applied = applyChecklistRow(card, published.rows[m.rowIndex], resolveText);
+          const teamsFromRow = applied.answered && applied.teams !== null;
+          link.revert = {
+            ...(ownPlayers ? { players: ownPlayers } : {}),
+            teamsFromRow,
+            ...(teamsFromRow && ownTeams ? { teams: ownTeams } : {}),
+            ...(teamsFromRow && wouldLookUp ? { teamLookup: "failed" as const } : {}),
+          };
           if (applied.fillPlayers) card.players = [...applied.fillPlayers];
           if (applied.conflict) {
             card.checklistConflict = applied.conflict;

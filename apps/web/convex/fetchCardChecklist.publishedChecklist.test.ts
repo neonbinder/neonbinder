@@ -1081,3 +1081,87 @@ describe("fetchCardChecklist with a publisher checklist: a No Team row paired by
     expect(result.checklistMatch).toMatchObject({ needsOperator: false, byPlayerName: 1 });
   });
 });
+
+describe("NEO-496 — a server pair carries its row and the card before it (Match Cards' Unlink)", () => {
+  test("a card with no team of its own: the row's team, and a revert that leaves the team to the operator", async () => {
+    mockState.bscCards = [bsc("1", { players: ["Elly De La Cruz"] })];
+    const { t } = await run({
+      rows: [{ number: "1", players: ["Elly De La Cruz"], teams: ["Cincinnati Reds"] }],
+    });
+    const card = (await candidates(t)).get("1")!;
+    expect(card).toMatchObject({ teams: ["Cincinnati Reds"], teamLookup: "checklist" });
+    expect(card.checklistLink).toEqual({
+      via: "number",
+      row: {
+        number: "1",
+        players: ["Elly De La Cruz"],
+        teams: ["Cincinnati Reds"],
+        cardName: "Elly De La Cruz",
+      },
+      // Unlinked, the card never had a BSC team answer: the data-missing
+      // state, so no rule may guess one (rule 8).
+      revert: { players: ["Elly De La Cruz"], teamsFromRow: true, teamLookup: "failed" },
+    });
+    expect(mockState.teamLookupCalls).toEqual([]);
+  });
+
+  test("a card whose listing names its team: the revert puts that team back, never 'failed'", async () => {
+    mockState.bscCards = [bsc("1", { players: ["Elly De La Cruz"], teams: ["Cincinnati Reds"] })];
+    const { t } = await run({
+      rows: [{ number: "1", players: ["Elly De La Cruz"], teams: ["Cincinnati Reds"] }],
+    });
+    const card = (await candidates(t)).get("1")!;
+    expect(card.checklistLink?.revert).toEqual({
+      players: ["Elly De La Cruz"],
+      teamsFromRow: true,
+      teams: ["Cincinnati Reds"],
+    });
+  });
+
+  test("a row naming no team makes no claim: the card is looked up as before and Unlink leaves its team alone", async () => {
+    mockState.bscCards = [bsc("1", { players: ["Elly De La Cruz"] })];
+    mockState.teamNamesResult = {
+      "bsc-1": { rawTeamName: "Cincinnati Reds", teamNames: ["Cincinnati Reds"] },
+    };
+    const { t } = await run({ rows: [{ number: "1", players: ["Elly De La Cruz"], teams: [] }] });
+    const card = (await candidates(t)).get("1")!;
+    expect(mockState.teamLookupCalls).toEqual([["bsc-1"]]);
+    expect(card.checklistLink?.revert).toEqual({
+      players: ["Elly De La Cruz"],
+      teamsFromRow: false,
+    });
+    expect(card.checklistLink?.row).toEqual({
+      number: "1",
+      players: ["Elly De La Cruz"],
+      teams: [],
+      cardName: "Elly De La Cruz",
+    });
+  });
+
+  test("players the row filled are undone: a card with none reverts to none", async () => {
+    mockState.bscCards = [bsc("1")];
+    const { t } = await run({
+      rows: [{ number: "1", players: ["Rhett Lowder"], teams: ["Cincinnati Reds"] }],
+    });
+    const card = (await candidates(t)).get("1")!;
+    expect(card.players).toEqual(["Rhett Lowder"]);
+    expect(card.checklistLink?.revert?.players).toBeUndefined();
+  });
+
+  test("a 'No Team' row and a no-number row keep their flags on the paired row", async () => {
+    mockState.bscCards = [bsc("NNO", { players: ["Team Checklist"] })];
+    const { t } = await run({
+      rows: [
+        { number: "", players: ["Team Checklist"], teams: [], noNumber: true, noTeam: true },
+      ],
+    });
+    const card = [...(await candidates(t)).values()].find((c) => c.checklistLink)!;
+    expect(card.checklistLink?.row).toMatchObject({
+      players: ["Team Checklist"],
+      teams: [],
+      noNumber: true,
+      noTeam: true,
+    });
+    expect(card.checklistLink?.revert?.teamsFromRow).toBe(true);
+  });
+});

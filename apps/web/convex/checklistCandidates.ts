@@ -9,6 +9,8 @@ import {
   cardPlatformWireDataValidator,
   cardTeamLookupValidator,
   checklistConflictValidator,
+  checklistPairRevertValidator,
+  checklistPairedRowValidator,
 } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
 // NEO-251 security review: the same two bounds the write path enforces, applied
@@ -96,6 +98,9 @@ export const checklistLinkValidator = v.object({
   ),
   confidence: v.optional(v.number()),
   checklistNumber: v.optional(v.string()),
+  /** The paired row and the card before it, for Match Cards' Unlink. */
+  row: v.optional(checklistPairedRowValidator),
+  revert: v.optional(checklistPairRevertValidator),
 });
 
 /**

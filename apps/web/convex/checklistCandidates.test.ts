@@ -1258,7 +1258,13 @@ describe("NEO-496 — checklist-only candidates and checklistLink", () => {
         },
         {
           ...cand("7", "b7"),
-          checklistLink: { via: "playerFuzzy" as const, confidence: 0.96, checklistNumber: "77" },
+          checklistLink: {
+            via: "playerFuzzy" as const,
+            confidence: 0.96,
+            checklistNumber: "77",
+            row: { number: "77", players: ["Rhett Lowder"], teams: ["Cincinnati Reds"], cardName: "Rhett Lowder" },
+            revert: { players: ["Rhet Lowder"], teamsFromRow: true, teamLookup: "failed" as const },
+          },
         },
         {
           cardNumber: "NNO",
@@ -1280,6 +1286,8 @@ describe("NEO-496 — checklist-only candidates and checklistLink", () => {
       via: "playerFuzzy",
       confidence: 0.96,
       checklistNumber: "77",
+      row: { number: "77", players: ["Rhett Lowder"], teams: ["Cincinnati Reds"], cardName: "Rhett Lowder" },
+      revert: { players: ["Rhet Lowder"], teamsFromRow: true, teamLookup: "failed" },
     });
     expect(byNumber.get("NNO")).toMatchObject({
       bucket: "checklistOnly",

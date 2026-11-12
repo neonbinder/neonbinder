@@ -1064,6 +1064,43 @@ export const checklistConflictValidator = v.object({
 });
 
 /**
+ * NEO-496 — a publisher-checklist row a fetched card was paired with on the
+ * server, in the shape Match Cards lists a row (`ChecklistLinkRow`) plus the
+ * name the row has as a card of its own (`checklistOnlyCard`). `teams` are
+ * resolved like a checklist-only card's; `noTeam` is the row's "No Team".
+ */
+export const checklistPairedRowValidator = v.object({
+  number: v.string(),
+  players: v.array(v.string()),
+  teams: v.array(v.string()),
+  noNumber: v.optional(v.literal(true)),
+  noTeam: v.optional(v.literal(true)),
+  cardName: v.string(),
+});
+
+/**
+ * NEO-496 — the card as it was before the paired row was applied, for an
+ * operator Unlink in Match Cards.
+ *
+ *  - `players`: the card's own players (absent: it had none).
+ *  - `teamsFromRow`: the row settled the card's team (`teamLookup:
+ *    "checklist"`), so BSC was never asked. Only then do `teams` /
+ *    `teamLookup` say what to put back; otherwise the card's teams are its
+ *    own (or its lookup's, which lands later) and Unlink leaves them alone.
+ *  - `teams`: the card's own teams before the row (absent: none).
+ *  - `teamLookup: "failed"`: the card had no team of its own and a BSC
+ *    listing whose team lookup was skipped because the row answered it.
+ *    "failed" is the data-missing state (rule 8): the operator picks the
+ *    team and no rule guesses one.
+ */
+export const checklistPairRevertValidator = v.object({
+  players: v.optional(v.array(v.string())),
+  teamsFromRow: v.boolean(),
+  teams: v.optional(v.array(v.string())),
+  teamLookup: v.optional(v.literal("failed")),
+});
+
+/**
  * NEO-335 / PR 451 — how a card's fetch-time team answer was reached:
  * "answered" (BSC replied), "failed" (the BSC call failed), "checklist" (the
  * operator's publisher checklist answered it; BSC was not asked). The one
@@ -3471,6 +3508,11 @@ export default defineSchema({
         confidence: v.optional(v.number()),
         // A name pair with a numbered row: the row's number as printed.
         checklistNumber: v.optional(v.string()),
+        // NEO-496 — the row the server paired, and the card as it was before
+        // the row was applied, so Match Cards can undo a wrong pair. Shapes:
+        // `checklistPairedRowValidator`, `checklistPairRevertValidator`.
+        row: v.optional(checklistPairedRowValidator),
+        revert: v.optional(checklistPairRevertValidator),
       }),
     ),
     // Pairing confidence for a matched row; the modal surfaces a fuzzy match
