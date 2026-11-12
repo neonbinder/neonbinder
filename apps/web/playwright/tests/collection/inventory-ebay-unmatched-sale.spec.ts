@@ -20,8 +20,8 @@
 //
 // R7/R7a: reads the seed's 2024 Topps Chrome Base and writes ONLY the signed-in
 // user's own rows: one box `Ebay<token>`, one copy of #215 Nolan Arenado in it
-// (reserved for this spec, SET-REGISTRY.md) and two `marketplaceSales` orders
-// (`<token>e` titled, `<token>f` untitled), both shipped by the end.
+// (reserved for this spec, SET-REGISTRY.md) and three `marketplaceSales` orders
+// (`<token>e` titled, `<token>g` with a 150-character unspaced title, `<token>f` untitled), all shipped by the end.
 // Self-cleaning: #215's copy is typed back to 0 and the box deleted; on a
 // failure the finally block ships whatever order is still open, on a second
 // page so the failing one stays as the screenshot saw it (the bootstrap's
@@ -67,6 +67,9 @@ test(
     // Two order numbers, neither a prefix of the other (row names match by prefix).
     const titled = `${env.ATTEMPT_TOKEN}e`;
     const untitled = `${env.ATTEMPT_TOKEN}f`;
+    const long = `${env.ATTEMPT_TOKEN}g`;
+    // One unspaced token of 150 characters: nothing to break on, so the page must wrap it itself.
+    const longTitle = `Long${env.ATTEMPT_TOKEN}`.padEnd(150, "w");
     // The title names a real card in the seller's box on purpose: NB must never read a title to find a card.
     const title = `${SET_TITLE} ${CARD.short} Thing${env.ATTEMPT_TOKEN}`;
     const advance = isMobile ? "Enter" : "Tab";
@@ -118,6 +121,19 @@ test(
       await expect(page).toHaveURL(/[?&]porder=/);
       await expect(pick.matches).toHaveText("1 match.");
 
+      // --- Group by order: the order's count says "1 item", never "1 card" ----------------------------
+      const groupByOrder = pick.quickFilters.getByRole("button", { name: "Group by order", exact: true });
+      await groupByOrder.click();
+      await expect(groupByOrder).toHaveAttribute("aria-pressed", "true");
+      await expect(page).toHaveURL(/[?&]pgroup=order(&|$)/);
+      const orderGroup = pickGroup(table, ebayOrder(titled));
+      await expect(pulledToggle(orderGroup, title)).toBeVisible();
+      await expect(orderGroup.getByText("1 item", { exact: true })).toBeVisible();
+      await expect(orderGroup.getByText("1 card", { exact: true })).toHaveCount(0);
+      await groupByOrder.click();
+      await expect(groupByOrder).toHaveAttribute("aria-pressed", "false");
+      await expect(page).not.toHaveURL(/[?&]pgroup=/);
+
       // --- Pick List: under Can't find it, eBay's title, the unmatched words, no chip ---------------
       const cantFind = pickGroup(table, "Can't find it");
       await expect(pulledToggle(cantFind, title)).toBeVisible();
@@ -166,6 +182,35 @@ test(
         await expect(pulledToggle(list.region, title)).toHaveCount(0);
       });
 
+      // --- A very long unspaced title wraps: nothing runs off the screen, on either tab -----------------
+      // The page's own width is not something a user perceives, so the reach of the rightmost thing in
+      // each row is: it must sit fully inside the viewport (a row that overflowed would push it out).
+      await seedEbayOrder(page, { orderNo: long, lines: [{ quantity: 1, title: longTitle }] }, "/inventory?tab=sales");
+      open.add(long);
+      const wide = saleOrder(long);
+      await expect(wide).toBeVisible({ timeout: LAUNCH_GATE });
+      const wideLine = wide.getByRole("listitem").filter({ hasText: longTitle });
+      await expect(wideLine).toHaveCount(1);
+      await expect(wideLine).toBeVisible();
+      await wideLine.getByText("$1.00 each", { exact: true }).scrollIntoViewIfNeeded();
+      await expect(wideLine.getByText("$1.00 each", { exact: true })).toBeInViewport({ ratio: 1 });
+      await expectAccessible(page, { label: "Sales, an order with a 150-character unspaced title" });
+      await tabs.getByRole("link", { name: "Pick List", exact: true }).click();
+      await expect(pick.heading).toBeVisible();
+      await filterBy(page, isMobile, "Order", ebayOrder(long));
+      await expect(pick.matches).toHaveText("1 match.");
+      await expect(pulledToggle(cantFind, longTitle)).toBeVisible();
+      const wideRow = pickRow(cantFind, longTitle);
+      await expect(seen(wideRow.getByText(longTitle, { exact: true }))).toBeVisible();
+      // Scrolled to first: the row may sit below the fold, which is not what is being asked.
+      const wideLink = seen(wideRow.getByRole("link", { name: `${ebayOrder(long)} on your Sales tab`, exact: true }));
+      await wideLink.scrollIntoViewIfNeeded();
+      await expect(wideLink).toBeInViewport({ ratio: 1 });
+      await expectAccessible(page, { label: "Pick List, a line with a 150-character unspaced title" });
+      await shipEbayOrder(page, long);
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      open.delete(long);
+
       // --- An eBay line that sends no title reads in plain words, on the Sales tab and the Pick List ---
       await seedEbayOrder(page, { orderNo: untitled, lines: [{ quantity: 1 }] }, "/inventory?tab=sales");
       open.add(untitled);
@@ -176,6 +221,7 @@ test(
       await expect(bareLine).toHaveCount(1);
       await expect(bareLine).toContainText(`1× ${NO_TITLE_NAME}`);
       await expect(bareLine.getByText(WHY_SALES, { exact: true })).toBeVisible();
+      await expectAccessible(page, { label: "Sales, an eBay line with no title" });
       await tabs.getByRole("link", { name: "Pick List", exact: true }).click();
       await expect(pick.heading).toBeVisible();
       await filterBy(page, isMobile, "Order", ebayOrder(untitled));
@@ -187,6 +233,7 @@ test(
       await expect(bareToggle).toHaveAttribute("aria-pressed", "false");
       await expect(seen(pickRow(cantFind, bareName).getByText(WHY_PICK, { exact: true }))).toBeVisible();
       await expect(table.getByText("Not in NB", { exact: true })).toHaveCount(0);
+      await expectAccessible(page, { label: "Pick List, an eBay line with no title" });
 
       // --- Shipping takes the line off the list ---------------------------------------------------
       await shipEbayOrder(page, untitled);
