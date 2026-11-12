@@ -287,3 +287,60 @@ describe("countChecklistTeams", () => {
     expect(countChecklistTeams([])).toBe(0);
   });
 });
+
+// NEO-489 × NEO-490 — a "No Team" row the operator links in Match Cards is a
+// claim: carried to the server, and its empty answer folds onto a teamless
+// card as "the checklist says no team".
+describe("checklist links: a No Team row (NEO-489)", () => {
+  const noTeamRows: ChecklistLinkRow[] = [
+    { number: "9", players: ["Show Card"], teams: [], noTeam: true },
+    { number: "10", players: ["Plain Card"], teams: [] },
+  ];
+
+  test("the request carries the row's No Team claim, and only on that row", () => {
+    const pairs = buildChecklistPairRequests(
+      [card("a"), card("b")],
+      new Map([
+        ["a", 0],
+        ["b", 1],
+      ]),
+      noTeamRows,
+      keyOf,
+    );
+    expect(pairs.map((p) => p.row.noTeam)).toEqual([true, undefined]);
+    expect(pairs[0].row.teams).toEqual([]);
+  });
+
+  test("an empty checklist answer marks a teamless card as checklist-answered with no team", () => {
+    const [out] = applyChecklistAnswers(
+      [card("a", { players: ["Show Card"], rawTeamName: "Boston Red Sox" })],
+      [{ cardKey: "a", teams: [], teamLookup: "checklist" }],
+      keyOf,
+    );
+    expect(out.teams).toEqual([]);
+    expect(out.teamLookup).toBe("checklist");
+    // BSC's raw text was a hint for a guess; the claim holds the guess back.
+    expect(out.rawTeamName).toBeUndefined();
+  });
+
+  test("an empty checklist answer never wipes a card's own team", () => {
+    const [out] = applyChecklistAnswers(
+      [card("a", { teams: ["Boston Red Sox"] })],
+      [{ cardKey: "a", teams: [], teamLookup: "checklist" }],
+      keyOf,
+    );
+    expect(out.teams).toEqual(["Boston Red Sox"]);
+    expect(out.teamLookup).toBeUndefined();
+  });
+
+  test("the No Team conflict rides on the card and its team stays", () => {
+    const conflict = { teams: { marketplace: ["Boston Red Sox"], checklist: [] } };
+    const [out] = applyChecklistAnswers(
+      [card("a", { teams: ["Boston Red Sox"] })],
+      [{ cardKey: "a", checklistConflict: conflict }],
+      keyOf,
+    );
+    expect(out.checklistConflict).toEqual(conflict);
+    expect(out.teams).toEqual(["Boston Red Sox"]);
+  });
+});

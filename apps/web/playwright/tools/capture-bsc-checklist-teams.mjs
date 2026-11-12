@@ -38,9 +38,13 @@
 //   node capture-bsc-checklist-teams.mjs --out <file.csv> --sport baseball \
 //     --year 2024 --set-name topps-stars-of-mlb-network --variant base \
 //     [--variant-name <slug> ...] [--cache <file.json>] [--rate 2] [--max-429 4] \
-//     [--omit-number <card number> ...]
+//     [--omit-number <card number> ...] [--omit-player <name> ...]
 //   --omit-number leaves that card's row OUT of the file (a card left to a live
 //   lookup on purpose); the card is still read, so the count check holds.
+//   --omit-player does the same for a card named by its player, for a set whose
+//   cards share one number (all `NNO`) so a number cannot pick one out. The name
+//   is matched whole, case-folded, against the names the card's row carries, and
+//   the run refuses a name that is on no card or on more than one.
 //   (slugs are the storefront facet slugs: lower-case, hyphenated)
 //
 // Prints a one-line summary on stdout; progress and 429 reports go to stderr.
@@ -69,7 +73,7 @@ const HEADERS = {
 };
 
 function parseArgs(argv) {
-  const args = { variantName: [], omitNumber: [], rate: 2, max429: 4 };
+  const args = { variantName: [], omitNumber: [], omitPlayer: [], rate: 2, max429: 4 };
   for (let i = 2; i < argv.length; i++) {
     const key = argv[i];
     const value = argv[i + 1];
@@ -82,6 +86,7 @@ function parseArgs(argv) {
       case "--variant": args.variant = value; i++; break;
       case "--variant-name": args.variantName.push(value); i++; break;
       case "--omit-number": args.omitNumber.push(String(value)); i++; break;
+      case "--omit-player": args.omitPlayer.push(String(value)); i++; break;
       case "--rate": args.rate = Number(value); i++; break;
       case "--max-429": args.max429 = Number(value); i++; break;
       default:
@@ -282,6 +287,16 @@ async function main() {
     writeFileSync(args.cache, JSON.stringify(cache));
   }
 
+  // --omit-player must name exactly one card each: a name on none (a typo) or on
+  // several would silently leave the wrong rows in or out. Checked before any
+  // card-listing call, so a bad name costs BSC nothing.
+  const omitByPlayer = new Set();
+  for (const name of args.omitPlayer) {
+    const hits = cache.cards.filter((c) => c.players.some((p) => p.toLowerCase() === name.toLowerCase()));
+    if (hits.length !== 1) throw new Error(`--omit-player "${name}" is on ${hits.length} cards, not exactly one`);
+    omitByPlayer.add(hits[0].id);
+  }
+
   // 2. Each card's own answer.
   let done = 0;
   for (const card of cache.cards) {
@@ -310,7 +325,7 @@ async function main() {
   let omitted = 0;
   for (const card of cache.cards) {
     const teams = cache.listings[card.id];
-    if (args.omitNumber.includes(card.number)) { omitted++; continue; }
+    if (args.omitNumber.includes(card.number) || omitByPlayer.has(card.id)) { omitted++; continue; }
     if (teams.length > 0) withTeam++;
     lines.push([card.number, card.players.join("; "), teams.join("; ")].map(csvCell).join(","));
   }

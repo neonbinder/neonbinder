@@ -50,7 +50,15 @@
 //
 // NEO-287: paused, nothing is asked of SportLots, so there is no Match Cards
 // dialog and no name decision: the feature has no surface. The paused branch
-// stops after the drill and proves the pause on the page.
+// proves the pause on the page, then (NEO-489) runs the one thing a one-marketplace
+// fetch of this set can still prove: a publisher's checklist that says "No Team" on
+// #6a, a team-leader card whose BSC bulk answer already names its team, raises the
+// wizard's "Checklist says otherwise" step with the checklist's side "No team on the
+// card"; taking the checklist's side saves #6a with no team and no "no team on this
+// card yet" badge. This is the only registered set whose marketplace bulk answer
+// carries a team, which is why the claim is exercised here. Zero BSC calls: all 554
+// rows are answered by the file, and #6a carries its team from the bulk answer.
+// Exactly one of the two branches commits the set in a given seed.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
 import {
@@ -60,7 +68,15 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
-import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import {
+  advanceToSave,
+  confirmSaveButton,
+  disagreementOn,
+  expectChecklistDisagreementFirst,
+  pickDisagreementSide,
+  reviewWizard,
+} from "../../support/wizard";
 
 const FOOTBALL_2014 = { sport: "Football", year: "2014", manufacturer: "Topps" };
 /** One live BSC + SportLots round trip on a ~1,000-row two-sided fetch. */
@@ -93,6 +109,80 @@ test(
       await expect(page.getByText("SportLots is on pause.")).toBeVisible();
       await expect(page.getByText(/Match Cards/)).toBeHidden();
       await expectAccessible(page, { label: "2014 Topps Football Base, SportLots on pause" });
+
+      // ── NEO-489, SportLots on pause: a checklist that says "No Team" on a card BSC gives a team ──
+      // With SportLots paused the fetch is BSC alone: no Match Cards dialog, the review wizard
+      // opens. This set is the one place the marketplace's OWN bulk answer carries a team (a
+      // team-leader card, "New England Patriots TL", is its team: no other registered set has
+      // one, see SET-REGISTRY.md), so it is where a No Team claim can disagree with a card that
+      // already has a team. The publisher's file is the set's own captured one with ONE change:
+      // #6a, the Patriots' card, now says No Team (`noTeamOn`). BSC calls added: 0. All 554 rows
+      // are answered, so no card is asked of BSC per card, and the card that disagrees already
+      // carries its team from the bulk answer, so nothing is looked up for it either.
+      // Fresh-only like the rest of this spec (the flow commits the set; the unpaused path
+      // below never runs in the same seed), every name skipped.
+      await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+      const claimed = await usePublishersChecklist(page, CHECKLISTS.topps2014FootballBase, { noTeamOn: "6a" });
+      await syncChecklistButton(page).click();
+      await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
+        platform: "BuySportsCards",
+        what: "the one-marketplace fetch's kept-cards line",
+      });
+      const pausedWizard = reviewWizard(page);
+      // The wizard opens behind the entity check's batch (live lookups), like the unpaused path's.
+      await expect(pausedWizard).toBeVisible({ timeout: WIZARD_OPENS });
+      // One less than the file answers: #6a's disagreement is the operator's to settle, so the
+      // checklist has not answered it yet.
+      await expectTeamsFromChecklist(page, { ...claimed, matched: claimed.matched - 1 });
+
+      // The step that asks comes first, with exactly one group: #6a. Marketplace first, then the
+      // checklist, each side's team: the card's own, and the checklist's claim in words.
+      await expectChecklistDisagreementFirst(page);
+      const onSix = disagreementOn(page, "6a");
+      await expect(onSix).toBeVisible();
+      await expect(pausedWizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(1);
+      await expect(onSix.getByRole("definition")).toHaveText(["New England Patriots", "No team on the card"]);
+      await expectAccessible(page, { within: pausedWizard, label: "Entity review wizard, a No Team claim against a team-leader card" });
+      await pickDisagreementSide(page, "6a", "Use the checklist's");
+
+      // The names are not this part's claim: skip them all (repeating while a Wikidata career
+      // history can still stage a row), then save.
+      const pausedNext = pausedWizard.getByRole("button", { name: "Next (Enter)", exact: true });
+      await pausedNext.click();
+      await expect(
+        pausedWizard.getByRole("heading", { level: 3, name: "Checklist says otherwise" }),
+      ).toBeHidden();
+      const pausedNamesDone = pausedNext.or(confirmSaveButton(page));
+      const pausedSkip = pausedWizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
+      await expect(async () => {
+        if (await pausedSkip.isVisible()) await pausedSkip.click();
+        await expect(pausedNamesDone).toBeVisible({ timeout: 7_000 });
+      }).toPass({ timeout: BATCH_GROWS });
+      await advanceToSave(page);
+      await confirmSaveButton(page).click();
+      await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
+      await expect(pausedWizard).toBeHidden();
+
+      // The checklist's side was taken: #6a (still named for its team, the TC rule) shows no team
+      // at all. A fresh load of the set, #6a found by the checklist search ("6a" is a prefix
+      // match: #6a, not #16a). Where the claim was NOT taken, the card would carry its team
+      // linked (the team text twice, name and sub-line, as STEP 9 reads) or typed and
+      // unconfirmed; here it is the name alone, no team chip in the drawer, and no
+      // "no team on this card yet" badge, because the checklist's No Team is an answer.
+      await drillToBaseVariant(page, env, { ...FOOTBALL_2014, set: "Topps" });
+      const pausedSearch = page.getByRole("searchbox", { name: "Search cards" });
+      await pausedSearch.fill("6a");
+      await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
+      const sixRow = page.getByRole("button", { name: /^Edit card 6a?, New England Patriots$/ });
+      await expect(sixRow).toBeVisible();
+      await expect(page.getByText(/New England Patriots \(unconfirmed\)/)).toHaveCount(0);
+      await expect(page.getByRole("img", { name: /^Card 6a?(, .*)? needs attention: no team on this card yet$/ })).toHaveCount(0);
+      await sixRow.click();
+      const sixDrawer = page.getByRole("dialog");
+      await expect(sixDrawer.getByText("Teams", { exact: true })).toBeVisible();
+      await expect(sixDrawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
+      await sixDrawer.getByRole("button", { name: "Done editing card" }).click();
+      await expect(sixDrawer).toBeHidden();
       return;
     }
 
