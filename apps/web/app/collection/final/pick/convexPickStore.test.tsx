@@ -248,3 +248,124 @@ describe("NEO-509: a sale's own words for its card", () => {
     expect(toListedCard({ sport: " ", players: "" }, undefined)).toBeUndefined();
   });
 });
+
+describe("NEO-509: the sports a sale names", () => {
+  const original = openAnswer;
+  const sportId = (n: number) => `sport${String(n).padStart(3, "0")}`;
+  const lostLine = (n: number, listed: Record<string, unknown>, over: Record<string, unknown> = {}) => ({
+    id: `s1~lost${n}`,
+    saleId: "s1",
+    platform: "bsc",
+    orderNo: "12-3456",
+    orderDate: 1,
+    firstSeenAt: 1,
+    cantFind: "unmatched",
+    quantity: 1,
+    condition: "near_mint",
+    from: [],
+    listed,
+    ...over,
+  });
+  const open = (lines: unknown[]) => ({ truncated: false, boxes: [], lines });
+  const sportCalls = () =>
+    query.mock.calls.filter(([, args]) => (args as { sportIds?: string[] }).sportIds).map(([, args]) => (args as { sportIds: string[] }).sportIds);
+
+  afterEach(() => {
+    openAnswer = original;
+    query.mockReset();
+    query.mockImplementation((_fn: unknown, args: { cardIds?: string[]; copyIds?: string[] }) =>
+      Promise.resolve(args.cardIds ? args.cardIds.map(() => ({ card: RAW_CARD, sportCode: "BB" })) : []),
+    );
+  });
+
+  async function mountWith(lines: unknown[]) {
+    openAnswer = open(lines);
+    store = null;
+    render(
+      <ConvexPickListProvider>
+        <Probe />
+      </ConvexPickListProvider>,
+    );
+    await act(async () => {});
+  }
+
+  it("asks 21 sports in a call of 20 and a call of 1, and holds the list until both have answered", async () => {
+    const pending: Array<(answer: unknown) => void> = [];
+    query.mockImplementation(
+      (_fn: unknown, args: { sportIds?: string[] }) =>
+        new Promise((resolve) => pending.push((answer) => resolve(answer ?? args.sportIds?.map(() => ({ name: "Football", code: "FB" }))))),
+    );
+    await mountWith(Array.from({ length: 21 }, (_, n) => lostLine(n, { sportId: sportId(n), sport: "football", year: "2021" })));
+    const calls = sportCalls();
+    expect(calls.map((c) => c.length)).toEqual([20, 1]);
+    expect(calls.flat()).toEqual(Array.from({ length: 21 }, (_, n) => sportId(n)));
+    // Neither has answered: the list waits rather than show a guessed sport.
+    expect(store?.data).toBeUndefined();
+    await act(async () => pending[0](undefined));
+    expect(store?.data).toBeUndefined();
+    await act(async () => pending[1](undefined));
+    expect(store?.data?.lines).toHaveLength(21);
+    expect(store!.data!.lines.every((l) => l.listed?.sportName === "Football" && l.sportCode === "FB")).toBe(true);
+    // Each sport is asked once, not again on the next render.
+    expect(sportCalls()).toHaveLength(2);
+  });
+
+  it("asks a repeated sport once, and none for a line without one", async () => {
+    await mountWith([lostLine(1, { sportId: sportId(1), year: "2021" }), lostLine(2, { sportId: sportId(1), year: "2022" }), lostLine(3, { year: "2023" })]);
+    expect(sportCalls()).toEqual([[sportId(1)]]);
+    expect(store?.data?.lines).toHaveLength(3);
+  });
+
+  it("a sport call that fails does not hold the list: the line keeps the listing's own sport word", async () => {
+    query.mockImplementation(() => Promise.reject(new Error("offline")));
+    await mountWith([lostLine(1, { sportId: sportId(1), sport: "football", year: "2021", setName: "Score", cardNo: "5" })]);
+    const line = store?.data?.lines[0];
+    expect(line?.listed).toMatchObject({ sportName: "football", year: 2021 });
+    expect(line?.listed?.sportId).toBeUndefined();
+    expect(line?.sportCode).toBeNull();
+  });
+
+  it("a sport NB no longer has (null answer) is the listing's word too", async () => {
+    query.mockImplementation((_fn: unknown, args: { sportIds?: string[] }) => Promise.resolve(args.sportIds?.map(() => null) ?? []));
+    await mountWith([lostLine(1, { sportId: sportId(1), sport: "football", year: "2021", setName: "Score", cardNo: "5" })]);
+    expect(store?.data?.lines[0].listed?.sportName).toBe("football");
+    expect(store?.data?.lines[0].listed?.sportId).toBeUndefined();
+  });
+
+  it("numbers lines of one order that read alike, so no two titles (and toggle names) are the same", async () => {
+    const same = { sport: "football", year: "2021", setName: "Score", cardNo: "5", players: "Justin Fields" };
+    await mountWith([
+      lostLine(1, same),
+      lostLine(2, same),
+      // Differs only by a field the title does not write.
+      lostLine(3, { ...same, sport: "hockey" }),
+      lostLine(4, { cardNo: "6", year: "2021", setName: "Score" }),
+      lostLine(5, {}),
+      lostLine(6, {}),
+      // Another order: its own count.
+      lostLine(7, same, { id: "s2~lost7", saleId: "s2", orderNo: "99" }),
+    ]);
+    const titles = store!.data!.lines.map((l) => l.listingTitle);
+    expect(titles).toEqual([
+      "2021 Score #5 · Justin Fields (1 of 3)",
+      "2021 Score #5 · Justin Fields (2 of 3)",
+      "2021 Score #5 · Justin Fields (3 of 3)",
+      "2021 Score #6",
+      "Unmatched sale (1 of 2)",
+      "Unmatched sale (2 of 2)",
+      "2021 Score #5 · Justin Fields",
+    ]);
+    // Every control name is the title plus its order: unique across the list.
+    const names = store!.data!.lines.map((l) => `${l.listingTitle}|${l.order.id}`);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("keeps the described line's listed card and its next step, and an undescribed one carries none", async () => {
+    await mountWith([lostLine(1, { year: "2021", setName: "Score", cardNo: "5" }), lostLine(2, { sport: " " })]);
+    const [described, bare] = store!.data!.lines;
+    expect(described.listed).toMatchObject({ year: 2021, cardNumber: "5" });
+    expect(described.problem).toMatch(/couldn't match/);
+    expect(bare.listed).toBeUndefined();
+    expect(bare.listingTitle).toBe("Unmatched sale");
+  });
+});

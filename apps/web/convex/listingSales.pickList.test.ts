@@ -28,6 +28,8 @@ import {
   MAX_SALE_ITEMS,
   type ProjectedOrder,
   SPORT_ROW_SCAN,
+  sportResolver,
+  utf8Bytes,
 } from "./listingSales";
 import { BSC_LISTED_BOUNDS } from "./lib/bscOrders";
 import { MAX_FROM_PER_SALE, MAX_PICK_FROM, saleLineKeys } from "./lib/pickLines";
@@ -831,5 +833,111 @@ describe("NEO-509 — the card a line describes (listed) on the stored sale", ()
     // The third big one would pass 100 KB: from there on no line carries one, small or not.
     expect(items.map((i) => i.listed !== undefined)).toEqual([true, true, true, false, false, false]);
     expect(listedBytes({ cardNo: "1" })).toBeGreaterThan("cardNo1".length);
+  });
+});
+
+describe("NEO-509 — utf8Bytes counts what the budget spends", () => {
+  test.each([
+    ["a", 1],
+    ["é", 2],
+    ["€", 3],
+    ["😀", 4],
+    // A lone surrogate stores as the 3-byte replacement character, high or low, mid-string or last.
+    ["\ud83d", 3],
+    ["\ude00", 3],
+    ["a\ud83d", 4],
+    ["\ud83dz", 4],
+    ["\ude00\ud83d", 6],
+    ["", 0],
+  ])("%j is %i bytes", (text, bytes) => {
+    expect(utf8Bytes(text)).toBe(bytes);
+  });
+
+  test("agrees with the platform's encoder on well-formed text", () => {
+    for (const text of ["Topps Chrome", "Müller #7", "2023–24 Prizm €", "大谷翔平", "Gold 😀😀 Refractor"]) {
+      expect(utf8Bytes(text)).toBe(new TextEncoder().encode(text).length);
+    }
+  });
+
+  test("a multi-byte description spends the sale's budget sooner than an ASCII one of the same length", () => {
+    const stored = (ch: string) => ({ setName: ch.repeat(120), players: ch.repeat(160), variantName: ch.repeat(120) });
+    const lines = (ch: string) => capListed(Array.from({ length: 400 }, () => ({ listed: stored(ch) })));
+    const kept = (ch: string) => lines(ch).filter((i) => i.listed !== undefined).length;
+    expect(kept("€")).toBeLessThan(kept("a"));
+    // The counts are exactly the budget over each line's cost: 3 bytes a character cost 3x the value bytes.
+    expect(kept("€")).toBe(Math.floor(MAX_LISTED_BYTES_PER_SALE / listedBytes(stored("€"))));
+    expect(kept("a")).toBe(Math.floor(MAX_LISTED_BYTES_PER_SALE / listedBytes(stored("a"))));
+    expect(listedBytes(stored("€"))).toBeGreaterThan(2 * listedBytes(stored("a")) - 40);
+  });
+});
+
+describe("NEO-509 — sportResolver reads BSC's slot only", () => {
+  const withSportRow = async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: { bsc: { b0: "football" } },
+        isCustom: false,
+        children: [],
+        lastUpdated: NOW,
+      } as never),
+    );
+    return { t, sportId };
+  };
+
+  test("another platform's lines resolve nothing, even for an id BSC's slot holds", async () => {
+    const { t, sportId } = await withSportRow();
+    const out = await t.run(async (ctx) => ({
+      bsc: await sportResolver(ctx, "bsc")("football"),
+      ebay: await sportResolver(ctx, "ebay")("football"),
+    }));
+    expect(out).toEqual({ bsc: sportId, ebay: null });
+  });
+
+  test("another platform's resolver never reads the sport rows", async () => {
+    const db = {
+      query: () => {
+        throw new Error("a non-BSC resolver must not read");
+      },
+    };
+    await expect(sportResolver({ db } as never, "ebay")("football")).resolves.toBeNull();
+  });
+});
+
+describe("NEO-509 — the listed budget across a re-poll", () => {
+  const FAT = {
+    sport: "S".repeat(BSC_LISTED_BOUNDS.sport),
+    year: "2021",
+    setName: "T".repeat(BSC_LISTED_BOUNDS.setName),
+    players: "P".repeat(BSC_LISTED_BOUNDS.players),
+    cardNo: "N".repeat(BSC_LISTED_BOUNDS.cardNo),
+    variant: "V".repeat(BSC_LISTED_BOUNDS.variant),
+    variantName: "W".repeat(BSC_LISTED_BOUNDS.variantName),
+  };
+  const fat = (n: number): Line => ({ platformCardId: "bsc-unknown", sellerSku: "303|TB2", listed: { ...FAT, cardNo: `${n}` } });
+
+  test("lines already holding a description keep it; the budget is spent on new lines only after them, and never passed", async () => {
+    const s = await setup();
+    await record(s, order(s, { lines: Array.from({ length: 100 }, (_, n) => fat(n)) }));
+    const first = (await sale(s)).items;
+    expect(first.every((i) => i.listed !== undefined)).toBe(true);
+
+    await record(s, order(s, { lines: Array.from({ length: 300 }, (_, n) => fat(n)) }));
+    const items = (await sale(s)).items;
+    expect(items).toHaveLength(300);
+    const has = items.map((i) => i.listed !== undefined);
+    // The first 100 (the stored ones) keep theirs; the new lines fill the rest until it runs out, then none.
+    expect(has.slice(0, 100).every(Boolean)).toBe(true);
+    const lastWith = has.lastIndexOf(true);
+    expect(lastWith).toBeGreaterThan(100);
+    expect(lastWith).toBeLessThan(299);
+    expect(has.slice(0, lastWith + 1).every(Boolean)).toBe(true);
+    expect(has.slice(lastWith + 1).some(Boolean)).toBe(false);
+    const spent = items.reduce((n, i) => n + (i.listed ? listedBytes(i.listed) : 0), 0);
+    expect(spent).toBeLessThanOrEqual(MAX_LISTED_BYTES_PER_SALE);
+    // Exactly as far as the budget goes: one more would not fit.
+    expect(spent + listedBytes(items[0].listed!)).toBeGreaterThan(MAX_LISTED_BYTES_PER_SALE);
   });
 });

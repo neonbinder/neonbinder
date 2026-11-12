@@ -204,6 +204,20 @@ describe("NEO-509: a Can't find it line's own words", () => {
     expect(open.lines.map((l) => l.listed ?? null)).toEqual([null, listed, null]);
   });
 
+  test("a linkMismatch line carries its listed card too, and an unmatched line with none carries none", async () => {
+    const { fx, sale, me } = await setup();
+    const listed = { sport: "Baseball", sportId: fx.sportId, year: "2024", setName: "Topps", cardNo: "1", variant: "Base" };
+    await sale(ME.subject, "W-2", 1000, [
+      { platformCardId: "bsc-m", condition: "near_mint", quantity: 1, priceCents: 5, applied: false, problem: "linkMismatch", listed },
+      { platformCardId: "bsc-n", condition: "near_mint", quantity: 1, priceCents: 5, applied: false, problem: "linkMismatch" },
+    ], { pullOpen: true });
+    const open = await me.query(api.pickList.open, {});
+    expect(open.lines.map((l) => [l.cantFind, l.listed ?? null])).toEqual([
+      ["linkMismatch", listed],
+      ["linkMismatch", null],
+    ]);
+  });
+
   test("sports names NB's sport and its code; a bad id or a row that is no sport is null", async () => {
     const { fx, me } = await setup();
     const out = await me.query(api.pickList.sports, { sportIds: [fx.sportId, fx.setId, "nope"] });
