@@ -1,11 +1,11 @@
 ---
 name: edit-tool-decodes-unicode-escapes
-description: Edit/Write can land `​`-style escapes as the literal characters; a literal U+2028 inside a regex literal is a parse error and invisible chars defeat review
+description: Edit/Write can land `\u200B`-style escapes as the literal characters; a literal U+2028 inside a regex literal is a parse error and invisible chars defeat review
 metadata:
   type: reference
 ---
 
-Writing `​`, `‮`, ` `, `﻿` etc. through the Edit tool landed
+Writing `\u200B`, `\u202E`, `\u2028`, `\uFEFF` etc. through the Edit tool landed
 the literal (invisible) characters in the file, while `\u0000`-range escapes on
 the same line stayed escaped (NEO-509 format-char filter). A literal U+2028
 inside a `/[...]/` regex literal is a line terminator, so vite/oxc fails with
