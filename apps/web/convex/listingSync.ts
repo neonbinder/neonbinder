@@ -37,6 +37,9 @@ import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import { ListingLabels } from "./lib/listingLabels";
 import { isPlatformPaused } from "./marketplacePause";
 import { DRAIN_LEASE_MS, MAX_STORED_PROBLEMS } from "./listingDrain";
+// A cycle (listingSales imports this module too), read only inside function
+// bodies, so it is safe at module load.
+import { ORDER_READ_VERSION } from "./listingSales";
 import {
   clearListingOutbox,
   enqueueListingCards,
@@ -178,6 +181,16 @@ export type ListingSetup =
   | "testOff";
 
 /**
+ * NEO-520 — what every new `marketplaceListingStates` row is stamped with: the
+ * platform's current order-read version, so a new row never takes the
+ * catch-up (`listingSales.ORDER_READ_VERSION`) and its first read starts at
+ * its creation less the grace.
+ */
+function newStateStamp(platform: ListingPlatform): { orderReadVersion: number } {
+  return { orderReadVersion: ORDER_READ_VERSION[platform] };
+}
+
+/**
  * A sign-in for `platform`'s site was saved (or found saved by the cron):
  * start listing there. Called from `userProfile.updateSiteCredentialStatus`
  * on every save and every successful login (`credentials` re-asserts the
@@ -253,7 +266,7 @@ export async function setUpListing(
       lastUpdated: now,
     };
     if (state) await ctx.db.patch(state._id, held);
-    else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...held });
+    else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...held, ...newStateStamp(platform) });
     return "sellerConflict";
   }
   const on = {
@@ -265,7 +278,7 @@ export async function setUpListing(
     lastUpdated: now,
   };
   if (state) await ctx.db.patch(state._id, on);
-  else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...on });
+  else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...on, ...newStateStamp(platform) });
   await ctx.scheduler.runAfter(0, internal.listingSync.startListingWalk, { ownerId, platform, startedAt: now });
   return "started";
 }
@@ -289,7 +302,7 @@ export async function holdTestListingOff(ctx: MutationCtx, ownerId: string, plat
   const state = await listingStateOf(ctx, ownerId, platform);
   const now = Date.now();
   if (!state) {
-    await ctx.db.insert("marketplaceListingStates", { ownerId, platform, testListingOff: true, lastUpdated: now });
+    await ctx.db.insert("marketplaceListingStates", { ownerId, platform, testListingOff: true, lastUpdated: now, ...newStateStamp(platform) });
     return;
   }
   if (state.testListingOff !== true || state.listingStartedAt !== undefined || state.drainRequested !== undefined) {

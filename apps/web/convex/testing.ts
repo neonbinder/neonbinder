@@ -1656,6 +1656,38 @@ const EBAY_SEED_MAX_LINES = 3;
 const EBAY_SEED_MAX_QUANTITY = 10;
 
 /**
+ * A line's quantity, bounded in the validator: one of the whole numbers
+ * 1..`EBAY_SEED_MAX_QUANTITY`, so a zero, fractional or huge quantity is
+ * refused before the handler runs (typed `number` for the caller). The
+ * line count and the title cannot be bounded by a Convex validator, so
+ * `ebaySeedLinesProblem` checks them first thing in the handler.
+ */
+const ebaySeedQuantityValidator = v.union(
+  ...Array.from({ length: EBAY_SEED_MAX_QUANTITY }, (_, i) => v.literal(i + 1)),
+);
+
+/**
+ * Why `lines` is out of bounds, or null: at most `EBAY_SEED_MAX_LINES`
+ * lines, each quantity a whole number 1..`EBAY_SEED_MAX_QUANTITY` (again,
+ * beside the validator), each title one `ebayLineTitle` keeps (bounded,
+ * no control or format character). Runs before any read, on every call that
+ * names lines (a retry or `ship` included), so nothing unbounded goes
+ * further. Whether a new order names at least one line is checked where the
+ * order is built.
+ */
+function ebaySeedLinesProblem(lines: ReadonlyArray<{ title?: string; quantity: number }>): string | null {
+  if (lines.length > EBAY_SEED_MAX_LINES) return `lines must name 1-${EBAY_SEED_MAX_LINES} lines`;
+  for (let i = 0; i < lines.length; i += 1) {
+    const { quantity, title } = lines[i];
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > EBAY_SEED_MAX_QUANTITY) {
+      return `quantity must be 1-${EBAY_SEED_MAX_QUANTITY}`;
+    }
+    if (title !== undefined && ebayLineTitle(title) === null) return `lines[${i}].title is not a title NB would keep`;
+  }
+  return null;
+}
+
+/**
  * NEO-520 — an eBay order on the CALLER's account whose every line is one
  * NeonBinder didn't list (no NB SKU), recorded and applied exactly as the
  * order poll would, for the unmatched-sale spec. A real sandbox order can't
@@ -1681,12 +1713,15 @@ const EBAY_SEED_MAX_QUANTITY = 10;
  *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
  *   - only the CALLER's rows (no owner argument to spoof);
  *   - calls no marketplace, and refuses outright while the caller pushes
- *     counts to any platform (`listsAnywhere`).
+ *     counts to any platform (`listsAnywhere`);
+ *   - every argument is bounded before any read: the quantity in the
+ *     validator, the order number, line count and titles first thing in the
+ *     handler.
  */
 export const seedMyTestEbayOrder = mutation({
   args: {
     orderNo: v.string(),
-    lines: v.optional(v.array(v.object({ title: v.optional(v.string()), quantity: v.number() }))),
+    lines: v.optional(v.array(v.object({ title: v.optional(v.string()), quantity: ebaySeedQuantityValidator }))),
     ship: v.optional(v.boolean()),
   },
   returns: v.object({ saleId: v.id("marketplaceSales"), lines: v.number(), applied: v.number() }),
@@ -1697,6 +1732,8 @@ export const seedMyTestEbayOrder = mutation({
     const ownerId = await getCurrentUserId(ctx);
     if (!ownerId) throw new Error("Not authenticated");
     if (!PICK_SEED_ORDER_NO_RE.test(args.orderNo)) throw new Error("orderNo must be one token (letters, digits, - or _)");
+    const linesProblem = args.lines !== undefined ? ebaySeedLinesProblem(args.lines) : null;
+    if (linesProblem !== null) throw new Error(linesProblem);
     if (await listsAnywhere(ctx, ownerId)) {
       throw new Error("The eBay order seed refuses an account that pushes to a marketplace");
     }
@@ -1726,26 +1763,17 @@ export const seedMyTestEbayOrder = mutation({
         })),
       };
     } else {
+      // Bounded above (`ebaySeedLinesProblem`); a new order needs a line.
       const lines = args.lines ?? [];
-      if (lines.length === 0 || lines.length > EBAY_SEED_MAX_LINES) {
-        throw new Error(`lines must name 1-${EBAY_SEED_MAX_LINES} lines`);
-      }
-      const lineItems = lines.map((line, i) => {
-        if (!Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > EBAY_SEED_MAX_QUANTITY) {
-          throw new Error(`quantity must be 1-${EBAY_SEED_MAX_QUANTITY}`);
-        }
-        if (line.title !== undefined && ebayLineTitle(line.title) === null) {
-          throw new Error(`lines[${i}].title is not a title NB would keep`);
-        }
-        return {
-          lineItemId: `nb-test-line-${i + 1}`,
-          legacyItemId: `nb-test-item-${i + 1}`,
-          sku: `nb-test-other-${i + 1}`,
-          ...(line.title !== undefined ? { title: line.title } : {}),
-          quantity: line.quantity,
-          lineItemCost: { value: line.quantity.toFixed(2), currency: "USD" },
-        };
-      });
+      if (lines.length === 0) throw new Error(`lines must name 1-${EBAY_SEED_MAX_LINES} lines`);
+      const lineItems = lines.map((line, i) => ({
+        lineItemId: `nb-test-line-${i + 1}`,
+        legacyItemId: `nb-test-item-${i + 1}`,
+        sku: `nb-test-other-${i + 1}`,
+        ...(line.title !== undefined ? { title: line.title } : {}),
+        quantity: line.quantity,
+        lineItemCost: { value: line.quantity.toFixed(2), currency: "USD" },
+      }));
       const subtotal = lines.reduce((sum, line) => sum + line.quantity, 0).toFixed(2);
       const created = new Date().toISOString();
       const raw = {
@@ -1761,7 +1789,7 @@ export const seedMyTestEbayOrder = mutation({
         lineItems,
       };
       const projected = projectEbayOrder(raw);
-      const recordable = projected ? projectEbayOrderForRecord(projected, { ordersFrom: null }) : null;
+      const recordable = projected ? projectEbayOrderForRecord(projected, { otherOrdersFrom: null }) : null;
       if (!recordable) throw new Error("The seeded eBay order did not project");
       // eBay shows the order id as its number; the spec reads its own token.
       order = { ...recordable, orderNo: args.orderNo };

@@ -775,6 +775,14 @@ describe("projectEbayOrder (NEO-415)", () => {
       expect(p?.lines).toHaveLength(3);
     });
 
+    test("a title hiding U+034F, U+061C or U+180E is dropped, inside or at either edge", () => {
+      for (const ch of ["\u034f", "\u061c", "\u180e"]) {
+        for (const title of [`Some${ch} Player`, `${ch}Some Player`, `Some Player${ch}`]) {
+          expect(ebayLineTitle(title)).toBeNull();
+        }
+      }
+    });
+
     test("a title is kept at exactly the bound and dropped, never cut, one past it", () => {
       const atBound = "a".repeat(LISTED_TITLE_MAX);
       const past = "a".repeat(LISTED_TITLE_MAX + 1);

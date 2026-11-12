@@ -425,6 +425,10 @@ describe("NEO-509 — the card a line describes (listed)", () => {
   // List (U+202E turns "TB2" into a visually different number), so each range
   // is absent like a control character. Escapes only: no literal format chars.
   test.each([
+    // NEO-520: three more invisible marks, none of them JS whitespace.
+    ["U+034F combining grapheme joiner", "\u034f"],
+    ["U+061C Arabic letter mark", "\u061c"],
+    ["U+180E Mongolian vowel separator", "\u180e"],
     ["U+200B zero-width space", "\u200b"],
     ["U+200C zero-width non-joiner", "\u200c"],
     ["U+200D zero-width joiner", "\u200d"],
@@ -463,7 +467,9 @@ describe("NEO-509 — the card a line describes (listed)", () => {
   test("the neighbours of the format ranges are still display text", () => {
     // One past each range edge (U+2010, U+2027, U+202F, U+205F, U+2070, U+FEFE),
     // plus U+00A0 no-break space and U+00E9 (e acute): readable, so kept.
-    for (const ch of ["\u2010", "\u2027", "\u202f", "\u205f", "\u2070", "\ufefe", "\u00a0", "\u00e9"]) {
+    // NEO-520: and the visible marks beside the single code points (U+034E
+    // combining upwards arrow below, U+061B Arabic semicolon).
+    for (const ch of ["\u2010", "\u2027", "\u202f", "\u205f", "\u2070", "\ufefe", "\u00a0", "\u00e9", "\u034e", "\u061b"]) {
       expect(bscListedText(`TB${ch}2`, BSC_LISTED_BOUNDS.cardNo)).toBe(`TB${ch}2`);
     }
   });

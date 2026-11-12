@@ -11,6 +11,10 @@ the same line stayed escaped (NEO-509 format-char filter). A literal U+2028
 inside a `/[...]/` regex literal is a line terminator, so vite/oxc fails with
 PARSE_ERROR; in a test table the chars are invisible and the test reads wrong.
 
+Not consistent: in NEO-520 the same session's Edit kept `\u034f` escaped in
+one file and decoded `\u034f`, `\u061c`, `\u180e` to literals in another, so
+check every file an escape went into, not just the first.
+
 **How to apply:** when a change needs Unicode escapes for format/bidi/zero-width
 chars, write them with a Python heredoc using `\\u` (or fix afterwards), then
 check with `grep -nP '[\x{200b}-\x{200f}\x{2028}-\x{202e}\x{2060}\x{2066}-\x{2069}\x{feff}]' <files>`

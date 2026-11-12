@@ -225,9 +225,10 @@ describe("seedMyTestEbayOrder", () => {
     ["no lines", { lines: [] }, /1-3 lines/],
     ["no lines argument", { lines: undefined }, /1-3 lines/],
     ["four lines", { lines: [1, 2, 3, 4].map(() => ({ quantity: 1 })) }, /1-3 lines/],
-    ["a zero quantity", { lines: [{ quantity: 0 }] }, /quantity must be/],
-    ["a fractional quantity", { lines: [{ quantity: 1.5 }] }, /quantity must be/],
-    ["a quantity past the cap", { lines: [{ quantity: 11 }] }, /quantity must be/],
+    // The quantity is bounded in the validator itself (whole numbers 1-10).
+    ["a zero quantity", { lines: [{ quantity: 0 }] }, /Validator error/],
+    ["a fractional quantity", { lines: [{ quantity: 1.5 }] }, /Validator error/],
+    ["a quantity past the cap", { lines: [{ quantity: 11 }] }, /Validator error/],
     ["a blank title", { lines: [{ title: "   ", quantity: 1 }] }, /lines\[0\]\.title/],
     ["a title past the bound", { lines: [{ quantity: 1 }, { title: "t".repeat(LISTED_TITLE_MAX + 1), quantity: 1 }] }, /lines\[1\]\.title/],
     ["a title with a control character", { lines: [{ title: "bad\u0000title", quantity: 1 }] }, /lines\[0\]\.title/],
@@ -235,6 +236,23 @@ describe("seedMyTestEbayOrder", () => {
     const s = await setup();
     await expect(seed(s, args)).rejects.toThrow(err);
     expect(await sales(s)).toEqual([]);
+  });
+
+  test("every quantity from 1 to 10 passes the validator", async () => {
+    const s = await setup();
+    for (let q = 1; q <= 10; q += 1) {
+      await expect(seed(s, { orderNo: `q${q}`, lines: [{ quantity: q }] })).resolves.toMatchObject({ lines: 1 });
+    }
+  });
+
+  test("a retry or ship naming out-of-bounds lines is refused before anything is read or written", async () => {
+    const s = await setup();
+    await seed(s, {});
+    const before = await sales(s);
+    await expect(seed(s, { lines: [1, 2, 3, 4].map(() => ({ quantity: 1 })) })).rejects.toThrow(/1-3 lines/);
+    await expect(seed(s, { ship: true, lines: [{ title: "t".repeat(LISTED_TITLE_MAX + 1), quantity: 1 }] })).rejects.toThrow(/lines\[0\]\.title/);
+    await expect(seed(s, { ship: true, lines: [{ title: "bad\u202etitle", quantity: 1 }] })).rejects.toThrow(/lines\[0\]\.title/);
+    expect(await sales(s)).toEqual(before);
   });
 
   test("calls no marketplace: no fetch, nothing queued for a drain, nothing scheduled", async () => {

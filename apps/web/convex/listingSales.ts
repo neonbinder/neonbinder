@@ -51,11 +51,13 @@
  * (`projectEbayOrderForRecord`); a line with no NB SKU is refused as
  * "unmatched" and lowers nothing, so the seller pulls it by hand from the Pick
  * List. An order with no NB line is stored only when it was placed on or after
- * `ebayOrdersFloor` (the earlier of the state row's creation and
- * `EBAY_OTHER_ORDERS_FLOOR_MS`): the seller's eBay history from before is not
- * imported. Each platform's order read has a version (`ORDER_READ_VERSION`);
- * a state row last read under an older one is rewound once to that floor, so
- * the eBay orders NEO-415 skipped since then are read again.
+ * the state row's floor (`ebayOrdersFloor`: Jason's 11/11 date for a row made
+ * before NEO-520 shipped, the row's own creation for any later one; fixed for
+ * the row's life): the seller's eBay history from before is not imported.
+ * Each platform's order read has a version (`ORDER_READ_VERSION`); a state
+ * row last read under an older one reads from its floor until a read
+ * completes or the catch-up runs out, so the eBay orders NEO-415 skipped are
+ * read again. New rows are stamped with the current version at insert.
  *
  * After each owner's poll `finishPoll` kicks the owner's listing drain when
  * changes are queued: that is the cron's half of the drain triggers.
@@ -158,27 +160,49 @@ export const INITIAL_CURSOR_GRACE_MS = 12 * 60 * 60 * 1000;
 
 /**
  * NEO-520 — 2026-11-11 00:00 US Central (06:00 UTC), the day NB began storing
- * eBay orders that hold no NB line (Jason chose the date). Such an order is
- * stored only when placed on or after `ebayOrdersFloor`: the earlier of this
- * and the owner's eBay state row's creation. It is also where the one-time
- * catch-up (`ORDER_READ_VERSION`) rewinds the cursor to. A time only, never a
- * test of what the order holds.
+ * eBay orders that hold no NB line (Jason chose the date). The floor of every
+ * eBay state row made before `EBAY_FLOOR_LEGACY_CUTOFF_MS` (`ebayOrdersFloor`).
+ * A time only, never a test of what the order holds.
  */
 export const EBAY_OTHER_ORDERS_FLOOR_MS = Date.parse("2026-11-11T06:00:00Z");
 
-/** NEO-520 — the floor for eBay orders with no NB line (see `EBAY_OTHER_ORDERS_FLOOR_MS`). */
+/**
+ * NEO-520 — 2026-11-13 00:00 US Central (06:00 UTC). Rows that existed before
+ * NEO-520 shipped take Jason's 11/11 date (`EBAY_OTHER_ORDERS_FLOOR_MS`);
+ * later rows never read before their own connection.
+ */
+export const EBAY_FLOOR_LEGACY_CUTOFF_MS = Date.parse("2026-11-13T06:00:00Z");
+
+/**
+ * NEO-520 — the floor for eBay orders with no NB line: such an order is
+ * stored only when placed on or after it, and the catch-up
+ * (`ORDER_READ_VERSION`) reads from it. A row created before
+ * `EBAY_FLOOR_LEGACY_CUTOFF_MS` gets `EBAY_OTHER_ORDERS_FLOOR_MS`; any later
+ * row gets its own `_creationTime`.
+ *
+ * The floor must be STABLE for the row's life: once a foreign-only order is
+ * stored, a later status change on it is read again only if it still projects
+ * (`projectEbayOrderForRecord`), so a floor that moved past it would leave the
+ * stored order stale for good. `_creationTime` never moves. `listingStartedAt`
+ * is NOT used: it is cleared when listing stops or goes dormant
+ * (`listingDrain`, `listingOutbox`, `listingSync.holdTestListingOff`) and
+ * re-stamped to "now" on every restart (`listingSync.setUpListing`).
+ */
 export function ebayOrdersFloor(stateCreationTime: number): number {
-  return Math.min(stateCreationTime, EBAY_OTHER_ORDERS_FLOOR_MS);
+  return stateCreationTime < EBAY_FLOOR_LEGACY_CUTOFF_MS ? EBAY_OTHER_ORDERS_FLOOR_MS : stateCreationTime;
 }
 
 /**
  * NEO-520 — the version of each platform's order read. A state row whose
- * `ordersReadVersion` (absent = 1) is below its platform's has its cursor
- * rewound once to the eBay floor (`pollInput`), and is stamped with the
- * version on its next complete read (`finishPoll`, alongside the cursor).
- * Version 2 of eBay's read stores every line, not only NB's. A re-read is
- * safe: `recordOrderCore` upserts by order and line key and never resets
- * `applied`, `from` or `pulledAt`. BSC is never rewound.
+ * `orderReadVersion` (absent = 1) is below its platform's reads from the
+ * earlier of its cursor and its floor (`pollInput`, flagged `rewound`) until
+ * `finishPoll` stamps the version: on a complete read (alongside the cursor),
+ * or when the catch-up runs out of pages (cursor left where it was). Rows are
+ * stamped with the current version at insert (`listingSync`), so only rows
+ * that predate a bump catch up. Only a platform with a floor (eBay) is
+ * rewound; bumping BSC needs a floor first. Version 2 of eBay's read stores
+ * every line, not only NB's. A re-read is safe: `recordOrderCore` upserts by
+ * order and line key and never resets `applied`, `from` or `pulledAt`.
  */
 export const ORDER_READ_VERSION: Readonly<Record<Platform, number>> = { bsc: 1, ebay: 2 };
 
@@ -303,9 +327,18 @@ const pollInputValidator = v.union(
      * NEO-520 — eBay: the date an order with no NB line must be placed on or
      * after to be stored (`ebayOrdersFloor`). Null for BSC, which has no floor.
      */
-    ordersFrom: v.union(v.number(), v.null()),
-    /** NEO-520 — the platform's `ORDER_READ_VERSION`: `finishPoll` stamps it on a complete read. */
+    otherOrdersFrom: v.union(v.number(), v.null()),
+    /**
+     * NEO-520 — the platform's `ORDER_READ_VERSION`: `finishPoll` stamps it on
+     * a complete read, or on a catch-up that ran out of pages.
+     */
     readVersion: v.number(),
+    /**
+     * NEO-520 — true when this read is the catch-up: the row's
+     * `orderReadVersion` is behind, so `cursorAt` is the earlier of the stored
+     * cursor and the floor. Such a read is best-effort (`pollEbaySteps`).
+     */
+    rewound: v.boolean(),
   }),
 );
 
@@ -328,17 +361,18 @@ export const pollInput = internalQuery({
       .order("desc")
       .take(OPEN_ORDER_SCAN);
     const readVersion = ORDER_READ_VERSION[args.platform];
-    const ordersFrom = args.platform === "ebay" ? ebayOrdersFloor(state._creationTime) : null;
-    let cursorAt = state.orderCursorAt ?? state._creationTime - INITIAL_CURSOR_GRACE_MS;
-    // NEO-520 — the one-time catch-up: a row last read under an older version
-    // reads again from the floor (never forward past where it already is).
-    if ((state.ordersReadVersion ?? 1) < readVersion && ordersFrom !== null) {
-      cursorAt = Math.min(cursorAt, ordersFrom);
-    }
+    const otherOrdersFrom = args.platform === "ebay" ? ebayOrdersFloor(state._creationTime) : null;
+    const storedCursor = state.orderCursorAt ?? state._creationTime - INITIAL_CURSOR_GRACE_MS;
+    // NEO-520 — the catch-up: a row last read under an older version reads
+    // from the earlier of its cursor and its floor until the version is
+    // stamped. Only a platform with a floor is rewound.
+    const rewound = (state.orderReadVersion ?? 1) < readVersion && otherOrdersFrom !== null;
+    const cursorAt = rewound ? Math.min(storedCursor, otherOrdersFrom) : storedCursor;
     return {
       cursorAt,
-      ordersFrom,
+      otherOrdersFrom,
       readVersion,
+      rewound,
       // A test seed's order (`testing.seedMyTestPickOrder`) is never the
       // platform's: re-reading it by id would only fail.
       stored: recent
@@ -1112,12 +1146,16 @@ export const applySaleItems = internalMutation({
 /**
  * Ends one owner's poll: stamps `lastPolledAt` (always, so the cron's order
  * moves on), the error or its absence, and the cursor (only forward, and
- * only when `cursorAt` is given). NEO-520: `readVersion` is stamped as the
- * row's `ordersReadVersion` only alongside a `cursorAt` (a complete read),
- * whether or not the cursor itself moved, and never lowered. Then the
+ * only when `cursorAt` is given). NEO-520: `readVersion`, whenever the caller
+ * passes it, is stamped as the row's `orderReadVersion` (never lowered),
+ * with or without a `cursorAt`. The poll passes it only on a complete read
+ * or on a catch-up that ran out of pages (cursor left where it was, so the
+ * stored cursor never moves back); never on a transport or HTTP failure,
+ * which keeps the row behind so the next poll rewinds again. Then the
  * cron's half of the drain triggers: when the owner pushes counts and has
- * changes queued, the drain runs now (`kickListingDrain`: a drain already scheduled or running is not
- * doubled, and one that died holding a lease is replaced once it runs out).
+ * changes queued, the drain runs now (`kickListingDrain`: a drain already
+ * scheduled or running is not doubled, and one that died holding a lease is
+ * replaced once it runs out).
  */
 export const finishPoll = internalMutation({
   args: {
@@ -1143,8 +1181,8 @@ export const finishPoll = internalMutation({
     if (args.cursorAt !== undefined && args.cursorAt > (state.orderCursorAt ?? -Infinity)) {
       patch.orderCursorAt = args.cursorAt;
     }
-    if (args.cursorAt !== undefined && args.readVersion !== undefined && args.readVersion > (state.ordersReadVersion ?? 1)) {
-      patch.ordersReadVersion = args.readVersion;
+    if (args.readVersion !== undefined && args.readVersion > (state.orderReadVersion ?? 1)) {
+      patch.orderReadVersion = args.readVersion;
     }
     await ctx.db.patch(state._id, patch);
     const kick = await kickListingDrain(ctx, args.ownerId, args.platform);
@@ -1179,14 +1217,18 @@ export async function pollOwnerImpl(
   // owner unstamped (first in line every tick) or their drain unkicked.
   let finished = false;
   let standDown = false;
-  const finish = async (cursorAt: number | undefined, failure: { message: string } | string | null) => {
+  const finish: PollFinish = async (cursorAt, failure, opts) => {
     const error = failure === null ? undefined : typeof failure === "string" ? failure : failure.message;
     report.error = error ?? null;
     report.cursorAt = cursorAt ?? null;
     finished = true;
+    // NEO-520: the read version is stamped on a complete read (a cursor) or
+    // when the caller says the catch-up ran out; never on a failure.
+    const stamp = cursorAt !== undefined || opts?.catchUpExhausted === true;
     await ctx.runMutation(internal.listingSales.finishPoll, {
       ...args,
-      ...(cursorAt !== undefined ? { cursorAt, readVersion: input.readVersion } : {}),
+      ...(cursorAt !== undefined ? { cursorAt } : {}),
+      ...(stamp ? { readVersion: input.readVersion } : {}),
       ...(error !== undefined ? { error } : {}),
     });
     console.log(
@@ -1219,13 +1261,24 @@ export async function pollOwnerImpl(
 
 type PollInput = NonNullable<typeof pollInputValidator.type>;
 
+/**
+ * Ends the poll (`pollOwnerImpl`): `cursorAt` only past a complete read.
+ * `catchUpExhausted` (NEO-520): a rewound read ran out of pages with no
+ * failure, so the read version is stamped while the cursor stays put.
+ */
+type PollFinish = (
+  cursorAt: number | undefined,
+  failure: { message: string } | string | null,
+  opts?: { catchUpExhausted?: boolean },
+) => Promise<PollReport>;
+
 /** The body of one owner's poll (`pollOwnerImpl` wraps it so it always finishes). */
 async function pollOwnerSteps(
   ctx: PollCtx,
   args: { ownerId: string; platform: Platform },
   input: PollInput,
   report: PollReport,
-  finish: (cursorAt: number | undefined, failure: { message: string } | string | null) => Promise<PollReport>,
+  finish: PollFinish,
   standDown: () => void,
 ): Promise<PollReport> {
   if (args.platform === "ebay") return await pollEbaySteps(ctx, args, input, report, finish, standDown);
@@ -1338,12 +1391,12 @@ async function pollOwnerSteps(
  *   label only, never parsed or matched.
  *
  * Null when the order has no readable line, or when it holds no NB line and
- * was placed before `opts.ordersFrom` (the floor: `ebayOrdersFloor`; null
- * means no floor). An order with an NB line is stored whatever its date.
+ * was placed before `opts.otherOrdersFrom` (the floor: `ebayOrdersFloor`;
+ * null means no floor). An order with an NB line is stored whatever its date.
  */
 export function projectEbayOrderForRecord(
   order: EbayProjectedOrder,
-  opts: { ordersFrom: number | null },
+  opts: { otherOrdersFrom: number | null },
 ): ProjectedOrder | null {
   const items: ProjectedOrder["items"] = [];
   let hasNbLine = false;
@@ -1374,7 +1427,7 @@ export function projectEbayOrderForRecord(
     });
   }
   if (items.length === 0) return null;
-  if (!hasNbLine && opts.ordersFrom !== null && order.orderDate < opts.ordersFrom) return null;
+  if (!hasNbLine && opts.otherOrdersFrom !== null && order.orderDate < opts.otherOrdersFrom) return null;
   return {
     orderId: order.orderId,
     orderNo: order.orderNo,
@@ -1393,13 +1446,20 @@ export function projectEbayOrderForRecord(
  * NB line only from the floor on), stored, and its NB lines applied exactly
  * once. Lines eBay sent that NB cannot read are noted, never stored. The
  * cursor moves (to the newest modification seen) only past a complete read.
+ *
+ * NEO-520 — the catch-up (`input.rewound`) is best-effort: when a rewound
+ * read runs out of pages with eBay still saying `more` and nothing failed,
+ * the read version is stamped WITHOUT moving the cursor (the next poll starts
+ * at the stored cursor, as before the catch-up) and the seller is told the
+ * older orders were too many to read back. A failed page stamps nothing, so
+ * the next poll rewinds again.
  */
 async function pollEbaySteps(
   ctx: PollCtx,
   args: { ownerId: string; platform: Platform },
   input: PollInput,
   report: PollReport,
-  finish: (cursorAt: number | undefined, failure: { message: string } | string | null) => Promise<PollReport>,
+  finish: PollFinish,
   standDown: () => void,
 ): Promise<PollReport> {
   const opened = await openEbaySellerSession(ctx, args.ownerId);
@@ -1420,10 +1480,10 @@ async function pollEbaySteps(
         continue;
       }
       newest = Math.max(newest, projected.lastModified);
-      const order = projectEbayOrderForRecord(projected, { ordersFrom: input.ordersFrom });
+      const order = projectEbayOrderForRecord(projected, { otherOrdersFrom: input.otherOrdersFrom });
       if (!order) {
         // Every line unreadable on an order NB would otherwise keep: say so.
-        const inFloor = input.ordersFrom === null || projected.orderDate >= input.ordersFrom;
+        const inFloor = input.otherOrdersFrom === null || projected.orderDate >= input.otherOrdersFrom;
         if (projected.lines.length === 0 && projected.unreadableLines > 0 && inFloor) {
           note = `Order ${projected.orderNo} has ${projected.unreadableLines} line(s) NeonBinder can't read, so it was skipped.`;
         }
@@ -1455,6 +1515,12 @@ async function pollEbaySteps(
       complete = true;
       break;
     }
+  }
+  if (!complete && input.rewound) {
+    // NEO-520: the catch-up ran out of pages with no failure. Give it up:
+    // stamp the version, leave the cursor where it was stored.
+    const caughtUp = "Older eBay orders were too many to read back; NeonBinder shows them from now on.";
+    return await finish(undefined, note === null ? caughtUp : `${note} ${caughtUp}`, { catchUpExhausted: true });
   }
   return await finish(complete ? newest : undefined, note);
 }

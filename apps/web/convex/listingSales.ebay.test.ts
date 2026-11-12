@@ -16,6 +16,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
+  EBAY_FLOOR_LEGACY_CUTOFF_MS,
   EBAY_OTHER_ORDERS_FLOOR_MS,
   INITIAL_CURSOR_GRACE_MS,
   MAX_HISTORY_PAGES,
@@ -120,7 +121,7 @@ async function startEbay(s: S, extra: { bsc?: boolean; readVersion?: number | nu
       platform: "ebay",
       listingStartedAt: NOW,
       lastUpdated: NOW,
-      ...(readVersion !== null ? { ordersReadVersion: readVersion } : {}),
+      ...(readVersion !== null ? { orderReadVersion: readVersion } : {}),
     });
     if (extra.bsc) {
       await ctx.db.insert("marketplaceListingStates", { ownerId: OWNER, platform: "bsc", listingStartedAt: NOW, lastUpdated: NOW });
@@ -644,7 +645,23 @@ describe("the cron fan-out", () => {
 // ── NEO-520: every eBay line is stored; non-NB lines are refused as unmatched ──
 
 const F = EBAY_OTHER_ORDERS_FLOOR_MS;
+const CUTOFF = EBAY_FLOOR_LEGACY_CUTOFF_MS;
 const DAY = 24 * 60 * 60 * 1000;
+/** A moment before the legacy cutoff: a row made then is a legacy row (floor F). */
+const LEGACY_NOW = F + DAY;
+/**
+ * Freezes `Date` for a describe block, so the state rows its tests make are
+ * created at `at` whatever day the suite runs (the floor depends on it).
+ */
+function clockAt(at: number) {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+}
 const OTHER = (n = 1, title?: string) => ({ legacyItemId: `X${n}`, sku: `MY-OWN-${n}`, ...(title !== undefined ? { title } : {}) });
 const projected = (o: RawOrder) => {
   const p = projectEbayOrder(raw(o));
@@ -657,10 +674,19 @@ describe("the floor and the read version (NEO-520)", () => {
     expect(EBAY_OTHER_ORDERS_FLOOR_MS).toBe(Date.UTC(2026, 10, 11, 6, 0, 0));
   });
 
-  test("the floor is the earlier of the state row's creation and the fixed floor", () => {
-    expect(ebayOrdersFloor(F + 5 * DAY)).toBe(F);
-    expect(ebayOrdersFloor(F - 5 * DAY)).toBe(F - 5 * DAY);
+  test("the legacy cutoff is 2026-11-13 00:00 US Central", () => {
+    expect(EBAY_FLOOR_LEGACY_CUTOFF_MS).toBe(Date.UTC(2026, 10, 13, 6, 0, 0));
+  });
+
+  test("a row made before the cutoff has the fixed 11/11 floor, whenever it was made; a later row's floor is its own creation", () => {
+    // Legacy rows: Jason's date, never the row's own creation (no Math.min).
+    expect(ebayOrdersFloor(F - 30 * DAY)).toBe(F);
     expect(ebayOrdersFloor(F)).toBe(F);
+    expect(ebayOrdersFloor(F + DAY)).toBe(F);
+    expect(ebayOrdersFloor(CUTOFF - 1)).toBe(F);
+    // Later rows: never read before their own connection.
+    expect(ebayOrdersFloor(CUTOFF)).toBe(CUTOFF);
+    expect(ebayOrdersFloor(CUTOFF + 5 * DAY)).toBe(CUTOFF + 5 * DAY);
   });
 
   test("eBay's order read is version 2 and BuySportsCards' stays at 1", () => {
@@ -674,7 +700,7 @@ describe("projectEbayOrderForRecord (NEO-520)", () => {
   test("an NB-SKU line keeps its bucket, SKU and unit price and carries the title; a foreign line stores an empty condition", () => {
     const out = projectEbayOrderForRecord(
       projected({ orderId: "O", created: F + 1, lines: [{ ...NB, quantity: 2, cost: "9.00" }, { ...OTHER(1, "Vintage lot"), quantity: 3, cost: "6.00" }] }),
-      { ordersFrom: F },
+      { otherOrdersFrom: F },
     );
     expect(out?.items).toEqual([
       { platformCardId: "L1", condition: "NM", quantity: 2, priceCents: 450, sellerSku: "NB2-abc-NM", graded: false, listed: { title: "NB's own listing title" } },
@@ -683,7 +709,7 @@ describe("projectEbayOrderForRecord (NEO-520)", () => {
   });
 
   test("a line eBay sent with no SKU and no title stores neither sellerSku nor listed", () => {
-    const out = projectEbayOrderForRecord(projected({ orderId: "O", created: F + 1, lines: [{ legacyItemId: "X9" }] }), { ordersFrom: F });
+    const out = projectEbayOrderForRecord(projected({ orderId: "O", created: F + 1, lines: [{ legacyItemId: "X9" }] }), { otherOrdersFrom: F });
     expect(out?.items).toEqual([{ platformCardId: "X9", condition: "", quantity: 1, priceCents: 1000, graded: false }]);
     expect("sellerSku" in out!.items[0]).toBe(false);
     expect("listed" in out!.items[0]).toBe(false);
@@ -691,46 +717,46 @@ describe("projectEbayOrderForRecord (NEO-520)", () => {
 
   test("an order with no readable line is null", () => {
     const empty = { ...projected({ orderId: "O", created: F + 1, lines: [OTHER()] }), lines: [] };
-    expect(projectEbayOrderForRecord(empty, { ordersFrom: null })).toBeNull();
+    expect(projectEbayOrderForRecord(empty, { otherOrdersFrom: null })).toBeNull();
   });
 
   test("an order of foreign lines placed before the floor is dropped; one millisecond later or exactly at it is kept", () => {
-    const at = (created: number) => projectEbayOrderForRecord(projected({ orderId: "O", created, lines: [OTHER()] }), { ordersFrom: F });
+    const at = (created: number) => projectEbayOrderForRecord(projected({ orderId: "O", created, lines: [OTHER()] }), { otherOrdersFrom: F });
     expect(at(F - 1)).toBeNull();
     expect(at(F)).not.toBeNull();
     expect(at(F + 1)).not.toBeNull();
   });
 
   test("an order with an NB line is kept whatever its date, even years before the floor", () => {
-    const old = projectEbayOrderForRecord(projected({ orderId: "O", created: F - 400 * DAY, lines: [OTHER(), NB] }), { ordersFrom: F });
+    const old = projectEbayOrderForRecord(projected({ orderId: "O", created: F - 400 * DAY, lines: [OTHER(), NB] }), { otherOrdersFrom: F });
     expect(old?.items).toHaveLength(2);
   });
 
   test("no floor (null) keeps a foreign-only order of any date", () => {
-    expect(projectEbayOrderForRecord(projected({ orderId: "O", created: 0 + DAY, lines: [OTHER()] }), { ordersFrom: null })).not.toBeNull();
+    expect(projectEbayOrderForRecord(projected({ orderId: "O", created: 0 + DAY, lines: [OTHER()] }), { otherOrdersFrom: null })).not.toBeNull();
   });
 
   test("the floor reads the order's creation date, not its last modification", () => {
     const o = projected({ orderId: "O", created: F - DAY, modified: F + DAY, lines: [OTHER()] });
-    expect(projectEbayOrderForRecord(o, { ordersFrom: F })).toBeNull();
+    expect(projectEbayOrderForRecord(o, { otherOrdersFrom: F })).toBeNull();
   });
 
   test("a SKU that only looks like NB's (not parseable) is a foreign line, and a title shaped like an NB SKU changes nothing", () => {
     const out = projectEbayOrderForRecord(
       projected({ orderId: "O", created: F + 1, lines: [{ legacyItemId: "X1", sku: "NB2-abc-ZZ", title: "NB2-abc-NM" }] }),
-      { ordersFrom: F },
+      { otherOrdersFrom: F },
     );
     expect(out?.items[0]).toMatchObject({ condition: "", listed: { title: "NB2-abc-NM" } });
     // Foreign only, so the floor still applies.
     expect(
-      projectEbayOrderForRecord(projected({ orderId: "O", created: F - 1, lines: [{ legacyItemId: "X1", sku: "NB2-abc-ZZ", title: "NB2-abc-NM" }] }), { ordersFrom: F }),
+      projectEbayOrderForRecord(projected({ orderId: "O", created: F - 1, lines: [{ legacyItemId: "X1", sku: "NB2-abc-ZZ", title: "NB2-abc-NM" }] }), { otherOrdersFrom: F }),
     ).toBeNull();
   });
 
   test("a title past the bound is not stored (dropped at the projection) while the line is", () => {
     const out = projectEbayOrderForRecord(
       projected({ orderId: "O", created: F + 1, lines: [OTHER(1, "t".repeat(LISTED_TITLE_MAX + 1))] }),
-      { ordersFrom: F },
+      { otherOrdersFrom: F },
     );
     expect(out?.items).toHaveLength(1);
     expect(out?.items[0].listed).toBeUndefined();
@@ -738,6 +764,7 @@ describe("projectEbayOrderForRecord (NEO-520)", () => {
 });
 
 describe("a stored eBay order that NB didn't list (NEO-520)", () => {
+  clockAt(LEGACY_NOW);
   async function stocked() {
     const s = await setup();
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 3 });
@@ -799,7 +826,7 @@ describe("a stored eBay order that NB didn't list (NEO-520)", () => {
     // A re-read: force the catch-up and bump the order's modification so it is not skipped.
     await s.t.run(async (ctx) => {
       const st = (await ctx.db.query("marketplaceListingStates").collect())[0];
-      await ctx.db.patch(st._id, { ordersReadVersion: 1 } as never);
+      await ctx.db.patch(st._id, { orderReadVersion: 1 } as never);
     });
     pages = [[{ ...order(), lastModifiedDate: ISO(F + 5000) }]];
     await poll(s);
@@ -877,6 +904,7 @@ describe("a stored eBay order that NB didn't list (NEO-520)", () => {
 });
 
 describe("the stored title is re-checked at the store (NEO-520)", () => {
+  clockAt(LEGACY_NOW);
   const record = (s: S, title: string) =>
     s.t.mutation(internal.listingSales.recordOrder, {
       ownerId: OWNER,
@@ -904,6 +932,7 @@ describe("the stored title is re-checked at the store (NEO-520)", () => {
 });
 
 describe("an order stored before NEO-520 and read again with its other lines (NEO-520)", () => {
+  clockAt(LEGACY_NOW);
   async function stockedWithNbOnlyOrder() {
     const s = await setup();
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 3 });
@@ -914,13 +943,13 @@ describe("an order stored before NEO-520 and read again with its other lines (NE
     // Run the old behaviour by hand: the rewind is switched off for this first poll.
     await s.t.run(async (ctx) => {
       const st = (await ctx.db.query("marketplaceListingStates").collect())[0];
-      await ctx.db.patch(st._id, { ordersReadVersion: ORDER_READ_VERSION.ebay });
+      await ctx.db.patch(st._id, { orderReadVersion: ORDER_READ_VERSION.ebay });
     });
     await poll(s);
     expect(await totalQty(s)).toBe(2);
     await s.t.run(async (ctx) => {
       const st = (await ctx.db.query("marketplaceListingStates").collect())[0];
-      await ctx.db.patch(st._id, { ordersReadVersion: undefined } as never);
+      await ctx.db.patch(st._id, { orderReadVersion: undefined } as never);
     });
     return s;
   }
@@ -961,6 +990,7 @@ describe("an order stored before NEO-520 and read again with its other lines (NE
 });
 
 describe("the one-time catch-up rewind (NEO-520)", () => {
+  clockAt(LEGACY_NOW);
   const stateRow = async (s: S) => (await state(s))!;
   /** A listing eBay seller whose cursor sits well past the floor. */
   async function behind(readVersion: number | null) {
@@ -987,7 +1017,7 @@ describe("the one-time catch-up rewind (NEO-520)", () => {
     const { s, floor } = await behind(null);
     pages = [[raw({ orderId: "A", created: floor + DAY, modified: floor + 4 * DAY, lines: [OTHER(1, "Missed sale")] })]];
     await poll(s);
-    expect((await stateRow(s)).ordersReadVersion).toBe(ORDER_READ_VERSION.ebay);
+    expect((await stateRow(s)).orderReadVersion).toBe(ORDER_READ_VERSION.ebay);
     expect((await stateRow(s)).orderCursorAt).toBe(floor + 4 * DAY);
     requests = [];
     await poll(s);
@@ -1025,21 +1055,64 @@ describe("the one-time catch-up rewind (NEO-520)", () => {
     pages = [[raw({ orderId: "A", created: floor + DAY, lines: [OTHER(1, "x")] })], [raw({ orderId: "B", created: floor + DAY, lines: [OTHER(2, "y")] })]];
     failPage = 1;
     await poll(s);
-    expect((await stateRow(s)).ordersReadVersion).toBeUndefined();
+    expect((await stateRow(s)).orderReadVersion).toBeUndefined();
     expect((await stateRow(s)).orderCursorAt).toBe(cursor);
     failPage = null;
     requests = [];
     await poll(s);
     expect(requests[0].filter).toBe(ordersModifiedSinceFilter(floor));
-    expect((await stateRow(s)).ordersReadVersion).toBe(ORDER_READ_VERSION.ebay);
+    expect((await stateRow(s)).orderReadVersion).toBe(ORDER_READ_VERSION.ebay);
   });
 
-  test("a read that never ends within the page limit does not stamp the version", async () => {
-    const { s, floor } = await behind(null);
-    pages = [[raw({ orderId: "A", created: floor + DAY, lines: [OTHER(1, "x")] })]];
+  test("a catch-up that never ends within the page limit stamps the version, keeps the stored cursor and says so; the next poll starts at the stored cursor", async () => {
+    const { s, floor, cursor } = await behind(null);
+    pages = [[raw({ orderId: "A", created: floor + DAY, modified: floor + 4 * DAY, lines: [OTHER(1, "x")] })]];
     alwaysMore = true;
+    const report = await poll(s);
+    expect(requests).toHaveLength(MAX_HISTORY_PAGES);
+    expect(requests[0].filter).toBe(ordersModifiedSinceFilter(floor));
+    // What it did read is kept.
+    expect((await sales(s)).map((x) => x.orderId)).toEqual(["A"]);
+    expect(report.error).toBe("Older eBay orders were too many to read back; NeonBinder shows them from now on.");
+    expect((await stateRow(s)).lastPollError).toBe(report.error);
+    expect((await stateRow(s)).orderReadVersion).toBe(ORDER_READ_VERSION.ebay);
+    expect((await stateRow(s)).orderCursorAt).toBe(cursor);
+
+    requests = [];
+    alwaysMore = false;
+    pages = [[]];
     await poll(s);
-    expect((await stateRow(s)).ordersReadVersion).toBeUndefined();
+    expect(requests[0].filter).toBe(ordersModifiedSinceFilter(cursor));
+    expect((await stateRow(s)).orderCursorAt).toBe(cursor);
+  });
+
+  test("an exhausted catch-up keeps an order's own note in front of its own", async () => {
+    const { s, floor } = await behind(null);
+    pages = [[raw({ orderId: "PART", created: floor + DAY, lines: [{ legacyItemId: "X1", quantity: 0 }, OTHER(2, "Readable")] })]];
+    alwaysMore = true;
+    const report = await poll(s);
+    expect(report.error).toMatch(/^Order PART has 1 line\(s\) NeonBinder can't read; the rest were applied\. Older eBay orders were too many/);
+    expect((await stateRow(s)).orderReadVersion).toBe(ORDER_READ_VERSION.ebay);
+  });
+
+  test("a read at the current version that never ends within the page limit stamps nothing and keeps the cursor", async () => {
+    const { s, cursor } = await behind(ORDER_READ_VERSION.ebay);
+    alwaysMore = true;
+    const report = await poll(s);
+    expect(report.error).toBeNull();
+    expect((await stateRow(s)).orderCursorAt).toBe(cursor);
+  });
+
+  test("a failed first page stamps nothing, so the next poll rewinds again", async () => {
+    const { s, floor, cursor } = await behind(null);
+    failPage = 0;
+    await poll(s);
+    expect((await stateRow(s)).orderReadVersion).toBeUndefined();
+    expect((await stateRow(s)).orderCursorAt).toBe(cursor);
+    failPage = null;
+    requests = [];
+    await poll(s);
+    expect(requests[0].filter).toBe(ordersModifiedSinceFilter(floor));
   });
 
   test("an old order modified after the floor, holding only foreign lines, is not stored by the catch-up", async () => {
@@ -1054,47 +1127,177 @@ describe("the one-time catch-up rewind (NEO-520)", () => {
     expect((await sales(s)).map((x) => x.orderId)).toEqual(["OLD-NB"]);
   });
 
-  test("the floor is the earlier of the state row's creation and the fixed floor: a row created before it stores orders from its creation", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      vi.setSystemTime(F - 30 * DAY);
+  test("a legacy row made weeks before 11/11 stores eBay's other orders from 11/11 on, not from its own creation", async () => {
+    vi.setSystemTime(F - 30 * DAY);
+    const s = await setup();
+    await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 1 });
+    await startEbay(s, { readVersion: null });
+    const created = (await stateRow(s))._creationTime;
+    expect(created).toBeLessThan(F);
+    const input = await s.t.query(internal.listingSales.pollInput, { ownerId: OWNER, platform: "ebay" });
+    expect(input).toMatchObject({ otherOrdersFrom: F, rewound: true });
+    pages = [
+      [
+        raw({ orderId: "AFTER-ROW", created: created + DAY, modified: F + DAY, lines: [OTHER(1, "a")] }),
+        raw({ orderId: "JUST-BEFORE", created: F - 1, modified: F + DAY, lines: [OTHER(2, "b")] }),
+        raw({ orderId: "AT-FLOOR", created: F, modified: F + DAY, lines: [OTHER(3, "c")] }),
+        raw({ orderId: "AFTER-FLOOR", created: F + DAY, modified: F + DAY, lines: [OTHER(4, "d")] }),
+      ],
+    ];
+    await poll(s);
+    expect((await sales(s)).map((x) => x.orderId).sort()).toEqual(["AFTER-FLOOR", "AT-FLOOR"]);
+  });
+
+  test("a row made after the cutoff never stores an order placed before its own start, rewound or not", async () => {
+    vi.setSystemTime(CUTOFF + 5 * DAY);
+    const s = await setup();
+    await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 3 });
+    await startEbay(s, { readVersion: null });
+    await link(s, s.cardId, "NM");
+    const created = (await stateRow(s))._creationTime;
+    expect(created).toBeGreaterThanOrEqual(CUTOFF);
+    const input = await s.t.query(internal.listingSales.pollInput, { ownerId: OWNER, platform: "ebay" });
+    expect(input?.otherOrdersFrom).toBe(created);
+    pages = [
+      [
+        // Placed between 11/11 and the row's start: a legacy row would keep it.
+        raw({ orderId: "AFTER-1111", created: F + DAY, modified: created + 1000, lines: [OTHER(1, "a")] }),
+        // eBay dates are whole milliseconds; `_creationTime` may carry a fraction.
+        raw({ orderId: "JUST-BEFORE", created: Math.floor(created) - 1, modified: created + 1000, lines: [OTHER(2, "b")] }),
+        raw({ orderId: "AT-START", created: Math.ceil(created), modified: created + 1000, lines: [OTHER(3, "c")] }),
+        // An NB line is NB's sale whatever its date.
+        raw({ orderId: "NB-OLD", created: created - DAY, modified: created + 1000, lines: [{ legacyItemId: "L1", sku: SKU(s) }] }),
+      ],
+    ];
+    await poll(s);
+    expect((await sales(s)).map((x) => x.orderId).sort()).toEqual(["AT-START", "NB-OLD"]);
+  });
+
+  test("the floor is the same before and after the version stamp, for a legacy row and a later one", async () => {
+    for (const at of [LEGACY_NOW, CUTOFF + DAY]) {
+      vi.setSystemTime(at);
       const s = await setup();
-      await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 1 });
-      await startEbay(s);
-      const created = (await stateRow(s))._creationTime;
-      expect(created).toBeLessThan(F);
-      pages = [
-        [
-          raw({ orderId: "BEFORE-ROW", created: created - DAY, modified: created + 1000, lines: [OTHER(1, "a")] }),
-          raw({ orderId: "AFTER-ROW", created: created + DAY, modified: created + DAY, lines: [OTHER(2, "b")] }),
-        ],
-      ];
+      await startEbay(s, { readVersion: null });
+      const before = await s.t.query(internal.listingSales.pollInput, { ownerId: OWNER, platform: "ebay" });
+      expect(before?.rewound).toBe(true);
       await poll(s);
-      expect((await sales(s)).map((x) => x.orderId)).toEqual(["AFTER-ROW"]);
-    } finally {
-      vi.useRealTimers();
+      expect((await stateRow(s)).orderReadVersion).toBe(ORDER_READ_VERSION.ebay);
+      // Time moves on; the row's floor does not.
+      vi.setSystemTime(at + 30 * DAY);
+      const after = await s.t.query(internal.listingSales.pollInput, { ownerId: OWNER, platform: "ebay" });
+      expect(after?.rewound).toBe(false);
+      expect(after?.otherOrdersFrom).toBe(before?.otherOrdersFrom);
+      expect(after?.otherOrdersFrom).toBe(at === LEGACY_NOW ? F : (await stateRow(s))._creationTime);
     }
+  });
+
+  test("a stored foreign order whose status changes later is still read and updated after the stamp", async () => {
+    const { s, floor } = await behind(null);
+    const order = (payment: string, modified: number) =>
+      raw({ orderId: "LATER", created: floor + DAY, modified, payment, lines: [OTHER(1, "Foreign")] });
+    pages = [[order("PENDING", floor + 4 * DAY)]];
+    await poll(s);
+    expect((await stateRow(s)).orderReadVersion).toBe(ORDER_READ_VERSION.ebay);
+    pages = [[order("PAID", floor + 5 * DAY)]];
+    await poll(s);
+    const [stored] = await sales(s);
+    expect(stored.items[0]).toMatchObject({ problem: "unmatched" });
   });
 
   test("BuySportsCards is never rewound: it reports version 1 and no floor", async () => {
     const s = await setup({ bsc: true });
     await startEbay(s, { bsc: true });
     const input = await s.t.query(internal.listingSales.pollInput, { ownerId: OWNER, platform: "bsc" });
-    expect(input).toMatchObject({ readVersion: 1, ordersFrom: null });
+    expect(input).toMatchObject({ readVersion: 1, otherOrdersFrom: null, rewound: false });
     const bscState = await s.t.run(async (ctx) =>
       (await ctx.db.query("marketplaceListingStates").collect()).find((r) => r.platform === "bsc"),
     );
     expect(input!.cursorAt).toBe(bscState!._creationTime - INITIAL_CURSOR_GRACE_MS);
   });
 
-  test("finishPoll never stamps a version without a cursor, and never lowers one", async () => {
+  test("finishPoll stamps a version whenever it is passed, with or without a cursor, never lowers one, and never moves the cursor back", async () => {
     const s = await setup();
     await startEbay(s, { readVersion: 2 });
-    await s.t.mutation(internal.listingSales.finishPoll, { ownerId: OWNER, platform: "ebay", readVersion: 5 });
-    expect((await stateRow(s)).ordersReadVersion).toBe(2);
+    await s.t.mutation(internal.listingSales.finishPoll, { ownerId: OWNER, platform: "ebay", cursorAt: NOW + 5000 });
+    // No cursor: the version is stamped and the cursor stays.
+    await s.t.mutation(internal.listingSales.finishPoll, { ownerId: OWNER, platform: "ebay", readVersion: 4 });
+    expect((await stateRow(s)).orderReadVersion).toBe(4);
+    expect((await stateRow(s)).orderCursorAt).toBe(NOW + 5000);
     await s.t.mutation(internal.listingSales.finishPoll, { ownerId: OWNER, platform: "ebay", cursorAt: NOW, readVersion: 1 });
-    expect((await stateRow(s)).ordersReadVersion).toBe(2);
-    await s.t.mutation(internal.listingSales.finishPoll, { ownerId: OWNER, platform: "ebay", cursorAt: NOW, readVersion: 3 });
-    expect((await stateRow(s)).ordersReadVersion).toBe(3);
+    expect((await stateRow(s)).orderReadVersion).toBe(4);
+    expect((await stateRow(s)).orderCursorAt).toBe(NOW + 5000);
+    await s.t.mutation(internal.listingSales.finishPoll, { ownerId: OWNER, platform: "ebay", cursorAt: NOW + 6000, readVersion: 5 });
+    expect((await stateRow(s)).orderReadVersion).toBe(5);
+    // Not passed: nothing stamped.
+    await s.t.mutation(internal.listingSales.finishPoll, { ownerId: OWNER, platform: "ebay", cursorAt: NOW + 7000 });
+    expect((await stateRow(s)).orderReadVersion).toBe(5);
+  });
+});
+
+describe("a new state row is stamped with the current read version at insert (NEO-520)", () => {
+  // A legacy-era row: unstamped, it would rewind to F, well before its
+  // creation less the grace, so the first filter tells the two apart.
+  clockAt(LEGACY_NOW);
+
+  /** No boxes, so the walk a real save schedules finds nothing to queue. */
+  async function bare(profile: Record<string, unknown> = {}) {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", { userId: OWNER, siteCredentials: [], ...profile } as never);
+    });
+    return t;
+  }
+  /** The product's own save of an eBay sign-in (`credentials` → `listingSync.setUpListing`). */
+  const save = (t: T, listing: "save" | "testOff" = "save") =>
+    t.mutation(internal.userProfile.updateSiteCredentialStatus, {
+      userId: OWNER,
+      site: "ebay",
+      hasCredentials: true,
+      needsReauth: false,
+      listing,
+    });
+  const row = (t: T) =>
+    t.run(async (ctx) =>
+      ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", OWNER).eq("platform", "ebay"))
+        .unique(),
+    );
+
+  test("a row made by a real save is stamped, and its first poll reads from its creation less the grace, not the floor", async () => {
+    const t = await bare();
+    await save(t);
+    const made = (await row(t))!;
+    expect(made.listingStartedAt).toBeTypeOf("number");
+    expect(made.orderReadVersion).toBe(ORDER_READ_VERSION.ebay);
+    expect(ebayOrdersFloor(made._creationTime)).toBe(F);
+
+    const input = await t.query(internal.listingSales.pollInput, { ownerId: OWNER, platform: "ebay" });
+    expect(input).toMatchObject({ rewound: false, otherOrdersFrom: F });
+    await pollOwnerImpl(stubCtx(t), { ownerId: OWNER, platform: "ebay" });
+    expect(requests[0].filter).toBe(ordersModifiedSinceFilter(made._creationTime - INITIAL_CURSOR_GRACE_MS));
+    expect(requests[0].filter).not.toBe(ordersModifiedSinceFilter(F));
+  });
+
+  test("a row the E2E marker makes is stamped", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    const t = await bare();
+    await save(t, "testOff");
+    expect(await row(t)).toMatchObject({ testListingOff: true, orderReadVersion: ORDER_READ_VERSION.ebay });
+  });
+
+  test("a row made dormant on a seller conflict is stamped", async () => {
+    const t = await bare({ marketplaceAccountIds: { ebayUserId: "EB-1" } });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "another-collector",
+        platform: "ebay",
+        listingStartedAt: NOW,
+        platformAccountId: "EB-1",
+        lastUpdated: NOW,
+      });
+    });
+    await save(t);
+    expect(await row(t)).toMatchObject({ dormant: "sellerConflict", orderReadVersion: ORDER_READ_VERSION.ebay });
   });
 });
