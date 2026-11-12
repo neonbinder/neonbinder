@@ -242,6 +242,30 @@ integrations. Seller specs and cloud threads are the exceptions (next section).
 
 5. **The deployment is yours.** Push new code with `npx convex dev --once` whenever
    the branch changes, and reset and re-seed as often as a fresh-only spec needs.
+6. **Delete it when the ticket closes**, before removing the worktree. An idle
+   deployment still runs every cron until it expires, and those function calls
+   count against the team's quota. The CLI has no delete command, so this uses
+   the Convex Management API with your `npx convex login` token, the same API
+   `preview-cleanup.yml` uses for PR previews. The guard deletes only a
+   non-default dev deployment with an expiry, which is what this block creates:
+
+   ```bash
+   (
+     set -euo pipefail
+     NAME="$(sed -nE 's/^CONVEX_DEPLOYMENT=dev:([a-z0-9-]+).*/\1/p' .env.local)"
+     [ -n "$NAME" ]
+     TOKEN="$(python3 -I -c "import json,os;print(json.load(open(os.path.expanduser('~/.convex/config.json')))['accessToken'])")"
+     API="https://api.convex.dev/v1/deployments/$NAME"
+     curl -sf -H "Authorization: Bearer $TOKEN" "$API" | python3 -I -c '
+   import json, sys
+   d = json.load(sys.stdin)
+   assert d.get("deploymentType") == "dev" and d.get("isDefault") is False and d.get("expiresAt"), "not a per-worktree deployment"
+   print("deleting", d.get("reference"))'
+     curl -sf -X POST -H "Authorization: Bearer $TOKEN" "$API/delete" >/dev/null && echo "deleted $NAME"
+   )
+   ```
+
+   If your workspace's own `CLAUDE.md` gives a script for this, use it.
 
 What a per-worktree deployment does not separate or cover:
 
@@ -264,8 +288,8 @@ What a per-worktree deployment does not separate or cover:
 
 Limits: the deployment expires 5 days after creation because the block passes
 `--expiration`. Always pass it: each deployment holds a full copy of dev's secrets.
-The CLI cannot extend or delete one, so delete it early in the dashboard or create a
-new one after it expires. The env copy is a snapshot: copy it again after your
+The CLI cannot extend one; create a new one after it expires, and delete it at
+close-out (step 6) rather than leaving it to expire. The env copy is a snapshot: copy it again after your
 long-lived deployment's env changes. A rotated dev secret's old value stays on these
 deployments until they expire or you copy again.
 
