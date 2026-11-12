@@ -10,11 +10,17 @@
  * "12a"). A season files under its start year ("2023-24" sorts as 2023):
  * that is the set's `year`. A card number is never assumed unique: rows
  * that tie on it fall through to the player and the line's id.
+ *
+ * NEO-509: a sale NB could not tie to a card still walks with its set when
+ * the listing says enough (sport, year, set, number). Every rule reads a
+ * row through one accessor, `rowFacts`, so a card and a listing sort,
+ * group and filter alike; `row.card` still means "NB matched it".
  */
 
+import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { setLabel } from "../data/labels";
-import type { Card } from "../data/types";
-import type { PickBox, PickGrade, PickOrder, PickPhoto, PickSpot, SaleLine } from "./types";
+import type { Card, SetRef } from "../data/types";
+import type { ListedCard, PickBox, PickGrade, PickOrder, PickPhoto, PickSpot, SaleLine } from "./types";
 
 // ---------------------------------------------------------------------------
 // Natural order
@@ -45,6 +51,17 @@ export const VARIANT_ROLE_LABEL: Record<VariantRole, string> = {
 };
 
 const ROLE_RANK: Record<VariantRole, number> = { base: 0, parallel: 1, insert: 2, insertParallel: 3 };
+
+/**
+ * Where a row with no role walks: a listing whose variant word NB does not
+ * file by ("Variation", "SP") or that names none. Right after Base, since an
+ * image variation or a short print shares the base's number; never shown.
+ */
+const NO_ROLE_RANK = 0.5;
+
+function roleRank(role: VariantRole | null): number {
+  return role ? ROLE_RANK[role] : NO_ROLE_RANK;
+}
 
 /**
  * A card's divider, from NB's own variant kind: a parallel under an insert
@@ -92,6 +109,10 @@ export interface PickRow {
   boxUnrecorded: boolean;
   /** The first merged line's copy photo, when one has it. */
   photo?: PickPhoto;
+  /** NEO-509 — on a row with no card: what the sale says the card is. */
+  listed?: ListedCard;
+  /** The NB set on the list a `listed` row files behind (`listedSetFor`). */
+  joined?: SetOnList;
 }
 
 function gradeKey(g: PickGrade | undefined): string {
@@ -112,7 +133,15 @@ export function mergeKey(line: SaleLine, bySpot = false): string {
   return parts.join("|");
 }
 
-export function mergeLines(lines: readonly SaleLine[], options: { bySpot?: boolean } = {}): PickRow[] {
+/**
+ * `sets` are the NB sets a listed row may file behind; by default the sets
+ * of `lines` themselves. A caller merging part of the list (one order, one
+ * stop) passes the whole list's, so a listing files the same way everywhere.
+ */
+export function mergeLines(
+  lines: readonly SaleLine[],
+  options: { bySpot?: boolean; sets?: readonly SetOnList[] } = {},
+): PickRow[] {
   const rows = new Map<string, SaleLine[]>();
   for (const line of lines) {
     const key = mergeKey(line, options.bySpot);
@@ -120,7 +149,14 @@ export function mergeLines(lines: readonly SaleLine[], options: { bySpot?: boole
     if (group) group.push(line);
     else rows.set(key, [line]);
   }
-  return [...rows].map(([key, group]) => toRow(key, group));
+  let sets = options.sets;
+  return [...rows].map(([key, group]) => {
+    const row = toRow(key, group);
+    if (row.card || !row.listed) return row;
+    sets ??= setsOnList(lines);
+    const joined = listedSetFor(row.listed, sets);
+    return joined ? { ...row, joined, sportCode: joined.sportCode } : row;
+  });
 }
 
 function toRow(key: string, group: SaleLine[]): PickRow {
@@ -145,6 +181,235 @@ function toRow(key: string, group: SaleLine[]): PickRow {
     spot: first.spot,
     boxUnrecorded: group.some((l) => l.boxUnrecorded),
     photo: group.find((l) => l.photo)?.photo,
+    ...(first.card || !first.listed ? {} : { listed: first.listed }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Row facts: a card, or what a listing says it is
+// ---------------------------------------------------------------------------
+
+/** What every rule reads of a row, whether NB matched it or only the listing says it. */
+export interface RowFacts {
+  /** NB's sport id; `sport:<word>` for a listing's sport NB has no row for. */
+  sportKey: string;
+  sportName: string;
+  /** The year the set files under. */
+  year: number;
+  /** The set's own name, without the season. */
+  setName: string;
+  /** 0 for an NB set, 1 for a listing's own: NB's divider comes first when the names tie. */
+  setRank: 0 | 1;
+  /** NB's set id, or `listed:<sport>|<year>|<name>` for a listing's own divider. */
+  setKey: string;
+  /** The divider's title: "2024 Topps Chrome". */
+  setTitle: string;
+  /** NB's code for the sport ("BB"): the divider's colour. Null when NB has no sport row for it. */
+  sportCode: string | null;
+  /** The variant's divider; null when a listing names no variant NB files by (never guessed). */
+  role: VariantRole | null;
+  /** A listing's own variant word NB does not file by ("Variation", "SP"); null otherwise. */
+  variantWord: string | null;
+  /** The insert or parallel's name; null for Base (a listing's Base keeps a name it gives). */
+  variantName: string | null;
+  cardNumber: string;
+  players: string;
+}
+
+/**
+ * The variant words a listing gives that are worth writing: its own word NB
+ * does not file by, and its variant name. A name that only repeats the word
+ * or the role ("Base" on a Base line) is dropped, so nothing reads twice.
+ */
+export function listedVariant(listed: ListedCard): { word: string | null; name: string | null } {
+  const word = listed.variantWord?.trim() || null;
+  const raw = listed.variantName?.trim() || null;
+  const repeats =
+    raw !== null &&
+    ((word !== null && fold(raw) === fold(word)) || (listed.role !== undefined && variantTypeKindFromTitle(raw) === listed.role));
+  return { word, name: repeats ? null : raw };
+}
+
+/** The variant as one phrase for a title: "1991 Throwback", "SP Photo", "Insert"; null for Base or none. */
+function listedVariantPhrase(listed: ListedCard): string | null {
+  const { word, name } = listedVariant(listed);
+  if (word && name) return containsWholeWords(name, word) ? name : `${word} ${name}`;
+  if (word || name) return word ?? name;
+  return listed.role === "insert" ? "Insert" : listed.role === "parallel" ? "Parallel" : null;
+}
+
+/**
+ * A listing's title, from whatever it says, in the order a seller finds a
+ * card in a box: the set, the insert or parallel, the number, then who is on
+ * it. "2021 Score 1991 Throwback #TB2 · Justin Fields". Base is not written
+ * (the chip says it); an empty answer means the listing said nothing a
+ * seller could look for.
+ */
+export function listedTitle(listed: ListedCard): string {
+  const season = listed.season?.trim();
+  const setName = listed.setName?.trim();
+  const set = setName ? (season && !fold(setName).startsWith(`${fold(season)} `) ? `${season} ${setName}` : setName) : season;
+  const card = [set, listedVariantPhrase(listed), listed.cardNumber?.trim() ? `#${listed.cardNumber.trim()}` : undefined]
+    .filter(Boolean)
+    .join(" ");
+  return [card, listed.players?.trim()].filter(Boolean).join(" · ");
+}
+
+/** One NB set on the list, with its sport's code (the divider colour). */
+export interface SetOnList {
+  set: SetRef;
+  sportCode: string | null;
+}
+
+/**
+ * Whether `name` says `word` as whole words, folded: "Photo Variation" says
+ * "Variation", but "Gold Special" does not say "SP". A boundary is the edge
+ * of the text or any character that is not a letter or a digit.
+ */
+function containsWholeWords(name: string, word: string): boolean {
+  const escaped = fold(word).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(fold(name));
+}
+
+/** Trimmed, inner spaces collapsed, case-folded. */
+function fold(text: string): string {
+  return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** The years a listing's year may name: anything else is a misread, not a year. */
+const FIRST_YEAR = 1800;
+const LAST_YEAR = 2100;
+
+interface ListedPlace {
+  sportName: string;
+  year: number;
+  /** The set's name without a leading season. */
+  setName: string;
+  /** "2021 Score": the season, then the name. */
+  setTitle: string;
+  cardNumber: string;
+}
+
+/**
+ * Where a listing files, when it says enough: a year NB can file under, a
+ * set name, a card number and a sport (NB's, or the listing's word).
+ * Null otherwise: the line stays in "Can't find it".
+ */
+function listedPlace(listed: ListedCard): ListedPlace | null {
+  const { year } = listed;
+  if (year === undefined || !Number.isInteger(year) || year < FIRST_YEAR || year > LAST_YEAR) return null;
+  const rawSet = listed.setName?.trim();
+  const cardNumber = listed.cardNumber?.trim();
+  const sportName = listed.sportName?.trim();
+  if (!rawSet || !cardNumber || !sportName) return null;
+  const season = listed.season?.trim() || String(year);
+  // A listing may write its set with the season in front ("2024 Topps Chrome") or without ("Score").
+  const setName = fold(rawSet).startsWith(`${fold(season)} `) ? rawSet.slice(season.length).trim() : rawSet;
+  if (!setName) return null;
+  return { sportName, year, setName, setTitle: `${season} ${setName}`, cardNumber };
+}
+
+/**
+ * THE one rule for whether a listing files behind an NB set's divider: when
+ * exactly one NB set on the list has its sport (NB's id when the sale named
+ * one, else the sport's name), its year, and its set name (case-folded, the
+ * listing's season dropped). Anything else gets its own divider, titled
+ * with the listing's set. Returning null here gives every listing its own.
+ */
+export function listedSetFor(listed: ListedCard, sets: readonly SetOnList[]): SetOnList | null {
+  const place = listedPlace(listed);
+  if (!place) return null;
+  const name = fold(place.setName);
+  const sport = fold(place.sportName);
+  const hits = sets.filter(
+    ({ set }) =>
+      (listed.sportId ? set.sport.id === listed.sportId : fold(set.sport.name) === sport) &&
+      set.year === place.year &&
+      fold(set.name) === name,
+  );
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** The NB sets the matched lines name, once each. */
+export function setsOnList(lines: readonly SaleLine[]): SetOnList[] {
+  const sets = new Map<string, SetOnList>();
+  for (const line of lines) {
+    if (line.card && !sets.has(line.card.set.id)) sets.set(line.card.set.id, { set: line.card.set, sportCode: line.sportCode });
+  }
+  return [...sets.values()];
+}
+
+const FACTS = new WeakMap<PickRow, RowFacts | null>();
+
+/**
+ * What a row is, for every rule that orders, groups or filters: its card's,
+ * or its listing's (behind the NB set it joined, when it did). Null for a
+ * row that says too little to walk: it goes in "Can't find it".
+ */
+export function rowFacts(row: PickRow): RowFacts | null {
+  if (FACTS.has(row)) return FACTS.get(row) ?? null;
+  const facts = factsOf(row);
+  FACTS.set(row, facts);
+  return facts;
+}
+
+function factsOf(row: PickRow): RowFacts | null {
+  const c = row.card;
+  if (c) {
+    return {
+      sportKey: c.set.sport.id,
+      sportName: c.set.sport.name,
+      year: c.set.year,
+      setName: c.set.name,
+      setRank: 0,
+      setKey: c.set.id,
+      setTitle: setLabel(c.set),
+      sportCode: row.sportCode,
+      role: variantRole(c),
+      variantWord: null,
+      variantName: variantName(c),
+      cardNumber: c.cardNumber,
+      players: c.players.map((p) => p.name).join(" / "),
+    };
+  }
+  const listed = row.listed;
+  const place = listed ? listedPlace(listed) : null;
+  if (!listed || !place) return null;
+  // Only the listing's own words: a role when its word is one, never a guess.
+  const { word, name } = listedVariant(listed);
+  const card = {
+    role: listed.role ?? null,
+    variantWord: word,
+    variantName: name,
+    cardNumber: place.cardNumber,
+    players: listed.players?.trim() ?? "",
+  };
+  const joined = row.joined?.set;
+  if (joined) {
+    return {
+      sportKey: joined.sport.id,
+      sportName: joined.sport.name,
+      year: joined.year,
+      setName: joined.name,
+      setRank: 0,
+      setKey: joined.id,
+      setTitle: setLabel(joined),
+      sportCode: row.joined?.sportCode ?? null,
+      ...card,
+    };
+  }
+  const sportKey = listed.sportId ?? `sport:${fold(place.sportName)}`;
+  return {
+    sportKey,
+    sportName: place.sportName,
+    year: place.year,
+    setName: place.setName,
+    setRank: 1,
+    setKey: `listed:${sportKey}|${place.year}|${fold(place.setName)}`,
+    setTitle: place.setTitle,
+    // NB's sport when the store resolved one, so its divider wears NB's colour, never the black "other".
+    sportCode: listed.sportCode ?? row.sportCode,
+    ...card,
   };
 }
 
@@ -172,31 +437,38 @@ export type SortDir = "asc" | "desc";
 
 export const SORT_KEYS: readonly SortKey[] = ["qty", "number", "player", "set", "condition", "detail", "order"];
 
-function sportName(row: PickRow): string {
-  return row.card?.set.sport.name ?? "";
-}
-
 function players(row: PickRow): string {
-  return row.card?.players.map((p) => p.name).join(" / ") ?? row.listingTitle;
+  return rowFacts(row)?.players ?? row.listingTitle;
 }
 
-/** The default walking order (see the file comment). */
+/** Exact, code-unit order: a set key is an id, never folded, so two keys tie only when equal. */
+function compareKeys(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * The default walking order (see the file comment). Each step compares one
+ * fact of both rows, so the order is a plain lexicographic one: transitive
+ * whatever mix of cards and listings it sorts.
+ */
 export function compareDefault(a: PickRow, b: PickRow): number {
-  const ca = a.card;
-  const cb = b.card;
-  if (!ca || !cb) {
-    if (ca || cb) return ca ? 1 : -1; // no card first: those are "Can't find it"
+  const fa = rowFacts(a);
+  const fb = rowFacts(b);
+  if (!fa || !fb) {
+    if (fa || fb) return fa ? 1 : -1; // nothing to file by first: those are "Can't find it"
     return naturalCompare(orderLabel(a.orders[0]), orderLabel(b.orders[0])) || naturalCompare(a.key, b.key);
   }
   return (
-    naturalCompare(ca.set.sport.name, cb.set.sport.name) ||
-    cb.set.year - ca.set.year ||
-    naturalCompare(ca.set.name, cb.set.name) ||
-    naturalCompare(ca.set.id, cb.set.id) ||
-    ROLE_RANK[variantRole(ca)] - ROLE_RANK[variantRole(cb)] ||
-    naturalCompare(variantName(ca) ?? "", variantName(cb) ?? "") ||
-    naturalCompare(ca.cardNumber, cb.cardNumber) ||
-    naturalCompare(players(a), players(b)) ||
+    naturalCompare(fa.sportName, fb.sportName) ||
+    fb.year - fa.year ||
+    naturalCompare(fa.setName, fb.setName) ||
+    fa.setRank - fb.setRank ||
+    compareKeys(fa.setKey, fb.setKey) ||
+    roleRank(fa.role) - roleRank(fb.role) ||
+    naturalCompare(fa.variantWord ?? "", fb.variantWord ?? "") ||
+    naturalCompare(fa.variantName ?? "", fb.variantName ?? "") ||
+    naturalCompare(fa.cardNumber, fb.cardNumber) ||
+    naturalCompare(fa.players, fb.players) ||
     naturalCompare(a.condition, b.condition) ||
     naturalCompare(a.serial ?? "", b.serial ?? "") ||
     naturalCompare(a.key, b.key)
@@ -215,7 +487,7 @@ function columnCompare(key: SortKey, a: PickRow, b: PickRow): number {
     case "qty":
       return a.quantity - b.quantity;
     case "number":
-      return naturalCompare(a.card?.cardNumber ?? "", b.card?.cardNumber ?? "");
+      return naturalCompare(rowFacts(a)?.cardNumber ?? "", rowFacts(b)?.cardNumber ?? "");
     case "player":
       return naturalCompare(players(a), players(b));
     case "set":
@@ -242,7 +514,7 @@ export function sortRows(rows: readonly PickRow[], key: SortKey | null, dir: Sor
 export interface PickFilters {
   /** Words to find in the number, player, set, variant, listing or order. */
   text?: string;
-  /** A sport's id. */
+  /** A sport's key (`RowFacts.sportKey`: NB's id, or a listing's sport word). */
   sport?: string;
   /** A set year, as a string. */
   year?: string;
@@ -252,16 +524,24 @@ export interface PickFilters {
   order?: string;
   slabs?: boolean;
   numbered?: boolean;
+  /** Only the sales NB has no card for (the "Not in NB" rows and Can't find it). */
+  notInNb?: boolean;
 }
 
 export function hasFilters(f: PickFilters): boolean {
-  return Boolean(f.text || f.sport || f.year || f.variant || f.condition || f.order || f.slabs || f.numbered);
+  return Boolean(f.text || f.sport || f.year || f.variant || f.condition || f.order || f.slabs || f.numbered || f.notInNb);
 }
 
+/** The chip a row NB has no card for wears (and a search finds it by). */
+export const NOT_IN_NB = "Not in NB";
+
 function haystack(row: PickRow): string {
-  const c = row.card;
+  const facts = rowFacts(row);
   const parts = [row.listingTitle, row.condition, row.serial ?? "", ...row.orders.map(orderLabel)];
-  if (c) parts.push(`#${c.cardNumber}`, c.cardNumber, players(row), setLabel(c.set), variantName(c) ?? "", c.set.sport.name);
+  if (facts) {
+    parts.push(`#${facts.cardNumber}`, facts.cardNumber, facts.players, facts.setTitle, facts.variantWord ?? "", facts.variantName ?? "", facts.sportName);
+  }
+  if (!row.card) parts.push(NOT_IN_NB);
   if (row.grade) parts.push(row.grade.grader, row.grade.grade, row.grade.cert);
   return parts.join(" ").toLowerCase();
 }
@@ -269,14 +549,15 @@ function haystack(row: PickRow): string {
 export function filterRows(rows: readonly PickRow[], f: PickFilters): PickRow[] {
   const words = (f.text ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   return rows.filter((row) => {
-    const c = row.card;
-    if (f.sport && c?.set.sport.id !== f.sport) return false;
-    if (f.year && String(c?.set.year ?? "") !== f.year) return false;
-    if (f.variant && (!c || variantRole(c) !== f.variant)) return false;
+    const facts = rowFacts(row);
+    if (f.sport && facts?.sportKey !== f.sport) return false;
+    if (f.year && String(facts?.year ?? "") !== f.year) return false;
+    if (f.variant && facts?.role !== f.variant) return false;
     if (f.condition && (row.grade ? "Graded" : row.condition) !== f.condition) return false;
     if (f.order && !row.orders.some((o) => o.id === f.order)) return false;
     if (f.slabs && !row.grade) return false;
     if (f.numbered && !row.serial) return false;
+    if (f.notInNb && row.card) return false;
     if (words.length) {
       const text = haystack(row);
       if (!words.every((w) => text.includes(w))) return false;
@@ -296,7 +577,19 @@ export function conditionOf(row: PickRow): string {
 
 export type PickSection =
   | { kind: "cantFind"; key: string; rows: PickRow[] }
-  | { kind: "set"; key: string; sportName: string; sportCode: string | null; title: string; rows: PickRow[] }
+  | {
+      kind: "set";
+      key: string;
+      sportName: string;
+      sportCode: string | null;
+      title: string;
+      rows: PickRow[];
+      /**
+       * A listing's own divider whose title reads exactly like an NB set's on
+       * the same list: its heading says it is not matched, so the two differ.
+       */
+      unmatchedTwin?: boolean;
+    }
   | { kind: "order"; key: string; order: PickOrder; rows: PickRow[] }
   | { kind: "flat"; key: string; rows: PickRow[] }
   | { kind: "new"; key: string; rows: PickRow[] };
@@ -326,40 +619,50 @@ export function buildSections(lines: readonly SaleLine[], filters: PickFilters, 
       else byOrder.set(line.order.id, { order: line.order, lines: [line] });
     }
     const orders = [...byOrder.values()].sort((a, b) => naturalCompare(orderLabel(a.order), orderLabel(b.order)));
+    const sets = setsOnList(lines);
     for (const { order, lines: own } of orders) {
-      const rows = sortRows(filterRows(mergeLines(own), filters), options.sort, options.dir);
+      const rows = sortRows(filterRows(mergeLines(own, { sets }), filters), options.sort, options.dir);
       if (rows.length) sections.push({ kind: "order", key: `order:${order.id}`, order, rows });
     }
     return sections;
   }
 
   const all = filterRows(mergeLines(lines), filters);
-  const cantFind = sortRows(all.filter((r) => !r.card), null);
-  const fresh = sortRows(all.filter((r) => r.card && r.isNew), null);
-  const rest = sortRows(all.filter((r) => r.card && !r.isNew), options.sort, options.dir);
+  const cantFind = sortRows(all.filter((r) => !rowFacts(r)), null);
+  const fresh = sortRows(all.filter((r) => rowFacts(r) && r.isNew), null);
+  const rest = sortRows(all.filter((r) => rowFacts(r) && !r.isNew), options.sort, options.dir);
 
   if (cantFind.length) sections.push({ kind: "cantFind", key: "cantFind", rows: cantFind });
   if (options.sort === null || options.sort === "set") {
-    for (const row of rest) {
-      const card = row.card!;
-      const key = `set:${card.set.id}`;
-      const last = sections[sections.length - 1];
-      if (last?.kind === "set" && last.key === key) last.rows.push(row);
-      else
-        sections.push({
-          kind: "set",
-          key,
-          sportName: card.set.sport.name,
-          sportCode: row.sportCode,
-          title: setLabel(card.set),
-          rows: [row],
-        });
-    }
+    sections.push(...setSections(rest));
   } else if (rest.length) {
     sections.push({ kind: "flat", key: "flat", rows: rest });
   }
   if (fresh.length) sections.push({ kind: "new", key: "new", rows: fresh });
   return sections;
+}
+
+/**
+ * Rows already in walking order, cut into one section per set divider. A
+ * listing's own divider titled exactly like an NB set's divider on the same
+ * list is marked (`unmatchedTwin`) so its heading reads apart.
+ */
+export function setSections(rows: readonly PickRow[]): Extract<PickSection, { kind: "set" }>[] {
+  const sections: Extract<PickSection, { kind: "set" }>[] = [];
+  const own: boolean[] = [];
+  for (const row of rows) {
+    const facts = rowFacts(row);
+    if (!facts) continue;
+    const key = `set:${facts.setKey}`;
+    const last = sections[sections.length - 1];
+    if (last?.key === key) last.rows.push(row);
+    else {
+      sections.push({ kind: "set", key, sportName: facts.sportName, sportCode: facts.sportCode, title: facts.setTitle, rows: [row] });
+      own.push(facts.setRank === 1);
+    }
+  }
+  const nbTitles = new Set(sections.filter((_, i) => !own[i]).map((s) => fold(s.title)));
+  return sections.map((s, i) => (own[i] && nbTitles.has(fold(s.title)) ? { ...s, unmatchedTwin: true } : s));
 }
 
 // ---------------------------------------------------------------------------
@@ -369,14 +672,22 @@ export function buildSections(lines: readonly SaleLine[], filters: PickFilters, 
 export interface BoxStop {
   box: PickBox;
   rows: PickRow[];
-  /** The walk's last stop: the sales NB could not tie to a card, after every box. */
+  /** The walk's last stop: the sales NB could not tie to a card and that say too little to file. */
   cantFind?: boolean;
+  /**
+   * The stop before it: sales NB has no card for but whose listings say what
+   * they are. No box holds them; they walk by set, as on the list.
+   */
+  notInBox?: boolean;
   /** The stop after the boxes for cards whose box NB did not note (before Can't find it). */
   unrecorded?: boolean;
 }
 
 /** The `pbox` id of the Can't find it stop; never a box's own id. */
 export const CANT_FIND_STOP = "cant-find";
+
+/** The `pbox` id of the Not in a box stop; never a box's own id. */
+export const NOT_IN_BOX_STOP = "not-in-box";
 
 /** The `pbox` id of the Box not recorded stop; never a box's own id. */
 export const BOX_NOT_RECORDED_STOP = "no-box";
@@ -425,8 +736,10 @@ export function boxWalk(lines: readonly SaleLine[], boxes: readonly PickBox[]): 
 
 /**
  * The whole By the Box walk: the boxes in order, then a stop for the cards
- * whose box NB never noted, then one last stop for the sales NB could not
- * tie to a card (the list's Can't find it), each when there are any.
+ * whose box NB never noted, then Not in a box (sales NB has no card for, but
+ * whose listings say what they are, in walking order by set), then one last
+ * stop for the sales that say too little (the list's Can't find it), each
+ * when there are any.
  */
 export function boxStops(lines: readonly SaleLine[], boxes: readonly PickBox[]): BoxStop[] {
   const stops = boxWalk(lines, boxes);
@@ -439,13 +752,16 @@ export function boxStops(lines: readonly SaleLine[], boxes: readonly PickBox[]):
       unrecorded: true,
     });
   }
-  const lost = lines.filter((l) => !l.card);
-  if (lost.length) {
-    stops.push({
-      box: { id: CANT_FIND_STOP, name: "Can't find it" },
-      rows: sortRows(mergeLines(lost), null),
-      cantFind: true,
-    });
+  // No box holds a sale NB could not tie to a card. One whose listing says
+  // what it is walks with its set; the rest wait at the very end.
+  const lost = sortRows(mergeLines(lines.filter((l) => !l.card), { sets: setsOnList(lines) }), null);
+  const described = lost.filter((r) => rowFacts(r));
+  if (described.length) {
+    stops.push({ box: { id: NOT_IN_BOX_STOP, name: "Not in a box" }, rows: described, notInBox: true });
+  }
+  const unreadable = lost.filter((r) => !rowFacts(r));
+  if (unreadable.length) {
+    stops.push({ box: { id: CANT_FIND_STOP, name: "Can't find it" }, rows: unreadable, cantFind: true });
   }
   return stops;
 }
