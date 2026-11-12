@@ -76,3 +76,4 @@
 - [zsh file list runs nothing](reference_zsh_file_list_runs_nothing.md) — unquoted $LIST is one arg in zsh; vitest matches nothing and stays green; use xargs, check the file count
 - [Vitest cache holds a stale glob](reference_vitest_cache_holds_stale_glob.md) — "Could not find module" for a module on disk = cached import.meta.glob; edit the test or --no-cache
 - [Preview query shares the action's block rules](patterns_preview_query_shares_the_actions_block_rules.md) — one set of pure block functions for list + action, pause threaded into both; list-then-build agreement test
+- [Seed hops that consume rows replay on retry](reference_seed_hops_that_consume_rows_replay_on_retry.md) — an apply-seed lowers the copies it resolved from; replay the stored order by token on a re-visit

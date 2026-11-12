@@ -671,6 +671,23 @@ export const collectionCopyGradingValidator = v.object({
 });
 
 /**
+ * NEO-500 — one box copy a sale's item was taken from, snapshotted by the
+ * apply (`marketplaceSales.items[].from`): the box, the copy row (which may
+ * be gone since: a copy lowered to 0 is deleted), how many came off it, and
+ * the copy's slot, condition and serial as they were. `condition` is required
+ * because the apply only ever lowers raw copies that carry one; no grade,
+ * since a graded copy is never lowered by a sale today.
+ */
+export const saleItemFromValidator = v.object({
+  homeId: v.id("collectionContainers"),
+  copyId: v.id("collectionCopies"),
+  quantity: v.number(),
+  slot: v.optional(v.number()),
+  condition: collectionCopyConditionValidator,
+  serialNumber: v.optional(v.string()),
+});
+
+/**
  * NEO-379 — the batch defaults an intake run applies to every card it files,
  * each overridable per card. The fields mirror `collectionCopies`;
  * `minPriceCents` is the box floor (NEO-378), meaningful for boxes only.
@@ -5282,8 +5299,38 @@ export default defineSchema({
         problem: v.optional(saleItemProblemValidator),
         /** `oversold` only: how many sold that NB held no copy for. */
         shortBy: v.optional(v.number()),
+        /**
+         * NEO-500 — where the apply took this item's copies from, one entry
+         * per box copy lowered, in the order taken (capped at
+         * `MAX_PICK_FROM`, `lib/pickLines.ts`). A snapshot for the Pick List
+         * (the copy may be gone or moved since): its box, slot and the
+         * copy's condition, grade and serial as they were. Written by the
+         * apply only; absent on an item applied before NEO-500, not
+         * applied at all, or past the sale's `MAX_FROM_PER_SALE` entries
+         * (the line then shows "Box not recorded"). A re-poll never touches it.
+         */
+        from: v.optional(v.array(saleItemFromValidator)),
+        /**
+         * NEO-500 — after the apply no box copy of this card remained (the
+         * collector pulled the last ones). Only `true` is stored. Unset when
+         * the copy read was truncated, so it never claims what it did not see.
+         */
+        lastOnes: v.optional(v.literal(true)),
+        /**
+         * NEO-500 — when the collector marked this item pulled on the Pick
+         * List (`pickList.setPulled`). Absent = not pulled. A re-poll keeps it.
+         */
+        pulledAt: v.optional(v.number()),
       }),
     ),
+    /**
+     * NEO-500 — this order has an item still to pull (applied or refused as
+     * unmatched/linkMismatch, no `pulledAt`) and has not shipped or been
+     * cancelled. Only `true` is stored; none open is ABSENT, written as an
+     * explicit `undefined` because a patch merges. Recomputed by every write
+     * to the items or status (`lib/pickLines.pullOpenOf`).
+     */
+    pullOpen: v.optional(v.literal(true)),
     firstSeenAt: v.number(),
     lastUpdated: v.number(),
   })
@@ -5291,7 +5338,11 @@ export default defineSchema({
     .index("by_owner_platform_order", ["ownerId", "platform", "orderId"])
     // The Sales screen, every platform, newest first, paginated (prefix
     // ownerId, order desc); the per-user test reset (prefix ownerId).
-    .index("by_owner_date", ["ownerId", "orderDate"]),
+    .index("by_owner_date", ["ownerId", "orderDate"])
+    // NEO-500 — the Pick List: the owner's orders with something to pull
+    // (prefix ownerId + pullOpen `true`; absent is the other value), oldest
+    // or newest order first.
+    .index("by_owner_pull_open", ["ownerId", "pullOpen", "orderDate"]),
 
   /**
    * ── NEO-415: one collector's eBay listing settings ──────────────────────

@@ -209,3 +209,4 @@
 - [Status after a dialog closes](reference_status_after_a_dialog_closes.md) — say it from a parent effect after the inert release, not in the closing handler; sr-only text breaks anchored Playwright getByText
 - [Checklist section kinds read card numbers](reference_checklist_section_kinds_read_card_numbers.md) — numbered fixtures 1,2,3… turn parallels into base-subsets; parallels repeat the base numbers
 - [Duplicate React key regression test](reference_duplicate_react_key_regression_test.md) — spy console.error for "same key"; text assertions pass with the bug
+- [Demo content column is ~806px at 1024](reference_demo_content_column_is_806px_at_e2e_width.md) — lg:pr-170 rail gutter; budget demo tables to ~800px or they slide under the exit rail

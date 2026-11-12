@@ -262,6 +262,19 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`. The 15-minute sales poll runs the same drain as a press, so a stocked box can be listed before the spec presses Sync (NEO-433), and neither the set's row nor the "Nothing syncing right now." line proves THIS press ran: the poll leaves a row that looks like a press's own, and the page is idle between two runs. A seller spec therefore presses, then walks the set to rest with `followRunToRest(platform, run, queueSettled(platform, setLabel))` (one step per wait; `slow` gives a named step a signed-off longer ceiling), and only then reads the row and picks its branch. `queueSettled` is the evidence: the press queues the set's cards before its toast, and a run's finish clears them in the write that records its result, only if the run claimed them, so "no card of this set queued" plus idle means a run that started after the press has finished. A press that never claims leaves them queued and fails the walk. A run that sent nothing ends on "Gathering data, done" then "Nothing new to send" (`expectNothingSent`); a sending branch asserts `run.nothingNew()` absent.
 - `support/cross-list.ts`: cross-release import (`openCrossListForm`,
   `pickCrossListSource`, `crossListCards`).
+- `support/pick-list.ts`: the Pick List (NEO-500), one set of handles for the
+  public demo and the signed-in list: `pickList(page)` (region, table, views,
+  filters, status line, Undo), `pulledToggle` / `pickRow` / `pictureButton` by
+  how a row's name begins, `pickGroup` (a set, Can't find it, Sold since you
+  started), `seen` (the table draws each row twice, one copy hidden),
+  `openMoreFilters` / `filterBy` / `sortBy` (a phone folds filters and sorts
+  from a select), and the order seed hop: `seedPickOrder` and
+  `shipPickOrder` (`/testing/seed-pick-order`, the caller's own box, no
+  marketplace call; it refuses an account that lists anywhere), with
+  `bscOrder` / `unmatchedLine` for how the list names an order and a line NB
+  could not tie to a card. A tick is optimistic and the list shows no
+  "saved" state, so a spec that reloads or navigates after a pull first reads
+  the list in a second tab (`inventory-pick-list`'s `fromServer`).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
