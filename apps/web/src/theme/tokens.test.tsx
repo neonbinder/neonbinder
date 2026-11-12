@@ -185,6 +185,25 @@ describe("NeonButton's fills (NEO-356)", () => {
   });
 });
 
+describe("named pairs a screen relies on (DESIGN.md, Notices)", () => {
+  // Reconcile's paused / unasked pane paints notice-warn-ink straight on the
+  // dialog's raised-deep ground; Match Cards' outline Keep buttons paint
+  // neon-green-text on the same ground. Pinned by name so a palette change
+  // that breaks either screen says which one.
+  const PAIRS: [TextRole, SurfaceRole][] = [
+    ["notice-warn-ink", "raised-deep"],
+    ["neon-green-text", "raised-deep"],
+  ];
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: each reads 4.5:1`, () => {
+      for (const [fg, bg] of PAIRS) {
+        const ratio = contrastRatio(tokenHex(fg, mode), tokenHex(bg, mode));
+        expect({ fg, bg, ok: ratio >= 4.5 }).toEqual({ fg, bg, ok: true });
+      }
+    });
+  }
+});
+
 describe("adversarial: every text and ink role, both modes", () => {
   const roles = (re: RegExp) => (Object.keys(TOKENS.dark) as TokenRole[]).filter((r) => re.test(r));
   const TEXT = roles(/(-text|^ink(-[23])?|^notice-.*-ink)$/) as TextRole[];

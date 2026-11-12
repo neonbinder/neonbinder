@@ -844,7 +844,9 @@ function ReadySetRow({
   const chip = (source: SourceDescriptor, item: PlatformItem) => (
     <span
       key={itemDndId(source.key, item.platformValue)}
-      className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border ${
+      // max-w-full + the name's min-w-0: a long set name wraps inside the
+      // chip at 320px rather than pushing it past the row (a11y audit).
+      className={`inline-flex max-w-full items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border ${
         TONE_CLASSES[source.tone].badge
       }`}
     >
@@ -852,7 +854,7 @@ function ReadySetRow({
           opacity: a faded tone falls under 4.5:1 on the light theme's chips
           (A1). Same for every tone. */}
       <span className="text-[10px] font-normal">{source.badge}</span>
-      <span className="break-words font-medium">
+      <span className="min-w-0 break-words font-medium">
         <ItemName
           item={item}
           source={source}
@@ -890,12 +892,14 @@ function ReadySetRow({
         isOver ? "bg-neon-blue/10 ring-1 ring-selection" : "bg-raised/50"
       }`}
     >
-      {/* One wrapping row. Side by side: name, percent, toggle and remove on
-          the first line, then the clash line and the chips, each a full line.
-          On a phone the name takes the whole first line, so a long set name
-          reads in full, and the chips share the next line with the percent,
-          toggle and remove (right-aligned): `order` moves them, not the DOM,
-          so the tab order is the same at every width. */}
+      {/* One wrapping row. The DOM reads name, clash line, chips, then the
+          percent, toggle and remove: the order a phone shows them, so on a
+          phone the reading, tab and visual orders agree (a11y audit). The
+          name takes the whole first line there, so a long set name reads in
+          full, and the chips share the next line with the controls
+          (right-aligned). Side by side, `sm:order-*` puts the controls back
+          on the first line beside the name, then the clash line and the
+          chips, each a full line. */}
       <div className="flex flex-wrap items-center gap-x-3 max-sm:gap-y-2">
         {/* The title is OUR set name, so it is an input, not a label. */}
         <Input
@@ -933,38 +937,14 @@ function ReadySetRow({
           aria-describedby={
             clashMessageId ? `${clashLineId} ${clashMessageId}` : undefined
           }
-          className={`flex-1 min-w-0 max-sm:basis-full px-2 py-1 text-sm font-medium text-ink bg-raised-deep/60 border rounded focus:border-selection ${
+          className={`flex-1 min-w-0 max-sm:basis-full sm:order-1 px-2 py-1 text-sm font-medium text-ink bg-raised-deep/60 border rounded focus:border-selection ${
             clashMessageId ? "border-neon-pink-text" : "border-rule-strong"
           }`}
         />
-        {set.confidence > 0 && (
-          <span className={`text-xs shrink-0 max-sm:order-3 ${confidenceColor}`}>
-            {Math.round(set.confidence * 100)}%
-          </span>
-        )}
-        {showMetadata && (
-          <button
-            type="button"
-            onClick={() => setExpanded(!expanded)}
-            className="hit-area-24 inline-flex items-center justify-center text-xs text-ink-3 hover:text-ink-2 px-2 max-sm:order-3 max-sm:min-h-11 max-sm:min-w-11"
-            aria-label={`Toggle details for ${label}`}
-            aria-expanded={expanded}
-          >
-            {expanded ? "▲" : "▼"}
-          </button>
-        )}
-        <button
-          onClick={onDisband}
-          className="hit-area-24 inline-flex items-center justify-center text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0 max-sm:order-3 max-sm:min-h-11 max-sm:min-w-11"
-          title="Remove this set (its mappings return to Pending)"
-          aria-label={`Remove set ${label}`}
-        >
-          ✕
-        </button>
       {clashMessageId && (
         <p
           id={clashLineId}
-          className="mt-1 basis-full text-xs text-neon-pink-text max-sm:order-1 max-sm:mt-0"
+          className="mt-1 basis-full text-xs text-neon-pink-text max-sm:mt-0 sm:order-3"
         >
           {TITLE_CLASH_ROW_LINE}{" "}
           {/* gray-400: a hint, quieter than the pink fact it follows. */}
@@ -973,7 +953,7 @@ function ReadySetRow({
       )}
 
       <div
-        className="mt-2 flex min-w-0 basis-full flex-wrap gap-1.5 max-sm:order-2 max-sm:mt-0 max-sm:flex-1 max-sm:basis-0"
+        className="mt-2 flex min-w-0 basis-full flex-wrap gap-1.5 max-sm:mt-0 max-sm:flex-1 max-sm:basis-0 sm:order-4"
       >
         {sources.map((source) =>
           set.links[source.key].map((i) => chip(source, i)),
@@ -995,6 +975,30 @@ function ReadySetRow({
             ),
         )}
       </div>
+        {set.confidence > 0 && (
+          <span className={`text-xs shrink-0 sm:order-2 ${confidenceColor}`}>
+            {Math.round(set.confidence * 100)}%
+          </span>
+        )}
+        {showMetadata && (
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="hit-area-24 inline-flex items-center justify-center text-xs text-ink-3 hover:text-ink-2 px-2 sm:order-2 max-sm:min-h-11 max-sm:min-w-11"
+            aria-label={`Toggle details for ${label}`}
+            aria-expanded={expanded}
+          >
+            {expanded ? "▲" : "▼"}
+          </button>
+        )}
+        <button
+          onClick={onDisband}
+          className="hit-area-24 inline-flex items-center justify-center text-xs text-neon-pink-text px-2 py-1 rounded hover:bg-neon-pink/10 shrink-0 sm:order-2 max-sm:min-h-11 max-sm:min-w-11"
+          title="Remove this set (its mappings return to Pending)"
+          aria-label={`Remove set ${label}`}
+        >
+          ✕
+        </button>
       </div>
 
       {onAttachClick && (
@@ -1512,7 +1516,7 @@ function ReconciliationDialog({
   /** The Pending columns' grid: the desktop jump's first row is in here. */
   const pendingGridRef = useRef<HTMLDivElement | null>(null);
   /** Each Pending column's label ("SportLots (3)"), by source. */
-  const columnLabelRefs = useRef<Partial<Record<SourceKey, HTMLDivElement | null>>>({});
+  const columnLabelRefs = useRef<Partial<Record<SourceKey, HTMLHeadingElement | null>>>({});
   /**
    * The subtitle's "N pending": scroll to the pending work and put focus on
    * it. An in-view move, so nothing goes in history.
@@ -2621,7 +2625,9 @@ function ReconciliationDialog({
         }}
       >
         <div className="flex items-center justify-between gap-2 mb-2">
-          <div
+          {/* A real heading under "Pending" (h3): the phone jump lands here,
+              and a screen reader announces where it landed (NEO-496 a11y). */}
+          <h4
             ref={(el) => {
               columnLabelRefs.current[key] = el;
             }}
@@ -2633,7 +2639,7 @@ function ReconciliationDialog({
           >
             {sideName} ({filtered.length}
             {narrowed ? ` of ${all.length}` : ""})
-          </div>
+          </h4>
           {/* aria-disabled, never `disabled`: a Base verdict that sets aside
               the column's last keepable row must not take focus with it (a
               disabled button drops focus to <body>). `keepAll` guards.

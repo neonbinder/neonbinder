@@ -290,6 +290,7 @@ vi.mock("./TeamPicker", () => ({
 // ---------------------------------------------------------------------------
 
 import SetAttributesPanel, {
+  CLOSED_SETS_CAP,
   SET_TEAM_PICKER_LABELS,
   teamCascadeConfirmCopy,
   teamClearConfirmCopy,
@@ -4067,5 +4068,56 @@ describe("SetAttributesPanel — the sources sit inside the open panel (NEO-496)
     render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
     expect(screen.queryByRole("heading", { name: "Multi-source sets" })).toBeNull();
     expect(screen.getByText("Set attributes")).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-496 (a11y audit) — one toggle for both states, so focus stays on it,
+ * with `aria-expanded` and `aria-controls` naming the open body; and the
+ * remembered closes are capped.
+ */
+describe("SetAttributesPanel — the attributes toggle keeps focus (NEO-496 a11y)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+  });
+
+  it("stays the focused element across open and close, saying its state", () => {
+    currentRow = makeRow({ level: "insert", value: "Anime" });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    const toggle = screen.getByRole("button", { name: "Edit attributes" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    toggle.focus();
+
+    fireEvent.click(toggle);
+    expect(document.activeElement).toBe(toggle);
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBe(toggle);
+    expect(toggle.textContent).toBe("Hide attributes ▴");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const body = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(body).not.toBeNull();
+    expect(within(body as HTMLElement).getByText("Set attributes")).toBeTruthy();
+
+    // Enter (the driver's synthetic key) closes it again, on the same element.
+    fireEvent.keyDown(toggle, { key: "Enter" });
+    expect(document.activeElement).toBe(toggle);
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBe(toggle);
+    expect(toggle.textContent).toBe("Edit attributes ▾");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps at most CLOSED_SETS_CAP closed sets, dropping the oldest", () => {
+    const key = "nb.setAttributesClosedSets";
+    const old = Array.from({ length: CLOSED_SETS_CAP }, (_, i) => `set-${i}`);
+    window.sessionStorage.setItem(key, JSON.stringify(old));
+    currentRow = makeRow({ level: "setName" });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+
+    const stored = JSON.parse(window.sessionStorage.getItem(key) ?? "[]") as string[];
+    expect(stored).toHaveLength(CLOSED_SETS_CAP);
+    expect(stored[stored.length - 1]).toBe(String(SELECTOR_OPTION_ID));
+    expect(stored.includes("set-0")).toBe(false);
+    expect(stored[0]).toBe("set-1");
   });
 });

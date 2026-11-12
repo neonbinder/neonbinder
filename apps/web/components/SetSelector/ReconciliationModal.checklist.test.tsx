@@ -261,28 +261,38 @@ describe("ReconciliationModal — checklist column", () => {
     // One wrapping row holds the name, the chips and the row's controls.
     expect(row.className).toContain("flex-wrap");
     expect(name.className).toContain("max-sm:basis-full");
+    expect(name.className).toContain("sm:order-1");
     const chips = screen.getByRole("button", { name: /^Remove Bomb Squad from / }).parentElement
       ?.parentElement as HTMLElement;
     expect(chips.parentElement).toBe(row);
-    // Side by side the chips take their own line; on a phone they share one
-    // with the controls, which follow them there at a 44px target.
+    // Side by side the chips take their own last line (sm:order-4); on a phone
+    // they share one with the controls, which follow them at a 44px target.
     expect(chips.className).toContain("basis-full");
-    expect(chips.className).toContain("max-sm:order-2");
+    expect(chips.className).toContain("sm:order-4");
     expect(chips.className).toContain("max-sm:flex-1");
-    for (const control of [
+    expect(chips.className).not.toMatch(/max-sm:order-/);
+    const controls = [
       screen.getByRole("button", { name: "Toggle details for Bomb Squad" }),
       screen.getByRole("button", { name: "Remove set Bomb Squad" }),
-    ]) {
+    ];
+    for (const control of controls) {
       expect(control.parentElement).toBe(row);
-      expect(control.className).toContain("max-sm:order-3");
+      // Back on the name's line side by side; DOM order on a phone.
+      expect(control.className).toContain("sm:order-2");
+      expect(control.className).not.toMatch(/max-sm:order-/);
       expect(control.className).toContain("max-sm:min-h-11");
       expect(control.className).toContain("max-sm:min-w-11");
     }
-    // The DOM order (so the tab order) is name, toggle, remove, then chips.
-    const order = [name, screen.getByRole("button", { name: "Remove set Bomb Squad" }), chips];
-    expect(order.map((el) => Array.from(row.children).indexOf(el))).toEqual(
-      [...order.map((el) => Array.from(row.children).indexOf(el))].sort((a, b) => a - b),
-    );
+    // NEO-496 (a11y audit): the DOM order (so the tab order) is the phone's
+    // order: name, chips, then toggle and remove.
+    const order = [name, chips, ...controls];
+    const at = order.map((el) => Array.from(row.children).indexOf(el));
+    expect(at).toEqual([...at].sort((a, b) => a - b));
+    // A long chip name wraps inside its chip rather than overflowing the row.
+    const chip = screen.getByRole("button", { name: /^Remove Bomb Squad from / })
+      .parentElement as HTMLElement;
+    expect(chip.className).toContain("max-w-full");
+    expect((chip.querySelector(".break-words") as HTMLElement).className).toContain("min-w-0");
   });
 
   test("a skipped BSC column says BSC wasn't asked", () => {

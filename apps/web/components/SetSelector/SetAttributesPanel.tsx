@@ -142,6 +142,7 @@ import {
  * old `focus:outline-none` with only a colour change left a keyboard operator
  * a focus indicator in name only.
  */
+const HIDE_ATTRIBUTES_LABEL = "Hide attributes";
 const ATTRIBUTES_TOGGLE_CLASS =
   "text-xs py-1 rounded text-ink-3 hover:text-neon-green-text focus-outline";
 
@@ -195,6 +196,12 @@ const TEAM_LEVELS: ReadonlySet<string> = new Set([
  * touch is guarded and the set simply opens by default if it does.
  */
 const CLOSED_SETS_KEY = "nb.setAttributesClosedSets";
+/**
+ * NEO-496 (a11y audit) — the most sets remembered as closed; the oldest
+ * close is dropped first. A long session walks a few dozen sets at most, so
+ * this only keeps the stored list from growing without end.
+ */
+export const CLOSED_SETS_CAP = 200;
 
 function readClosedSets(): string[] {
   try {
@@ -211,10 +218,9 @@ function readClosedSets(): string[] {
 function rememberSetClosed(id: string, closed: boolean) {
   try {
     const rest = readClosedSets().filter((other) => other !== id);
-    window.sessionStorage.setItem(
-      CLOSED_SETS_KEY,
-      JSON.stringify(closed ? [...rest, id] : rest),
-    );
+    // Newest last, so the oldest close is the one dropped at the cap.
+    const next = closed ? [...rest, id].slice(-CLOSED_SETS_CAP) : rest;
+    window.sessionStorage.setItem(CLOSED_SETS_KEY, JSON.stringify(next));
   } catch {
     // Storage unavailable: the set opens by default next time.
   }
@@ -326,6 +332,8 @@ export default function SetAttributesPanel({
   // row may still be loading on the first render; the effect below settles
   // it once the level is known, before the panel draws anything.
   const rowLevel = row?.level;
+  /** The open body, for the toggle's `aria-controls`. */
+  const bodyId = useId();
   const [expanded, setExpanded] = useState(() =>
     opensByDefault(rowLevel, selectorOptionId, defaultCollapsed),
   );
@@ -803,29 +811,22 @@ export default function SetAttributesPanel({
             )}
           </p>
         </div>
-        {expanded ? (
-          <button
-            type="button"
-            onClick={() => setOpen(false)}
-            onKeyDown={(e) => activateOnEnter(e, () => setOpen(false))}
-            aria-label="Hide attributes"
-            className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
-          >
-            Hide attributes ▴
-          </button>
-        ) : (
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setOpen(true)}
-              onKeyDown={(e) => activateOnEnter(e, () => setOpen(true))}
-              aria-label={EDIT_ATTRIBUTES_LABEL}
-              className={ATTRIBUTES_TOGGLE_CLASS}
-            >
-              {EDIT_ATTRIBUTES_LABEL} ▾
-            </button>
-          </div>
-        )}
+        {/* NEO-496 (a11y audit): ONE button for both states, so toggling
+            keeps focus on it. Two elements swapped under the press and
+            dropped focus to <body>. Its name still says what a press does
+            ("Edit attributes" / "Hide attributes": specs and copy name
+            them), and `aria-expanded` says the state. */}
+        <button
+          type="button"
+          onClick={() => setOpen(!expanded)}
+          onKeyDown={(e) => activateOnEnter(e, () => setOpen(!expanded))}
+          aria-label={expanded ? HIDE_ATTRIBUTES_LABEL : EDIT_ATTRIBUTES_LABEL}
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
+        >
+          {expanded ? `${HIDE_ATTRIBUTES_LABEL} ▴` : `${EDIT_ATTRIBUTES_LABEL} ▾`}
+        </button>
       </div>
 
       {/* NEO-306: the things that can be DONE to this row, as its own row of
@@ -941,7 +942,8 @@ export default function SetAttributesPanel({
       </div>
 
       {expanded && (
-        <>
+        // The body the toggle's `aria-controls` names (NEO-496 a11y).
+        <div id={bodyId} className="space-y-3">
           {/* NEO-496: the set's publisher checklist, one file for the whole
               set, at the set level only. First and full width (Jason,
               2026-11-12): the upload is what an operator opens a set to do,
@@ -1068,7 +1070,7 @@ export default function SetAttributesPanel({
               />
             ))}
           </div>
-        </>
+        </div>
       )}
     </div>
   );

@@ -1156,6 +1156,10 @@ describe("ReconciliationModal — the subtitle's pending count jumps to the work
       renderModal({ autoMatched: [], unmatchedBsc: [], unmatchedSl: [SL_COMBINED], slCandidates: [] });
       fireEvent.click(screen.getByRole("button", { name: "1 pending, go to Pending" }));
       expect(document.activeElement?.textContent).toMatch(/^SportLots \(1\)/);
+      // A real heading under Pending's h3, so the landing is announced as one.
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { level: 4, name: /^SportLots \(1\)/ }),
+      );
     } finally {
       media.mockRestore();
     }
