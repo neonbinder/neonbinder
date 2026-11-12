@@ -36,4 +36,13 @@ Checks to repeat on any client-side archive/document reader:
   node_modules, run with the repo's tsx); a `.ts` copy outside the package is
   treated as CJS and top-level await fails.
 
+Per-user scrub (`forgetUploader`, same ticket): an anonymising sentinel is safe
+when it sits outside the only auth provider's subject namespace (Clerk `user_…`;
+`auth.config.ts` has one provider, machine tokens also resolve to a `user_`
+subject) and every owner check compares the stored id to the CALLER's id, so a
+sentinel row becomes nobody's and falls to its expiry job. Re-check both if a
+second auth provider is added. A privacy line "we delete the data tied to it"
+backed only by an operator-run internal mutation is true only while the
+deletion runbook names it (no NB deletion sweep exists).
+
 Related: [[patterns-neo478-operator-checklist-ingest]], [[patterns-neo149-zip-ingest]].
