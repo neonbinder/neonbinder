@@ -7,7 +7,7 @@ import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 export const PRIVACY_CONTACT_EMAIL = "support@neonbinder.io";
 
 /** The date this policy last changed, shown at the top. Update it with the text. */
-const LAST_UPDATED = { iso: "2026-11-04", label: "November 4, 2026" };
+const LAST_UPDATED = { iso: "2026-11-11", label: "November 11, 2026" };
 
 /**
  * NEO-421 — the public privacy policy at /privacy. eBay asks for its URL
@@ -199,6 +199,11 @@ export default function PrivacyPage() {
                 copy lists on a marketplace you&apos;ve connected, and they show on your public profile
                 if you show that copy there.
               </P>
+              <P>
+                When a copy sells, its photos stay with the sale, so your Pick List can show you the exact
+                card to pull. Only you see them there. They&apos;re kept until you delete your account; to
+                have them removed sooner, email <ContactLink />.
+              </P>
             </Sub>
             <Sub title="Marketplace connections">
               <P>
@@ -329,7 +334,7 @@ export default function PrivacyPage() {
               <li>
                 Want a BuySportsCards or SportLots sign-in removed? Email us and we&apos;ll delete it.
               </li>
-              <li>Edit or delete your cards, boxes and photos any time.</li>
+              <li>Edit or delete your cards, boxes and photos any time. Photos of copies that sold are removed on request.</li>
               <li>Make your trade shelf or for-sale cards private from your public profile settings.</li>
               <li>
                 To see what we hold about you, or to delete your account and its data, email <ContactLink />.
@@ -342,7 +347,8 @@ export default function PrivacyPage() {
               We keep your data while your account is open, because it&apos;s your collection. Card scans
               are deleted after two days, apart from the photos we make from them for a card you save,
               which stay on that copy. Photos you replace or remove are deleted from storage soon
-              after. When you ask us to delete your account, we delete it and the data tied to it.
+              after. Photos of a copy that sold stay with the sale until you delete your account or ask
+              us to remove them. When you ask us to delete your account, we delete it and the data tied to it.
               PostHog and Sentry keep analytics and error reports for their own standard periods.
             </P>
           </Section>
