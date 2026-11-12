@@ -93,6 +93,29 @@ export function focusWithoutOpening(
   }
 }
 
+/**
+ * NEO-518 — an option's DOM id, from the list's id and the item's KEY.
+ *
+ * Keyed rather than indexed so `aria-activedescendant` changes whenever the
+ * highlighted ROW changes, not only when the highlight moves: a search whose
+ * answer re-ranks under a resting highlight (row 0 was "+ New team …", is now
+ * the Astros) gets a new active descendant, and a screen reader announces the
+ * row Enter will now take. Under an index id the attribute stayed `…-opt-0`
+ * and nothing was said.
+ *
+ * A key may hold anything (`:`, spaces, quotes). Every character outside
+ * `[A-Za-z0-9-]` is written as `_<hex code point>_`, `_` included, so two
+ * different keys never share an id and the result is safe both in an id and
+ * inside the `[id="…"]` selector the scroll effect uses.
+ */
+export function autocompleteOptionId(listboxId: string, key: string): string {
+  const safe = key.replace(
+    /[^A-Za-z0-9-]/gu,
+    (c) => `_${c.codePointAt(0)!.toString(16)}_`,
+  );
+  return `${listboxId}-opt-${safe}`;
+}
+
 export interface AutocompleteProps<T> {
   /** Current text in the field. Controlled — the caller owns the query. */
   query: string;
@@ -176,6 +199,17 @@ export interface AutocompleteProps<T> {
   describedBy?: string;
   /** Marks the field as failing validation (`aria-invalid`); pair it with `describedBy` on the error. */
   invalid?: boolean;
+  /**
+   * NEO-518 — Enter on this highlighted row does nothing FOR NOW: the press is
+   * swallowed (never reaching a host form or dialog), the list stays open, and
+   * nothing is selected. A click still selects it.
+   *
+   * For a create row offered while the caller's answer is still on its way:
+   * an Enter there would mint a duplicate of a team the search has not
+   * returned yet. Dropped rather than queued — once the answer lands the
+   * highlight resets to row 0, the best match, and the next Enter takes it.
+   */
+  holdEnter?: (item: T) => boolean;
 }
 
 export function Autocomplete<T>({
@@ -203,6 +237,7 @@ export function Autocomplete<T>({
   hideWhenEmpty = false,
   describedBy,
   invalid = false,
+  holdEnter,
 }: AutocompleteProps<T>) {
   const [open, setOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
@@ -273,19 +308,28 @@ export function Autocomplete<T>({
     open &&
     (openOnEmpty || query.trim().length > 0) &&
     !(hideWhenEmpty && !hasResults && !loading);
-  const activeId = hasResults ? `${listboxId}-opt-${highlightIdx}` : undefined;
+  const highlighted = hasResults ? items[highlightIdx] : undefined;
+  const activeId =
+    highlighted !== undefined
+      ? autocompleteOptionId(listboxId, getKey(highlighted))
+      : undefined;
 
   // Keep the highlighted row on screen as the arrows walk a list longer than
   // its height cap. Without this the highlight scrolls out of the box and a
   // sighted keyboard user is steering blind. `nearest` so a row already in
   // view does not jump. Optional-called: happy-dom has no layout.
+  //
+  // NEO-518 — on a new LIST too (`signature`), not only a moved highlight: an
+  // answer that lands while the list is scrolled resets the highlight to row
+  // 0, and an index that was already 0 would not re-run this, leaving the row
+  // Enter now takes out of sight.
   useEffect(() => {
-    if (!showPopup || !hasResults) return;
+    if (!showPopup || !activeId) return;
     const option = listRef.current?.querySelector<HTMLElement>(
-      `[id="${listboxId}-opt-${highlightIdx}"]`,
+      `[id="${activeId}"]`,
     );
     option?.scrollIntoView?.({ block: "nearest" });
-  }, [showPopup, hasResults, highlightIdx, listboxId]);
+  }, [showPopup, activeId, signature]);
 
   /*
    * NEO-307 — anchor the fixed-position list to the field, below it or,
@@ -472,7 +516,9 @@ export function Autocomplete<T>({
             // confirm shortcut while a suggestion is highlighted.
             if (showPopup && hasResults) {
               e.preventDefault();
-              select(items[highlightIdx]);
+              const item = items[highlightIdx];
+              if (item === undefined || holdEnter?.(item)) return;
+              select(item);
             }
           } else if (e.key === "Escape") {
             // Swallow Escape only while the list is open, so a host dialog's
@@ -533,10 +579,18 @@ export function Autocomplete<T>({
             return (
               <li
                 key={getKey(item)}
-                id={`${listboxId}-opt-${idx}`}
+                id={autocompleteOptionId(listboxId, getKey(item))}
                 role="option"
                 aria-selected={idx === highlightIdx}
-                onMouseEnter={() => setHighlightIdx(idx)}
+                // NEO-518 — mousemove, not mouseenter. A list that opens, or
+                // re-renders with new rows, under a RESTING pointer fires
+                // mouseenter on whatever row lands there, and that stole the
+                // highlight from row 0 — so Enter took the row under the
+                // mouse, not the best match. Only a pointer that actually
+                // moves claims it, and only when it is not already there.
+                onMouseMove={() => {
+                  if (idx !== highlightIdx) setHighlightIdx(idx);
+                }}
                 // onMouseDown, not onClick: the input's blur fires first on a
                 // click and would close the list before the click lands.
                 onMouseDown={(e) => {

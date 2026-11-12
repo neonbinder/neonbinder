@@ -1310,9 +1310,17 @@ old attention count climbed to). The step prints no count; the header's
   ONE line, `Cards with no players (24)`, on `Leave for later`. Its card list
   (`#NNO, #NNO, #NNO +21 · 24 cards`) opens; card 1 takes
   `Just this card… — #…` → `No team on this card`; card 2 takes
-  `Just this card…` → `Other team…` → the search field (`Team name to find`)
-  → `No matches.` → Enter → the New Team dialog → `Create team RXO<token>T`,
-  which joins that card selected; the line itself stays on `Leave for later`.
+  `Just this card…` → `Other team…` → the search field (`Team name to find`),
+  where NEO-518 comes first: the field is pressed, `pittsburgh` typed, and the
+  set's league and year rank the list (this is a Hockey 1995 set, so the NHL's
+  Pittsburgh Penguins lead the long-gone Pirates and the Panthers college team,
+  all catalogue rows; the old context-free search listed the Penguins LAST),
+  the Penguins are the highlighted option (`aria-selected`) and the create row is
+  last, and Enter checks `Pittsburgh Penguins — #…` on that card (no write beyond
+  the card's local answer); then card 2's real answer replaces the pick: `Other
+  team…` again → `RXO<token>T` → `No matches.` → Enter → the New Team dialog →
+  `Create team RXO<token>T`, which joins that card selected (the Penguins
+  radio is then unchecked); the line itself stays on `Leave for later`.
 - **STEP 6c** leaves with `Next (Enter)` and asserts the Save step is
   `Step y of y` (y read on the teams step) and `Save 25 cards?`.
 - **STEP 7** asserts the pill reads `22 need you` within 7s of
@@ -2781,7 +2789,7 @@ whole thing; never assume which letter the worker half starts with.
 |---|---|---|
 | `CNAA`, `CNAB` | `tests/set-selector/checklist-attention-badge-and-filter.spec.ts` | two teams; CNAB is the born-linked card's alone, which is what makes its row assertion single-row |
 | `RXT` | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` | RETIRED by NEO-413: the career team is a real recorded one-word club (`recordedNoMatchName`) |
-| `RXO` | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` | a HOCKEY team, `RXO<token>T`, created from the wizard's teams step through a line's "Other team…" picker and the New Team dialog it opens (NEO-335 Phase 2, C1); read back as `Remove team RXO<token>T` in a card drawer. Ends in a LETTER so no other attempt's longer token can contain it as a prefix (Convex search treats the last term as a prefix, which would turn the picker's `No matches.` into a match). Diverges from `RXT` at its third character |
+| `RXO` | `tests/set-selector/checklist-one-marketplace-skips-match-dialog.spec.ts` | a HOCKEY team, `RXO<token>T`, created from the wizard's teams step through a line's "Other team…" picker and the New Team dialog it opens (NEO-335 Phase 2, C1), on the same card whose picker first proves the set-ranked `pittsburgh` search (NEO-518: the Penguins lead and Enter takes them, then this create replaces the pick); read back as `Remove team RXO<token>T` in a card drawer. Ends in a LETTER so no other attempt's longer token can contain it as a prefix (Convex search treats the last term as a prefix, which would turn the picker's `No matches.` into a match). Diverges from `RXT` at its third character |
 | `CNAP` | `tests/set-selector/checklist-attention-badge-and-filter.spec.ts` | a PLAYER — the born-linked card #703's, created from the quick-add form's PlayerPicker ("Create player CNAP<token>") and read back from that card's drawer. The quick-add create path's one E2E since NEO-335 retired `set-fill-teams-from-teammate-card` (and its `ftl-`/`FTP`/`FTT` names). Diverges from CNAA/CNAB at its fourth character, and lives in `players.search`, not `teams.search` |
 | `CNWT` | `tests/set-selector/checklist-attention-walker-missing-team.spec.ts` | |
 | `NBTeam` | `tests/set-selector/team-picker-create-custom-card.spec.ts` | created under `E2E Test Sport <w>`, not Baseball |
