@@ -311,70 +311,86 @@ describe("parsePublishedChecklist — adversarial input", () => {
     expect(out).toEqual({ rows: [], skipped: [], format: "lines", tooBig: true });
   });
 
-  describe("a whole file at the size cap, one adversarial line repeated", () => {
+  describe("a large file, one adversarial line repeated", () => {
     // A per-line cap does not bound the whole parse: lines x quadratic-per-line
     // still stalls. Before the fix, `/[\s,]+$/` in the name trim made a 2 MB
-    // headered CSV of "a , , , … x" cells take ~9-31 s. Each file here fills
-    // the 2 MB cap with one line just under the line cap, repeated.
-    const WHOLE_FILE_MS = 2000;
+    // headered CSV of "a , , , … x" cells take ~9-31 s. Each file here is a
+    // quarter of the 2 MB cap (the cost is linear in the line count, so a
+    // quarter is a quarter of the work), filled with one line just under the
+    // line cap, repeated.
+    //
+    // The bound is a ratio, not a wall clock: the same file size of benign
+    // short lines is parsed first, back to back, and the adversarial file may
+    // cost at most RATIO_LIMIT times that. A busy box slows both alike, so the
+    // ratio holds under load. Alone, the adversarial files cost 0.02-1.3x the
+    // benign one; the regression costs 15x or more. Each side takes the faster
+    // of two runs, so one stall (GC, a scheduler pause) cannot decide it.
+    const FILE_SIZE = PUBLISHED_CHECKLIST_MAX_TEXT / 4;
+    const RATIO_LIMIT = 8;
     const commaRun = (length: number) => `a${" ,".repeat(Math.floor((length - 2) / 2))}x`;
-    const fillToCap = (head: string, line: string) => {
-      const count = Math.floor((PUBLISHED_CHECKLIST_MAX_TEXT - head.length) / (line.length + 1));
+    const fillToSize = (head: string, line: string) => {
+      const count = Math.floor((FILE_SIZE - head.length) / (line.length + 1));
       return { text: head + Array(count).fill(line).join("\n"), count };
     };
-    const parsesWholeFileFast = (head: string, line: string) => {
+    const fastest = (text: string) => {
+      const first = timed(text);
+      const second = timed(text);
+      return { out: first.out, ms: Math.min(first.ms, second.ms) };
+    };
+    const parsesLargeFileFast = (head: string, line: string) => {
       expect(line.length).toBeLessThanOrEqual(PUBLISHED_CHECKLIST_MAX_LINE);
-      const { text, count } = fillToCap(head, line);
-      expect(text.length).toBeGreaterThan(PUBLISHED_CHECKLIST_MAX_TEXT - 2 * PUBLISHED_CHECKLIST_MAX_LINE);
-      expect(text.length).toBeLessThanOrEqual(PUBLISHED_CHECKLIST_MAX_TEXT);
-      const { out, ms } = timed(text);
+      const { text, count } = fillToSize(head, line);
+      expect(text.length).toBeGreaterThan(FILE_SIZE - 2 * PUBLISHED_CHECKLIST_MAX_LINE);
+      expect(text.length).toBeLessThanOrEqual(FILE_SIZE);
+      const baseline = fastest(fillToSize("", "1 Mike Trout - Angels").text);
+      const { out, ms } = fastest(text);
       expect(out.tooBig).toBeUndefined();
       // Every line was read: each is a row or a skipped entry.
       expect(out.rows.length + out.skipped.length).toBe(count);
-      expect(ms).toBeLessThan(WHOLE_FILE_MS);
+      expect(ms).toBeLessThan(RATIO_LIMIT * baseline.ms);
       return out;
     };
 
-    it("a 2 MB headered CSV whose player cell is 'a , , , … x' on every line", () => {
-      const out = parsesWholeFileFast("#,Player,Team\n", `1,"${commaRun(1900)}",Royals`);
+    it("a 512 KB headered CSV whose player cell is 'a , , , … x' on every line", () => {
+      const out = parsesLargeFileFast("#,Player,Team\n", `1,"${commaRun(1900)}",Royals`);
       expect(out.format).toBe("csv");
     });
 
-    it("a 2 MB headered CSV whose team cell is 'a , , , … x' on every line", () => {
-      const out = parsesWholeFileFast("#,Player,Team\n", `1,Mike Trout,"${commaRun(1900)}"`);
+    it("a 512 KB headered CSV whose team cell is 'a , , , … x' on every line", () => {
+      const out = parsesLargeFileFast("#,Player,Team\n", `1,Mike Trout,"${commaRun(1900)}"`);
       expect(out.format).toBe("csv");
     });
 
-    it("a 2 MB line-format file whose team is 'a , , , … x' on every line", () => {
-      const out = parsesWholeFileFast("", `1 Mike Trout - ${commaRun(1900)}`);
+    it("a 512 KB line-format file whose team is 'a , , , … x' on every line", () => {
+      const out = parsesLargeFileFast("", `1 Mike Trout - ${commaRun(1900)}`);
       expect(out.format).toBe("lines");
     });
 
-    it("a 2 MB line-format file whose players are 'a , , , … x' on every line", () => {
-      const out = parsesWholeFileFast("", `1 ${commaRun(1900)}`);
+    it("a 512 KB line-format file whose players are 'a , , , … x' on every line", () => {
+      const out = parsesLargeFileFast("", `1 ${commaRun(1900)}`);
       expect(out.format).toBe("lines");
     });
 
-    it("a 2 MB headerless TSV whose player cell is 'a , , , … x' on every line", () => {
-      const out = parsesWholeFileFast("", `1\t${commaRun(1900)}\tRoyals`);
+    it("a 512 KB headerless TSV whose player cell is 'a , , , … x' on every line", () => {
+      const out = parsesLargeFileFast("", `1\t${commaRun(1900)}\tRoyals`);
       expect(out.format).toBe("tsv");
     });
 
-    it("a 2 MB line-format file of long first words before a U+2028", () => {
+    it("a 512 KB line-format file of long first words before a U+2028", () => {
       // `.*$` stopped at the U+2028 and retried every shorter first word.
-      parsesWholeFileFast("", `1${"a".repeat(999)} ${"b".repeat(900)} c`);
+      parsesLargeFileFast("", `1${"a".repeat(999)} ${"b".repeat(900)} c`);
     });
 
-    it("a 2 MB headered CSV whose player cell names 900 players on every line", () => {
+    it("a 512 KB headered CSV whose player cell names 900 players on every line", () => {
       // Each row was kept with its 900 names: a million strings held for the
       // preview (~2 s, mostly GC). The server's per-card caps now skip them.
-      const out = parsesWholeFileFast("#,Player,Team\n", `1,${"A/".repeat(900)},${"B/".repeat(40)}`);
+      const out = parsesLargeFileFast("#,Player,Team\n", `1,${"A/".repeat(900)},${"B/".repeat(40)}`);
       expect(out.rows).toEqual([]);
       expect(out.skipped[0].reason).toBe("More than 20 players on one card");
     });
 
-    it("a 2 MB headered CSV whose cell is a long run of quotes", () => {
-      const out = parsesWholeFileFast("#,Player,Team\n", `1,${" ".repeat(900)}a${'"'.repeat(1000)},Royals`);
+    it("a 512 KB headered CSV whose cell is a long run of quotes", () => {
+      const out = parsesLargeFileFast("#,Player,Team\n", `1,${" ".repeat(900)}a${'"'.repeat(1000)},Royals`);
       expect(out.format).toBe("csv");
     });
   });

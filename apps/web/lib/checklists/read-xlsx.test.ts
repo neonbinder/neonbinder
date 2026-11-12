@@ -13,6 +13,9 @@ import {
   readXlsx,
 } from "./read-xlsx";
 
+/** Rows of 50 full-length cells the injected kept-characters cap allows. */
+const KEPT_CAP_ROWS = 10;
+
 const NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
 const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
@@ -312,13 +315,20 @@ describe("readXlsx — which sheet", () => {
   });
 
   it("holds the kept-characters cap across the whole workbook", () => {
-    // Each sheet alone stays under the cap; together they pass it.
-    const perSheet = Math.ceil(XLSX_MAX_KEPT_CHARS / 2 / (50 * XLSX_MAX_CELL_CHARS)) + 10;
+    // The cap is injected small (ten full 50-cell rows) so the input is a few
+    // rows, not the 64 MB the default needs. Each sheet alone stays under it;
+    // together they pass it.
+    const maxKeptChars = KEPT_CAP_ROWS * 50 * XLSX_MAX_CELL_CHARS;
+    const perSheet = KEPT_CAP_ROWS / 2 + 1;
     const row = '<c t="s"><v>0</v></c>'.repeat(50);
     const body = Array.from({ length: perSheet }, (_, i) => `<row r="${i + 1}">${row}</row>`).join("");
     const big = [`<t>${"A B ".repeat(1_000)}</t>`];
-    expect(readXlsx(workbook([body], big)).ok).toBe(true);
-    expect(readXlsx(workbook([body, body], big))).toEqual({ ok: false, reason: "part-too-big" });
+    expect(readXlsx(workbook([body], big), { maxKeptChars }).ok).toBe(true);
+    expect(readXlsx(workbook([body, body], big), { maxKeptChars })).toEqual({ ok: false, reason: "part-too-big" });
+  });
+
+  it("keeps the default kept-characters cap at 64 MB when no cap is injected", () => {
+    expect(XLSX_MAX_KEPT_CHARS).toBe(64 * 1024 * 1024);
   });
 
   it("stops at the row cap across sheets and says which sheet it stopped in", () => {
@@ -461,10 +471,10 @@ describe("readXlsx — hostile shapes stay bounded", () => {
   });
 
   it("refuses as part-too-big once the cells kept across rows pass the character cap", () => {
-    const rowsToPass = Math.ceil(XLSX_MAX_KEPT_CHARS / (50 * XLSX_MAX_CELL_CHARS)) + 20;
-    const started = performance.now();
-    expect(readXlsx(amplifier(rowsToPass))).toEqual({ ok: false, reason: "part-too-big" });
-    expect(performance.now() - started).toBeLessThan(10_000);
+    // Injected small cap: ten full rows of 50 cells. Nine rows fit, twelve do not.
+    const maxKeptChars = KEPT_CAP_ROWS * 50 * XLSX_MAX_CELL_CHARS;
+    expect(readXlsx(amplifier(KEPT_CAP_ROWS - 1), { maxKeptChars }).ok).toBe(true);
+    expect(readXlsx(amplifier(KEPT_CAP_ROWS + 2), { maxKeptChars })).toEqual({ ok: false, reason: "part-too-big" });
   });
 
   it("cleans a long cell exactly as a short one, then cuts it to the cap", () => {

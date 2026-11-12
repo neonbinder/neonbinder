@@ -640,7 +640,12 @@ function parseRow(
  * Read every visible sheet of an .xlsx, in tab order. Never throws: a file it
  * cannot read comes back `{ ok: false, reason }`.
  */
-export function readXlsx(input: Uint8Array | ArrayBuffer): XlsxRead {
+export function readXlsx(
+  input: Uint8Array | ArrayBuffer,
+  /** Tests only: a smaller kept-characters cap, so the cap is cheap to reach. */
+  options: { maxKeptChars?: number } = {},
+): XlsxRead {
+  const maxKeptChars = options.maxKeptChars ?? XLSX_MAX_KEPT_CHARS;
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.length > XLSX_MAX_FILE_BYTES) return { ok: false, reason: "too-big" };
   try {
@@ -674,7 +679,7 @@ export function readXlsx(input: Uint8Array | ArrayBuffer): XlsxRead {
           return false;
         }
         for (const cell of row.cells) keptChars += cell.length;
-        if (keptChars > XLSX_MAX_KEPT_CHARS) throw new XlsxError("part-too-big");
+        if (keptChars > maxKeptChars) throw new XlsxError("part-too-big");
         rows.push({ ...row, sheetIndex: index });
       });
       sheetBytes += streamEntry(
