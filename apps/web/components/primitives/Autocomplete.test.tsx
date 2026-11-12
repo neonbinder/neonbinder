@@ -19,7 +19,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import React, { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Autocomplete } from "./Autocomplete";
+import { Autocomplete, autocompleteOptionId } from "./Autocomplete";
 
 type Row = { id: string; name: string; sport?: string };
 
@@ -48,6 +48,7 @@ function Harness({
   | "selectOnFocus"
   | "listMaxHeightClassName"
   | "inputGeometryClassName"
+  | "holdEnter"
 >) {
   const [query, setQuery] = useState(initialQuery);
   return (
@@ -426,6 +427,99 @@ describe("Autocomplete — picker mode", () => {
     } finally {
       Element.prototype.scrollIntoView = original;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-518 — a re-ranked answer is announced, and only a moving pointer
+// claims the highlight
+// ---------------------------------------------------------------------------
+
+describe("Autocomplete — re-ranked answers (NEO-518)", () => {
+  const ASTROS: Row = { id: "astros", name: "Houston Astros" };
+  const COUGARS: Row = { id: "cougars", name: "Houston Cougars" };
+
+  it("keys option ids on the item, so the active descendant changes when row 0 does", () => {
+    const { rerender } = render(<Harness items={[COUGARS, ASTROS]} initialQuery="Houston" />);
+    openList();
+    const before = input().getAttribute("aria-activedescendant")!;
+    expect(screen.getByText("Houston Cougars").closest("li")!.id).toBe(before);
+
+    // The answer re-ranks under a resting highlight: still row 0, new row.
+    rerender(<Harness items={[ASTROS, COUGARS]} initialQuery="Houston" />);
+    const after = input().getAttribute("aria-activedescendant")!;
+    expect(after).not.toBe(before);
+    expect(screen.getByText("Houston Astros").closest("li")!.id).toBe(after);
+    expect(screen.getByText("Houston Astros").closest("li")!.getAttribute("aria-selected")).toBe(
+      "true",
+    );
+  });
+
+  it("writes any key as a safe, distinct id", () => {
+    const ids = ["a b", "a_20_b", "x:y", 'q"uote', "é", "plain-1"].map((k) =>
+      autocompleteOptionId("lb", k),
+    );
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) expect(id).toMatch(/^lb-opt-[A-Za-z0-9_-]+$/);
+    expect(autocompleteOptionId("lb", "plain-1")).toBe("lb-opt-plain-1");
+  });
+
+  it("scrolls the highlighted row back into view when a new list lands", () => {
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.textContent ?? "");
+    };
+    try {
+      const { rerender } = render(<Harness items={[COUGARS, ASTROS]} initialQuery="Houston" />);
+      openList();
+      scrolled.length = 0;
+      rerender(<Harness items={[ASTROS, COUGARS]} initialQuery="Houston" />);
+      expect(scrolled.at(-1)).toContain("Houston Astros");
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("a list that opens under a resting pointer keeps row 0; only a moving pointer claims the highlight", () => {
+    render(<Harness />);
+    openList();
+    const lofton = screen.getByText("Kenny Lofton").closest("li")!;
+    // mouseenter alone: the row arrived under a pointer that did not move.
+    fireEvent.mouseEnter(lofton);
+    fireEvent.mouseOver(lofton);
+    expect(screen.getByText("Ken Griffey Jr.").closest("li")!.getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(lofton.getAttribute("aria-selected")).toBe("false");
+
+    fireEvent.mouseMove(lofton);
+    expect(lofton.getAttribute("aria-selected")).toBe("true");
+    expect(input().getAttribute("aria-activedescendant")).toBe(lofton.id);
+  });
+
+  it("holdEnter: Enter on a held row does nothing and keeps the list open; a click still picks it", () => {
+    const onSelect = vi.fn();
+    const hostKey = vi.fn();
+    render(
+      <div onKeyDown={(e) => hostKey(e.key, e.defaultPrevented)}>
+        <Harness onSelect={onSelect} holdEnter={(r) => r.id === "1"} />
+      </div>,
+    );
+    openList();
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    // Swallowed: a host form or dialog never sees an Enter it could act on.
+    expect(hostKey).toHaveBeenLastCalledWith("Enter", true);
+
+    fireEvent.keyDown(input(), { key: "ArrowDown" });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onSelect.mock.calls.at(-1)?.[0].name).toBe("Ken Caminiti");
+
+    openList();
+    fireEvent.mouseDown(screen.getByText("Ken Griffey Jr."));
+    expect(onSelect.mock.calls.at(-1)?.[0].name).toBe("Ken Griffey Jr.");
   });
 });
 

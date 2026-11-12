@@ -29,6 +29,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+import { teamRowFields } from "./lib/teamRow";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1003,4 +1004,82 @@ describe("teams.pickerCandidates — an unusable context gives no tier 1 or 3", 
     expect(rows.map((r) => r.tier)).not.toContain(1);
     expect(rows.map((r) => r.tier)).not.toContain(3);
   });
+});
+
+describe("teams.pickerCandidates — a set built the real way (NEO-518)", () => {
+  /**
+   * The wizard's "Other team…" field passes the node the cards are saved
+   * under — a set or one of its variant rows — and that row's OWN
+   * `features.league` is what resolves L (nothing walks up for the league).
+   * So this tree is built through `addCustomSelectorOption`, the real
+   * creation path: the sport row is born with `league: "MLB"`
+   * (`deriveOwnLevelFeatures`) and every child copies it down at its own
+   * creation. A hand-seeded `features` would prove nothing about that.
+   */
+  async function seedEliteSet(t: T) {
+    const asAdmin = t.withIdentity(USER);
+    const add = (level: string, value: string, parentId?: SelId) =>
+      asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: level as never,
+        value,
+        ...(parentId ? { parentId } : {}),
+      });
+    const sportId = await add("sport", "Baseball");
+    const yearId = await add("year", "2026", sportId);
+    const brandId = await add("manufacturer", "Donruss", yearId);
+    const setId = await add("setName", "Donruss Elite", brandId);
+    const baseId = await add("variantType", "Base", setId);
+    return { sportId, setId, baseId };
+  }
+
+  async function seedHouston(t: T, sportId: SelId) {
+    // Fresh-data shape: the New League step stores the short form as the
+    // abbreviation and seeds no alias, so "MLB" resolves by the fallback.
+    const mlb = await seedLeague(t, sportId, "Major League Baseball", "major", undefined, "MLB");
+    const texas = await seedLeague(t, sportId, "Texas League", "minor");
+    const ncaa = await seedLeague(t, sportId, "NCAA Division I", "college");
+    const team = (location: string, name: string, extra: {
+      leagueId: Id<"leagues">;
+      yearsActive: { from: number; to?: number };
+    }) =>
+      t.run(async (ctx) =>
+        ctx.db.insert("teams", {
+          ...teamRowFields({ location, name }),
+          sportId,
+          lastUpdated: 1,
+          ...extra,
+        }),
+      );
+    // Inserted college-first: the old `teams.search` order led with it.
+    await team("Houston", "Cougars", { leagueId: ncaa, yearsActive: { from: 1946 } });
+    await team("Houston", "Buffaloes", { leagueId: texas, yearsActive: { from: 1888, to: 1961 } });
+    await team("Houston", "Colt .45s", { leagueId: mlb, yearsActive: { from: 1962, to: 1964 } });
+    // A fixture club: a minor-league team active in 2026 with the city's name.
+    await team("Houston", "Hot Sauce", { leagueId: texas, yearsActive: { from: 2020 } });
+    await team("Houston", "Astros", { leagueId: mlb, yearsActive: { from: 1965 } });
+  }
+
+  test.each(["set", "variant"] as const)(
+    "'houston' on a 2026 baseball set leads with the Astros, then minor leagues active that year (%s-level context)",
+    async (level) => {
+      const t = convexTest(schema, modules);
+      const { sportId, setId, baseId } = await seedEliteSet(t);
+      await seedHouston(t, sportId);
+
+      const rows = await pick(t, {
+        query: "houston",
+        sportId,
+        contextOptionId: level === "set" ? setId : baseId,
+        limit: 8,
+      });
+
+      expect(rows.map((r) => `${r.team.location} ${r.team.name}:${r.tier}`)).toEqual([
+        "Houston Astros:1",
+        "Houston Hot Sauce:2",
+        "Houston Colt .45s:3",
+        "Houston Buffaloes:4",
+        "Houston Cougars:4",
+      ]);
+    },
+  );
 });
