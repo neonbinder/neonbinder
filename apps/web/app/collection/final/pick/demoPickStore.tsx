@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { Card, CardFeature, Finish, VariantKind } from "../data/types";
+import { listedTitle } from "./model";
 import { PickListStoreContext } from "./store";
-import type { PickBox, PickListData, PickListStore, PickOrder, SaleLine } from "./types";
+import type { ListedCard, PickBox, PickListData, PickListStore, PickOrder, SaleLine } from "./types";
 
 /**
  * NEO-500 — the public demo's Pick List: a hard-coded stack of open orders,
@@ -183,6 +184,17 @@ function line(
   };
 }
 
+/** What the one described-but-unmatched demo sale says it is: "2024 Score #302 · Malik Nabers". */
+const NABERS_LISTED: ListedCard = {
+  sportName: FOOTBALL.name,
+  year: 2024,
+  season: "2024",
+  setName: "Score",
+  players: "Malik Nabers",
+  cardNumber: "302",
+  role: "base",
+};
+
 const at = (boxId: string, slot?: number) => ({ spot: slot === undefined ? { boxId } : { boxId, slot } });
 
 export const DEMO_PICK_LINES: readonly SaleLine[] = [
@@ -336,6 +348,15 @@ export const DEMO_PICK_LINES: readonly SaleLine[] = [
   // Non-Sport: no sport code, so the black divider.
   line(card({ set: S24_GPK, number: "1a", player: "Adam Bomb" }), NON_SPORT, O6),
   line(card({ set: S24_GPK, number: "KP-3", player: "Dead Ted", kind: "insert", variant: "Kids at Play" }), NON_SPORT, O6),
+
+  // NB could not tie this sale to a card, but the listing says what it is,
+  // so it walks with its set (2024 Score) and wears "Not in NB". In By the
+  // Box it is the Not in a box stop; the two below are Can't find it.
+  line(null, null, O5, {
+    listingTitle: listedTitle(NABERS_LISTED),
+    listed: NABERS_LISTED,
+    problem: "NB couldn't match this line. Check the order's photo.",
+  }),
 
   // Can't find it: NB could not tie these to one card.
   line(null, null, O3, {

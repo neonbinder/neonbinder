@@ -9,7 +9,11 @@
  * apply's snapshot (`items[].from`); NB data only, so a line never names a
  * marketplace card id or SKU.
  *
- * Four functions, split so a pull re-runs as little as possible:
+ * NEO-509: a "Can't find it" line also carries the sale's own words for its
+ * card (`listed`, as the poll stored them), so the seller can look for it.
+ * Sale data for the Pick List only: nothing here writes it to NB's rows.
+ *
+ * Five functions, split so a pull re-runs as little as possible:
  *   - `open` (subscribed): the lines and the boxes they name. Bounded: at
  *     most `OPEN_SALES_READ + RECENT_SALES_READ` sale docs plus one read per
  *     distinct box. Every poll and every `setPulled` re-runs it, so it reads
@@ -17,6 +21,8 @@
  *   - `cards`: the catalog cards the lines name, hydrated once by the client
  *     (they do not change when a line is pulled).
  *   - `soldPhotos`: the photos of the copies the lines came from.
+ *   - `sports`: the NB sport rows the lines' `listed.sportId` name (name and
+ *     SKU code), hydrated once by the client like `cards`.
  *   - `setPulled`: marks lines pulled or not, and recomputes the order's
  *     stored `pullOpen`.
  *
@@ -34,7 +40,7 @@ import { MAX_CARDS_BY_ID } from "./collectionCatalog";
 import { CatalogReader, catalogCardWithPathValidator } from "./lib/catalogView";
 import { parseListingSku } from "./lib/listingSku";
 import { lineOnPickList, orderOnPickList, pullOpenOf, saleIdOfLine, saleLineKeys } from "./lib/pickLines";
-import { collectionCopyConditionValidator, listingPlatformValidator } from "./schema";
+import { collectionCopyConditionValidator, listingPlatformValidator, saleItemListedValidator } from "./schema";
 
 type Sale = Doc<"marketplaceSales">;
 type SaleItem = Sale["items"][number];
@@ -57,6 +63,8 @@ export const MAX_PICK_LINES = 1000;
 export const MAX_SOLD_PHOTOS = 100;
 /** Line ids one `setPulled` call may carry. */
 export const MAX_SET_PULLED = 200;
+/** Sport ids one `sports` call may ask about. */
+export const MAX_SPORTS_BY_ID = 20;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Validators
@@ -94,6 +102,13 @@ export const pickLineValidator = v.object({
   cardId: v.optional(v.id("cardChecklist")),
   /** Why NB could not match the line; it goes in "Can't find it". */
   cantFind: v.optional(cantFindValidator),
+  /**
+   * NEO-509 — on a `cantFind` line only: what the sale says the card is, as
+   * the poll stored it (`marketplaceSales.items[].listed`). The marketplace's
+   * words, for the seller to look for; `sportId` is NB's sport row when the
+   * poll tied the sale's sport to one.
+   */
+  listed: v.optional(saleItemListedValidator),
   quantity: v.number(),
   /** The marketplace's condition string for the line, verbatim. */
   condition: v.string(),
@@ -221,7 +236,7 @@ async function lineOf(
   if (!item.applied) {
     // `lineOnPickList` lets an unapplied line through only when refused.
     const cantFind = item.problem === "linkMismatch" ? ("linkMismatch" as const) : ("unmatched" as const);
-    return { ...base, cantFind, from: [] };
+    return { ...base, cantFind, ...(item.listed ? { listed: item.listed } : {}), from: [] };
   }
 
   const from: PickLine["from"] = [];
@@ -294,6 +309,42 @@ export const cards = query({
       const card = await reader.cardWithPath(row);
       const sport = card.set?.sport ? await reader.row(card.set.sport._id) : null;
       out.push({ card, sportCode: sport?.sportConfig?.skuCode ?? null });
+    }
+    return out;
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// sports
+// ───────────────────────────────────────────────────────────────────────────
+
+const pickSportValidator = v.object({
+  id: v.id("selectorOptions"),
+  /** NB's name for the sport. */
+  name: v.string(),
+  /** NB's own code for the sport (the SKU code: "FB"); null when it has none. */
+  code: v.union(v.string(), v.null()),
+});
+
+/**
+ * The NB sports some lines' `listed.sportId` name, aligned with `sportIds`:
+ * a gone row, a bad id, or a row that is not a sport is null in its place.
+ * Catalog data only, so any signed-in caller may read it. One point read
+ * per id, at most `MAX_SPORTS_BY_ID` ids.
+ */
+export const sports = query({
+  args: { sportIds: v.array(v.string()) },
+  returns: v.array(v.union(pickSportValidator, v.null())),
+  handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
+    if (args.sportIds.length > MAX_SPORTS_BY_ID) {
+      refuse(COLLECTION_ERRORS.limit, `Ask for at most ${MAX_SPORTS_BY_ID} sports at once.`);
+    }
+    const out: Array<typeof pickSportValidator.type | null> = [];
+    for (const raw of args.sportIds) {
+      const id = ctx.db.normalizeId("selectorOptions", raw);
+      const row = id ? await ctx.db.get(id) : null;
+      out.push(row && row.level === "sport" ? { id: row._id, name: row.value, code: row.sportConfig?.skuCode ?? null } : null);
     }
     return out;
   },

@@ -1147,6 +1147,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     // NEO-370 — the listing outbox and per-variant sync records name a variant.
     "listingOutbox",
     "marketplaceListingSyncs",
+    // NEO-509 — a sale line's description names a sport row (listed.sportId).
+    "marketplaceSales",
     "cardPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
