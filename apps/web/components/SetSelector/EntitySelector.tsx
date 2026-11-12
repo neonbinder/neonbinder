@@ -214,6 +214,17 @@ const HIGHLIGHT_TINT =
  */
 const TWIN_SUFFIX = "text-xs font-normal tabular-nums opacity-75";
 /**
+ * NEO-499 — a row's name may wrap (a set name can be one unbroken
+ * 200-character token), so the name's line is `items-start` and each small
+ * item beside it is nudged to centre on the name's first 24px line: the
+ * suffix's 16px line box by 4px, a 20px pill or chevron by 2px. A one-line
+ * row therefore looks exactly as it did under `items-center`.
+ */
+const SUFFIX_ON_FIRST_LINE = "mt-1 shrink-0";
+/** The SL / BSC linkage pill beside a row's name (see SUFFIX_ON_FIRST_LINE). */
+const MARKETPLACE_PILL =
+  "mt-0.5 shrink-0 text-xs px-1 py-0.5 rounded bg-chip-strong text-ink-2";
+/**
  * NEO-341 (axe color-contrast) — a row's secondary line, in every row state.
  * It was gray-400, which measured under 4.5:1 on the highlight tint (#184b3f,
  * the green /20 over the dark card) and is no better on the selected `*-900`
@@ -635,7 +646,7 @@ function EntitySelector({
       <button
         ref={collapsedCardRef}
         type="button"
-        className="w-full text-left bg-raised p-6 rounded-lg shadow shadow-offset flex items-center justify-between cursor-pointer focus-outline"
+        className="w-full text-left bg-raised p-6 rounded-lg shadow shadow-offset flex items-start justify-between gap-2 cursor-pointer focus-outline"
         aria-label={`${title}: ${nameOf(selected)}${
           suffixOf(selected) ? ` ${suffixOf(selected)}` : ""
         } — change`}
@@ -643,16 +654,24 @@ function EntitySelector({
         onClick={() => setExpanded(true)}
         onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
       >
-        <div className="flex items-center gap-2">
-          <div className="font-semibold">{nameOf(selected)}</div>
+        {/* NEO-499: `min-w-0` down the flex chain and `wrap-anywhere` on the
+            name, so a long unbroken name (a set name may be 200 characters
+            with no space) wraps inside the column's card instead of running
+            out of it over the next column; the chevron keeps its size.
+            Top-aligned, so a wrapped name keeps its suffix and the chevron
+            on its FIRST line rather than floating mid-height; the `mt-*`
+            centres each on that 24px line, so a one-line card sits exactly
+            where `items-center` put it. */}
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="min-w-0 wrap-anywhere font-semibold">{nameOf(selected)}</div>
           {suffixOf(selected) && (
             <>
               {" "}
-              <span className={TWIN_SUFFIX}>{suffixOf(selected)}</span>
+              <span className={`${TWIN_SUFFIX} ${SUFFIX_ON_FIRST_LINE}`}>{suffixOf(selected)}</span>
             </>
           )}
         </div>
-        <ChevronDownIcon className="w-5 h-5 text-ink-3" />
+        <ChevronDownIcon className="w-5 h-5 mt-0.5 shrink-0 text-ink-3" />
       </button>
     );
   }
@@ -878,8 +897,11 @@ function EntitySelector({
                       pinned ? " border-l-4 border-l-neon-blue-text" : ""
                     }`}
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold">{nameOf(item)}</span>
+                    <div className="flex min-w-0 items-start gap-2">
+                      {/* NEO-499: wraps a long unbroken name inside the row
+                          (see the collapsed card above); the suffix and
+                          pills keep their size and sit on its first line. */}
+                      <span className="min-w-0 wrap-anywhere font-semibold">{nameOf(item)}</span>
                       {/* NEO-325: its own element beside the name, so the
                           name stays alone in its text node (flows tap rows
                           by that text) while the option's accessible name
@@ -887,16 +909,16 @@ function EntitySelector({
                       {twinSuffix && (
                         <>
                           {" "}
-                          <span className={TWIN_SUFFIX}>{twinSuffix}</span>
+                          <span className={`${TWIN_SUFFIX} ${SUFFIX_ON_FIRST_LINE}`}>{twinSuffix}</span>
                         </>
                       )}
                       {showPills && pd?.sportlots && (
-                        <span className="text-xs px-1 py-0.5 rounded bg-chip-strong text-ink-2">
+                        <span className={MARKETPLACE_PILL}>
                           SL
                         </span>
                       )}
                       {showPills && pd?.bsc && (
-                        <span className="text-xs px-1 py-0.5 rounded bg-chip-strong text-ink-2">
+                        <span className={MARKETPLACE_PILL}>
                           BSC
                         </span>
                       )}

@@ -6,7 +6,8 @@
  * advance-to-save.yaml, util-wizard-read-back-decision.yaml (Maestro suite
  * retired in NEO-341; see git history).
  *
- * The wizard since NEO-335 ("Tidy up this set"): names -> teams -> titles ->
+ * The wizard since NEO-335 ("Tidy up <year> <set> <variant>" since NEO-497,
+ * `TIDY_UP_NAME`): names -> teams -> titles ->
  * save, ONE "Step x of y" counter (WizardChrome). On a NAME step x is the
  * decided count plus one, so "Step 1 of N" is a batch with nothing decided;
  * y grows as staged steps arrive, so pin x, never y. Past the names come a
@@ -36,6 +37,7 @@ import {
   columnHeading,
   columnOption,
   columnSearch,
+  DRILL_DEFAULTS,
   drillToBaseVariant,
   drillToColdManufacturer,
   syncChecklistButton,
@@ -48,12 +50,46 @@ const FETCH = 120_000;
 export const LOOKUPS = 180_000;
 
 /**
- * The open pre-save wizard, by its dialog name (WizardChrome `WIZARD_TITLE`;
- * it was "Confirm New Players & Teams" before NEO-335). Contract: a locator,
- * nothing waited for. The post-save attention walker shares this name.
+ * NEO-497 — the name every tidy-up dialog (the pre-save wizard and the
+ * post-save attention walker) starts with. The title goes on to name the set
+ * it tidies, "Tidy up 2024 Topps Chrome" for its Base checklist (`tidyUpName`),
+ * and reads "Tidy up this set" only while the set's names are still loading.
+ * Find the dialog or its heading by this; assert the full name with
+ * `tidyUpName`.
+ */
+export const TIDY_UP_NAME = /^Tidy up /;
+
+/**
+ * NEO-497 — a tidy-up dialog's full name for the checklist at
+ * `<year> / <set> / <variant>`: the year row, the SET row (never the
+ * manufacturer) and the checklist's own row, in that order. `variant` is the
+ * words the title shows, taken exactly: a parallel under an insert reads
+ * "<insert> <parallel>" (the insert's name first, unless the parallel's own
+ * name already starts with it), so the caller passes that whole text; this
+ * helper does not re-derive the rule, so it cannot agree with a broken one.
+ *
+ * A Base checklist's title does not say "Base" (Jason, 2026-11-11): leave
+ * `variant` out for it ("Tidy up 2024 Topps Chrome"). Passing "Base" throws,
+ * so an expectation cannot quietly bring the word back; the helper never
+ * strips it itself.
+ */
+export function tidyUpName({ year, set, variant }: { year: string; set: string; variant?: string }): string {
+  if (variant?.trim().toLowerCase() === "base") {
+    throw new Error(
+      'tidyUpName: a Base checklist\'s title does not say "Base" (NEO-497); leave `variant` out for it',
+    );
+  }
+  return variant === undefined ? `Tidy up ${year} ${set}` : `Tidy up ${year} ${set} ${variant}`;
+}
+
+/**
+ * The open pre-save wizard, by its dialog name (`TIDY_UP_NAME`; "Tidy up this
+ * set" from NEO-335 to NEO-497, "Confirm New Players & Teams" before that).
+ * Contract: a locator, nothing waited for. The post-save attention walker
+ * shares this name.
  */
 export function reviewWizard(page: Page): Locator {
-  return page.getByRole("dialog", { name: "Tidy up this set" });
+  return page.getByRole("dialog", { name: TIDY_UP_NAME });
 }
 
 /**
@@ -244,8 +280,9 @@ export async function walkToAutographStep(page: Page): Promise<void> {
  * fetch it from the marketplaces, confirm the card pairing when both
  * marketplaces answered, and land in the entity-review wizard.
  *
- * Contract: EXIT the "Tidy up this set" dialog is open and axe-clean, every
- * row undecided ("Step 1 of N"; callers assert that themselves). Live, the
+ * Contract: EXIT the tidy-up dialog is open, named for the set it fetched
+ * ("Tidy up 2024 Topps Stars of MLB Network" by default, NEO-497) and
+ * axe-clean, every row undecided ("Step 1 of N"; callers assert that themselves). Live, the
  * pairing session is PARKED behind it ("Back to Match Cards" is offered);
  * with SportLots paused it is the one-marketplace solo path and there is no
  * parked session. NEO-475: on the default set the live branch is UNMEASURED
@@ -259,7 +296,8 @@ export async function fetchChecklistToWizard(
   target: DrillTarget = {},
   { checklist = target.set === undefined ? CHECKLISTS.starsOfMlbNetwork : undefined }: { checklist?: ChecklistName } = {},
 ): Promise<void> {
-  await drillToBaseVariant(page, env, { set: "Topps Stars of MLB Network", ...target });
+  const drilled = { set: "Topps Stars of MLB Network", ...target };
+  await drillToBaseVariant(page, env, drilled);
   // NEO-478/482/489: the publisher's checklist is uploaded before the fetch. The default
   // set's file answers every card (each row says "No Team": the hosts and the show card
   // have none), so BSC is asked for nothing per card and none of its cards reaches "Cards
@@ -288,10 +326,22 @@ export async function fetchChecklistToWizard(
     await expect(confirmMatches).toBeHidden();
   }
   await expect(reviewWizard(page)).toBeVisible({ timeout: FETCH });
+  // NEO-497: the dialog names the checklist it is tidying, read off the NB rows
+  // this drill picked (the year and the set; a Base checklist's title leaves
+  // "Base" out).
+  await expect(reviewWizard(page)).toHaveAccessibleName(
+    tidyUpName({
+      year: drilled.year ?? DRILL_DEFAULTS.year,
+      set: drilled.set ?? DRILL_DEFAULTS.set,
+    }),
+  );
   if (facts !== undefined) await expectTeamsFromChecklist(page, facts);
   // The helper's product is this screen, so it checks it (GUIDE "Accessibility checks").
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
+
+/** `openOneMarketplaceSetBase`'s ancestors when the caller names none. */
+const ONE_MARKETPLACE_DEFAULTS = { sport: "Hockey", year: "1995", manufacturer: "All Brands" } as const;
 
 export interface OneMarketplaceSet {
   /** The set's NB name, as the Sets column lists it. */
@@ -321,7 +371,7 @@ export interface OneMarketplaceSet {
 export async function openOneMarketplaceSetBase(
   page: Page,
   env: FlowEnv,
-  { set, sport = "Hockey", year = "1995", manufacturer = "All Brands" }: OneMarketplaceSet,
+  { set, sport = ONE_MARKETPLACE_DEFAULTS.sport, year = ONE_MARKETPLACE_DEFAULTS.year, manufacturer = ONE_MARKETPLACE_DEFAULTS.manufacturer }: OneMarketplaceSet,
 ): Promise<void> {
   await drillToColdManufacturer(page, env, { sport, year, manufacturer });
 
@@ -374,7 +424,9 @@ export async function openOneMarketplaceSetBase(
  * (after `advanceToSave`) for the set's sole writer (SET-REGISTRY.md).
  *
  * Contract: ENTRY the set is registered one-marketplace and never fetched.
- * EXIT the "Tidy up this set" dialog is open and axe-clean. NEO-335: a
+ * EXIT the tidy-up dialog is open, named for the set ("Tidy up 1995 <set>"
+ * by default, NEO-497; a Base checklist's title leaves "Base" out), and
+ * axe-clean. NEO-335: a
  * one-sided fetch with unknown names (every current caller) opens on a name
  * step; one whose only open question is teams or titles opens the same dialog
  * straight onto "Cards with no team" / "Card titles", so the title gate holds
@@ -405,8 +457,11 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
 
   // Every fetched name the deployment does not hold is queued, each behind a
   // lookup (measured ~0.8 s to open on a 25-card set; the flow's 60 s). Gated
-  // on the wizard's title, "Tidy up this set" since NEO-335.
+  // on the wizard's title, which names the set since NEO-497.
   await expect(reviewWizard(page)).toBeVisible({ timeout: 60_000 });
+  await expect(reviewWizard(page)).toHaveAccessibleName(
+    tidyUpName({ year: target.year ?? ONE_MARKETPLACE_DEFAULTS.year, set: target.set }),
+  );
   if (facts !== undefined) await expectTeamsFromChecklist(page, facts);
   await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
 }
