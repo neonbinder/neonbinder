@@ -973,7 +973,7 @@ function BoxView({
 /** How a toggle's name says a row is not in NB: "…, not in NB, BSC 1234". */
 const NOT_IN_NB_NAME = "not in NB";
 
-function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolean } = {}): string {
+function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolean; withTeam?: boolean } = {}): string {
   const c = row.card;
   const extra = row.grade
     ? `${row.grade.grader} ${row.grade.grade}, cert ${row.grade.cert}`
@@ -985,8 +985,10 @@ function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolea
   // nothing of its order, so its name always carries it: two orders' strays
   // never read alike. One the listing describes also says it is not in NB.
   // The title's " · " joins read as pauses here, never as "dot".
+  // The picture's name carries the team the card shows (the row itself no longer prints it).
+  const team = options.withTeam && c ? c.teams.map((t) => t.name).join(" / ") : "";
   let name = c
-    ? `#${c.cardNumber} ${playerNames(c)}, ${setLabel(c.set)}${variantName(c) ? ` ${variantName(c)}` : ""}, ${extra}`
+    ? `#${c.cardNumber} ${playerNames(c)}${team ? `, ${team}` : ""}, ${setLabel(c.set)}${variantName(c) ? ` ${variantName(c)}` : ""}, ${extra}`
     : `${row.listingTitle.split(" · ").join(", ")}${row.listed ? `, ${NOT_IN_NB_NAME}` : ""}, ${orders}`;
   if (options.withSlot && row.spot?.slot !== undefined) name += `, slot ${row.spot.slot}`;
   if (row.isNew) name += `, ${COPY.fresh.toLowerCase()}`;
@@ -1050,7 +1052,8 @@ function PickTable({
   };
 
   // The column headers stick just under the site header (its height is published as `--nb-header-h`, 0 on a phone).
-  const headCell = "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold";
+  const headCell =
+    "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold md:max-lg:px-1.5";
 
   const sortButton = (key: SortKey) => {
     const on = sort === key;
@@ -1127,7 +1130,7 @@ function PickTable({
             {sortHead("number", "w-16")}
             {sortHead("player")}
             {sortHead("set", setInCells ? "lg:min-w-36" : "", "detail")}
-            {sortHead("condition", "lg:w-28")}
+            {sortHead("condition")}
             {sortHead("order", "w-28")}
             <th scope="col" className={`${headCell} md:hidden`}>
               Card
@@ -1159,6 +1162,7 @@ function PickTable({
                     showSport={!hideSport && !inSet && section.kind !== "cantFind"}
                     ruleBelow={breaks[i]}
                     name={rowName(row, { withOrder: nameWithOrder, withSlot: showSlot })}
+                    pictureName={rowName(row, { withOrder: nameWithOrder, withSlot: showSlot, withTeam: true })}
                   />
                 );
               })}
@@ -1178,7 +1182,7 @@ function PickTable({
             {thumb.photo ? (
               <img
                 src={thumb.photo.imageUrl}
-                alt={`The copy that sold: ${rowName(thumb)}`}
+                alt={`The copy that sold: ${rowName(thumb, { withTeam: true })}`}
                 className="max-h-[60vh] w-auto max-w-full rounded-md"
               />
             ) : (
@@ -1263,12 +1267,12 @@ function VariantTag({ tag }: { tag: VariantTagModel }) {
   return (
     <span
       title={tag.kind ? `${tag.kind}: ${tag.text}` : tag.text}
-      // Capped per width so a long name wraps instead of widening the table: roomy on a
-      // phone's one cell, tight beside the columns at md, roomier again from lg.
-      className={`nb-pick-chip inline-flex min-h-7 w-max max-w-40 items-center rounded-md border px-2 py-0.5 text-base font-bold leading-5 md:max-w-24 lg:min-h-8 lg:max-w-40 lg:text-lg lg:leading-6 xl:max-w-52 ${paint}`}
+      // Capped per width so a long name wraps onto more lines instead of widening the
+      // table, never cut: the whole name always shows (the title is only an extra).
+      className={`nb-pick-chip inline-flex min-h-7 w-max max-w-40 items-center rounded-md border px-2 py-0.5 text-base font-bold leading-5 md:max-w-27 lg:min-h-8 lg:max-w-40 lg:text-lg lg:leading-6 xl:max-w-52 ${paint}`}
     >
       {tag.kind && <span className="sr-only">{tag.kind}: </span>}
-      <span className="line-clamp-2 break-words">{tag.text}</span>
+      <span className="break-words hyphens-auto">{tag.text}</span>
     </span>
   );
 }
@@ -1324,6 +1328,7 @@ function Row({
   showSport,
   ruleBelow,
   name,
+  pictureName,
 }: {
   row: PickRow;
   pulled: boolean;
@@ -1345,6 +1350,8 @@ function Row({
    */
   ruleBelow?: VariantRole | null;
   name: string;
+  /** The row's name with the card's team, for its picture (the team is on the card, not the row). */
+  pictureName: string;
 }) {
   const c = row.card;
   // A card's facts, or a listing's when it says enough to file by (NEO-509).
@@ -1355,7 +1362,9 @@ function Row({
   // The divider card between two variants: a heavier rule in the next one's colour. Same variant: the thin neutral line.
   const rule =
     ruleBelow === undefined ? "border-b border-rule" : `border-b-[3px] ${ruleBelow ? VARIANT_RULE[ruleBelow] : "border-b-rule-strong"}`;
-  const cell = `${rule} px-2 py-1 align-middle`;
+  const cell = `${rule} py-1 align-middle`;
+  // Between md and lg nine columns share a tablet's width: a touch less air between them.
+  const pad = "px-2 md:max-lg:px-1.5";
   // NEO-522: the number and the name are what a picker reads from a few feet away.
   const big = "text-lg leading-8 lg:text-[1.75rem]";
 
@@ -1401,17 +1410,21 @@ function Row({
   );
 
   // Condition, or a slab's grade and cert.
+  // NEO-522: big enough to check against the copy in hand (NM or EX), so it reads at the row's scale.
   const condition = (
-    <span className="flex flex-col">
+    <span className="flex flex-col text-base leading-6 lg:text-lg lg:leading-7">
       {row.grade ? (
         <>
-          <span className="font-semibold text-ink">
+          <span className="whitespace-nowrap font-semibold text-ink">
             {row.grade.grader} {row.grade.grade}
           </span>
-          <span className="text-xs text-ink-3 tabular-nums">Cert {row.grade.cert}</span>
+          {/* "Cert" may wrap above its number where the columns are tight. */}
+          <span className="text-sm text-ink-2 tabular-nums">
+            Cert <span className="whitespace-nowrap">{row.grade.cert}</span>
+          </span>
         </>
       ) : (
-        <span className="text-ink-2">{row.condition}</span>
+        <span className="font-semibold text-ink">{row.condition}</span>
       )}
     </span>
   );
@@ -1424,7 +1437,7 @@ function Row({
     </>
   );
   const orders = (
-    <span className="flex flex-col">
+    <span className="flex flex-col text-sm leading-5 lg:text-base lg:leading-6">
       {row.orders.map((o) =>
         !c && salesLink ? (
           <ParamLink
@@ -1494,7 +1507,7 @@ function Row({
               e.currentTarget.focus();
               onThumb();
             }}
-            aria-label={`Bigger picture of ${name}`}
+            aria-label={`Bigger picture of ${pictureName}`}
             className="nb-pick-thumb block w-10 rounded-sm focus-outline"
           >
             {row.photo ? (
@@ -1512,22 +1525,22 @@ function Row({
           </span>
         )}
       </td>
-      {showSlot && <td className={`${cell} font-semibold tabular-nums text-ink`}>{row.spot?.slot ?? "–"}</td>}
-      {showQty && <td className={`${cell} max-md:hidden`}>{qty}</td>}
-      {facts && <td className={`${cell} max-md:hidden`}>{variant}</td>}
-      {facts && <td className={`${cell} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden ${big}`}>#{facts.cardNumber}</td>}
+      {showSlot && <td className={`${cell} ${pad} font-semibold tabular-nums text-ink`}>{row.spot?.slot ?? "–"}</td>}
+      {showQty && <td className={`${cell} ${pad} max-md:hidden`}>{qty}</td>}
+      {facts && <td className={`${cell} ${pad} max-md:hidden`}>{variant}</td>}
+      {facts && <td className={`${cell} ${pad} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden ${big}`}>#{facts.cardNumber}</td>}
       {/* Nothing to file by: the listing's own words take the variant's and the number's columns too. */}
-      <td colSpan={facts ? undefined : 3} className={`${cell} max-md:hidden`}>
+      <td colSpan={facts ? undefined : 3} className={`${cell} ${pad} max-md:hidden`}>
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className={facts ? `font-semibold text-ink ${big}` : "text-lg font-semibold leading-7 text-ink"}>{who}</span>
           <Markers row={row} salesLink={salesLink} />
         </span>
       </td>
-      <td className={`${cell} max-md:hidden`}>{setText}</td>
-      <td className={`${cell} whitespace-nowrap max-md:hidden`}>{condition}</td>
-      <td className={`${cell} max-md:hidden`}>{orders}</td>
+      <td className={`${cell} ${pad} max-md:hidden`}>{setText}</td>
+      <td className={`${cell} ${pad} max-md:hidden`}>{condition}</td>
+      <td className={`${cell} ${pad} max-md:hidden`}>{orders}</td>
       {/* A phone has no room for columns: one cell says it all. */}
-      <td className={`${cell} md:hidden`}>
+      <td className={`${cell} ${pad} md:hidden`}>
         <span className="flex min-w-0 flex-col gap-1">
           <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             {qty}
@@ -1537,7 +1550,7 @@ function Row({
             <Markers row={row} salesLink={salesLink} />
           </span>
           {setText}
-          <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {condition}
             {orders}
           </span>

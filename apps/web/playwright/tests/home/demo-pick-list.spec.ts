@@ -28,6 +28,7 @@
 // nothing of it, and two orders' strays must not read alike.
 // Phone differences (column sort, More filters, row tap) branch on
 // `isMobile` and end in hard asserts (GUIDE "Desktop and mobile").
+import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible } from "../../support/fixtures";
 import {
   filterBy,
@@ -153,6 +154,35 @@ test(
     // In the variant's own colour: Gold Foil's rule is not Base's thin grey line.
     const colourOf = (row: string) => ruleUnder(row).evaluate((td) => getComputedStyle(td).borderBottomColor);
     expect(await colourOf(SKENES)).not.toBe(await colourOf(TROUT));
+    // Each change wears the colour of the variant it opens: Gold Foil, 8 Bit Ballers and
+    // 8 Bit Ballers Red are three different rules, never one colour for every change.
+    const changes = [await colourOf(SKENES), await colourOf(SCHLITTLER), await colourOf(OHTANI_INSERT)];
+    expect(new Set(changes).size).toBe(3);
+
+    // NEO-522: the tick box is the size of the row's text; the button around it is the
+    // target, 44px on a phone and 32px with a mouse.
+    const troutToggle = pulledToggle(table, TROUT);
+    const target = await troutToggle.boundingBox();
+    const floor = isMobile ? 44 : 32;
+    expect(target?.width ?? 0).toBeGreaterThanOrEqual(floor);
+    expect(target?.height ?? 0).toBeGreaterThanOrEqual(floor);
+    const tick = await troutToggle.evaluate((button) => {
+      const box = button.firstElementChild!.getBoundingClientRect();
+      return { width: box.width, height: box.height };
+    });
+    expect(tick.width).toBeGreaterThanOrEqual(18);
+    expect(tick.width).toBeLessThanOrEqual(22);
+    expect(tick.height).toBeGreaterThanOrEqual(18);
+    expect(tick.height).toBeLessThanOrEqual(22);
+    // The number and the name read from a few feet away: 18px on a phone, 28px on a
+    // desktop (the config's 1024px viewport is Tailwind's lg).
+    const fontPx = (text: Locator) => text.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    const readable = isMobile ? 18 : 28;
+    const troutNumber = isMobile
+      ? troutName.getByText("#27", { exact: true })
+      : seen(pickRow(table, TROUT).getByRole("cell", { name: "#27", exact: true }));
+    expect(await fontPx(troutNumber)).toBeGreaterThanOrEqual(readable);
+    expect(await fontPx(troutName.getByText("Mike Trout", { exact: true }))).toBeGreaterThanOrEqual(readable);
 
     // The same card in the same condition on two orders is ONE row: ×2, both orders.
     await expect(pulledToggle(table, SKENES)).toHaveCount(1);
@@ -181,7 +211,8 @@ test(
     await expect(seen(pickRow(score, NABERS).getByTitle("NB doesn't have this copy. Go by the listing.", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("Malik Nabers", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("#302", { exact: true }))).toBeVisible();
-    // NEO-522: no "couldn't match" note on screen; the chip says where to look (paper keeps it, below).
+    // NEO-522: no "couldn't match" note on screen; the chip says where to look. The printed
+    // sheet still carries it: the print block below asserts the note on Nabers' paper line.
     await expect(pickRow(score, NABERS).getByText("NB couldn't match this line. Check the order's photo.")).toHaveCount(0);
     await expect(pulledToggle(pickGroup(table, "Can't find it"), NABERS)).toHaveCount(0);
     await expect(seen(pickRow(score, LATHAM).getByText("Not in NB", { exact: true }))).toHaveCount(0);
@@ -320,7 +351,8 @@ test(
     await expect(pulledToggle(table, LATHAM)).toBeVisible();
 
     // --- A thumbnail's bigger picture ----------------------------------------
-    const skenesPicture = pictureButton(table, SKENES);
+    // NEO-522: the row no longer prints the team, so the picture's name carries it, after the player.
+    const skenesPicture = pictureButton(table, "#150 Paul Skenes, Pirates, 2026 Topps Series 1");
     await skenesPicture.click();
     const bigger = page.getByRole("dialog", { name: "#150 Paul Skenes", exact: true });
     await expect(bigger).toBeVisible();

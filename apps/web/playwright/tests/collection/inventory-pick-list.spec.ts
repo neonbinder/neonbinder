@@ -1,17 +1,20 @@
 // NEO-500 (R1): the signed-in Pick List (Inventory → Pick List) lists what sold
 // and still sits in a box, so the seller can pull it. A collector stocks a
 // minted box through the inventory's Checklists (one copy of card A with a front
-// photo, three of card B), and a BuySportsCards order sells A ×2, B ×1, one line
+// photo, three of card B, and one of the Future Stars insert card I), and a
+// BuySportsCards order sells A ×2, B ×1, I ×1, one line
 // NB cannot tie to a card and says nothing of, and one NB cannot tie to a card
 // but DESCRIBES (NEO-509: set, a card number, players), and one that describes
 // too little (players, no card number). On the list, scoped to that order:
 //   - A is marked "Last ones" (the sale took the box's only copy) and "Short 1"
 //     (it sold two), and its bigger picture is the photo of the very copy sold;
 //   - B is a plain row; the stray line waits under "Can't find it";
-//   - NEO-522: each row's variant is a tag with its own name ("Base"), its name
-//     stands alone (no team line: the card's picture carries it) with its
-//     markers on the same line, and the described line carries no "couldn't
-//     match" note (its Not in NB chip says where to look);
+//   - NEO-522: each row's variant is a tag with its own name ("Base", "Future
+//     Stars"), its name stands alone (no team line: the card's picture carries
+//     it) with its markers on the same line, the set's run turns from Base to
+//     the insert under a 3px rule in the insert's colour (B is Base's last
+//     row; By the Box draws none), and the described line carries no
+//     "couldn't match" note (its Not in NB chip says where to look);
 //   - the described line (#208) is filed inside the 2024 Topps Chrome group
 //     between A (#205) and B (#211), wears a "Not in NB" chip and its own
 //     words, and is pulled, put back and pulled like any other row; the
@@ -35,17 +38,18 @@
 // sales poll does and calls no marketplace; it refuses an account that lists
 // anywhere, and the suite's accounts never do, so nothing is pushed to one.
 //
-// R7/R7a: reads the seed's 2024 Topps Chrome Base and writes ONLY the signed-in
-// user's own rows: one box `Pick<token>`, its copies of #205 and #211 (cards no
-// other spec boxes, so "Last ones" is this spec's alone; SET-REGISTRY.md), a
+// R7/R7a: reads the seed's 2024 Topps Chrome Base and its Insert › Future Stars,
+// and writes ONLY the signed-in user's own rows: one box `Pick<token>`, its
+// copies of #205, #211 and Future Stars #FS-17 (cards no other spec boxes, so
+// "Last ones" is this spec's alone; SET-REGISTRY.md), a
 // `collectionCopyPhotos` front on #205's copy (its R2 objects expire in the dev
 // bucket), and two `marketplaceSales` orders (`<token>a` and `<token>b`), both
 // shipped by the end. The described line and the no-number line are part of the
 // first order and take no card, box or set row of their own: "208" is a number NO
 // spec boxes (the line is never matched), so only its position between #205 and
 // #211 matters (SET-REGISTRY.md reserves it).
-// Self-cleaning: B's last copy is typed back to 0 and the
-// box deleted; on a failure the finally block ships whatever order is still
+// Self-cleaning: the sale takes A's and I's only copies, B's last copy is typed
+// back to 0 and the box deleted; on a failure the finally block ships whatever order is still
 // open, on a second page so the failing one stays as the screenshot saw it (the
 // bootstrap's per-user reset clears the rest).
 //
@@ -53,7 +57,10 @@
 import type { Locator, Page } from "@playwright/test";
 import { escapeRe } from "../../support/cards";
 import {
+  TOPPS_CHROME_2024_FUTURE_STARS,
   backToBoxes,
+  checklistTitle,
+  collectorCascade,
   createBox,
   deleteOpenBox,
   drillToCollectorBase,
@@ -84,6 +91,11 @@ import {
 /** Two 2024 Topps Chrome Base cards no other spec puts in a box (SET-REGISTRY.md). */
 const CARD_A = { no: "205", short: "#205 Shea Langeliers" };
 const CARD_B = { no: "211", short: "#211 Owen White" };
+/**
+ * NEO-522: a Future Stars insert card no other spec boxes (the seller specs take the
+ * checklist's first rows; SET-REGISTRY.md), so the set's run turns from Base to an insert.
+ */
+const CARD_I = { no: "FS-17", short: "#FS-17 Triston Casas" };
 /** The set's divider, and the card number the described line gives (between #205 and #211, boxed by no spec). */
 const SET_TITLE = "2024 Topps Chrome";
 const LISTED_NO = "208";
@@ -166,11 +178,28 @@ test(
       await expect(drawer).toBeHidden();
       await expect(fieldA).toHaveValue("1");
 
+      // NEO-522: one copy of the Future Stars insert in the same box, so the order's run turns
+      // from Base to an insert. Variant Types reopens from its summary; Insert › Future Stars
+      // is its own checklist, with its own quantities in the box.
+      const { cascade, drill } = collectorCascade(page);
+      await cascade.getByRole("button", { name: "Variant Types: Base, change" }).click();
+      await drill("Variant Types", "Insert", "Insert");
+      await drill("Insert", "Future Stars");
+      const insertTitle = checklistTitle(TOPPS_CHROME_2024_FUTURE_STARS);
+      const insertList = page.getByRole("region", { name: insertTitle });
+      await expect(insertList.getByRole("heading", { level: 3, name: insertTitle })).toBeVisible();
+      const fieldI = quantityField(insertList.getByRole("list", { name: `Quantities in ${boxName}` }), CARD_I.short, boxName);
+      await expect(fieldI).toHaveValue("0");
+      await fieldI.fill("1");
+      await page.keyboard.press(advance);
+      await expect(said(`Boxed 1 more of ${CARD_I.short}. 1 in ${boxName}.`)).toBeVisible();
+
       // --- An order sells A ×2, B ×1, a line NB can't tie to a card, and one it can only describe ---
       await seedPickOrder(page, {
         orderNo: first,
         box: boxName,
-        cards: { [CARD_A.no]: 2, [CARD_B.no]: 1 },
+        // The hop reads the described lines' set from the first card: keep a Base card first.
+        cards: { [CARD_A.no]: 2, [CARD_B.no]: 1, [CARD_I.no]: 1 },
         bad: true,
         // Repeated `listed` params, in this order: the described line, then the one with no card number.
         listed: [`${LISTED_NO}:${listedPlayers}`, `:${nonumPlayers}`],
@@ -181,8 +210,8 @@ test(
       await expect(tabs.getByRole("link", { name: "Pick List", exact: true })).toHaveAttribute("aria-current", "page");
       await filterBy(page, isMobile, "Order", bscOrder(first));
       await expect(page).toHaveURL(/[?&]porder=/);
-      // A, B, the stray line, the described line and the no-number line.
-      await expect(pick.matches).toHaveText("5 cards match.");
+      // A, B, I, the stray line, the described line and the no-number line.
+      await expect(pick.matches).toHaveText("6 cards match.");
 
       // A: the sale took the box's last copy, and NB held one fewer than sold.
       const rowA = pickRow(table, CARD_A.short);
@@ -205,6 +234,19 @@ test(
       if (!isMobile) await expect(nameB).toHaveAccessibleName("Owen White");
       // A sold two: a phone's one cell leads with the ×2 chip.
       await expect(nameCell(rowA, "Shea Langeliers", `×2 copies Base #${CARD_A.no}`)).toContainText("Last ones");
+      // I: its tag is the insert's own name, the kind read out first.
+      const rowI = pickRow(table, CARD_I.short);
+      await expect(variantTag(rowI, "Future Stars", "Insert")).toHaveText("Insert: Future Stars");
+      // NEO-522: the set's run walks Base (#205, the described #208, #211), then Future Stars.
+      // A 3px rule in the insert's colour runs under #211, Base's last row; the Base rows
+      // between keep the thin divider, and so does the set's last row.
+      const ruleUnder = (row: Locator) => row.getByRole("cell").first();
+      await expect(ruleUnder(rowA)).toHaveCSS("border-bottom-width", "1px");
+      await expect(ruleUnder(pickRow(table, listedTitle))).toHaveCSS("border-bottom-width", "1px");
+      await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "3px");
+      await expect(ruleUnder(rowI)).toHaveCSS("border-bottom-width", "1px");
+      const ruleColour = (row: Locator) => ruleUnder(row).evaluate((td) => getComputedStyle(td).borderBottomColor);
+      expect(await ruleColour(rowB)).not.toBe(await ruleColour(rowA));
       // Can't find it holds two lines: the stray (it says nothing) and the one with players but
       // no card number (too little to file), each with why.
       const cantFind = pickGroup(table, "Can't find it");
@@ -232,15 +274,16 @@ test(
       await expect(seen(rowNonum.getByText("Not in NB", { exact: true }))).toHaveCount(0);
       await expect(table.getByRole("button", { name: /^Pulled Unmatched sale \(/ })).toHaveCount(0);
       await expect(nonumToggle(pickGroup(table, SET_TITLE))).toHaveCount(0);
-      // The described line: filed in the set's own group, between #205 and #211, never
-      // under Can't find it; it says Not in NB, and the listing's words are its label.
+      // The described line: filed in the set's own group, between #205 and #211 (the insert
+      // after them), never under Can't find it; it says Not in NB, and the listing's words are its label.
       const inSet = pickGroup(table, SET_TITLE).getByRole("button", { name: /^Pulled / });
-      await expect(inSet).toHaveCount(3);
+      await expect(inSet).toHaveCount(4);
       await expect(inSet.nth(0)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(CARD_A.short)}`));
       await expect(inSet.nth(1)).toHaveAccessibleName(
         new RegExp(`^Pulled ${escapeRe(listedName)}, not in NB, ${escapeRe(bscOrder(first))}$`),
       );
       await expect(inSet.nth(2)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(CARD_B.short)}`));
+      await expect(inSet.nth(3)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(CARD_I.short)}`));
       await expect(pulledToggle(cantFind, listedTitle)).toHaveCount(0);
       await expect(pulledToggle(table, listedTitle)).toHaveAttribute("aria-pressed", "false");
       const rowListed = pickRow(table, listedTitle);
@@ -256,14 +299,14 @@ test(
 
       // --- The printed sheet: the described line under its set with its number, the no-number one without ---
       // Print media emulated (what the Print button and Ctrl/Cmd+P switch on): the screen's
-      // table gives way to a condensed sheet of the same five rows, in the same two groups.
+      // table gives way to a condensed sheet of the same six rows, in the same two groups.
       await page.emulateMedia({ media: "print" });
       const sheet = region.getByRole("table", { name: "Pick sheet", exact: true });
       await expect(sheet).toBeVisible();
       await expect(sheet.getByRole("rowheader")).toHaveCount(2);
       await expect(sheet.getByRole("rowheader").filter({ hasText: SET_TITLE })).toHaveCount(1);
       await expect(sheet.getByRole("rowheader").filter({ hasText: "Can't find it" })).toHaveCount(1);
-      await expect(sheet.getByRole("row")).toHaveCount(1 + 2 + 5);
+      await expect(sheet.getByRole("row")).toHaveCount(1 + 2 + 6);
       const sheetRow = (text: string) => sheet.getByRole("row").filter({ hasText: text });
       // The described line prints like a card, number and players in their columns, with the chip's words.
       await expect(sheetRow(listedPlayers)).toHaveCount(1);
@@ -288,10 +331,11 @@ test(
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toBeVisible();
       await expect(pulledToggle(table, CARD_A.short)).toHaveCount(0);
       await expect(pulledToggle(table, CARD_B.short)).toHaveCount(0);
+      await expect(pulledToggle(table, CARD_I.short)).toHaveCount(0);
       await pick.onlyNotInNb.click();
       await expect(pick.onlyNotInNb).toHaveAttribute("aria-pressed", "false");
       await expect(page).not.toHaveURL(/[?&]pnotnb=/);
-      await expect(pick.matches).toHaveText("5 cards match.");
+      await expect(pick.matches).toHaveText("6 cards match.");
       await expect(pulledToggle(table, CARD_A.short)).toBeVisible();
 
       // A's bigger picture is the photo of the copy that sold, and it really loads.
@@ -314,6 +358,11 @@ test(
       await expect(boxHeading).toBeVisible();
       await expect(pulledToggle(inBox, CARD_A.short)).toBeVisible();
       await expect(pulledToggle(inBox, CARD_B.short)).toBeVisible();
+      await expect(pulledToggle(inBox, CARD_I.short)).toBeVisible();
+      // NEO-522: a box is one run in slot order, whatever variants it holds: no variant rule.
+      for (const short of [CARD_A.short, CARD_B.short, CARD_I.short]) {
+        await expect(ruleUnder(pickRow(inBox, short))).toHaveCSS("border-bottom-width", "1px");
+      }
       // No box holds the three sales NB has no card for: the first box says they wait after the boxes.
       await expect(
         region.getByText("Plus 3 sales NB couldn't tie to a card. They wait after the boxes.", { exact: true }),
@@ -361,7 +410,7 @@ test(
       await page.goBack();
       await expect(pick.views.getByRole("link", { name: "Whole list", exact: true })).toHaveAttribute("aria-current", "page");
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("5 cards match.");
+      await expect(pick.matches).toHaveText("6 cards match.");
 
       // --- The stray line's order opens on the Sales tab, that order focused; Back returns -----
       const toSales = pickRow(cantFind, unmatchedLine(first)).getByRole("link", {
@@ -383,7 +432,7 @@ test(
       await page.goBack();
       await expect(pick.heading).toBeVisible();
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("5 cards match.");
+      await expect(pick.matches).toHaveText("6 cards match.");
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toHaveAttribute("aria-pressed", "false");
 
       // --- Pull B and Undo it; pull the described line and Undo it; pull A -------------------
@@ -409,11 +458,11 @@ test(
 
       // A refresh straight after that confirmation starts the pull over with what is
       // left (no second tab, no wait on the server): A is gone, B, the described
-      // line (both put back) and the no-number line stay, the described line still
+      // line (both put back), I and the no-number line stay, the described line still
       // in its set and the no-number one still under Can't find it.
       await page.reload();
       await expect(pick.heading).toBeVisible();
-      await expect(pick.matches).toHaveText("4 cards match.");
+      await expect(pick.matches).toHaveText("5 cards match.");
       await expect(pulledToggle(table, CARD_B.short)).toHaveAttribute("aria-pressed", "false");
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toBeVisible();
       await expect(nonumToggle(cantFind)).toHaveAttribute("aria-pressed", "false");
@@ -466,7 +515,7 @@ test(
       await expect(pulledToggle(table, CARD_B.short).first()).toBeVisible();
 
       // --- Shipping the first order takes its lines off the list -----------------------------
-      // Its B, stray line and no-number line were never pulled; once it ships, nothing is left to pull.
+      // Its B, I, stray line and no-number line were never pulled; once it ships, nothing is left to pull.
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toHaveAttribute("aria-pressed", "false");
       await shipPickOrder(page, first);
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
@@ -476,6 +525,7 @@ test(
       await expect(nonumToggle(region)).toHaveCount(0);
       await expect(pulledToggle(region, listedTitle)).toHaveCount(0);
       await expect(pulledToggle(region, CARD_B.short)).toHaveCount(0);
+      await expect(pulledToggle(region, CARD_I.short)).toHaveCount(0);
       // The empty state points on: to what sold, and to the inventory.
       const sawSold = region.getByRole("link", { name: "See what sold", exact: true });
       await expect(sawSold).toBeVisible();

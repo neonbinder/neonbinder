@@ -324,8 +324,10 @@ describe("NEO-522: a row read from across the room", () => {
     expect(tagOf(schlittler, "Gold Foil").textContent).toBe("Parallel: Gold Foil");
     const judge = await rowOf(/^Pulled #8B-12 Aaron Judge/);
     expect(tagOf(judge, "8 Bit Ballers Red").textContent).toBe("Insert parallel: 8 Bit Ballers Red");
-    // A long name wraps to two lines and trims, never pushing the row wider.
-    expect(within(judge).getAllByText("8 Bit Ballers Red", { exact: true })[0].className).toContain("line-clamp-2");
+    // A long name wraps onto more lines, never pushing the row wider and never cut short.
+    const red = tagOf(judge, "8 Bit Ballers Red");
+    expect(red.className).toMatch(/\bmax-w-/);
+    expect(red.innerHTML).not.toMatch(/line-clamp|truncate|text-ellipsis/);
     // The serial stays with the copy's details, not the tag.
     expect(within(schlittler).getAllByText("1187/2026").length).toBeGreaterThan(0);
   });
@@ -357,6 +359,33 @@ describe("NEO-522: a row read from across the room", () => {
     // Every cell of the row carries it, so the rule runs the row's full width.
     const cells = [...(await rowOf(/^Pulled #150 Paul Skenes/)).querySelectorAll("td")];
     expect(cells.every((td) => td.className.includes("border-b-variant-parallel-rule"))).toBe(true);
+  });
+
+  it("draws no variant rule under Can't find it, nor at a box's stop", async () => {
+    renderPick();
+    const thick = (scope: HTMLElement) => [...scope.querySelectorAll("td")].filter((td) => td.className.includes("border-b-[3px]"));
+    const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
+    const cantFind = witt.closest("tbody")!;
+    expect(within(cantFind).getAllByRole("button", { name: /^Pulled / }).length).toBeGreaterThan(1);
+    expect(thick(cantFind)).toHaveLength(0);
+    cleanup();
+    // By the Box: each box is one run in slot order, whatever variants sit in it.
+    renderPick(`${PICK_URL}&pv=box`);
+    const box = await screen.findByRole("table", { name: /^Cards to pull from / });
+    const roles = new Set(
+      [...box.querySelectorAll(".nb-pick-band")].map((el) => [...el.classList].find((c) => c.startsWith("bg-variant-"))).filter(Boolean),
+    );
+    // The stop mixes variants, so a rule would show if a box drew one.
+    expect(roles.size).toBeGreaterThan(1);
+    expect(thick(box)).toHaveLength(0);
+    cleanup();
+    renderPick(`${PICK_URL}&pv=box&pbox=cant-find`);
+    expect(thick(await screen.findByRole("table", { name: "Sales NB couldn't tie to a card" }))).toHaveLength(0);
+  });
+
+  it("names the card's team on its picture, where the row no longer prints it", async () => {
+    renderPick();
+    expect(await screen.findByRole("button", { name: /^Bigger picture of #27 Mike Trout, Angels, / })).toBeTruthy();
   });
 
   it("draws no variant rule in a flat run sorted by a column", async () => {
