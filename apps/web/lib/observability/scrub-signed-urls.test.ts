@@ -73,6 +73,11 @@ describe("scrubSignedStorageUrls", () => {
         "https://<redacted>.r2.cloudflarestorage.com/photos/copy-photos/<redacted>/image.jpg?X-Amz-Credential=<redacted>&X-Amz-Signature=<redacted>",
       ],
       [
+        "a virtual-hosted R2 signed PUT (NEO-466): bucket and account in the host, no bucket in the path",
+        `https://photos.acct123.r2.cloudflarestorage.com/copy-photos/${TOKEN}/image.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=c1&X-Amz-Date=d1&X-Amz-Expires=600&X-Amz-SignedHeaders=host&X-Amz-Signature=s1`,
+        "https://<redacted>.r2.cloudflarestorage.com/copy-photos/<redacted>/image.jpg?X-Amz-Algorithm=<redacted>&X-Amz-Credential=<redacted>&X-Amz-Date=<redacted>&X-Amz-Expires=<redacted>&X-Amz-SignedHeaders=<redacted>&X-Amz-Signature=<redacted>",
+      ],
+      [
         "an R2 host with a bucket and a jurisdiction",
         "https://bucket.acct123.eu.r2.cloudflarestorage.com/o",
         "https://<redacted>.eu.r2.cloudflarestorage.com/o",
@@ -104,6 +109,20 @@ describe("scrubSignedStorageUrls", () => {
       ["an object key", `copy-photos/${TOKEN}/image.jpg`, "copy-photos/<redacted>/image.jpg"],
     ])("%s", (_name, input, expected) => {
       expect(scrubSignedStorageUrls({ data: { url: input } })).toEqual({ data: { url: expected } });
+    });
+
+    test("a virtual-hosted R2 PUT URL is scrubbed in a breadcrumb, a span and a message (NEO-466)", () => {
+      const url = `https://photos.acct123.r2.cloudflarestorage.com/copy-photos/${TOKEN}/image.jpg?X-Amz-Credential=c1&X-Amz-Signature=s1`;
+      const shapes = [
+        { category: "xhr", data: { method: "PUT", url, status_code: 200 } },
+        { spans: [{ description: "PUT photos.acct123.r2.cloudflarestorage.com", data: { "http.url": url } }] },
+        { message: `upload to ${url} stalled` },
+      ];
+      for (const shape of shapes) {
+        const scrubbed = JSON.stringify(scrubSignedStorageUrls(shape));
+        for (const secret of ["acct123", "photos.", TOKEN, "c1", "s1\""]) expect(scrubbed).not.toContain(secret);
+        expect(scrubbed).toContain("<redacted>.r2.cloudflarestorage.com");
+      }
     });
 
     test("a path that only looks like a copy-photo token is left alone", () => {

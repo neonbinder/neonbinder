@@ -4,7 +4,10 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { MemoryRouter } from "react-router";
 import { Input } from "@/components/primitives/Input";
 import { CopyList } from "./CardDetail";
-import type { Container, Copy } from "./data/types";
+import CopyPhotosField from "./CopyPhotosField";
+import { CollectionStoreContext, useCopyPhotos } from "./data/store";
+import { REAL_CAPABILITIES, type Container, type Copy } from "./data/types";
+import type { CopyPhotosExtension } from "./data/store";
 import { carryLineKeys, NO_LINE_KEYS, OPTIMISTIC_ID_PREFIX } from "./lineKeys";
 
 /**
@@ -151,5 +154,57 @@ describe("CopyList through the id swap", () => {
     expect(still.isConnected).toBe(true);
     expect(still.value).toBe("From the card show");
     expect(still.closest("li")?.getAttribute("data-copy-editor")).toBe("copy-9");
+  });
+  it("a photo picked on a drawn line saves through the id swap: the same Photos status reads saved, with no alert", async () => {
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const addPhoto = vi.fn((_copy: Copy) => held);
+    const ext = { addPhoto, removePhoto: vi.fn(), swapPhotos: vi.fn(), usePhotos: () => undefined, useCardImages: () => undefined } as unknown as CopyPhotosExtension;
+    const store = { capabilities: { ...REAL_CAPABILITIES, copyPhotos: true }, photos: ext } as never;
+    /** The editor the drawer shows: the live photos box on whichever line is open. */
+    function PhotosEditor({ copy }: { copy: Copy }) {
+      const photos = useCopyPhotos()!;
+      return <CopyPhotosField copy={copy} line="Raw" photos={undefined} ext={photos} />;
+    }
+    function Editing({ copies }: { copies: Copy[] }) {
+      const [editing, setEditing] = useState<{ key: string } | null>(null);
+      return (
+        <CollectionStoreContext.Provider value={store}>
+          <MemoryRouter>
+            <CopyList
+              name="#1 Shohei Ohtani"
+              copies={copies}
+              names={copies.map((c) => (c.homeId === "main" ? "Raw ×2" : "Raw"))}
+              editing={editing}
+              renderEditor={(copy) => <PhotosEditor copy={copy} />}
+              onEdit={(_copy, key) => setEditing({ key })}
+              onRemove={() => {}}
+            />
+          </MemoryRouter>
+        </CollectionStoreContext.Provider>
+      );
+    }
+    const { rerender, container } = render(<Editing copies={[LINE, DRAWN]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit #1 Shohei Ohtani, Raw" }));
+    const editor = () => container.querySelector<HTMLElement>("[data-copy-editor]")!;
+    const status = within(editor()).getByRole("status");
+    const input = editor().querySelector<HTMLInputElement>('[data-copy-photo-input="front"]')!;
+    fireEvent.change(input, { target: { files: [new File(["x"], "card.jpg", { type: "image/jpeg" })] } });
+    expect(addPhoto).toHaveBeenCalledTimes(1);
+    expect(addPhoto.mock.calls[0][0].id).toBe(DRAWN.id);
+    expect(status.textContent).toBe("Saving the front photo…");
+
+    act(() => rerender(<Editing copies={[LINE, LANDED]} />));
+    expect(editor().getAttribute("data-copy-editor")).toBe("copy-9");
+    expect(within(editor()).getByRole("status")).toBe(status);
+
+    await act(async () => finish());
+    const after = within(editor()).getByRole("status");
+    expect(after).toBe(status);
+    expect(status.isConnected).toBe(true);
+    expect(status.textContent).toBe("Front photo saved.");
+    expect(within(editor()).getByRole("alert").textContent).toBe("");
   });
 });

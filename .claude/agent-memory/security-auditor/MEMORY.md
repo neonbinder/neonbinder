@@ -94,6 +94,7 @@
 - [Bundler plugin disable drops cleanup](patterns_bundler_plugin_disable_drops_cleanup.md) — `disable` also drops delete-after-upload; tie build.sourcemap to the gate; local `vercel build` sets VERCEL=1
 - [Address step bundle order](patterns_neo434_address_step_bundle_order.md) — "First import" is a source claim; read the built entry, run a timeline; how to leak-check a real bundle without a token
 - [Neo424 offered-on-stored-row](patterns_neo424_offered_on_stored_row.md) — id relaxation keyed on stored row fields is as narrow as that field's writers; enumerate them (applyLookupResult spread, switchRowSport)
+- [Signed URL scrub coverage](patterns_signed_url_scrub_coverage.md) — which pipelines scrubUrlSecrets covers; test a new shape via strip-types; PostHog replay compresses DOM events past before_send
 - [Neo475 body scrubber](patterns_neo475_body_scrubber.md) — run adversarial inputs; x-amzn-* wildcard + unredacted headers; slice-before-redact; free-text kept keys; key names; entities
 - [Shared cache host gate](patterns_shared_cache_host_gate.md) — Cloud Run Host gate holds against spoofing but runs in PR code; IAM is the boundary for a shared cache; sha256 envelope = integrity only (NEO-484)
 - [Playwright WebSocket route proxy](patterns_playwright_websocket_route_proxy.md) — route-group calls never reach reporters; local trace holds the JWT; close-code 1005 remap; forward before side work
