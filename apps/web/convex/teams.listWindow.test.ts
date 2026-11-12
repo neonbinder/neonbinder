@@ -161,6 +161,143 @@ describe("the capped windows are newest first (NEO-330)", () => {
   });
 });
 
+/**
+ * NEO-495 — the league dropdown is answered by the server, from the league's
+ * own rows (`by_league_id`), not by filtering the newest-2000 window.
+ *
+ * Filtered in the browser, MLB showed only the MLB-tagged rows that happened
+ * to be recent: every real club was older than the window and unreachable.
+ */
+describe("listForManagement scoped to a league (NEO-495)", () => {
+  /** One team, then CAP newer filler rows that push it out of the window. */
+  async function seedBehindTheWindow(
+    t: ReturnType<typeof convexTest>,
+    extra: { leagueId?: Id<"leagues"> },
+  ) {
+    const sportId = await seedSport(t);
+    const old = await seedTeam(t, sportId, "New York Yankees", extra);
+    const other = await seedLeague(t, sportId, "Atlantic League");
+    await t.run(async (ctx) => {
+      for (let i = 0; i < CAP; i += 1) {
+        await ctx.db.insert("teams", {
+          name: `Filler ${i}`,
+          nameNormalized: normalizeTeamName(`Filler ${i}`),
+          sportId,
+          // In some OTHER league, so neither the league read nor the
+          // no-league read can return a filler row.
+          leagueId: other,
+          lastUpdated: 1_700_000_000_000,
+        });
+      }
+    });
+    return { sportId, old };
+  }
+
+  test("returns a league's team that the newest-first window leaves out", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const mlb = await seedLeague(t, sportId, "Major League Baseball");
+    const { old } = await seedBehindTheWindow(t, { leagueId: mlb });
+    const asAdmin = t.withIdentity(ADMIN);
+
+    const window = await asAdmin.query(api.teams.listForManagement, {});
+    expect(window.teams.some((team) => team._id === old)).toBe(false);
+
+    const inMlb = await asAdmin.query(api.teams.listForManagement, { leagueId: mlb });
+    expect(inMlb).toEqual({
+      teams: [expect.objectContaining({ _id: old })],
+      totalCount: 1,
+      truncated: false,
+    });
+  }, 60_000);
+
+  test("'none' returns exactly the teams with no league, wherever they sit", async () => {
+    const t = convexTest(schema, modules);
+    const { old } = await seedBehindTheWindow(t, {});
+
+    const none = await t
+      .withIdentity(ADMIN)
+      .query(api.teams.listForManagement, { leagueId: "none" });
+
+    expect(none.teams.map((team) => team._id)).toEqual([old]);
+    expect(none.truncated).toBe(false);
+  }, 60_000);
+
+  test("keeps only the league's rows and sorts them by full name", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const mlb = await seedLeague(t, sportId, "Major League Baseball");
+    const nfl = await seedLeague(t, sportId, "National Football League");
+    await seedTeam(t, sportId, "Seattle Mariners", { leagueId: mlb });
+    await seedTeam(t, sportId, "New York Giants", { leagueId: nfl });
+    await seedTeam(t, sportId, "Boston Red Sox", { leagueId: mlb });
+    await seedTeam(t, sportId, "New York Cubans");
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .query(api.teams.listForManagement, { leagueId: mlb });
+
+    expect(result.teams.map((team) => team.name)).toEqual([
+      "Boston Red Sox",
+      "Seattle Mariners",
+    ]);
+    expect(result.totalCount).toBe(2);
+  });
+
+  test("caps a league past CAP newest first and says it was truncated", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const big = await seedLeague(t, sportId, "Other clubs");
+    await t.run(async (ctx) => {
+      for (let i = 0; i <= CAP; i += 1) {
+        await ctx.db.insert("teams", {
+          name: `Club ${i}`,
+          nameNormalized: normalizeTeamName(`Club ${i}`),
+          sportId,
+          leagueId: big,
+          lastUpdated: 1_700_000_000_000,
+        });
+      }
+    });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .query(api.teams.listForManagement, { leagueId: big });
+
+    expect(result.truncated).toBe(true);
+    expect(result.teams).toHaveLength(CAP);
+    // Newest first: the oldest row is the one the cap gives up.
+    expect(result.teams.some((team) => team.name === "Club 0")).toBe(false);
+  }, 60_000);
+
+  test("refuses a league and a sport together, rather than under-report truncation", async () => {
+    // A sport filter after the capped league read could drop rows the cap had
+    // already spent, so `truncated: false` would describe an incomplete list.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const mlb = await seedLeague(t, sportId, "Major League Baseball");
+    const asAdmin = t.withIdentity(ADMIN);
+
+    for (const leagueId of [mlb, "none" as const]) {
+      await expect(
+        asAdmin.query(api.teams.listForManagement, { leagueId, sportId }),
+      ).rejects.toThrow(/league or a sport/);
+    }
+    // Each on its own still answers.
+    await expect(asAdmin.query(api.teams.listForManagement, { leagueId: mlb })).resolves.toBeTruthy();
+    await expect(asAdmin.query(api.teams.listForManagement, { sportId })).resolves.toBeTruthy();
+  });
+
+  test("requires admin, with or without a league", async () => {
+    const t = convexTest(schema, modules);
+    const asMember = t.withIdentity(MEMBER);
+    await expect(asMember.query(api.teams.listForManagement, {})).rejects.toThrow(/admin/i);
+    await expect(
+      asMember.query(api.teams.listForManagement, { leagueId: "none" }),
+    ).rejects.toThrow(/admin/i);
+  });
+});
+
 describe("teams.searchForManagement (NEO-330)", () => {
   test("finds a team the list's window leaves out", async () => {
     const t = convexTest(schema, modules);
