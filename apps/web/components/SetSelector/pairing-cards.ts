@@ -16,6 +16,7 @@
  */
 
 import type { PairingCard } from "./CardPairingModal";
+import { committable } from "./checklist-match-apply";
 import type { ChecklistConflict } from "./checklist-conflict";
 
 /**
@@ -37,6 +38,8 @@ export type TeamLookup = NonNullable<PairingCard["teamLookup"]>;
  * what is consumed keeps the helper — and its unit test — free of Convex.
  */
 export type ReadyCandidate = {
+  /** NEO-496 — the candidate row's id; keys a checklist-only row (no ref). */
+  _id?: string;
   cardNumber: string;
   cardName: string;
   teams?: string[];
@@ -58,7 +61,9 @@ export type ReadyCandidate = {
     sportlots: string[];
     preferred?: "bsc" | "sportlots";
   };
-  bucket: "matched" | "bscOnly" | "slOnly";
+  bucket: "matched" | "bscOnly" | "slOnly" | "checklistOnly";
+  /** NEO-496 — the server paired this card with a publisher checklist row. */
+  checklistLink?: PairingCard["checklistLink"];
   teamLookup?: TeamLookup;
   /** NEO-335 — BSC's unsplit team value; see `PairingCard.rawTeamName`. */
   rawTeamName?: string;
@@ -111,6 +116,12 @@ export function candidateToPairingCard(
     // cross-marketplace question, so the dialog carries it through untouched
     // and the wizard's "Checklist says otherwise" step settles it.
     ...(c.checklistConflict ? { checklistConflict: c.checklistConflict } : {}),
+    // NEO-496: how the card paired with the publisher's checklist (the
+    // dialog's "On checklist" chip), and, on a checklist-only row, the id the
+    // dialog tells re-deliveries apart by. Both wire-only: `committable`
+    // takes them off before anything is saved.
+    ...(c.checklistLink ? { checklistLink: c.checklistLink } : {}),
+    ...(c.bucket === "checklistOnly" && c._id ? { checklistRowId: c._id } : {}),
   };
 }
 
@@ -137,7 +148,7 @@ export function candidatesToPairingCards(
   candidates: readonly ReadyCandidate[],
 ): PairingCard[] {
   return candidates.map((c) => {
-    const card = candidateToPairingCard(c);
+    const card = committable(candidateToPairingCard(c));
     delete card.nameConflict;
     delete card.playersConflict;
     return card;

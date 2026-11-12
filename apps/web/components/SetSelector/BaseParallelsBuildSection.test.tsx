@@ -154,18 +154,18 @@ describe("BaseParallelsBuildSection — copy helpers", () => {
   });
 
   describe("tallyParallels", () => {
-    it("counts only buildable (linked, not blocked) parallels toward replaced and filled", () => {
+    it("counts every parallel that is not blocked toward replaced and filled, unlinked included (NEO-496 NQ2)", () => {
       const tally = tallyParallels([
         entry(1, { hasCards: true }), // replaced
         entry(2), // filled
-        entry(3, { hasCards: true, sides: { bsc: false, sportlots: false } }), // unlinked, has cards
+        entry(3, { hasCards: true, sides: { bsc: false, sportlots: false } }), // unlinked, has cards: replaced
         entry(4, { hasCards: true, blocked: "scans" }), // blocked, has cards
         entry(5, { sides: { bsc: false, sportlots: true } }), // filled via SportLots only
       ]);
       expect(tally).toEqual({
         total: 5,
         withCards: 3,
-        replaced: 1,
+        replaced: 2,
         filled: 2,
         unlinked: 1,
         blocked: 1,
@@ -206,10 +206,10 @@ describe("BaseParallelsBuildSection — copy helpers", () => {
 
     it("adds the unlinked and blocked sentences only when true, singular and plural", () => {
       expect(summaryText(tally({ total: 4, unlinked: 1, blocked: 1 }))).toBe(
-        "4 parallels, all empty. 1 isn't linked to a marketplace yet and gets skipped. 1 is blocked.",
+        "4 parallels, all empty. 1 isn't linked to a marketplace yet, so its copy carries no marketplace links. 1 is blocked.",
       );
       expect(summaryText(tally({ total: 5, unlinked: 2, blocked: 3 }))).toBe(
-        "5 parallels, all empty. 2 aren't linked to a marketplace yet and get skipped. 3 are blocked.",
+        "5 parallels, all empty. 2 aren't linked to a marketplace yet, so their copies carry no marketplace links. 3 are blocked.",
       );
     });
   });
@@ -442,19 +442,23 @@ describe("BaseParallelsBuildSection — D4 confirm", () => {
     expect(runner.start).toHaveBeenCalledTimes(1);
   });
 
-  it("does not ask when the only parallels with cards are ones the run would skip or refuse", () => {
-    // K counts what a run would REPLACE: an unlinked parallel is skipped and a
-    // blocked one is refused, so neither loses anything.
+  it("does not ask when the only parallels with cards are ones the run would refuse", () => {
+    // K counts what a run would REPLACE: a blocked one is refused, so it
+    // loses nothing.
     const { runner } = renderSection(
-      planOf([
-        entry(1),
-        entry(2, { hasCards: true, sides: { bsc: false, sportlots: false } }),
-        entry(3, { hasCards: true, blocked: "scans" }),
-      ]),
+      planOf([entry(1), entry(3, { hasCards: true, blocked: "scans" })]),
     );
     fireEvent.click(button());
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(runner.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks when an unlinked parallel holds cards: the run replaces them too (NEO-496 NQ2)", () => {
+    renderSection(
+      planOf([entry(1), entry(2, { hasCards: true, sides: { bsc: false, sportlots: false } })]),
+    );
+    fireEvent.click(button());
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
   it("Cancel closes it without starting, and puts focus back on the button", async () => {
@@ -507,10 +511,8 @@ describe("BaseParallelsBuildSection — the attention list", () => {
     );
   });
 
-  it("attentionText names an unlinked parallel as skipped", () => {
-    expect(attentionText(entry(2, { sides: UNLINKED }))).toBe(
-      "Parallel 2 — skipped: not linked to a marketplace yet",
-    );
+  it("attentionText is null for an unlinked parallel: it builds an unlinked copy (NEO-496 NQ2)", () => {
+    expect(attentionText(entry(2, { sides: UNLINKED }))).toBeNull();
   });
 
   it("attentionText is null for a parallel the run will build, and blocked wins over unlinked", () => {
@@ -520,7 +522,7 @@ describe("BaseParallelsBuildSection — the attention list", () => {
     );
   });
 
-  it("lists one line per blocked or unlinked parallel, with the reason, and none for the rest", () => {
+  it("lists one line per blocked parallel, with the reason, and none for the rest (an unlinked one builds)", () => {
     renderSection(
       planOf([
         entry(1),
@@ -529,29 +531,26 @@ describe("BaseParallelsBuildSection — the attention list", () => {
         entry(4, { hasCards: true }),
       ]),
     );
-    expect(items()).toEqual([
-      "Parallel 2 — blocked: scans",
-      "Parallel 3 — skipped: not linked to a marketplace yet",
-    ]);
+    expect(items()).toEqual(["Parallel 2 — blocked: scans"]);
   });
 
-  it("is absent when nothing is blocked or unlinked", () => {
-    renderSection(planOf([entry(1), entry(2, { hasCards: true })]));
+  it("is absent when nothing is blocked, unlinked parallels included", () => {
+    renderSection(planOf([entry(1), entry(2, { hasCards: true }), entry(3, { sides: UNLINKED })]));
     expect(screen.queryByRole("list")).toBeNull();
   });
 
   it("shows all of them at exactly 10, with no overflow line", () => {
-    renderSection(planOf(Array.from({ length: 10 }, (_, i) => entry(i + 1, { sides: UNLINKED }))));
+    renderSection(planOf(Array.from({ length: 10 }, (_, i) => entry(i + 1, { blocked: "scans" }))));
     expect(items()).toHaveLength(10);
     expect(screen.queryByText(/…and \d+ more/)).toBeNull();
   });
 
   it("caps at 10 lines and says how many more", () => {
-    renderSection(planOf(Array.from({ length: 13 }, (_, i) => entry(i + 1, { sides: UNLINKED }))));
+    renderSection(planOf(Array.from({ length: 13 }, (_, i) => entry(i + 1, { blocked: "scans" }))));
     const lines = items();
     expect(lines).toHaveLength(11);
-    expect(lines[0]).toBe("Parallel 1 — skipped: not linked to a marketplace yet");
-    expect(lines[9]).toBe("Parallel 10 — skipped: not linked to a marketplace yet");
+    expect(lines[0]).toBe("Parallel 1 — blocked: scans");
+    expect(lines[9]).toBe("Parallel 10 — blocked: scans");
     expect(lines[10]).toBe(moreText(3));
   });
 });

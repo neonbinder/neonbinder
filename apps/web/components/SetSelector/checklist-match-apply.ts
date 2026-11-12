@@ -15,10 +15,34 @@
  *
  * What a link never does: change the card's number (the card keeps the number
  * it was fetched with), touch `platformData`, or write a row anywhere. An
- * unlinked row is simply dropped at Confirm.
+ * unlinked row is dropped at Confirm unless the operator kept it (NEO-496).
+ *
+ * NEO-496: the rows now reach the dialog as `checklistOnly` candidates, so a
+ * stored checklist (whose rows the client never holds) and a pasted one are
+ * linked the same way; `checklistRowOf` in the dialog turns one back into a
+ * `ChecklistLinkRow` for the question.
  */
 
 import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
+import type { PairingCard } from "./CardPairingModal";
+
+/**
+ * NEO-496 — a card as Match Cards hands it on: the wire-only fields the dialog
+ * reads (`checklistLink`, the server's checklist pairing; `checklistRowId`, a
+ * checklist-only row's candidate id) taken off, because entity resolution and
+ * the commit validate cards strictly and refuse a field they do not know. A
+ * card carrying neither is returned by reference. Used by the dialog's
+ * Confirm and by the one-source auto-keep path, so both hand on the same card.
+ */
+export function committable<C extends PairingCard>(card: C): C {
+  if (card.checklistLink === undefined && card.checklistRowId === undefined) {
+    return card;
+  }
+  const out: C = { ...card };
+  delete out.checklistLink;
+  delete out.checklistRowId;
+  return out;
+}
 
 /** One row of the uploaded checklist, as the dialog lists it. */
 export type ChecklistLinkRow = {

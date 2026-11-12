@@ -113,7 +113,10 @@ export type ParallelTally = {
   replaced: number;
   /** Buildable parallels with no cards: what a run would fill. */
   filled: number;
-  /** Not linked to any marketplace yet — the run skips them. */
+  /**
+   * Not linked to any marketplace yet. NEO-496 (NQ2): the run builds them
+   * too, as copies with no marketplace links; counted only to say so.
+   */
   unlinked: number;
   /** The server already knows a build would be refused. */
   blocked: number;
@@ -122,7 +125,8 @@ export type ParallelTally = {
 const linked = (p: ParallelPlanEntry) => p.sides.bsc || p.sides.sportlots;
 
 export function tallyParallels(parallels: ParallelPlanEntry[]): ParallelTally {
-  const buildable = parallels.filter((p) => !p.blocked && linked(p));
+  // NEO-496 (NQ2): linked or not, every parallel that is not blocked builds.
+  const buildable = parallels.filter((p) => !p.blocked);
   return {
     total: parallels.length,
     withCards: parallels.filter((p) => p.hasCards).length,
@@ -134,8 +138,10 @@ export function tallyParallels(parallels: ParallelPlanEntry[]): ParallelTally {
 }
 
 /**
- * "12 parallels: 9 empty, 3 with cards. 2 aren't linked to a marketplace yet
- * and get skipped. 1 is blocked." — only the sentences that are true.
+ * "12 parallels: 9 empty, 3 with cards. 2 aren't linked to a marketplace yet,
+ * so their copies carry no marketplace links. 1 is blocked." — only the
+ * sentences that are true. NEO-496 (NQ2): an unlinked parallel is built, not
+ * skipped.
  */
 export function summaryText(tally: ParallelTally): string {
   const { total, withCards } = tally;
@@ -150,8 +156,8 @@ export function summaryText(tally: ParallelTally): string {
   if (tally.unlinked > 0) {
     parts.push(
       tally.unlinked === 1
-        ? "1 isn't linked to a marketplace yet and gets skipped."
-        : `${tally.unlinked} aren't linked to a marketplace yet and get skipped.`,
+        ? "1 isn't linked to a marketplace yet, so its copy carries no marketplace links."
+        : `${tally.unlinked} aren't linked to a marketplace yet, so their copies carry no marketplace links.`,
     );
   }
   if (tally.blocked > 0) {
@@ -209,20 +215,17 @@ export function useBaseParallelsPlan(
 /** The pre-run sleeve: what each parallel looks like before anything is built. */
 function previewKind(entry: ParallelPlanEntry): ParallelLine["kind"] {
   if (entry.blocked) return "blocked";
-  if (!linked(entry)) return "skipped";
   return entry.hasCards ? "built" : "waiting";
 }
 
 /**
  * a11y (NEO-321 audit) — a parallel the run will not build, named with why:
- * "Gold — blocked: some of its cards have scans…" or "Gold — skipped: not
- * linked to a marketplace yet". `null` for one the run will build. Shown as
- * words under the summary, because the strip that also marks them is
- * decorative.
+ * "Gold — blocked: some of its cards have scans…". `null` for one the run
+ * will build (NEO-496: an unlinked one included). Shown as words under the
+ * summary, because the strip that also marks them is decorative.
  */
 export function attentionText(entry: ParallelPlanEntry): string | null {
   if (entry.blocked) return `${entry.value} — blocked: ${entry.blocked}`;
-  if (!linked(entry)) return `${entry.value} — skipped: not linked to a marketplace yet`;
   return null;
 }
 

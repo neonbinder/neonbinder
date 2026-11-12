@@ -116,7 +116,7 @@ beforeEach(() => {
 });
 
 describe("useParallelBuildRun — the runner's order", () => {
-  test("only the WAITING entries reach the action, in list order — blocked and no-id parallels never do", async () => {
+  test("every entry but a blocked one reaches the action, in list order — a no-id parallel builds too (NEO-496 NQ2)", async () => {
     mockQuery.mockResolvedValue(plan());
     const calls: Id<"selectorOptions">[] = [];
     mockActionFn.mockImplementation(async (_ref: unknown, args: { parallelId: Id<"selectorOptions"> }) => {
@@ -129,11 +129,11 @@ describe("useParallelBuildRun — the runner's order", () => {
       await result.current.start({ id: INSERT_ID, value: "Anime" });
     });
 
-    expect(calls).toEqual([A, D]);
+    expect(calls).toEqual([A, C_NO_IDS, D]);
     expect(result.current.run?.phase).toBe("finished");
     const byId = new Map(result.current.run?.entries.map((e) => [e.id, e.line]));
     expect(byId.get(B_BLOCKED)?.kind).toBe("blocked");
-    expect(byId.get(C_NO_IDS)?.kind).toBe("skipped");
+    expect(byId.get(C_NO_IDS)?.kind).toBe("built");
     expect(byId.get(A)?.kind).toBe("built");
     expect(byId.get(D)?.kind).toBe("built");
   });
@@ -336,7 +336,7 @@ function baseRun(overrides: Partial<ParallelRun> = {}): ParallelRun {
     entries: [
       { id: A, value: "Anime Gold", line: { kind: "built", result: builtResult() } },
       { id: B_BLOCKED, value: "Anime Silver", line: { kind: "blocked", reason: "some reason" } },
-      { id: C_NO_IDS, value: "Anime Bronze", line: { kind: "skipped" } },
+      { id: C_NO_IDS, value: "Anime Bronze", line: { kind: "failed", message: "boom" } },
       { id: D, value: "Anime Platinum", line: { kind: "waiting" } },
     ],
     truncated: false,
@@ -366,7 +366,7 @@ describe("panelHeading", () => {
 
   test("finished with a mix names every non-zero bucket", () => {
     const run = baseRun({ phase: "finished" });
-    expect(panelHeading(run)).toBe("Anime parallels — 1 built, 1 blocked, 1 skipped");
+    expect(panelHeading(run)).toBe("Anime parallels — 1 built, 1 blocked, 1 failed");
   });
 
   test("stopped names how many of the total were built before Stop", () => {

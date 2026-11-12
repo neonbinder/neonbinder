@@ -3,15 +3,15 @@
  *
  * What is pinned here, and why it matters:
  *
- *  - SOLO MODE (a one-marketplace set whose checklist needs the operator):
- *    every card from the one marketplace is saved, at seed and as it streams
- *    in, and the dialog offers no Keep, Keep all or Remove. A fetched
- *    marketplace card is never discarded on this path.
+ *  - NEO-496: the checklist is a full source. One marketplace plus a
+ *    checklist is two sources: leftover cards and leftover checklist rows each
+ *    need a Keep (Keep all is one click), and a kept row is saved as a card of
+ *    its own. A card the server paired with a row is matched and saved.
  *  - A link keeps an unmatched card; taking the card off the save list drops
  *    the link; unlinking a pair keeps the link on the BSC half (and that half
  *    stays saved).
- *  - Cards the server already paired to a row are not listed, but they are
- *    still SAVED. If that path broke, cards would vanish silently.
+ *  - Rows the server already paired to a card are not listed, and the card
+ *    is still SAVED. If that path broke, cards would vanish silently.
  *  - Confirm asks the server (through `resolveChecklistPairs`) what the links
  *    mean, merges the answers in place, and keeps `conflictsByIndex` aligned.
  *    A failed answer confirms nothing.
@@ -33,8 +33,6 @@ import {
 import CardPairingModal, {
   CHECKLIST_COLUMN_SUBTITLE,
   CHECKLIST_LINKS_FAILED,
-  alreadyMatchedText,
-  soloChecklistSubtitle,
   type PairingCard,
 } from "./CardPairingModal";
 import type {
@@ -49,7 +47,6 @@ type Checklist = {
   unusedRowIndices: number[];
   leftoverCardKeys: string[];
   alreadyMatched: number;
-  suggestions?: Array<{ cardKey: string; rowIndex: number }>;
 };
 
 /** A card from the one marketplace; the key is its BSC ref `bsc-<n>`. */
@@ -102,9 +99,50 @@ type Data = {
   unmatchedSl?: PairingCard[];
 };
 
+/**
+ * NEO-496 — the rows no card paired arrive as `checklistOnly` candidates
+ * now, not as a prop: a row as the server publishes it (number, players and
+ * teams; "checklist" answered the team when the row names one or says No
+ * Team; no marketplace link), keyed by its candidate id.
+ */
+const rowCard = (r: ChecklistLinkRow, i: number): PairingCard => ({
+  cardNumber: r.number,
+  cardName: r.players.length > 0 ? r.players.join(" / ") : `Card #${r.number || "NNO"}`,
+  ...(r.players.length > 0 ? { players: [...r.players] } : {}),
+  ...(r.teams.length > 0 || r.noTeam
+    ? { teams: [...r.teams], teamLookup: "checklist" as const }
+    : {}),
+  platformData: {},
+  checklistRowId: `row-${i}`,
+});
+
+/**
+ * The NEO-490 checklist shape, translated to what the dialog is sent since
+ * NEO-496: the unused rows as checklist-only cards, and every card the
+ * server paired with a row (one NOT named in `leftoverCardKeys`) carrying
+ * its `checklistLink`.
+ */
+function toWire(data: Data, checklist: Checklist | undefined) {
+  const leftover = new Set(checklist?.leftoverCardKeys ?? []);
+  const stamp = (c: PairingCard): PairingCard => {
+    if (!checklist) return c;
+    const refs = [c.platformData.bsc?.ref, c.platformData.sportlots?.ref].filter(Boolean);
+    return refs.some((r) => leftover.has(r as string))
+      ? c
+      : { ...c, checklistLink: { via: "number" } };
+  };
+  return {
+    autoMatched: (data.autoMatched ?? []).map((m) => ({ ...m, card: stamp(m.card) })),
+    unmatchedBsc: (data.unmatchedBsc ?? []).map(stamp),
+    unmatchedSl: (data.unmatchedSl ?? []).map(stamp),
+    checklistOnly: checklist
+      ? checklist.unusedRowIndices.map((i) => rowCard(checklist.rows[i], i))
+      : [],
+  };
+}
+
 type Props = {
   data: Data;
-  soloSide?: "bsc" | "sl";
   checklist?: Checklist;
   resolve?: (pairs: ChecklistPairRequest[]) => Promise<ChecklistPairAnswer[]>;
   isStreaming?: boolean;
@@ -119,8 +157,7 @@ function mount(initial: Props) {
       isOpen
       onClose={onClose}
       onConfirm={onConfirm}
-      soloSide={p.soloSide}
-      checklist={p.checklist}
+      sources={p.checklist ? ["bsc", "sportlots", "checklist"] : undefined}
       resolveChecklistPairs={p.resolve}
       isStreaming={p.isStreaming}
       streamSettled={p.streamSettled}
@@ -129,11 +166,7 @@ function mount(initial: Props) {
           ? { ready: 0, total: 1 }
           : undefined
       }
-      initialData={{
-        autoMatched: p.data.autoMatched ?? [],
-        unmatchedBsc: p.data.unmatchedBsc ?? [],
-        unmatchedSl: p.data.unmatchedSl ?? [],
-      }}
+      initialData={toWire(p.data, p.checklist)}
     />
   );
   const { rerender } = render(ui(initial));
@@ -165,199 +198,334 @@ const plainRows = () => [
 ];
 const plainKeys = ["bsc-A1", "bsc-A2", "bsc-A3"];
 
-describe("CardPairingModal — solo checklist mode (NEO-490)", () => {
-  test("every card is saved at seed, with nothing linked and no Keep controls", async () => {
-    const { onConfirm } = mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: plainCards() },
-      checklist: checklistFor(plainRows(), plainKeys),
+/**
+ * NEO-496 — the dialog as the fetch sends it now: the marketplace candidates,
+ * the checklist-only rows, and the run's `sources`.
+ */
+function mountWire(initial: {
+  sources?: readonly ("bsc" | "sportlots" | "checklist")[];
+  unmatchedBsc?: PairingCard[];
+  unmatchedSl?: PairingCard[];
+  autoMatched?: Array<{ card: PairingCard; confidence: number }>;
+  checklistOnly?: PairingCard[];
+  resolve?: (pairs: ChecklistPairRequest[]) => Promise<ChecklistPairAnswer[]>;
+}) {
+  const onConfirm = vi.fn().mockResolvedValue(undefined);
+  const onClose = vi.fn();
+  type P = typeof initial;
+  const ui = (p: P) => (
+    <CardPairingModal
+      isOpen
+      onClose={onClose}
+      onConfirm={onConfirm}
+      sources={p.sources}
+      resolveChecklistPairs={p.resolve}
+      initialData={{
+        autoMatched: p.autoMatched ?? [],
+        unmatchedBsc: p.unmatchedBsc ?? [],
+        unmatchedSl: p.unmatchedSl ?? [],
+        checklistOnly: p.checklistOnly ?? [],
+      }}
+    />
+  );
+  const { rerender } = render(ui(initial));
+  return {
+    onConfirm,
+    onClose,
+    update: (next: Partial<P>) => rerender(ui({ ...initial, ...next })),
+  };
+}
+
+const BSC_AND_CHECKLIST = ["bsc", "checklist"] as const;
+
+/** Open the Matched list when leftovers below collapsed it. */
+function expandMatched() {
+  const toggle = screen.queryByLabelText(/^Expand matched cards/);
+  if (toggle) fireEvent.click(toggle);
+}
+
+describe("CardPairingModal — one marketplace + a checklist is two sources (NEO-496 NQ1)", () => {
+  test("leftover BSC cards and leftover checklist rows each need a Keep; there is no SportLots column", () => {
+    mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [bscCard("SG-CO", "Chris Olave")],
+      checklistOnly: [rowCard(row("101", ["Matt Shaw"], ["Chicago Cubs"]), 0)],
     });
 
-    expect(screen.queryByLabelText(/^Keep /)).toBeNull();
-    expect(screen.queryByRole("button", { name: /Keep all/ })).toBeNull();
-    expect(screen.queryByLabelText(/^Remove .* from save list/)).toBeNull();
-    expect(screen.queryByText(/^Keeping \(/)).toBeNull();
+    expect(screen.getByRole("heading", { name: "BSC only (1)" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Checklist only (1)" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /^SportLots only/ })).toBeNull();
+    expect(screen.getByLabelText("Keep #SG-CO Chris Olave as BSC-only")).toBeTruthy();
+    expect(
+      screen.getByLabelText("Keep #101 Matt Shaw · Chicago Cubs as checklist-only"),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Keep all BSC-only cards")).toBeTruthy();
+    expect(screen.getByLabelText("Keep all checklist-only cards")).toBeTruthy();
+    expect(screen.getByText(CHECKLIST_COLUMN_SUBTITLE)).toBeTruthy();
+  });
+
+  test("nothing kept saves nothing: a BSC card the checklist lacks and an unkept row are both dropped", async () => {
+    const resolve = vi.fn().mockResolvedValue([]);
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [bscCard("SG-CO", "Chris Olave")],
+      checklistOnly: [rowCard(row("101", ["Matt Shaw"]), 0)],
+      resolve,
+    });
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    expect(confirmedCards(onConfirm)).toEqual([]);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  test("Keep on a checklist row saves it as a card of its own: the row's number, players and teams, no marketplace link", async () => {
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      checklistOnly: [
+        rowCard(row("101", ["Matt Shaw"], ["Chicago Cubs"]), 0),
+        rowCard(row("102", ["Jacob Wilson"]), 1),
+      ],
+    });
+
+    fireEvent.click(
+      screen.getByLabelText("Keep #101 Matt Shaw · Chicago Cubs as checklist-only"),
+    );
+
+    expect(screen.getByRole("heading", { name: "Checklist only (1)" })).toBeTruthy();
+    expect(screen.getByText("Checklist: #101 Matt Shaw · Chicago Cubs")).toBeTruthy();
+    expect(screen.getByText("1 card will be saved")).toBeTruthy();
+    expect(
+      screen.queryByLabelText("Keep #101 Matt Shaw · Chicago Cubs as checklist-only"),
+    ).toBeNull();
 
     await confirm();
-
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    expect(confirmedCards(onConfirm).map((c) => c.cardNumber)).toEqual([
-      "A1",
-      "A2",
-      "A3",
+    // Wire-only fields come off: the commit validators are strict.
+    expect(confirmedCards(onConfirm)).toEqual([
+      {
+        cardNumber: "101",
+        cardName: "Matt Shaw",
+        players: ["Matt Shaw"],
+        teams: ["Chicago Cubs"],
+        teamLookup: "checklist",
+        platformData: {},
+      },
     ]);
   });
 
-  test("a card that streams in after the dialog opened is kept too (ABSORB)", async () => {
-    const { onConfirm, update } = mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: [bscCard("A1", "Card One")] },
-      checklist: checklistFor(plainRows(), ["bsc-A1", "bsc-A2"]),
+  test("Keep all keeps every row still listed; a linked row stays linked, not kept twice", async () => {
+    const resolve = vi.fn().mockResolvedValue([]);
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [bscCard("A1", "Card One")],
+      checklistOnly: [
+        rowCard(row("1", ["Frank Thomas"]), 0),
+        rowCard(row("2", ["Jacob Wilson"]), 1),
+        rowCard(row("3", ["Matt Shaw"]), 2),
+      ],
+      resolve,
     });
 
-    update({
-      data: { unmatchedBsc: [bscCard("A1", "Card One"), bscCard("A2", "Card Two")] },
-    });
-    expect(screen.queryByLabelText(/^Keep /)).toBeNull();
-    expect(screen.getByText("#A2 Card Two")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas"));
+    fireEvent.click(screen.getByLabelText("Link selected checklist row to #A1 Card One"));
+    fireEvent.click(screen.getByLabelText("Keep all checklist-only cards"));
+
+    expect(screen.getByRole("heading", { name: "Checklist only (0)" })).toBeTruthy();
+    expect(screen.getByLabelText("Keep all checklist-only cards")).toHaveProperty("disabled", true);
+    expect(screen.getByText("Checklist: #2 Jacob Wilson")).toBeTruthy();
+    expect(screen.getByText("Checklist: #3 Matt Shaw")).toBeTruthy();
+    expect(screen.queryByText("Checklist: #1 Frank Thomas")).toBeNull();
 
     await confirm();
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    expect(confirmedCards(onConfirm).map((c) => c.cardNumber)).toEqual([
-      "A1",
-      "A2",
-    ]);
+    expect(confirmedCards(onConfirm).map((c) => c.cardNumber)).toEqual(["A1", "2", "3"]);
+    expect(resolve).toHaveBeenCalledTimes(1);
   });
 
-  test("a SportLots-only set keeps its cards the same way, and names no marketplace in the subtitle", async () => {
-    const { onConfirm } = mount({
-      soloSide: "sl",
-      data: { unmatchedSl: [slCard("77", "SL Card")] },
-      checklist: checklistFor([row("1", ["Somebody"])], ["#77 SL Card"]),
+  test("Remove on a kept row puts it back in the list, and an unkept row is dropped", async () => {
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      checklistOnly: [rowCard(row("101", ["Matt Shaw"]), 0)],
     });
 
-    expect(screen.getByText(soloChecklistSubtitle())).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "SportLots cards (1)" })).toBeTruthy();
-    expect(screen.queryByLabelText(/^Keep /)).toBeNull();
+    fireEvent.click(screen.getByLabelText("Keep #101 Matt Shaw as checklist-only"));
+    fireEvent.click(
+      screen.getByLabelText("Remove checklist row #101 Matt Shaw from save list"),
+    );
+
+    expect(screen.getByRole("heading", { name: "Checklist only (1)" })).toBeTruthy();
+    expect(screen.getByLabelText("Keep #101 Matt Shaw as checklist-only")).toBeTruthy();
 
     await confirm();
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    expect(confirmedCards(onConfirm)).toHaveLength(1);
-    expect(confirmedCards(onConfirm)[0].platformData.sportlots).toBeDefined();
+    expect(confirmedCards(onConfirm)).toEqual([]);
   });
 
-  test("the solo subtitle says every card is saved and unlinked rows are not", () => {
-    mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: plainCards() },
-      checklist: checklistFor(plainRows(), plainKeys),
+  test("a kept row is no longer a row to link: picking it is cleared, and it offers no Select", () => {
+    mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [bscCard("A1", "Card One")],
+      checklistOnly: [rowCard(row("101", ["Matt Shaw"]), 0)],
+    });
+    fireEvent.click(screen.getByLabelText("Select #101 Matt Shaw"));
+    expect(screen.getByLabelText("Link selected checklist row to #A1 Card One")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Keep #101 Matt Shaw as checklist-only"));
+
+    expect(screen.queryByLabelText("Select #101 Matt Shaw")).toBeNull();
+    expect(screen.queryByLabelText("Link selected checklist row to #A1 Card One")).toBeNull();
+    expect(screen.queryByLabelText("Clear selected checklist row")).toBeNull();
+  });
+
+  test("a kept row counts as the operator's work in the discard confirm", () => {
+    const { onClose } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      checklistOnly: [rowCard(row("101", ["Matt Shaw"]), 0)],
+    });
+    fireEvent.click(screen.getByLabelText("Keep #101 Matt Shaw as checklist-only"));
+    fireEvent.click(screen.getByLabelText("Cancel card matching"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("Discard 1 pairing?")).toBeTruthy();
+  });
+
+  test("a row that streams in again is not listed twice; a new one joins", () => {
+    const first = rowCard(row("101", ["Matt Shaw"]), 0);
+    const { update } = mountWire({ sources: BSC_AND_CHECKLIST, checklistOnly: [first] });
+    update({ checklistOnly: [first, rowCard(row("102", ["Jacob Wilson"]), 1)] });
+    update({ checklistOnly: [first, rowCard(row("102", ["Jacob Wilson"]), 1)] });
+    expect(screen.getByRole("heading", { name: "Checklist only (2)" })).toBeTruthy();
+    expect(screen.getAllByLabelText("Select #101 Matt Shaw")).toHaveLength(1);
+  });
+
+  test("the checklist column joins when the fetch says the checklist is a source, after the dialog opened", () => {
+    const { update } = mountWire({
+      sources: ["bsc"],
+      unmatchedBsc: [bscCard("A1", "Card One")],
+    });
+    expect(screen.queryByRole("heading", { name: /^Checklist only/ })).toBeNull();
+    update({ sources: BSC_AND_CHECKLIST });
+    expect(screen.getByRole("heading", { name: "Checklist only (0)" })).toBeTruthy();
+    expect(screen.getByText("Every checklist row found its card.")).toBeTruthy();
+  });
+});
+
+describe("CardPairingModal — the server's checklist pairs (NEO-496 D10)", () => {
+  const linked = (
+    card: PairingCard,
+    link: NonNullable<PairingCard["checklistLink"]>,
+  ): PairingCard => ({ ...card, checklistLink: link });
+
+  test("a BSC card paired with a row is matched, says On checklist, offers no Unlink, and is saved without a Keep", async () => {
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [
+        linked(bscCard("FS-1", "Jackson Holliday"), { via: "number" }),
+        bscCard("SG-CO", "Chris Olave"),
+      ],
+    });
+
+    expect(screen.getByText(/Matched \(1\)/)).toBeTruthy();
+    expandMatched();
+    expect(screen.getByText("On checklist")).toBeTruthy();
+    expect(screen.queryByLabelText("Unlink #FS-1 Jackson Holliday")).toBeNull();
+    expect(screen.queryByLabelText("Keep #FS-1 Jackson Holliday as BSC-only")).toBeNull();
+    expect(screen.getByRole("heading", { name: "BSC only (1)" })).toBeTruthy();
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = confirmedCards(onConfirm);
+    expect(cards.map((c) => c.cardNumber)).toEqual(["FS-1"]);
+    expect(cards[0]).not.toHaveProperty("checklistLink");
+  });
+
+  test("a near-name pair shows its % in the chip", () => {
+    mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [
+        linked(bscCard("FS-4", "Jackson Merrill"), { via: "playerFuzzy", confidence: 0.937 }),
+      ],
+    });
+    expandMatched();
+    expect(screen.getByText("On checklist")).toBeTruthy();
+    expect(screen.getByText("94%")).toBeTruthy();
+  });
+
+  test("a name pair whose numbers differ shows the row's number beside the card's own, which it keeps", async () => {
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [
+        linked(bscCard("3", "Wyatt Langford"), { via: "playerName", checklistNumber: "FS-3" }),
+      ],
+    });
+    expandMatched();
+    expect(screen.getByText("#3 Wyatt Langford")).toBeTruthy();
+    expect(screen.getByText("Checklist #FS-3")).toBeTruthy();
+    expect(screen.queryByText("On checklist")).toBeNull();
+    // No conflict, no other note.
+    expect(screen.queryByText(/conflict/i)).toBeNull();
+
+    await confirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    expect(confirmedCards(onConfirm)[0].cardNumber).toBe("3");
+  });
+
+  test("everything linked still opens and reads as lined up; Confirm saves every card", async () => {
+    const { onConfirm } = mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [
+        linked(bscCard("1", "Card One"), { via: "number" }),
+        linked(bscCard("2", "Card Two"), { via: "number" }),
+      ],
     });
     expect(
       screen.getByText(
-        soloChecklistSubtitle(),
+        "Every card lines up across your sources. Review and confirm — no cards are saved until you do.",
       ),
     ).toBeTruthy();
-  });
-
-  test("unlinked rows are dropped: Confirm sends no question and no row anywhere", async () => {
-    const resolve = vi.fn().mockResolvedValue([]);
-    const { onConfirm } = mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: plainCards() },
-      checklist: checklistFor(plainRows(), plainKeys),
-      resolve,
-    });
+    expect(screen.queryByRole("heading", { name: /^Checklist only/ })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^BSC only/ })).toBeNull();
 
     await confirm();
-
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    expect(resolve).not.toHaveBeenCalled();
-    for (const card of confirmedCards(onConfirm)) {
-      expect(JSON.stringify(card)).not.toMatch(/Frank Thomas|Jacob Wilson|Matt Shaw/);
-    }
-    expect(confirmedCards(onConfirm)).toHaveLength(3);
+    expect(confirmedCards(onConfirm).map((c) => c.cardNumber)).toEqual(["1", "2"]);
   });
 
-  test("only the linked rows are asked about, with the card's current players and teams", async () => {
-    const resolve = vi.fn().mockResolvedValue([]);
-    const { onConfirm } = mount({
-      soloSide: "bsc",
-      data: {
-        unmatchedBsc: [
-          { ...bscCard("A1", "Card One", ["Frank Thomas"]), teams: ["Cubs"] },
-          bscCard("A2", "Card Two"),
-        ],
-      },
-      checklist: checklistFor(
-        [row("9", ["Someone Else"], ["Chicago White Sox"]), row("2", ["Jacob Wilson"])],
-        ["bsc-A1", "bsc-A2"],
-      ),
-      resolve,
+  test("a checklist-paired card is not a link target for a leftover row", () => {
+    mountWire({
+      sources: BSC_AND_CHECKLIST,
+      unmatchedBsc: [
+        linked(bscCard("1", "Card One"), { via: "number" }),
+        bscCard("2", "Card Two"),
+      ],
+      checklistOnly: [rowCard(row("9", ["Somebody"]), 0)],
+    });
+    fireEvent.click(screen.getByLabelText("Select #9 Somebody"));
+    expect(screen.queryByLabelText("Link selected checklist row to #1 Card One")).toBeNull();
+    expect(screen.getByLabelText("Link selected checklist row to #2 Card Two")).toBeTruthy();
+  });
+
+  test("three sources: unlinking a BSC + SportLots pair the checklist also paired keeps the BSC half saved with its chip", async () => {
+    const pair = linked(pairedCard("7", "Seven"), { via: "number" });
+    const { onConfirm } = mountWire({
+      sources: ["bsc", "sportlots", "checklist"],
+      autoMatched: [{ card: pair, confidence: 1 }],
     });
 
-    fireEvent.click(screen.getByLabelText("Select #9 Someone Else · Chicago White Sox"));
-    fireEvent.click(screen.getByLabelText("Link selected checklist row to #A1 Card One"));
+    fireEvent.click(screen.getByLabelText("Unlink #7 Seven"));
+
+    expect(screen.getByRole("heading", { name: "SportLots only (1)" })).toBeTruthy();
+    expect(screen.getByText("BSC: #7 Seven")).toBeTruthy();
     await confirm();
-
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    expect(resolve).toHaveBeenCalledTimes(1);
-    expect(resolve).toHaveBeenCalledWith([
-      {
-        cardKey: "bsc-A1",
-        card: { cardNumber: "A1", players: ["Frank Thomas"], teams: ["Cubs"] },
-        row: { number: "9", players: ["Someone Else"], teams: ["Chicago White Sox"] },
-      },
-    ]);
-    // The card keeps the number it was fetched with: a link never renumbers.
-    expect(confirmedCards(onConfirm).map((c) => c.cardNumber)).toEqual(["A1", "A2"]);
-  });
-
-  test("cards the server already paired are not listed, yet still reach onConfirm", async () => {
-    const { onConfirm } = mount({
-      soloSide: "bsc",
-      data: {
-        unmatchedBsc: [
-          bscCard("H1", "Hidden One"),
-          bscCard("H2", "Hidden Two"),
-          bscCard("A1", "Card One"),
-        ],
-      },
-      // Only A1 is a leftover; H1 and H2 were paired to rows on the server.
-      checklist: checklistFor([row("5", ["Left Over"])], ["bsc-A1"], {
-        alreadyMatched: 2,
-      }),
-    });
-
-    expect(screen.getByText(alreadyMatchedText(2))).toBeTruthy();
-    expect(screen.getByText("2 cards already matched to your checklist — they're saved too")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "BuySportsCards cards (1)" })).toBeTruthy();
-    expect(screen.queryByText("#H1 Hidden One")).toBeNull();
-    expect(screen.queryByText("#H2 Hidden Two")).toBeNull();
-
-    await confirm();
-
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    expect(confirmedCards(onConfirm).map((c) => c.cardNumber).sort()).toEqual([
-      "A1",
-      "H1",
-      "H2",
-    ]);
-  });
-
-  test("a hidden server-paired card that streams in later is saved too", async () => {
-    const { onConfirm, update } = mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: [bscCard("A1", "Card One")] },
-      checklist: checklistFor([row("5", ["Left Over"])], ["bsc-A1"]),
-    });
-
-    update({
-      data: {
-        unmatchedBsc: [bscCard("A1", "Card One"), bscCard("H9", "Late Hidden")],
-      },
-    });
-    await confirm();
-
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    expect(confirmedCards(onConfirm).map((c) => c.cardNumber)).toContain("H9");
-  });
-
-  test("the one-card summary reads in the singular", () => {
-    mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: [bscCard("A1", "Card One")] },
-      checklist: checklistFor([row("5", ["Left Over"])], ["bsc-A1"], {
-        alreadyMatched: 1,
-      }),
-    });
-    expect(screen.getByText("1 card already matched to your checklist — it's saved too")).toBeTruthy();
+    const cards = confirmedCards(onConfirm);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].platformData).toEqual({ bsc: { ref: "bsc-7", setId: "sig-1" } });
   });
 });
 
 describe("CardPairingModal — checklist names (NEO-490)", () => {
   test("the list, filter, select, link and unlink controls carry the planned names", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: [bscCard("A1", "Card One"), bscCard("A2", "Card Two")] },
       checklist: checklistFor(
         [row("1", ["Frank Thomas"], ["Chicago White Sox"]), row("2", ["Jacob Wilson"])],
@@ -369,7 +537,7 @@ describe("CardPairingModal — checklist names (NEO-490)", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(2);
     expect(screen.getByRole("textbox", { name: "Filter checklist rows" })).toBeTruthy();
     expect(
-      screen.getByRole("heading", { name: "Your checklist (2 to link)" }),
+      screen.getByRole("heading", { name: "Checklist only (2)" }),
     ).toBeTruthy();
 
     const select = screen.getByRole("button", {
@@ -395,13 +563,12 @@ describe("CardPairingModal — checklist names (NEO-490)", () => {
     expect(screen.getByText("Linked to #A2 Card Two")).toBeTruthy();
     expect(screen.getByText("Checklist #1")).toBeTruthy();
     expect(
-      screen.getByRole("heading", { name: "Your checklist (1 to link)" }),
+      screen.getByRole("heading", { name: "Checklist only (1)" }),
     ).toBeTruthy();
   });
 
   test("the filter narrows the rows by their line", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -417,7 +584,6 @@ describe("CardPairingModal — checklist names (NEO-490)", () => {
 
   test("a row the server paired (not in unusedRowIndices) is not listed", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: {
         rows: plainRows(),
@@ -433,7 +599,6 @@ describe("CardPairingModal — checklist names (NEO-490)", () => {
 
   test("a card that is not a leftover offers no Link, even with a row picked", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: [bscCard("A1", "Card One"), bscCard("H1", "Hidden")] },
       checklist: checklistFor([row("1", ["Frank Thomas"])], ["bsc-A1"]),
     });
@@ -445,7 +610,6 @@ describe("CardPairingModal — checklist names (NEO-490)", () => {
 describe("CardPairingModal — linking rows (NEO-490)", () => {
   test("a linked row cannot be linked to a second card, and its card cannot take a second row", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -466,7 +630,6 @@ describe("CardPairingModal — linking rows (NEO-490)", () => {
 
   test("Unlink returns the row to the list and offers the card a row again", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -477,7 +640,7 @@ describe("CardPairingModal — linking rows (NEO-490)", () => {
 
     expect(screen.getByLabelText("Select #1 Frank Thomas · Chicago White Sox")).toBeTruthy();
     expect(screen.queryByText(/^Checklist #/)).toBeNull();
-    expect(screen.getByRole("heading", { name: "Your checklist (3 to link)" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Checklist only (3)" })).toBeTruthy();
   });
 
   test("linking an unmatched card in a two-marketplace set keeps it, and it is saved", async () => {
@@ -487,7 +650,7 @@ describe("CardPairingModal — linking rows (NEO-490)", () => {
         unmatchedBsc: [bscCard("A1", "Card One")],
         unmatchedSl: [slCard("Z9", "Other Side")],
       },
-      checklist: checklistFor([row("1", ["Frank Thomas"])], ["bsc-A1"]),
+      checklist: checklistFor([row("1", ["Frank Thomas"])], ["bsc-A1", "#Z9 Other Side"]),
       resolve,
     });
 
@@ -633,7 +796,7 @@ describe("CardPairingModal — linking rows (NEO-490)", () => {
 });
 
 describe("CardPairingModal — the checklist arrives late (NEO-490)", () => {
-  test("a checklist passed after the dialog opened joins it, and the first one wins", () => {
+  test("the checklist joins after the dialog opened, and a row streamed again keeps its first form and its link", () => {
     const first = checklistFor([row("1", ["Frank Thomas"])], ["bsc-A1"]);
     const second = checklistFor([row("2", ["Jacob Wilson"])], ["bsc-A1"]);
     const { update } = mount({
@@ -644,133 +807,12 @@ describe("CardPairingModal — the checklist arrives late (NEO-490)", () => {
     update({ checklist: first });
     expect(screen.getByLabelText("Select #1 Frank Thomas")).toBeTruthy();
 
-    // A later, different prop does not replace the checklist or reset links.
+    // The same row id arriving again does not replace the row or reset links.
     fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas"));
     fireEvent.click(screen.getByLabelText("Link selected checklist row to #A1 Card One"));
     update({ checklist: second });
     expect(screen.queryByLabelText(/Select #2 /)).toBeNull();
     expect(screen.getByLabelText("Unlink checklist row #1 Frank Thomas from #A1 Card One")).toBeTruthy();
-  });
-});
-
-describe("CardPairingModal — suggested links (NEO-490)", () => {
-  const named = () => [
-    bscCard("A1", "Card One", ["Frank Thomas"]),
-    bscCard("A2", "Card Two", ["Jacob Wilson"]),
-    bscCard("A3", "Card Three", ["Matt Shaw"]),
-  ];
-
-  test("unique name pairs are linked once the stream has settled, not before", () => {
-    const props: Props = {
-      soloSide: "bsc",
-      data: { unmatchedBsc: named() },
-      checklist: checklistFor(plainRows(), plainKeys),
-      isStreaming: true,
-      streamSettled: false,
-    };
-    const { update } = mount(props);
-
-    // Still streaming: a card still to come could turn a unique name into a tie.
-    expect(screen.queryByLabelText(/^Unlink checklist row /)).toBeNull();
-    expect(screen.getByRole("heading", { name: "Your checklist (3 to link)" })).toBeTruthy();
-
-    update({ isStreaming: false, streamSettled: true, data: { unmatchedBsc: named() } });
-
-    expect(screen.getByLabelText("Unlink checklist row #1 Frank Thomas · Chicago White Sox from #A1 Card One")).toBeTruthy();
-    expect(screen.getByLabelText("Unlink checklist row #2 Jacob Wilson from #A2 Card Two")).toBeTruthy();
-    expect(screen.getByLabelText("Unlink checklist row #3 Matt Shaw from #A3 Card Three")).toBeTruthy();
-  });
-
-  test("seeding runs once: a suggestion the operator took off is not put back", () => {
-    const { update } = mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: named() },
-      checklist: checklistFor(plainRows(), plainKeys),
-      isStreaming: false,
-      streamSettled: true,
-    });
-    fireEvent.click(screen.getByLabelText("Unlink checklist row #2 Jacob Wilson from #A2 Card Two"));
-    expect(screen.getByLabelText("Select #2 Jacob Wilson")).toBeTruthy();
-
-    // More props, more renders, another settled stream: nothing re-links.
-    update({ data: { unmatchedBsc: named() }, streamSettled: true });
-    update({ data: { unmatchedBsc: named() }, streamSettled: true });
-
-    expect(screen.getByLabelText("Select #2 Jacob Wilson")).toBeTruthy();
-    expect(screen.queryByLabelText("Unlink checklist row #2 Jacob Wilson from #A2 Card Two")).toBeNull();
-  });
-
-  test("a name tie stays unlinked for the operator: no row goes to the first candidate", () => {
-    mount({
-      soloSide: "bsc",
-      data: {
-        unmatchedBsc: [
-          bscCard("A1", "Card One", ["Jacob Wilson"]),
-          bscCard("A2", "Card Two", ["Jacob Wilson"]),
-          bscCard("A3", "Card Three", ["Matt Shaw"]),
-        ],
-      },
-      checklist: checklistFor(
-        [row("1", ["Jacob Wilson"]), row("2", ["Matt Shaw"])],
-        plainKeys,
-      ),
-    });
-
-    // Two cards claim Jacob Wilson: neither is linked, and the row waits.
-    expect(screen.getByLabelText("Select #1 Jacob Wilson")).toBeTruthy();
-    expect(screen.queryByLabelText(/^Unlink checklist row 1 /)).toBeNull();
-    // The unique pair beside the tie still links.
-    expect(screen.getByLabelText("Unlink checklist row #2 Matt Shaw from #A3 Card Three")).toBeTruthy();
-  });
-
-  test("two rows with one name leave the card and both rows unlinked", () => {
-    mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: [bscCard("A1", "Card One", ["Jacob Wilson"])] },
-      checklist: checklistFor(
-        [row("1", ["Jacob Wilson"]), row("2", ["Jacob Wilson"])],
-        ["bsc-A1"],
-      ),
-    });
-    expect(screen.queryByLabelText(/^Unlink checklist row /)).toBeNull();
-    expect(screen.getByLabelText("Select #1 Jacob Wilson")).toBeTruthy();
-    expect(screen.getByLabelText("Select #2 Jacob Wilson")).toBeTruthy();
-  });
-
-  test("a card the server paired already is not suggested a row", () => {
-    mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: [bscCard("A1", "Card One", ["Jacob Wilson"])] },
-      // The card is not a leftover, so it cannot be a link target.
-      checklist: checklistFor([row("1", ["Jacob Wilson"])], []),
-    });
-    expect(screen.queryByLabelText(/^Unlink checklist row /)).toBeNull();
-  });
-
-  test("suggestions passed by the caller are linked instead of the name rule", () => {
-    mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: plainCards() },
-      checklist: checklistFor(plainRows(), plainKeys, {
-        suggestions: [{ cardKey: "bsc-A2", rowIndex: 0 }],
-      }),
-    });
-    expect(screen.getByLabelText("Unlink checklist row #1 Frank Thomas · Chicago White Sox from #A2 Card Two")).toBeTruthy();
-    expect(screen.queryByLabelText(/^Unlink checklist row 2 /)).toBeNull();
-  });
-
-  test("a suggested link on an unmatched card keeps it in a two-marketplace set", async () => {
-    const resolve = vi.fn().mockResolvedValue([]);
-    const { onConfirm } = mount({
-      data: { unmatchedBsc: [bscCard("A1", "Card One", ["Frank Thomas"])] },
-      checklist: checklistFor([row("1", ["Frank Thomas"])], ["bsc-A1"]),
-      resolve,
-    });
-    expect(screen.getByText(/^Keeping \(1\)$/)).toBeTruthy();
-    await confirm();
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    expect(confirmedCards(onConfirm)).toHaveLength(1);
-    expect(resolve).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -786,7 +828,6 @@ describe("CardPairingModal — Confirm resolves the links first (NEO-490)", () =
       () => new Promise<ChecklistPairAnswer[]>((res) => (answer = res)),
     );
     const { onConfirm } = mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
       resolve,
@@ -812,14 +853,14 @@ describe("CardPairingModal — Confirm resolves the links first (NEO-490)", () =
     });
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
-    const [first, second, third] = confirmedCards(onConfirm);
+    const cards = confirmedCards(onConfirm);
+    // NEO-496: the leftovers nobody linked or kept are dropped.
+    expect(cards).toHaveLength(1);
+    const [first] = cards;
     expect(first.cardNumber).toBe("A1");
     expect(first.teams).toEqual(["Chicago White Sox"]);
     expect(first.teamLookup).toBe("checklist");
     expect(first.players).toEqual(["Frank Thomas"]);
-    // The unlinked cards are untouched and still saved.
-    expect(second.teams).toBeUndefined();
-    expect(third.teams).toBeUndefined();
   });
 
   test("a disagreement rides on the card and the card's own values stay", async () => {
@@ -835,7 +876,6 @@ describe("CardPairingModal — Confirm resolves the links first (NEO-490)", () =
       },
     ]);
     const { onConfirm } = mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: [{ ...bscCard("A1", "Card One"), teams: ["Cubs"] }] },
       checklist: checklistFor(plainRows(), ["bsc-A1"]),
       resolve,
@@ -888,7 +928,6 @@ describe("CardPairingModal — Confirm resolves the links first (NEO-490)", () =
       { cardKey: "bsc-GONE", teams: ["Nobody"], teamLookup: "checklist" },
     ]);
     const { onConfirm } = mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
       resolve,
@@ -905,7 +944,6 @@ describe("CardPairingModal — Confirm resolves the links first (NEO-490)", () =
       .mockRejectedValueOnce(new Error("server down"))
       .mockResolvedValueOnce([]);
     const { onConfirm } = mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
       resolve,
@@ -928,7 +966,6 @@ describe("CardPairingModal — Confirm resolves the links first (NEO-490)", () =
 
   test("links with no resolver to ask confirm nothing rather than save them unanswered", async () => {
     const { onConfirm } = mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -942,9 +979,8 @@ describe("CardPairingModal — Confirm resolves the links first (NEO-490)", () =
 describe("CardPairingModal — the discard count with a checklist (NEO-490)", () => {
   const pairingDialog = () => screen.getByRole("dialog", { name: /Match Cards/ });
 
-  test("an untouched solo session closes at once: the cards this screen kept are not the operator's work", () => {
+  test("an untouched session closes at once: the server's pairs are not the operator's work", () => {
     const { onClose } = mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -953,67 +989,6 @@ describe("CardPairingModal — the discard count with a checklist (NEO-490)", ()
     expect(screen.queryByRole("dialog", { name: /Discard/ })).toBeNull();
   });
 
-  test("seeded suggestions alone are not counted either", () => {
-    const { onClose } = mount({
-      soloSide: "bsc",
-      data: {
-        unmatchedBsc: [
-          bscCard("A1", "Card One", ["Frank Thomas"]),
-          bscCard("A2", "Card Two", ["Jacob Wilson"]),
-        ],
-      },
-      checklist: checklistFor(plainRows(), plainKeys),
-    });
-    expect(screen.getAllByLabelText(/^Unlink checklist row /)).toHaveLength(2);
-    fireEvent.keyDown(pairingDialog(), { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  test("a hand link counts, and so does taking a suggestion off", () => {
-    const { onClose } = mount({
-      soloSide: "bsc",
-      data: {
-        unmatchedBsc: [
-          bscCard("A1", "Card One", ["Frank Thomas"]),
-          bscCard("A2", "Card Two"),
-        ],
-      },
-      checklist: checklistFor(plainRows(), plainKeys),
-    });
-    // One suggestion taken off.
-    fireEvent.click(screen.getByLabelText("Unlink checklist row #1 Frank Thomas · Chicago White Sox from #A1 Card One"));
-    fireEvent.click(screen.getByLabelText("Cancel card matching"));
-    expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Discard 1 pairing?" })).toBeTruthy();
-  });
-
-  test("a new hand link in solo mode is one edit", () => {
-    mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: plainCards() },
-      checklist: checklistFor(plainRows(), plainKeys),
-    });
-    fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas · Chicago White Sox"));
-    fireEvent.click(screen.getByLabelText("Link selected checklist row to #A1 Card One"));
-    fireEvent.keyDown(pairingDialog(), { key: "Escape" });
-    expect(screen.getByRole("button", { name: "Discard 1 pairing" })).toBeTruthy();
-  });
-
-  test("moving a suggestion onto a different row is counted, a plain re-link back to the seed is not", () => {
-    const { onClose } = mount({
-      soloSide: "bsc",
-      data: { unmatchedBsc: [bscCard("A1", "Card One", ["Frank Thomas"])] },
-      checklist: checklistFor(plainRows(), ["bsc-A1"]),
-    });
-    const unlink = () =>
-      fireEvent.click(screen.getByLabelText("Unlink checklist row #1 Frank Thomas · Chicago White Sox from #A1 Card One"));
-    unlink();
-    // Put it back by hand: the same link as the seed made.
-    fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas · Chicago White Sox"));
-    fireEvent.click(screen.getByLabelText("Link selected checklist row to #A1 Card One"));
-    fireEvent.click(screen.getByLabelText("Cancel card matching"));
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
 });
 
 /** The checklist's own status region: the one without the stream's id. */
@@ -1030,7 +1005,6 @@ const linkTopTo = (card: string) =>
 describe("CardPairingModal — the checklist announcer (NEO-490 a11y)", () => {
   const soloMount = () =>
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -1078,17 +1052,16 @@ describe("CardPairingModal — the checklist announcer (NEO-490 a11y)", () => {
 
   test("the last link says every row is linked", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: [bscCard("A1", "Card One")] },
       checklist: checklistFor([row("1", ["Frank Thomas"])], ["bsc-A1"]),
     });
     fireEvent.click(screen.getByLabelText("Select #1 Frank Thomas"));
     linkTopTo("#A1 Card One");
     expect(announcer().textContent).toBe(
-      "Linked checklist row 1 to #A1 Card One. Every checklist row is linked.",
+      "Linked checklist row 1 to #A1 Card One. Every checklist row is linked or kept.",
     );
     expect(
-      screen.getByRole("heading", { name: "Your checklist (all linked!)" }),
+      screen.getByRole("heading", { name: "Checklist only (0)" }),
     ).toBeTruthy();
   });
 
@@ -1110,21 +1083,6 @@ describe("CardPairingModal — the checklist announcer (NEO-490 a11y)", () => {
     linkTopTo("#A1 Card One");
     fireEvent.click(screen.getByLabelText("Remove #A1 Card One from save list"));
     expect(announcer().textContent).toBe("Checklist row 1 unlinked too.");
-  });
-
-  test("the links the one-time seed makes are not announced", () => {
-    mount({
-      soloSide: "bsc",
-      data: {
-        unmatchedBsc: [
-          bscCard("A1", "Card One", ["Frank Thomas"]),
-          bscCard("A2", "Card Two", ["Jacob Wilson"]),
-        ],
-      },
-      checklist: checklistFor(plainRows(), plainKeys),
-    });
-    expect(screen.getAllByLabelText(/^Unlink checklist row /)).toHaveLength(2);
-    expect(announcer().textContent).toBe("");
   });
 
   describe("a drop", () => {
@@ -1162,7 +1120,7 @@ describe("CardPairingModal — the checklist announcer (NEO-490 a11y)", () => {
       twoSided();
       await dropOn("Keep #A1 Card One as BSC-only");
       expect(announcer().textContent).toBe(
-        "Linked checklist row 1 to #A1 Card One. Every checklist row is linked.",
+        "Linked checklist row 1 to #A1 Card One. Every checklist row is linked or kept.",
       );
     });
 
@@ -1179,7 +1137,6 @@ describe("CardPairingModal — the checklist announcer (NEO-490 a11y)", () => {
 describe("CardPairingModal — the Selected strip (NEO-490 a11y)", () => {
   const soloMount = () =>
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -1219,7 +1176,6 @@ describe("CardPairingModal — the Selected strip (NEO-490 a11y)", () => {
 describe("CardPairingModal — rows that read alike (NEO-490 a11y)", () => {
   const twins = () =>
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(
         [row("5", ["Same Guy"]), row("5", ["Same Guy"]), row("9", ["Other Guy"])],
@@ -1248,7 +1204,6 @@ describe("CardPairingModal — rows that read alike (NEO-490 a11y)", () => {
 
   test("an NNO row reads NNO, not #NNO, and duplicates are told apart the same way", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(
         [1, 2, 3].map(() => ({ ...row("NNO", ["Same"]), noNumber: true as const })),
@@ -1264,7 +1219,6 @@ describe("CardPairingModal — rows that read alike (NEO-490 a11y)", () => {
 
   test("the number chip says what the number is", () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -1310,7 +1264,6 @@ describe("CardPairingModal — Confirm while the links are asked about (NEO-490 
   const confirmButton = () => screen.getByLabelText("Confirm card matches");
   const linkOneAndMount = async (resolve: Props["resolve"]) => {
     const view = mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
       resolve,
@@ -1377,7 +1330,6 @@ describe("CardPairingModal — Confirm while the links are asked about (NEO-490 
 describe("CardPairingModal — the checklist filter (NEO-490 a11y)", () => {
   const soloMount = () =>
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -1442,7 +1394,6 @@ describe("CardPairingModal — link targets are refs only (NEO-490)", () => {
       unmatched: "sl",
     };
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: [bscCard("A1", "Card One"), refless] },
       // The number-only key a ref-less card would answer to is named a
       // leftover, and still does not make it a target.
@@ -1478,7 +1429,6 @@ describe("CardPairingModal — the card's own Unlink on the checklist chip (NEO-
 
   const soloLinked = () => {
     mount({
-      soloSide: "bsc",
       data: { unmatchedBsc: plainCards() },
       checklist: checklistFor(plainRows(), plainKeys),
     });
@@ -1495,7 +1445,7 @@ describe("CardPairingModal — the card's own Unlink on the checklist chip (NEO-
     expect(screen.getByLabelText(`Select #1 ${TOP}`)).toBeTruthy();
     expect(screen.queryByText(/^Checklist #/)).toBeNull();
     expect(screen.queryByLabelText(CHIP_SOLO)).toBeNull();
-    expect(screen.getByRole("heading", { name: "Your checklist (3 to link)" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Checklist only (3)" })).toBeTruthy();
     // The card is offered a row again.
     selectTop();
     expect(screen.getByLabelText("Link selected checklist row to #A1 Card One")).toBeTruthy();

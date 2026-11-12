@@ -334,6 +334,25 @@ vi.mock("./EntityReviewWizard", () => ({
 }));
 
 const mockFetchChecklist = vi.fn();
+/**
+ * NEO-496 — the server always reports the run's `sources`: the marketplace
+ * sides it fetched (attached, minus paused) plus "checklist" when a checklist
+ * was in play. Most fixtures here predate the field, so a result without one
+ * gets the value the server would send for that fixture; a fixture that sets
+ * `sources` itself is passed through untouched.
+ */
+const fetchWithSources = async (args: { publishedChecklist?: unknown }) => {
+  const result = await mockFetchChecklist(args);
+  if (!result || typeof result !== "object" || "sources" in result || !result.success) {
+    return result;
+  }
+  const paused = new Set<string>(result.pausedSides ?? []);
+  const sides = ((result.attachedSides ?? []) as string[]).filter((s) => !paused.has(s));
+  return {
+    ...result,
+    sources: [...sides, ...(args.publishedChecklist ? ["checklist"] : [])],
+  };
+};
 const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
 const mockDiffChecklist = vi.fn();
@@ -446,7 +465,7 @@ vi.mock("convex/react", () => ({
     return vi.fn();
   },
   useAction: (ref: string) => {
-    if (ref === "fetchCardChecklist") return mockFetchChecklist;
+    if (ref === "fetchCardChecklist") return fetchWithSources;
     if (ref === "resolveChecklistEntities") return mockResolveEntities;
     // NEO-189: commitCardChecklist became an ACTION when the commit was
     // chunked server-side. Same call shape, different hook.
@@ -1760,12 +1779,31 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(mockFetchChecklist.mock.calls[0][0].waitKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
     });
 
+    /**
+     * NEO-496 — the server paired both cards with a checklist row by number
+     * and took their teams from it, so each carries the row's link.
+     */
+    const linkedCandidates = slCandidates.map((card) => ({
+      ...card,
+      teamLookup: "checklist" as const,
+      checklistLink: { via: "number" as const },
+    }));
+    const linkedBatch = { ...arrivedBatch, cards: linkedCandidates };
+
+    /** NEO-496 — a checklist makes two sources: Match Cards opens; confirm it. */
+    async function confirmMatchCards() {
+      await screen.findByText(/Match Cards/);
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      });
+    }
+
     it("renders 'Teams from your checklist: N of M cards' from checklistTeams while the wizard is open", async () => {
       // The line rides on the sync banner, read here where the run stops: on
-      // a card the wizard has to settle. (The auto-commit case is below.)
+      // a card the wizard has to settle. (The no-question case is below.)
       const conflictBatch = {
-        ...arrivedBatch,
-        cards: slCandidates.map((card, i) =>
+        ...linkedBatch,
+        cards: linkedCandidates.map((card, i) =>
           i === 0
             ? { ...card, checklistConflict: { teams: { marketplace: [], checklist: ["Reds"] } } }
             : card,
@@ -1774,16 +1812,18 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       const { rerender } = renderChecklist();
       await addChecklist();
       await syncWith(rerender, conflictBatch, { checklistTeams: { matched: 1, total: 2 } });
+      await confirmMatchCards();
       await screen.findByText("Wizard opened teams-only");
       expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards");
     });
 
     it("keeps 'Teams from your checklist: N of M cards' on the saved line when the run commits with no question", async () => {
-      // No disagreement, no unknown names: the run commits straight away and
+      // No disagreement, no unknown names: Confirm commits straight away and
       // "Saved N cards." replaces the sync line — the checklist line rides on.
       const { rerender } = renderChecklist();
       await addChecklist();
-      await syncWith(rerender, arrivedBatch, { checklistTeams: { matched: 2, total: 2 } });
+      await syncWith(rerender, linkedBatch, { checklistTeams: { matched: 2, total: 2 } });
+      await confirmMatchCards();
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
       expect(liveRegionText()).toContain("Teams from your checklist: 2 of 2 cards");
@@ -1791,74 +1831,120 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     });
 
     /**
-     * NEO-490 — the checklist as a source in Match Cards. A one-marketplace set
-     * opens the dialog in solo mode only when the fetch says the operator is
-     * needed; otherwise it still keeps every card and commits with no dialog.
+     * NEO-496 — the checklist is a full source. One marketplace plus a
+     * checklist is two sources, so Match Cards opens, even when every card
+     * lines up; a checklist alone is one source and is kept whole.
      */
-    describe("NEO-490: checklist routing", () => {
-      const matchSummary = (over: Record<string, unknown> = {}) => ({
-        needsOperator: true,
-        byNumber: 0,
-        byPlayerName: 0,
-        unusedRowIndices: [0, 1],
-        leftoverCardKeys: ["sl-1", "sl-2"],
-        ...over,
+    describe("NEO-496: checklist routing", () => {
+      /** A checklist row no card paired, as the fetch streams it. */
+      const rowCandidate = (n: string, player: string, id = `row-${n}`) => ({
+        _id: id,
+        cardNumber: n,
+        cardName: player,
+        players: [player],
+        teams: ["Solo Team"],
+        teamLookup: "checklist" as const,
+        bucket: "checklistOnly" as const,
+        platformData: {},
       });
+      const withRows = {
+        ...arrivedBatch,
+        ready: 4,
+        total: 4,
+        cards: [...slCandidates, rowCandidate("1", "Solo One"), rowCandidate("2", "Solo Two")],
+      };
 
-      it("a one-marketplace set whose checklist needs the operator opens Match Cards in solo mode, and commits nothing yet", async () => {
+      it("a one-marketplace set with a checklist opens Match Cards with Keep on both sources' leftovers, and commits nothing yet", async () => {
         const { rerender } = renderChecklist();
         await addChecklist();
-        await syncWith(rerender, arrivedBatch, { checklistMatch: matchSummary() });
+        await syncWith(rerender, withRows, { candidateCount: 4 });
 
         expect(await screen.findByText(/Match Cards/)).toBeTruthy();
-        expect(screen.getByRole("list", { name: "Leftover checklist rows" })).toBeTruthy();
-        expect(screen.getByLabelText("Select #1 Solo One · Solo Team")).toBeTruthy();
-        // Solo: every SportLots card is saved, so there is nothing to keep.
-        expect(screen.queryByLabelText(/^Keep /)).toBeNull();
-        expect(screen.getByText(/Every card here gets saved/)).toBeTruthy();
+        expect(screen.getByRole("heading", { name: "Checklist only (2)" })).toBeTruthy();
+        expect(screen.queryByRole("heading", { name: /^BSC only/ })).toBeNull();
+        expect(screen.getByLabelText("Keep #1 Solo One as SportLots-only")).toBeTruthy();
+        expect(
+          screen.getByLabelText("Keep #1 Solo One · Solo Team as checklist-only"),
+        ).toBeTruthy();
         expect(mockCommitChecklist).not.toHaveBeenCalled();
         expect(mockResolveEntities).not.toHaveBeenCalled();
       });
 
-      it("without needsOperator the same one-marketplace set still keeps every card and commits with no dialog", async () => {
+      it("every card on the checklist still opens Match Cards; Confirm saves them all", async () => {
         const { rerender } = renderChecklist();
         await addChecklist();
-        await syncWith(rerender, arrivedBatch, {
-          checklistMatch: matchSummary({
-            needsOperator: false,
-            byNumber: 2,
-            unusedRowIndices: [],
-            leftoverCardKeys: [],
-          }),
-        });
+        await syncWith(rerender, linkedBatch);
 
+        await confirmMatchCards();
         await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-        expect(screen.queryByText(/Match Cards/)).toBeNull();
-        expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(2);
+        const saved = mockCommitChecklist.mock.calls[0][0].cards;
+        expect(saved).toHaveLength(2);
+        // The wire-only link never reaches the strict commit validator.
+        expect(saved[0]).not.toHaveProperty("checklistLink");
       });
 
-      it("needsOperator with no checklist sent opens nothing: there are no rows to line up", async () => {
+      it("a stored checklist the client could not see is learned from the fetch, and opens Match Cards", async () => {
+        // Nothing pasted: the client predicted one source, the server says two.
         const { rerender } = renderChecklist();
-        await syncWith(rerender, arrivedBatch, { checklistMatch: matchSummary() });
+        await syncWith(rerender, linkedBatch, { sources: ["sportlots", "checklist"] });
+        expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+      });
+
+      it("no checklist: a one-marketplace set still keeps every card and commits with no dialog", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, arrivedBatch);
         await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
         expect(screen.queryByText(/Match Cards/)).toBeNull();
       });
 
-      it("Confirm asks the server about the hand links, saves every card, and recounts the teams line from the answers", async () => {
+      it("a checklist alone (no marketplace attached) keeps every row as a card and goes straight on", async () => {
+        state.ancestorChain = [
+          { _id: SPORT_ID, level: "sport", value: "Baseball", platformData: {} },
+          { _id: SET_ID, level: "setName", value: "Test Set", platformData: {} },
+          { _id: VARIANT_ID, level: "variantType", value: "Base", platformData: {} },
+        ];
+        const rowsOnly = {
+          ...arrivedBatch,
+          cards: [rowCandidate("1", "Solo One"), rowCandidate("2", "Solo Two")],
+        };
+        // Held open so the kept line is read while it stands for the commit.
+        let finishCommit: (value: unknown) => void = () => {};
+        mockCommitChecklist.mockImplementation(
+          () => new Promise((resolve) => (finishCommit = resolve)),
+        );
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, rowsOnly, { attachedSides: [] });
+
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText(/Match Cards/)).toBeNull();
+        const saved = mockCommitChecklist.mock.calls[0][0].cards;
+        expect(saved.map((c: { cardNumber: string }) => c.cardNumber)).toEqual(["1", "2"]);
+        expect(saved[0]).toMatchObject({ platformData: {}, teamLookup: "checklist" });
+        expect(saved[0]).not.toHaveProperty("checklistRowId");
+        expect(liveRegionText()).toContain(
+          "Kept all 2 cards from your checklist. Nothing to match, no marketplace attached.",
+        );
+        await act(async () => finishCommit({ count: 2 }));
+      });
+
+      it("Confirm asks the server about the hand links, saves the linked and kept cards, and recounts the teams line from the answers", async () => {
         mockApplyChecklistPairs.mockResolvedValue([
           { teams: ["Solo Team"], teamLookup: "checklist" },
         ]);
         const { rerender } = renderChecklist();
         await addChecklist();
         // The fetch counted none from the checklist; one link will make it one.
-        await syncWith(rerender, arrivedBatch, {
-          checklistMatch: matchSummary(),
+        await syncWith(rerender, withRows, {
+          candidateCount: 4,
           checklistTeams: { matched: 0, total: 2 },
         });
         await screen.findByText(/Match Cards/);
 
         fireEvent.click(screen.getByLabelText("Select #1 Solo One · Solo Team"));
         fireEvent.click(screen.getByLabelText("Link selected checklist row to #1 Solo One"));
+        fireEvent.click(screen.getByLabelText("Keep #2 Solo Two as SportLots-only"));
         await act(async () => {
           fireEvent.click(screen.getByLabelText("Confirm card matches"));
         });
@@ -1873,7 +1959,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
           players: ["Solo One"],
           teams: ["Solo Team"],
         });
-        // The unlinked row was dropped; both marketplace cards were saved.
+        // The row nobody kept was dropped; the linked and the kept card saved.
         expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(2);
         await waitFor(() =>
           expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards"),
@@ -1881,10 +1967,10 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         expect(liveRegionText()).not.toContain("Teams from your checklist: 0 of 2 cards");
       });
 
-      it("the teams line is left as the fetch counted it when the checklist column was not in play", async () => {
-        // Two marketplaces, a checklist that needed no one: the dialog opens
-        // for the usual pairing, and what is saved is not a recount of
-        // anything the operator linked. A recount here would read 0 of 1.
+      it("the teams line is left as the fetch counted it when the checklist was not a source", async () => {
+        // Two marketplaces, and the server reports no checklist source: the
+        // dialog opens for the usual pairing, and nothing is recounted. A
+        // recount here would read 0 of 1.
         state.ancestorChain = twoSidedChain();
         state.liveCandidates = {
           batchId: "batch-490",
@@ -1904,13 +1990,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
             message: "1 matched, 0 BSC-only, 0 SL-only",
             candidateCount: 1,
             attachedSides: ["bsc", "sportlots"],
+            sources: ["bsc", "sportlots"],
             checklistTeams: { matched: 1, total: 1 },
-            checklistMatch: matchSummary({
-              needsOperator: false,
-              byNumber: 1,
-              unusedRowIndices: [],
-              leftoverCardKeys: [],
-            }),
           });
         });
         expect(screen.queryByRole("list", { name: "Leftover checklist rows" })).toBeNull();
@@ -1928,7 +2009,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         mockApplyChecklistPairs.mockRejectedValue(new Error("server down"));
         const { rerender } = renderChecklist();
         await addChecklist();
-        await syncWith(rerender, arrivedBatch, { checklistMatch: matchSummary() });
+        await syncWith(rerender, withRows, { candidateCount: 4 });
         await screen.findByText(/Match Cards/);
 
         fireEvent.click(screen.getByLabelText("Select #1 Solo One · Solo Team"));

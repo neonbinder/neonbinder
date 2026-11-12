@@ -202,7 +202,6 @@ export type ParallelLine =
   | { kind: "waiting" }
   | { kind: "building" }
   | { kind: "built"; result: ParallelBuildResult }
-  | { kind: "skipped" }
   | { kind: "blocked"; reason?: string; deleted?: number }
   | { kind: "stopped" }
   | { kind: "failed"; message: string }
@@ -262,7 +261,6 @@ export function possessive(name: string): string {
 
 export const WAITING_TEXT = "Waiting";
 export const BUILDING_TEXT = "Building…";
-export const SKIPPED_TEXT = "Skipped — not linked to a marketplace yet";
 export const STOPPED_TEXT = "Stopped";
 export const UNFINISHED_TEXT =
   "Still building when you left — open it to check";
@@ -402,8 +400,6 @@ export function lineStatusText(line: ParallelLine, sourceValue?: string): string
       return BUILDING_TEXT;
     case "built":
       return builtText(line.result, sourceValue);
-    case "skipped":
-      return SKIPPED_TEXT;
     case "blocked":
       return blockedText(line.reason, line.deleted);
     case "stopped":
@@ -436,7 +432,7 @@ const countKind = (run: ParallelRun, kind: ParallelLine["kind"]) =>
  * The heading.
  *
  *   running  "Building parallels of Anime — 2 of 5"   (the line being built)
- *   finished "Anime parallels — 3 built, 1 blocked, 1 skipped"  (non-zero parts only)
+ *   finished "Anime parallels — 3 built, 1 blocked, 1 failed"  (non-zero parts only)
  *   stopped  "Anime parallels — stopped after 2 of 5"  (2 = built)
  *   left     "Anime parallels — stopped when you left, 2 of 5 built"
  */
@@ -462,7 +458,6 @@ export function panelHeading(run: ParallelRun): string {
   const parts = [
     [built, "built"],
     [countKind(run, "blocked"), "blocked"],
-    [countKind(run, "skipped"), "skipped"],
     [countKind(run, "failed"), "failed"],
   ]
     .filter(([n]) => (n as number) > 0)
@@ -632,14 +627,16 @@ function errorMessage(error: unknown): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Lines the server has already answered: a parallel holding no marketplace id
- * of its own has nothing to copy links from (and the source's ids are never
- * borrowed — M4), and one the plan marks `blocked` would be refused. Neither is
- * sent to the action.
+ * Lines the server has already answered: one the plan marks `blocked` would
+ * be refused, so it is not sent to the action.
+ *
+ * NEO-496 (NQ2): a parallel holding no marketplace id of its own is built
+ * like any other. It gets a copy of every card of its source, with no
+ * marketplace link (the source's ids are never borrowed — M4). Rows with and
+ * without ids behave the same (product invariant 6).
  */
 function initialLine(entry: ParallelPlanEntry): ParallelLine {
   if (entry.blocked) return { kind: "blocked", reason: entry.blocked };
-  if (!entry.sides.bsc && !entry.sides.sportlots) return { kind: "skipped" };
   return { kind: "waiting" };
 }
 
