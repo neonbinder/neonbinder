@@ -1,0 +1,122 @@
+/*
+ * NEO-500 — the Pick List's own rules: a pulled row, the box heading's
+ * arrival, and the printed sheet.
+ *
+ * A pulled row stays where it was (the seller's place in the box is the
+ * row's place). Its words turn the quiet ink and are struck through; the
+ * green check is the mark, so the state is never colour alone. No opacity:
+ * ink-3 holds 4.5:1 on the page in both modes, and a faded row did not.
+ * The chips (variant, qty, markers) and the picture keep their own paint.
+ */
+.nb-pick-pulled td:not(:first-child) {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.nb-pick-pulled td:not(:first-child) :not(.nb-pick-chip, .nb-pick-chip *, .nb-pick-thumb, .nb-pick-thumb *) {
+  color: var(--ink-3);
+}
+
+/*
+ * The Undo toast floats over the bottom of the page and the column header
+ * row sticks to the top: keep the row the keyboard is on clear of both.
+ */
+html:has(.nb-pick) {
+  scroll-padding-top: calc(var(--nb-header-h, 0px) + 3rem);
+  scroll-padding-bottom: 7rem;
+}
+
+/* The thumbnail's card scales with this cell, not the page. */
+.nb-pick-thumb {
+  container-type: inline-size;
+}
+
+/* A new box's heading takes the keyboard; it lights up briefly so the eye follows. */
+.nb-pick-boxhead:focus {
+  animation: nb-pick-arrive 1.2s ease-out;
+}
+@keyframes nb-pick-arrive {
+  from {
+    background-color: var(--list-hover);
+    box-shadow: 0 0 0 4px var(--list-hover);
+  }
+  to {
+    background-color: transparent;
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+/*
+ * Print: the list alone, on paper, whatever the screen's mode. Every other
+ * thing on the page (the demo bar, the tabs, the filters, the buttons, the
+ * pictures) stays off the sheet; the set dividers stay, and the sport and
+ * variant colours print as bands edged in the paper roles.
+ */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .nb-pick,
+  .nb-pick * {
+    visibility: visible;
+  }
+  .nb-pick {
+    position: absolute;
+    inset: 0 0 auto 0;
+    padding: 0;
+    color: var(--on-paper);
+    background: var(--paper);
+    --ink: var(--on-paper);
+    --ink-2: var(--on-paper);
+    --ink-3: var(--on-paper);
+    --surface: var(--paper);
+    --raised: var(--paper);
+    --rule: var(--paper-rule-base);
+    --rule-strong: var(--on-paper);
+    --list-hover: transparent;
+    --notice-warn-ink: var(--on-paper);
+    --notice-warn-rule: var(--on-paper);
+    --notice-warn-bg: transparent;
+    --notice-info-ink: var(--on-paper);
+    --notice-info-rule: var(--on-paper);
+    --notice-info-bg: transparent;
+    --neon-blue-text: var(--on-paper);
+    --sport-other-rule: var(--paper-rule-other);
+    --variant-base-rule: var(--paper-rule-base);
+    --variant-parallel-rule: var(--paper-rule-parallel);
+    --variant-insert-rule: var(--paper-rule-insert);
+    --variant-insert-parallel-rule: var(--paper-rule-insert-parallel);
+  }
+  .nb-pick-noprint,
+  .nb-pick-noprint *,
+  .nb-pick-pic {
+    display: none !important;
+  }
+  .nb-pick-table th {
+    position: static;
+  }
+  .nb-pick-band,
+  .nb-pick-table button[data-pick-toggle] {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .nb-pick-group {
+    break-inside: auto;
+  }
+  .nb-pick-row {
+    break-inside: avoid;
+  }
+  .nb-pick-table th[scope="rowgroup"] {
+    break-after: avoid;
+  }
+  /* An unpulled row's check box prints as an empty square to tick with a pen. */
+  .nb-pick-table button[data-pick-toggle] {
+    width: 1.25rem;
+    height: 1.25rem;
+    border-color: var(--on-paper);
+  }
+  .nb-pick-table button[data-pick-toggle] svg {
+    width: 1rem;
+    height: 1rem;
+  }
+}
