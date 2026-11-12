@@ -390,3 +390,38 @@ describe("storeReconciledOptions — checklistSectionKeys (NEO-496 D7)", () => {
     expect(await keysOf(t, row)).toEqual(["future stars", "radiating rookies"]);
   });
 });
+
+describe("storeReconciledOptions — checklistSectionKeys, adversarial additions (NEO-496 D7)", () => {
+  test("in ONE call, a line without keys leaves its row's links while a sibling line with keys replaces its own", async () => {
+    const t = convexTest(schema, modules);
+    const { insertTypeId } = await seed(t);
+    await store(t, insertTypeId, [
+      { value: "Future Stars", bsc: "b-fs", checklistSectionKeys: ["future stars"] },
+      { value: "Radiating Rookies", bsc: "b-rr", checklistSectionKeys: ["radiating rookies"] },
+    ]);
+    const fs = await rowNamed(t, insertTypeId, "Future Stars");
+    const rr = await rowNamed(t, insertTypeId, "Radiating Rookies");
+
+    await store(t, insertTypeId, [
+      { value: "Future Stars", bsc: "b-fs", existingId: fs._id, checklistSectionKeys: ["expose"] },
+      { value: "Radiating Rookies", bsc: "b-rr", existingId: rr._id },
+    ]);
+
+    expect(await keysOf(t, fs._id)).toEqual(["expose"]);
+    expect(await keysOf(t, rr._id)).toEqual(["radiating rookies"]);
+  });
+
+  test("sections sent for a row that is not inside a set are refused and nothing is written", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await insertRow(t, { level: "sport", value: "Baseball" });
+    const yearId = await insertRow(t, { level: "year", value: "2025", parentId: sportId });
+    const brandId = await insertRow(t, { level: "manufacturer", value: "Topps", parentId: yearId });
+
+    await expect(
+      store(t, brandId, [
+        { value: "Future Stars", bsc: "b-fs", checklistSectionKeys: ["future stars"] },
+      ]),
+    ).rejects.toThrow(/inside a set/);
+    expect(await insertsUnder(t, brandId)).toEqual([]);
+  });
+});
