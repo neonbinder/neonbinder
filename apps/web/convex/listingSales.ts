@@ -43,10 +43,19 @@
  *      (or a use for them on the sold record, NEO-371) is expected later.
  *
  * eBay (NEO-415) polls the same way per owner with its own read
- * (`pollEbaySteps`: orders modified since the cursor, NB-SKU orders only)
- * and its own guard (`applyEbayLine`: NB's link row for the SKU must hold
- * the sold eBay item id). Its stored status is one of eBay's own words
- * (`lib/ebayListing.ebayOrderStatus`).
+ * (`pollEbaySteps`: orders modified since the cursor) and its own guard
+ * (`applyEbayLine`: NB's link row for the SKU must hold the sold eBay item
+ * id). Its stored status is one of eBay's own words
+ * (`lib/ebayListing.ebayOrderStatus`). NEO-520: every readable eBay line is
+ * stored, NB's or not, with eBay's line title as its label
+ * (`projectEbayOrderForRecord`); a line with no NB SKU is refused as
+ * "unmatched" and lowers nothing, so the seller pulls it by hand from the Pick
+ * List. An order with no NB line is stored only when it was placed on or after
+ * `ebayOrdersFloor` (the earlier of the state row's creation and
+ * `EBAY_OTHER_ORDERS_FLOOR_MS`): the seller's eBay history from before is not
+ * imported. Each platform's order read has a version (`ORDER_READ_VERSION`);
+ * a state row last read under an older one is rewound once to that floor, so
+ * the eBay orders NEO-415 skipped since then are read again.
  *
  * After each owner's poll `finishPoll` kicks the owner's listing drain when
  * changes are queued: that is the cron's half of the drain triggers.
@@ -86,6 +95,7 @@ import {
 import {
   ebayStatusDisposition,
   isFinalEbayStatus,
+  LISTED_TITLE_MAX,
   nbConditionsOfBucket,
   ordersModifiedSinceFilter,
   parseEbaySku,
@@ -145,6 +155,32 @@ export const MAX_SALE_ITEMS = 2000;
  * this lets in has no NB SKU and is stored as unmatched, never applied.
  */
 export const INITIAL_CURSOR_GRACE_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * NEO-520 — 2026-11-11 00:00 US Central (06:00 UTC), the day NB began storing
+ * eBay orders that hold no NB line (Jason chose the date). Such an order is
+ * stored only when placed on or after `ebayOrdersFloor`: the earlier of this
+ * and the owner's eBay state row's creation. It is also where the one-time
+ * catch-up (`ORDER_READ_VERSION`) rewinds the cursor to. A time only, never a
+ * test of what the order holds.
+ */
+export const EBAY_OTHER_ORDERS_FLOOR_MS = Date.parse("2026-11-11T06:00:00Z");
+
+/** NEO-520 — the floor for eBay orders with no NB line (see `EBAY_OTHER_ORDERS_FLOOR_MS`). */
+export function ebayOrdersFloor(stateCreationTime: number): number {
+  return Math.min(stateCreationTime, EBAY_OTHER_ORDERS_FLOOR_MS);
+}
+
+/**
+ * NEO-520 — the version of each platform's order read. A state row whose
+ * `ordersReadVersion` (absent = 1) is below its platform's has its cursor
+ * rewound once to the eBay floor (`pollInput`), and is stamped with the
+ * version on its next complete read (`finishPoll`, alongside the cursor).
+ * Version 2 of eBay's read stores every line, not only NB's. A re-read is
+ * safe: `recordOrderCore` upserts by order and line key and never resets
+ * `applied`, `from` or `pulledAt`. BSC is never rewound.
+ */
+export const ORDER_READ_VERSION: Readonly<Record<Platform, number>> = { bsc: 1, ebay: 2 };
 
 type Platform = Doc<"marketplaceSales">["platform"];
 type SaleItem = Doc<"marketplaceSales">["items"][number];
@@ -263,6 +299,13 @@ const pollInputValidator = v.union(
   v.object({
     cursorAt: v.number(),
     stored: v.array(v.object({ orderId: v.string(), status: v.string(), orderDate: v.number() })),
+    /**
+     * NEO-520 — eBay: the date an order with no NB line must be placed on or
+     * after to be stored (`ebayOrdersFloor`). Null for BSC, which has no floor.
+     */
+    ordersFrom: v.union(v.number(), v.null()),
+    /** NEO-520 — the platform's `ORDER_READ_VERSION`: `finishPoll` stamps it on a complete read. */
+    readVersion: v.number(),
   }),
 );
 
@@ -284,8 +327,18 @@ export const pollInput = internalQuery({
       .withIndex("by_owner_date", (q) => q.eq("ownerId", args.ownerId))
       .order("desc")
       .take(OPEN_ORDER_SCAN);
+    const readVersion = ORDER_READ_VERSION[args.platform];
+    const ordersFrom = args.platform === "ebay" ? ebayOrdersFloor(state._creationTime) : null;
+    let cursorAt = state.orderCursorAt ?? state._creationTime - INITIAL_CURSOR_GRACE_MS;
+    // NEO-520 — the one-time catch-up: a row last read under an older version
+    // reads again from the floor (never forward past where it already is).
+    if ((state.ordersReadVersion ?? 1) < readVersion && ordersFrom !== null) {
+      cursorAt = Math.min(cursorAt, ordersFrom);
+    }
     return {
-      cursorAt: state.orderCursorAt ?? state._creationTime - INITIAL_CURSOR_GRACE_MS,
+      cursorAt,
+      ordersFrom,
+      readVersion,
       // A test seed's order (`testing.seedMyTestPickOrder`) is never the
       // platform's: re-reading it by id would only fail.
       stored: recent
@@ -563,11 +616,17 @@ export function sportResolver(
 }
 
 /** The description's text fields, re-checked one by one before storing. */
-const LISTED_TEXT_KEYS = ["sport", "year", "setName", "players", "cardNo", "variant", "variantName"] as const;
+const LISTED_TEXT_KEYS = ["sport", "year", "setName", "players", "cardNo", "variant", "variantName", "title"] as const;
+
+/** Each text field's bound: BSC's, plus (NEO-520) eBay's line title. */
+const LISTED_TEXT_BOUNDS: Record<(typeof LISTED_TEXT_KEYS)[number], number> = {
+  ...BSC_LISTED_BOUNDS,
+  title: LISTED_TITLE_MAX,
+};
 
 /**
  * A projected description → what the sale stores: every field re-checked
- * against `BSC_LISTED_BOUNDS` (a caller other than the parser gets the same
+ * against `LISTED_TEXT_BOUNDS` (a caller other than the parser gets the same
  * rule), the platform's sport id swapped for NB's `sportId` when exactly one
  * sport row holds it. Undefined when nothing readable is left.
  */
@@ -577,7 +636,7 @@ export async function storedListed(
 ): Promise<StoredListed | undefined> {
   const out: StoredListed = {};
   for (const key of LISTED_TEXT_KEYS) {
-    const s = bscListedText(projected[key], BSC_LISTED_BOUNDS[key]);
+    const s = bscListedText(projected[key], LISTED_TEXT_BOUNDS[key]);
     if (s !== null) out[key] = s;
   }
   const platformSportId = bscListedText(projected.platformSportId, BSC_LISTED_BOUNDS.platformSportId);
@@ -1053,9 +1112,11 @@ export const applySaleItems = internalMutation({
 /**
  * Ends one owner's poll: stamps `lastPolledAt` (always, so the cron's order
  * moves on), the error or its absence, and the cursor (only forward, and
- * only when `cursorAt` is given). Then the cron's half of the drain
- * triggers: when the owner pushes counts and has changes queued, the drain
- * runs now (`kickListingDrain`: a drain already scheduled or running is not
+ * only when `cursorAt` is given). NEO-520: `readVersion` is stamped as the
+ * row's `ordersReadVersion` only alongside a `cursorAt` (a complete read),
+ * whether or not the cursor itself moved, and never lowered. Then the
+ * cron's half of the drain triggers: when the owner pushes counts and has
+ * changes queued, the drain runs now (`kickListingDrain`: a drain already scheduled or running is not
  * doubled, and one that died holding a lease is replaced once it runs out).
  */
 export const finishPoll = internalMutation({
@@ -1064,6 +1125,7 @@ export const finishPoll = internalMutation({
     platform: listingPlatformValidator,
     cursorAt: v.optional(v.number()),
     error: v.optional(v.string()),
+    readVersion: v.optional(v.number()),
   },
   returns: v.object({ drainKicked: v.boolean() }),
   handler: async (ctx, args) => {
@@ -1080,6 +1142,9 @@ export const finishPoll = internalMutation({
     };
     if (args.cursorAt !== undefined && args.cursorAt > (state.orderCursorAt ?? -Infinity)) {
       patch.orderCursorAt = args.cursorAt;
+    }
+    if (args.cursorAt !== undefined && args.readVersion !== undefined && args.readVersion > (state.ordersReadVersion ?? 1)) {
+      patch.ordersReadVersion = args.readVersion;
     }
     await ctx.db.patch(state._id, patch);
     const kick = await kickListingDrain(ctx, args.ownerId, args.platform);
@@ -1121,7 +1186,7 @@ export async function pollOwnerImpl(
     finished = true;
     await ctx.runMutation(internal.listingSales.finishPoll, {
       ...args,
-      ...(cursorAt !== undefined ? { cursorAt } : {}),
+      ...(cursorAt !== undefined ? { cursorAt, readVersion: input.readVersion } : {}),
       ...(error !== undefined ? { error } : {}),
     });
     console.log(
@@ -1260,22 +1325,56 @@ async function pollOwnerSteps(
   }
 }
 
-/** eBay orders projected for `recordOrder`: NB's SKU lines only (a seller's other eBay sales are not NB's). */
-export function projectEbayOrderForNb(order: EbayProjectedOrder): ProjectedOrder | null {
+/**
+ * NEO-520 — an eBay order projected for `recordOrder`: EVERY readable line
+ * (Jason: show every eBay line; NB never decides whether an item is a card).
+ *
+ * - A line with NB's SKU (`parseEbaySku`) is stored as before NEO-520: its
+ *   condition is the SKU's bucket, and the apply lowers NB's copies once.
+ * - Any other line is the seller's own eBay sale: stored with the eBay item id
+ *   as `platformCardId`, an empty condition, the SKU as sent (if any) and not
+ *   graded. The apply refuses it as "unmatched" and lowers nothing.
+ * - Every line carries eBay's title (`listed.title`) when it was readable: a
+ *   label only, never parsed or matched.
+ *
+ * Null when the order has no readable line, or when it holds no NB line and
+ * was placed before `opts.ordersFrom` (the floor: `ebayOrdersFloor`; null
+ * means no floor). An order with an NB line is stored whatever its date.
+ */
+export function projectEbayOrderForRecord(
+  order: EbayProjectedOrder,
+  opts: { ordersFrom: number | null },
+): ProjectedOrder | null {
   const items: ProjectedOrder["items"] = [];
+  let hasNbLine = false;
   for (const line of order.lines) {
     const sku = parseEbaySku(line.sku);
-    if (!sku || line.sku === null) continue;
+    const listed = line.title !== null ? { listed: { title: line.title } } : {};
+    if (sku && line.sku !== null) {
+      hasNbLine = true;
+      items.push({
+        platformCardId: line.legacyItemId,
+        condition: sku.conditionCode,
+        quantity: line.quantity,
+        priceCents: line.unitPriceCents,
+        sellerSku: line.sku,
+        graded: false,
+        ...listed,
+      });
+      continue;
+    }
     items.push({
       platformCardId: line.legacyItemId,
-      condition: sku.conditionCode,
+      condition: "",
       quantity: line.quantity,
       priceCents: line.unitPriceCents,
-      sellerSku: line.sku,
+      ...(line.sku !== null ? { sellerSku: line.sku } : {}),
       graded: false,
+      ...listed,
     });
   }
   if (items.length === 0) return null;
+  if (!hasNbLine && opts.ordersFrom !== null && order.orderDate < opts.ordersFrom) return null;
   return {
     orderId: order.orderId,
     orderNo: order.orderNo,
@@ -1289,10 +1388,11 @@ export function projectEbayOrderForNb(order: EbayProjectedOrder): ProjectedOrder
 /**
  * NEO-415 — the eBay half of one owner's poll: Fulfillment `getOrders`
  * filtered to orders MODIFIED since the cursor (so a status change on an
- * old order is seen with no history walk), paged. Each order carrying an NB
- * SKU is stored and its lines applied exactly once; orders with no NB line
- * are not stored. The cursor moves (to the newest modification seen) only
- * past a complete read.
+ * old order is seen with no history walk), paged. Each order is projected by
+ * `projectEbayOrderForRecord` (NEO-520: every readable line; an order with no
+ * NB line only from the floor on), stored, and its NB lines applied exactly
+ * once. Lines eBay sent that NB cannot read are noted, never stored. The
+ * cursor moves (to the newest modification seen) only past a complete read.
  */
 async function pollEbaySteps(
   ctx: PollCtx,
@@ -1320,11 +1420,21 @@ async function pollEbaySteps(
         continue;
       }
       newest = Math.max(newest, projected.lastModified);
-      const order = projectEbayOrderForNb(projected);
-      if (!order) continue;
+      const order = projectEbayOrderForRecord(projected, { ordersFrom: input.ordersFrom });
+      if (!order) {
+        // Every line unreadable on an order NB would otherwise keep: say so.
+        const inFloor = input.ordersFrom === null || projected.orderDate >= input.ordersFrom;
+        if (projected.lines.length === 0 && projected.unreadableLines > 0 && inFloor) {
+          note = `Order ${projected.orderNo} has ${projected.unreadableLines} line(s) NeonBinder can't read, so it was skipped.`;
+        }
+        continue;
+      }
       if (order.items.length > MAX_SALE_ITEMS) {
         note = `Order ${order.orderNo} has more lines than NeonBinder takes in one order, so none of it was applied.`;
         continue;
+      }
+      if (projected.unreadableLines > 0) {
+        note = `Order ${order.orderNo} has ${projected.unreadableLines} line(s) NeonBinder can't read; the rest were applied.`;
       }
       const recorded = await ctx.runMutation(internal.listingSales.recordOrder, { ...args, order });
       if (recorded.saleId === null) {

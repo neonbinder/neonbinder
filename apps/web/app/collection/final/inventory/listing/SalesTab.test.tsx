@@ -171,7 +171,7 @@ describe("the Sales tab", () => {
     const orders = screen.getByRole("list", { name: "Orders, newest first" });
     const order = within(orders).getByRole("article", { name: "BuySportsCards order 100245" });
     expect(order.textContent).toContain("Ready to ship");
-    expect(order.textContent).toContain("6 cards, $12.50, you keep $10.50");
+    expect(order.textContent).toContain("6 items, $12.50, you keep $10.50");
     const lines = within(order).getAllByRole("listitem").map((li) => li.textContent);
     expect(lines[0]).toBe("2× 1985 Topps #620 Dwight Gooden (Near mint)$5.00 each");
     expect(lines[1]).toContain("1× A BuySportsCards card we can't match (Excellent)$2.50 each");
@@ -253,7 +253,8 @@ describe("the Sales tab", () => {
     expect(within(order).getByRole("heading", { level: 3, name: "eBay order 12-34567-89012" })).toBeTruthy();
     expect(within(order).getByText("Ready to ship")).toBeTruthy();
     expect(within(order).getByText("(Near Mint or better)")).toBeTruthy();
-    expect(within(order).getByText("An eBay card we can't match")).toBeTruthy();
+    // NEO-520: a line NB didn't list is never called a card; with no title it says where it sold.
+    expect(within(order).getByText("Sold on eBay, not listed by NeonBinder")).toBeTruthy();
     const link = within(order).getByRole("link", { name: "Open order 12-34567-89012 on eBay (opens in a new tab)" });
     expect(link.getAttribute("href")).toBe("https://www.sandbox.ebay.com/sh/ord/details?orderid=12-34567-89012");
     // Both platforms' orders pages up top: BSC is connected in the stub, eBay sold.

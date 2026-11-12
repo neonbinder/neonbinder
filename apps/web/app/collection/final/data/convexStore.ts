@@ -2945,6 +2945,7 @@ function toSale(raw: RawSale): Sale {
       applied: item.applied,
       ...(item.problem !== undefined ? { problem: item.problem } : {}),
       ...(item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+      ...(item.title !== undefined ? { title: item.title } : {}),
     })),
   };
 }

@@ -10,7 +10,13 @@ import { api } from "@/convex/_generated/api";
 // describes card <no> by <players> in the first card's set, NEO-509; an empty
 // <no>, `listed=:<players>`, describes the card with no card number), or
 //   /testing/seed-pick-order?order=<orderNo>&ship=1&redirect=<final>
-// to mark that order shipped. This page waits for the Convex client to pick
+// to mark that order shipped. NEO-520: with `platform=ebay` it seeds an eBay
+// order NeonBinder didn't list instead (seedMyTestEbayOrder):
+//   /testing/seed-pick-order?platform=ebay&order=<orderNo>&line=<qty>:<title>[&line=...]&redirect=<final>
+// (each `line`, up to 3, repeated, is one line with that quantity and eBay
+// title; an empty title, `line=1:`, sends none), and
+//   /testing/seed-pick-order?platform=ebay&order=<orderNo>&ship=1&redirect=<final>
+// marks it shipped (FULFILLED). This page waits for the Convex client to pick
 // up the Clerk session, calls the auth-scoped seedMyTestPickOrder mutation
 // (the caller's own rows only; no marketplace is called), then forwards.
 //
@@ -56,9 +62,31 @@ function parseListed(raws: readonly string[]): ListedLine[] | null {
   return out;
 }
 
+type EbayLine = { quantity: number; title?: string };
+
+/**
+ * `["1:2024 Topps Chrome #7 Thing", "2:"]` →
+ * `[{quantity:1,title:"2024 Topps Chrome #7 Thing"},{quantity:2}]`: the text
+ * before the first ":" is the quantity, the rest the title as given (empty =
+ * none, so a title may hold ":"). Null when any entry is malformed or none is given.
+ */
+function parseEbayLines(raws: readonly string[]): EbayLine[] | null {
+  const out: EbayLine[] = [];
+  for (const raw of raws) {
+    const at = raw.indexOf(":");
+    if (at <= 0) return null;
+    const quantity = Number(raw.slice(0, at));
+    if (!Number.isInteger(quantity)) return null;
+    const title = raw.slice(at + 1);
+    out.push(title.trim() ? { quantity, title } : { quantity });
+  }
+  return out.length > 0 ? out : null;
+}
+
 export default function TestingSeedPickOrderPage() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const seed = useMutation(api.testing.seedMyTestPickOrder);
+  const seedEbay = useMutation(api.testing.seedMyTestEbayOrder);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = searchParams.get("redirect") || "/dashboard";
@@ -71,6 +99,9 @@ export default function TestingSeedPickOrderPage() {
   // Repeated params; joined into one stable string so the effect does not
   // re-run on every render for a fresh array.
   const listedParams = JSON.stringify(searchParams.getAll("listed"));
+  // NEO-520: `platform=ebay` seeds an eBay order NB didn't list; anything else is BuySportsCards.
+  const ebay = searchParams.get("platform") === "ebay";
+  const ebayLineParams = JSON.stringify(searchParams.getAll("line"));
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 
@@ -84,8 +115,13 @@ export default function TestingSeedPickOrderPage() {
       setStatus("Missing ?order= parameter.");
       return;
     }
+    const ebayLines = ebay ? parseEbayLines(JSON.parse(ebayLineParams) as string[]) : null;
+    if (ebay && !ship && !ebayLines) {
+      setStatus("Missing or malformed ?line= parameter (want <qty>:<title>, or <qty>: for no title).");
+      return;
+    }
     const cards = parseCards(cardsParam);
-    if (!ship && (!boxName || !cards)) {
+    if (!ebay && !ship && (!boxName || !cards)) {
       setStatus("Missing or malformed ?box= / ?cards= parameter.");
       return;
     }
@@ -103,7 +139,11 @@ export default function TestingSeedPickOrderPage() {
     ranRef.current = true;
     (async () => {
       try {
-        if (ship) {
+        if (ebay) {
+          setStatus(ship ? `Shipping eBay order ${orderNo}...` : `Seeding eBay order ${orderNo}...`);
+          const result = ship ? await seedEbay({ orderNo, ship: true }) : await seedEbay({ orderNo, lines: ebayLines ?? [] });
+          setStatus(`Seeded eBay order ${orderNo}: ${result.applied} of ${result.lines} lines applied.`);
+        } else if (ship) {
           setStatus(`Shipping order ${orderNo}...`);
           await seed({ orderNo, ship: true });
         } else {
@@ -122,7 +162,22 @@ export default function TestingSeedPickOrderPage() {
         setStatus(`Error: ${e instanceof Error ? e.message : JSON.stringify(e)}`);
       }
     })();
-  }, [badLine, boxName, cardsParam, isAuthenticated, isLoading, listedParams, navigate, orderNo, redirect, seed, ship]);
+  }, [
+    badLine,
+    boxName,
+    cardsParam,
+    ebay,
+    ebayLineParams,
+    isAuthenticated,
+    isLoading,
+    listedParams,
+    navigate,
+    orderNo,
+    redirect,
+    seed,
+    seedEbay,
+    ship,
+  ]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-surface">

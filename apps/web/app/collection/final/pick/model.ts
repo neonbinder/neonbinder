@@ -243,7 +243,8 @@ function listedVariantPhrase(listed: ListedCard): string | null {
  * card in a box: the set, the insert or parallel, the number, then who is on
  * it. "2021 Score 1991 Throwback #TB2 · Justin Fields". Base is not written
  * (the chip says it); an empty answer means the listing said nothing a
- * seller could look for.
+ * seller could look for. With no such words, the listing's own title
+ * (NEO-520), never parsed.
  */
 export function listedTitle(listed: ListedCard): string {
   const season = listed.season?.trim();
@@ -252,7 +253,8 @@ export function listedTitle(listed: ListedCard): string {
   const card = [set, listedVariantPhrase(listed), listed.cardNumber?.trim() ? `#${listed.cardNumber.trim()}` : undefined]
     .filter(Boolean)
     .join(" ");
-  return [card, listed.players?.trim()].filter(Boolean).join(" · ");
+  // NEO-520: a listing with no card words (an eBay line NB didn't list) is named by its own title, as sent.
+  return [card, listed.players?.trim()].filter(Boolean).join(" · ") || (listed.title?.trim() ?? "");
 }
 
 /** One NB set on the list, with its sport's code (the divider colour). */

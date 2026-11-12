@@ -161,6 +161,8 @@ export function toListedCard(raw: RawListed, sport: SportRow | null | undefined)
     // A word NB does not file by ("Variation") is how the seller tells the copy from the base: kept as written.
     ...(variant && !kind ? { variantWord: variant } : {}),
     ...(variantName ? { variantName } : {}),
+    // NEO-520: the listing's own title (eBay), a label only; never parsed for a place.
+    ...(words(raw.title) ? { title: words(raw.title) } : {}),
   };
   return Object.keys(out).length ? out : undefined;
 }

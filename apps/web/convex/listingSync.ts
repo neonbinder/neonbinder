@@ -1246,6 +1246,11 @@ export const saleValidator = v.object({
       applied: v.boolean(),
       problem: v.optional(saleItemProblemValidator),
       shortBy: v.optional(v.number()),
+      /**
+       * NEO-520 — the listing's own title as eBay sent it (`listed.title`),
+       * for naming a line NB holds no card for. A label only.
+       */
+      title: v.optional(v.string()),
     }),
   ),
 });
@@ -1266,6 +1271,7 @@ function publicSale(row: Doc<"marketplaceSales">): typeof saleValidator.type {
       applied: item.applied,
       ...(item.problem !== undefined ? { problem: item.problem } : {}),
       ...(item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+      ...(item.listed?.title !== undefined ? { title: item.listed.title } : {}),
     })),
   };
 }

@@ -95,6 +95,12 @@ export interface ListedCard {
   variantWord?: string;
   /** The insert or parallel's name as the listing gives it: "1991 Throwback". */
   variantName?: string;
+  /**
+   * NEO-520 — the listing's own title as the platform sent it (eBay). Only a
+   * label: it names the line when the fields above say nothing, and is never
+   * parsed, so a title-only line always stays in "Can't find it".
+   */
+  title?: string;
 }
 
 /**

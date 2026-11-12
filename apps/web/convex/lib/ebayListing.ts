@@ -17,6 +17,7 @@
 import type { Id } from "../_generated/dataModel";
 import type { NbCondition } from "./bscConditions";
 import { tableNumberOf } from "./convexIdCodec";
+import { bscListedText } from "./bscOrders";
 import { compareCopiesOldestFirst, type AgedCopy } from "./listingCopyOrder";
 import { hasListingCondition, listingFloorCents } from "./listingReadiness";
 
@@ -723,6 +724,12 @@ export interface EbayOrderLine {
   quantity: number;
   /** Per unit, cents: lineItemCost / quantity, rounded. */
   unitPriceCents: number;
+  /**
+   * NEO-520 — the line's own title as eBay sent it (`lineItems[].title`),
+   * bounded by `ebayLineTitle`; null when absent or unreadable. A label only:
+   * never parsed, matched or written to an NB row.
+   */
+  title: string | null;
 }
 
 export interface EbayProjectedOrder {
@@ -736,10 +743,32 @@ export interface EbayProjectedOrder {
   disposition: "sale" | "cancelled" | "unknown";
   totals: { subtotalCents?: number; shippingCents?: number; feesCents?: number; totalCents?: number };
   lines: EbayOrderLine[];
+  /**
+   * NEO-520 — order lines NB could not read and dropped: not an object, no
+   * usable `legacyItemId`, quantity or line cost, or past
+   * `EBAY_ORDER_MAX_LINES`. The poll notes them; they are never stored.
+   */
+  unreadableLines: number;
 }
 
 /** An order holds at most this many lines NB will read. */
 export const EBAY_ORDER_MAX_LINES = 200;
+
+/**
+ * NEO-520 — the longest line title NB stores (eBay's own limit is 80). A
+ * longer one is dropped, never cut: a cut title could name a different card.
+ * The same bound guards the stored `listed.title` (`listingSales.storedListed`).
+ */
+export const LISTED_TITLE_MAX = 200;
+
+/**
+ * NEO-520 — one order line's title, or null: trimmed, refused when it holds a
+ * control or invisible format character (`bscListedText`'s rule, shared with
+ * the BSC description), dropped when longer than `LISTED_TITLE_MAX`.
+ */
+export function ebayLineTitle(value: unknown): string | null {
+  return bscListedText(value, LISTED_TITLE_MAX);
+}
 
 /**
  * Whether an order lowers NB's copies. `cancelState` CANCELED or a full
@@ -839,7 +868,8 @@ function parseIsoMs(value: unknown): number | null {
 /**
  * Projects one Fulfillment `Order` to what NB stores. NO buyer data: the
  * buyer, the ship-to (`fulfillmentStartInstructions`) and checkout notes are
- * never read. Null for an order NB cannot read (no id or date).
+ * never read. Of each line only the item id, SKU, quantity, cost and (NEO-520)
+ * title are read. Null for an order NB cannot read (no id or date).
  */
 export function projectEbayOrder(raw: unknown): EbayProjectedOrder | null {
   if (!isRecord(raw)) return null;
@@ -870,14 +900,21 @@ export function projectEbayOrder(raw: unknown): EbayProjectedOrder | null {
   if (total !== undefined) totals.totalCents = total;
   const lines: EbayOrderLine[] = [];
   const rawLines = Array.isArray(raw.lineItems) ? raw.lineItems : [];
+  let unreadableLines = Math.max(0, rawLines.length - EBAY_ORDER_MAX_LINES);
   for (const line of rawLines.slice(0, EBAY_ORDER_MAX_LINES)) {
-    if (!isRecord(line)) continue;
+    if (!isRecord(line)) {
+      unreadableLines += 1;
+      continue;
+    }
     const legacyItemId = typeof line.legacyItemId === "string" && line.legacyItemId.length <= 40 ? line.legacyItemId : null;
     const quantity = typeof line.quantity === "number" && Number.isInteger(line.quantity) ? line.quantity : null;
     const cost = isRecord(line.lineItemCost) ? ebayValueToCents(line.lineItemCost.value) : null;
-    if (!legacyItemId || quantity === null || quantity < 1 || cost === null) continue;
+    if (!legacyItemId || quantity === null || quantity < 1 || cost === null) {
+      unreadableLines += 1;
+      continue;
+    }
     const sku = typeof line.sku === "string" && line.sku.length <= EBAY_SKU_MAX ? line.sku : null;
-    lines.push({ legacyItemId, sku, quantity, unitPriceCents: Math.round(cost / quantity) });
+    lines.push({ legacyItemId, sku, quantity, unitPriceCents: Math.round(cost / quantity), title: ebayLineTitle(line.title) });
   }
   return {
     orderId,
@@ -888,6 +925,7 @@ export function projectEbayOrder(raw: unknown): EbayProjectedOrder | null {
     disposition: ebayOrderDisposition(statusFacts),
     totals,
     lines,
+    unreadableLines,
   };
 }
 

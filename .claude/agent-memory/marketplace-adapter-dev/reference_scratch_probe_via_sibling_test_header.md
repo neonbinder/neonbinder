@@ -18,5 +18,7 @@ one `describe("scratch")`, write it to `convex/zz<Something>.test.ts`, run
 `import.meta.glob` modules map are relative), so delete it in the same Bash
 call that runs it and `ls convex/zz*` before reporting; the worktree is shared
 and the coordinator commits whatever is there. vitest swallows `console.log`
-on a pass, so assert rather than print. Related: [[convex-test-needs-the-modules-arg]],
+on a pass, so assert rather than print, or `writeFileSync` a JSON dump of
+the stored rows to a scratchpad path and `cat` it after the run (one probe
+then shows every field at once). Related: [[convex-test-needs-the-modules-arg]],
 [[test-unit-ignores-file-args]].

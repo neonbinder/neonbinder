@@ -712,6 +712,15 @@ export const saleItemListedValidator = v.object({
   cardNo: v.optional(v.string()),
   variant: v.optional(v.string()),
   variantName: v.optional(v.string()),
+  /**
+   * NEO-520 — eBay only: the order line's own title as the buyer saw it
+   * (`lineItems[].title`), stored on every eBay line and shown only where NB
+   * holds no card for the line (a listing NB did not make). Bounded at the
+   * sync boundary (`lib/ebayListing.ts`): trimmed, control characters
+   * refused, an over-long title dropped, never cut. Never parsed, matched or
+   * written to any NB row. BSC lines never carry it.
+   */
+  title: v.optional(v.string()),
 });
 
 /**
@@ -5137,6 +5146,14 @@ export default defineSchema({
     platformAccountId: v.optional(v.string()),
     /** When the poll last ran while the owner's credentials needed a fresh sign-in. */
     reauthPollAt: v.optional(v.number()),
+    /**
+     * NEO-520: which version of the platform's order read last completed for
+     * this owner (absent = 1). A poll whose platform reads a newer version
+     * (`ORDER_READ_VERSION` in `listingSales.ts`) rewinds `orderCursorAt` once
+     * to that version's floor. Stamped only on a complete read (the same
+     * condition that lets the cursor move), never lowered.
+     */
+    ordersReadVersion: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     // Get-or-create and the drainer's claim (both fields, `.unique()`); the
