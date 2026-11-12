@@ -75,3 +75,4 @@
 - [Seed hops that consume rows replay on retry](reference_seed_hops_that_consume_rows_replay_on_retry.md) — an apply-seed lowers the copies it resolved from; replay the stored order by token on a re-visit
 - [Convex doc-size budget counts framing](reference_convex_doc_size_budget_counts_framing.md) — getDocumentSize adds ~3 B/field + ~10 B/object; test both fat and many-tiny worst shapes
 - [Edit tool decodes \u escapes](reference_edit_tool_decodes_unicode_escapes.md) — format/bidi escapes land as literal chars; U+2028 in a regex = PARSE_ERROR; write via python, grep -P after
+- [Lint crashes beside a vitest run](reference_lint_crashes_beside_a_vitest_run.md) — eslint glob stack trace when .vitest/ vanishes mid-walk is not a result; rerun lint alone

@@ -22,9 +22,10 @@
  *     `pullOpen`, status or totals; nothing is applied or re-applied.
  *   - Each description goes through the poll's own store rules: the bounds
  *     re-check and NB's sport resolved by id (`storedListed`, `sportResolver`),
- *     and the per-sale byte budget (`listedBytes`, `MAX_LISTED_BYTES_PER_SALE`,
- *     the `capListed` rule: from the first line that would pass the budget, no
- *     new line gets one; a line already holding one keeps it).
+ *     and the per-sale byte budget (`capListed`, the poll's own helper: a
+ *     line already holding one keeps it and is budgeted first; from the first
+ *     new line that would pass `MAX_LISTED_BYTES_PER_SALE`, no new line gets
+ *     one).
  *
  * Two arms, the NEO-214 pair: `confirm: "BACKFILL"` per invocation and
  * `ALLOW_SALE_LISTED_BACKFILL=1` on the deployment. Without both it is a dry
@@ -63,8 +64,7 @@ import { OPEN_SALES_READ, RECENT_SALES_READ } from "./pickList";
 import { orderOnPickList, saleItemKey } from "./lib/pickLines";
 import { isTestSaleOrderId } from "./lib/testSeedMarks";
 import {
-  listedBytes,
-  MAX_LISTED_BYTES_PER_SALE,
+  capListed,
   MAX_SALE_ITEMS,
   projectBscOrder,
   projectedListedValidator,
@@ -257,38 +257,26 @@ export const fillListed = internalMutation({
       if (line.listed !== undefined) fresh.set(freshKeys[i], line.listed);
     });
 
-    // The budget already spent by lines that hold a description; those are
-    // never changed, so new ones only spend what is left.
-    let spent = 0;
-    for (const item of sale.items) if (item.listed !== undefined) spent += listedBytes(item.listed);
-    let over = false;
-
+    // Only lines without a description get a candidate; a line that holds one
+    // keeps it as it is. The poll's own budget rule (`capListed`) then spends
+    // the stored ones first and the new ones on what is left, in item order.
     const resolveSport = sportResolver(ctx, "bsc");
     const storedKeys = occurrenceKeys(sale.items);
-    const items: SaleItem[] = [];
-    let filled = 0;
-    let stillMissing = 0;
+    const candidates: SaleItem[] = [];
     for (let i = 0; i < sale.items.length; i += 1) {
       const item = sale.items[i];
-      if (item.listed !== undefined) {
-        items.push(item);
-        continue;
-      }
-      const projected = over ? undefined : fresh.get(storedKeys[i]);
+      const projected = item.listed === undefined ? fresh.get(storedKeys[i]) : undefined;
       const listed = projected !== undefined ? await storedListed(projected, resolveSport) : undefined;
-      if (listed !== undefined) {
-        const cost = listedBytes(listed);
-        if (spent + cost <= MAX_LISTED_BYTES_PER_SALE) {
-          spent += cost;
-          items.push({ ...item, listed });
-          filled += 1;
-          continue;
-        }
-        over = true;
-      }
-      items.push(item);
-      stillMissing += 1;
+      candidates.push(listed !== undefined ? { ...item, listed } : item);
     }
+    const items = capListed(candidates, (_item, i) => sale.items[i].listed);
+    let filled = 0;
+    let stillMissing = 0;
+    items.forEach((item, i) => {
+      if (sale.items[i].listed !== undefined) return;
+      if (item.listed !== undefined) filled += 1;
+      else stillMissing += 1;
+    });
     if (filled > 0) await ctx.db.patch(sale._id, { items });
     return { outcome: "filled" as const, filled, stillMissing };
   },

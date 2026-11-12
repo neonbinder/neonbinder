@@ -388,9 +388,10 @@ const itemKey = saleItemKey;
 
 /**
  * Bytes one sale may spend on its lines' `listed` (key names and values in
- * UTF-8, plus Convex's framing: `listedBytes`), counted in item order: from
- * the first line that would pass the budget, no line stores a `listed` (such
- * a line shows in "Can't find it" by its line number, as before NEO-509).
+ * UTF-8, plus Convex's framing: `listedBytes`): descriptions the sale already
+ * stores first, then new ones in item order; from the first new line that
+ * would pass the budget, no new line stores a `listed` (such a line shows in
+ * "Can't find it" by its line number, as before NEO-509). See `capListed`.
  * With `MAX_SALE_ITEMS` worst-case lines the sale stays under 1,000,000 bytes
  * (`listingSales.pickList.test.ts`).
  */
@@ -445,24 +446,74 @@ export function listedBytes(listed: StoredListed): number {
 }
 
 /**
- * The sale's lines with `listed` kept in item order until the budget is
- * spent; from the first line that would pass it, no line carries one.
+ * The sale's lines with `listed` capped to `MAX_LISTED_BYTES_PER_SALE`. Each
+ * line's `listed` is the description it would carry; `storedOf` gives the one
+ * the stored sale already holds for that line (none on a fresh sale). The one
+ * rule for the poll's merge (`recordOrderCore`) and the backfill
+ * (`saleListedBackfill.fillListed`), so "a re-poll keeps an existing
+ * description" holds whatever order BSC sends the lines in:
+ *
+ *   1. Stored descriptions are budgeted first, in item order. They were
+ *      stored under this budget, so all fit; should one not (a legacy row),
+ *      it and every stored one after it are dropped, so the sale can never
+ *      pass the budget.
+ *   2. A line whose description changed: the new one wins when it fits in
+ *      what the stored ones leave (its own old cost given back); otherwise
+ *      the line keeps its stored description. A changed description never
+ *      pushes another stored one out, and never leaves its own line bare.
+ *   3. Lines with no stored description fill what is left in item order;
+ *      from the first that would pass the budget, no new line gets one.
  */
-export function capListed<T extends { listed?: StoredListed }>(items: readonly T[]): T[] {
+export function capListed<T extends { listed?: StoredListed }>(
+  items: readonly T[],
+  storedOf: (item: T, index: number) => StoredListed | undefined = () => undefined,
+): T[] {
   let spent = 0;
-  let over = false;
-  return items.map((item) => {
-    if (item.listed === undefined) return item;
-    if (!over) {
-      const cost = listedBytes(item.listed);
-      if (spent + cost <= MAX_LISTED_BYTES_PER_SALE) {
-        spent += cost;
-        return item;
-      }
-      over = true;
+  const kept: (StoredListed | undefined)[] = items.map(() => undefined);
+  const hadStored: boolean[] = items.map(() => false);
+
+  // 1. Stored descriptions, in item order.
+  let storedOver = false;
+  items.forEach((item, i) => {
+    const stored = storedOf(item, i);
+    if (stored === undefined) return;
+    hadStored[i] = true;
+    if (storedOver) return;
+    const cost = listedBytes(stored);
+    if (spent + cost <= MAX_LISTED_BYTES_PER_SALE) {
+      spent += cost;
+      kept[i] = stored;
+    } else storedOver = true;
+  });
+
+  // 2. Changed descriptions on those lines, when the swap fits.
+  items.forEach((item, i) => {
+    const stored = kept[i];
+    if (stored === undefined || item.listed === undefined || item.listed === stored) return;
+    const delta = listedBytes(item.listed) - listedBytes(stored);
+    if (spent + delta <= MAX_LISTED_BYTES_PER_SALE) {
+      spent += delta;
+      kept[i] = item.listed;
     }
+  });
+
+  // 3. New descriptions, in item order, until the first that would pass.
+  let over = false;
+  items.forEach((item, i) => {
+    if (hadStored[i] || item.listed === undefined || over) return;
+    const cost = listedBytes(item.listed);
+    if (spent + cost <= MAX_LISTED_BYTES_PER_SALE) {
+      spent += cost;
+      kept[i] = item.listed;
+    } else over = true;
+  });
+
+  return items.map((item, i) => {
+    const listed = kept[i];
+    if (listed === item.listed) return item;
     const out = { ...item };
-    delete out.listed;
+    if (listed === undefined) delete out.listed;
+    else out.listed = listed;
     return out;
   });
 }
@@ -551,8 +602,10 @@ export interface SaleCoreOptions {
  * a stored line the new read lacks is kept), nor what the apply and the Pick
  * List wrote on it (`from`, `lastOnes`, `pulledAt`). NEO-509: each line's
  * description (`listed`) is stored with NB's sport resolved by id
- * (`sportResolver`); a re-read that carries one replaces it, one that does not
- * keeps it; the sale spends at most `MAX_LISTED_BYTES_PER_SALE` on them.
+ * (`sportResolver`); a re-read that carries one replaces it when the budget
+ * allows (else the line keeps its stored one), one that does not keeps it; the
+ * sale spends at most `MAX_LISTED_BYTES_PER_SALE` on them, stored descriptions
+ * first (`capListed`).
  * Recomputes `pullOpen` (written as an explicit `undefined` when nothing is
  * open: a patch merges), so a SHIPPED or CANCELLED re-read takes the order
  * off the Pick List.
@@ -592,6 +645,10 @@ export async function recordOrderCore(
   }
 
   let items: SaleItem[];
+  // NEO-509 — the description each merged line already held on the stored
+  // sale, beside it by index: `capListed` budgets those first, so a re-poll
+  // keeps them whatever BSC's item order puts in front of them.
+  const storedListedAt: (StoredListed | undefined)[] = [];
   if (!existing) {
     items = fresh;
   } else {
@@ -604,18 +661,25 @@ export async function recordOrderCore(
     }
     items = fresh.map((line) => {
       const old = pool.get(itemKey(line))?.shift();
+      storedListedAt.push(old?.listed);
       if (!old) return line;
       return {
         ...old,
         quantity: old.applied ? old.quantity : line.quantity,
         priceCents: line.priceCents,
-        // NEO-509 — a fresh description wins; a read without one keeps the old.
+        // NEO-509 — a fresh description wins when it fits (`capListed` step 2);
+        // a read without one keeps the old.
         ...(line.listed !== undefined ? { listed: line.listed } : {}),
       };
     });
-    for (const leftover of pool.values()) items.push(...leftover);
+    for (const leftover of pool.values()) {
+      for (const old of leftover) {
+        items.push(old);
+        storedListedAt.push(old.listed);
+      }
+    }
   }
-  items = capListed(items);
+  items = capListed(items, (_item, i) => storedListedAt[i]);
 
   const doc = {
     ownerId: args.ownerId,

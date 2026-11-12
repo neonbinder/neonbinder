@@ -940,4 +940,102 @@ describe("NEO-509 — the listed budget across a re-poll", () => {
     // Exactly as far as the budget goes: one more would not fit.
     expect(spent + listedBytes(items[0].listed!)).toBeGreaterThan(MAX_LISTED_BYTES_PER_SALE);
   });
+
+  /** A line with its own key (card id), so a re-poll pairs it by key whatever its position. */
+  const keyed = (id: string, listed?: Record<string, string>): Line => ({
+    platformCardId: id,
+    sellerSku: "303|TB2",
+    ...(listed ? { listed } : {}),
+  });
+  const fatFor = (n: number) => ({ ...FAT, cardNo: `${n}` });
+  const spentOn = (items: Doc<"marketplaceSales">["items"]) =>
+    items.reduce((t, i) => t + (i.listed ? listedBytes(i.listed) : 0), 0);
+
+  test.each([
+    ["the stored lines come after the new ones", true],
+    ["the stored lines are missing from the read (kept at the end)", false],
+  ])("stored descriptions are budgeted first when %s; new fat lines only fill what is left", async (_name, resend) => {
+    const s = await setup();
+    await record(s, order(s, { lines: Array.from({ length: 100 }, (_, n) => keyed(`bsc-old-${n}`, fatFor(n))) }));
+    const before = new Map((await sale(s)).items.map((i) => [i.platformCardId, i.listed]));
+    expect([...before.values()].every((l) => l !== undefined)).toBe(true);
+
+    // BSC's order puts 300 large new descriptions in front of the stored lines.
+    const fresh = Array.from({ length: 300 }, (_, n) => keyed(`bsc-new-${n}`, fatFor(1000 + n)));
+    const resent = resend ? Array.from({ length: 100 }, (_, n) => keyed(`bsc-old-${n}`, fatFor(n))) : [];
+    await record(s, order(s, { lines: [...fresh, ...resent] }));
+    const items = (await sale(s)).items;
+    expect(items).toHaveLength(400);
+
+    // Every stored line keeps its description, unchanged.
+    const old = items.filter((i) => i.platformCardId.startsWith("bsc-old-"));
+    expect(old).toHaveLength(100);
+    for (const i of old) expect(i.listed).toEqual(before.get(i.platformCardId));
+
+    // New lines fill what is left in item order, then none; the sale never passes the budget.
+    const has = items.filter((i) => i.platformCardId.startsWith("bsc-new-")).map((i) => i.listed !== undefined);
+    const lastWith = has.lastIndexOf(true);
+    expect(lastWith).toBeGreaterThan(0);
+    expect(lastWith).toBeLessThan(299);
+    expect(has.slice(0, lastWith + 1).every(Boolean)).toBe(true);
+    expect(has.slice(lastWith + 1).some(Boolean)).toBe(false);
+    const spent = spentOn(items);
+    expect(spent).toBeLessThanOrEqual(MAX_LISTED_BYTES_PER_SALE);
+    const nextNew = items.find((i) => i.platformCardId === `bsc-new-${lastWith + 1}`)!;
+    expect(nextNew.listed).toBeUndefined();
+    expect(spent + listedBytes(old[0].listed!)).toBeGreaterThan(MAX_LISTED_BYTES_PER_SALE);
+  });
+
+  test("a changed description wins when it fits and never pushes another stored one out", async () => {
+    const s = await setup();
+    const THIN = { setName: "2021 Score", cardNo: "1" };
+    // A thin line first, then more fat lines than the budget holds: the sale stores as many as fit.
+    await record(
+      s,
+      order(s, { lines: [keyed("bsc-thin", THIN), ...Array.from({ length: 300 }, (_, n) => keyed(`bsc-fat-${n}`, fatFor(n)))] }),
+    );
+    const first = (await sale(s)).items;
+    const storedFat = first.filter((i) => i.platformCardId.startsWith("bsc-fat-") && i.listed !== undefined);
+    const spent0 = spentOn(first);
+    const thinCost = listedBytes(first[0].listed!);
+    const fatCost = listedBytes(storedFat[0].listed!);
+    // The precondition: the thin line growing to a fat one cannot fit beside the stored ones.
+    expect(spent0 - thinCost + fatCost).toBeGreaterThan(MAX_LISTED_BYTES_PER_SALE);
+
+    // Re-poll: the thin line now reads fat (no room), the first fat line now reads thin (room).
+    const lines = [
+      keyed("bsc-thin", fatFor(9999)),
+      ...Array.from({ length: 300 }, (_, n) => keyed(`bsc-fat-${n}`, n === 0 ? { setName: "1991 Score", cardNo: "2" } : fatFor(n))),
+    ];
+    await record(s, order(s, { lines }));
+    const items = (await sale(s)).items;
+    const byId = new Map(items.map((i) => [i.platformCardId, i.listed]));
+
+    // No room for the growth: the line keeps its stored description rather than going bare.
+    expect(byId.get("bsc-thin")).toEqual(first[0].listed);
+    // A shrinking change fits, so it wins.
+    expect(byId.get("bsc-fat-0")).toEqual({ setName: "1991 Score", cardNo: "2" });
+    // Every other stored description is still there.
+    for (const i of storedFat.slice(1)) expect(byId.get(i.platformCardId)).toEqual(i.listed);
+    expect(spentOn(items)).toBeLessThanOrEqual(MAX_LISTED_BYTES_PER_SALE);
+  });
+
+  test("capListed: stored descriptions first, a changed one only when the swap fits, then new ones in item order", () => {
+    const big = { setName: "x".repeat(40_000) };
+    const small = { cardNo: "1" };
+    const stored = [undefined, undefined, small, big] as const;
+    // Lines 0-1 are new and big; line 2 changed small -> big; line 3 is stored big and unchanged.
+    const items = capListed(
+      [{ listed: big }, { listed: big }, { listed: big }, { listed: big }],
+      (_item, i) => stored[i],
+    );
+    // Stored: small + big. The swap on line 2 fits (big + big), then line 0 fills nothing more: 3 x 40 KB > 100 KB.
+    expect(items.map((i) => i.listed)).toEqual([undefined, undefined, big, big]);
+    // Without room for the swap, line 2 keeps its stored small description, and no new line fits.
+    const tight = capListed(
+      [{ listed: big }, { listed: big }, { listed: big }, { listed: big }, { listed: big }],
+      (_item, i) => [undefined, undefined, small, big, big][i],
+    );
+    expect(tight.map((i) => i.listed)).toEqual([undefined, undefined, small, big, big]);
+  });
 });
