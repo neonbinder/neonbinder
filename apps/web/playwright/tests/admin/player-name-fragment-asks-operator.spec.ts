@@ -86,6 +86,8 @@ test(
     await pickerPanel.getByRole("button", { name: `Add ${fuller}` }).click();
     await expect(drawer.getByRole("button", { name: `Remove player ${fuller}` })).toBeVisible();
     await expect(drawer.getByRole("button", { name: "Remove player Devin", exact: true })).toHaveCount(0);
+    // NEO-531: the chip is optimistic; wait for the server-confirmed save before leaving, or the goto below can drop the write.
+    await expect(page.getByText(/Saved Players/)).toBeVisible();
     await drawer.getByRole("button", { name: "Done editing card" }).click();
     await expect(drawer.getByRole("textbox", { name: "Card name", exact: true })).toBeHidden();
 

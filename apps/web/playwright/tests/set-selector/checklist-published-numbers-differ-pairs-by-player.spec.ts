@@ -52,8 +52,11 @@
 // Base, Parallel and Insert types (approved by Jason 2026-11-11, Q8/N4). SOLE
 // WRITER of the set; FRESH-ONLY (it commits in PHASE B and C), so a re-run fails
 // at "No cards in this checklist yet." by name: re-seed first. In PHASES A-B every player and
-// club but Oakland A's is on the catalogue, so no player is minted and no live lookup is waited
-// on; PHASE C skips every name Unleashed's wizard asks, so it mints nothing either.
+// club but Oakland A's is on the catalogue, so no player is minted; Oakland A's is the one name
+// the wizard looks up (a recorded no-match, answered at once), and that lookup queues in the
+// deployment-wide pool every shard shares, so the club step is waited for through
+// `awaitLookupsSettled` (a pending team is not a step yet; GUIDE, support/wizard.ts). PHASE C skips
+// every name Unleashed's wizard asks, so it mints nothing either.
 //
 // Not a hand-rolled drill by choice (R9): the helpers drill a Base or a brand's
 // set; this set is an INSERT under the year's Unknown brand, reached through the
@@ -85,6 +88,7 @@ import { editCardButton } from "../../support/cards";
 import { buildDonrussCsv, buildDonrussXlsx } from "../../fixtures/checklists/build-fixtures.mjs";
 import {
   advanceToSave,
+  awaitLookupsSettled,
   cancelAndDiscard,
   confirmSaveButton,
   expectChecklistDisagreementFirst,
@@ -283,7 +287,19 @@ test(
     await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
     await expect(matchCards).toBeHidden();
     const clubStep = wizard.getByRole("heading", { level: 3, name: `New Team: ${CLUB}` });
-    await expect(clubStep).toBeVisible();
+    // The club's lookup waits in the deployment-wide pool beside every other shard's batch, and a
+    // pending team is not presented, so the wizard shows "N still looking up" until it settles
+    // (`awaitLookupsSettled`, the house ceiling). The step itself then shows within the usual 7 s.
+    // Jason 2026-11-13 (NEO-496): wait for the batch's lookups before the club step; the shared
+    // Wikidata pool can hold a recorded miss ~9 s under CI load. (GUIDE hard rule 3.)
+    // R2: the settle wait is a negative that passes on a dead page, so it sits between two positive
+    // asserts: the wizard is up before it, the club step's heading is up after it.
+    const expectClubStep = async () => {
+      await expect(wizard).toBeVisible();
+      await awaitLookupsSettled(page);
+      await expect(clubStep).toBeVisible();
+    };
+    await expectClubStep();
 
     // Back to Match Cards keeps every link and keep the operator made.
     await wizard.getByRole("button", { name: "Back to Match Cards" }).click();
@@ -291,7 +307,7 @@ test(
     await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
     await expect(matchCards.getByRole("heading", { name: "BSC only (0)" })).toBeVisible();
     await matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }).click();
-    await expect(clubStep).toBeVisible();
+    await expectClubStep();
 
     // Link the club to the one the checklist names, the 1968-2024 Oakland Athletics. Remember-box
     // OFF first, while the combobox is closed: no alias is saved (PHASE B reads the decision back).
@@ -349,7 +365,7 @@ test(
 
     // Then the one club question, then no "Cards with no team": all 14 cards took their team from the
     // checklist, and all 14 reach the save.
-    await expect(clubStep).toBeVisible();
+    await expectClubStep();
     await answerClubStep(page);
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
     await advanceToSave(page);
@@ -384,7 +400,7 @@ test(
       "Linked to Frank Thomas · the Hall of Famer",
     );
 
-    await expect(clubStep).toBeVisible();
+    await expectClubStep();
     await answerClubStep(page);
     // Every card has its team, so the walk goes straight past the teams step.
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
