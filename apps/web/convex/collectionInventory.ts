@@ -277,19 +277,24 @@ function photoLineToRaise(rows: ReadonlyArray<CopyRow>): CopyRow | undefined {
   return [...rows].sort(byNewest)[0];
 }
 
-/** Put `quantity` more copies on an existing line. */
+/**
+ * Put `quantity` more copies on an existing line. NEO-464: a raise files cards
+ * into the box, so it passes `filed` (the line takes `filedAt` and `listedAt`); an undo's
+ * put-back passes nothing and leaves the stamp as it was.
+ */
 async function raiseLine(
   ctx: MutationCtx,
   row: CopyRow,
   adding: number,
   now: number,
+  filed: { filedAt?: number; listedAt?: number } = {},
 ): Promise<{ undo: Step; change: CountChange; row: CopyRow }> {
   const quantity = row.quantity + adding;
-  await ctx.db.patch(row._id, { quantity, lastUpdated: now });
+  await ctx.db.patch(row._id, { quantity, lastUpdated: now, ...filed });
   return {
     undo: { op: "set", copyId: row._id, from: quantity, to: row.quantity },
     change: changeOf(row, counted(row), counted({ ...row, quantity })),
-    row: { ...row, quantity, lastUpdated: now },
+    row: { ...row, quantity, lastUpdated: now, ...filed },
   };
 }
 
@@ -338,7 +343,7 @@ async function putPlain(
   defaultCondition: Condition,
   now: number,
   place: () => Promise<Place> = () => placeOf(ctx, cardId),
-  { ownLine = false }: { ownLine?: boolean } = {},
+  { ownLine = false, filed = {} }: { ownLine?: boolean; filed?: { filedAt?: number; listedAt?: number } } = {},
 ): Promise<{ undo: Step; change: CountChange; row: CopyRow }> {
   const next: StoredDetails = {
     quantity: details.quantity,
@@ -354,12 +359,12 @@ async function putPlain(
         lines,
         (row) => foldsInto(foldShape(row), next) && row.quantity + details.quantity <= MAX_COPY_QUANTITY,
       );
-  if (into) return await raiseLine(ctx, into, details.quantity, now);
+  if (into) return await raiseLine(ctx, into, details.quantity, now, filed);
   if (lines.length >= MAX_LINES_PER_CARD) {
     refuse(COLLECTION_ERRORS.limit, TOO_MANY_LINES);
   }
   const { variantId, setId } = await place();
-  const fields = { ownerId, cardId, variantId, setId, ...next, lastUpdated: now };
+  const fields = { ownerId, cardId, variantId, setId, ...next, lastUpdated: now, ...filed };
   const copyId = await ctx.db.insert("collectionCopies", fields);
   return {
     undo: { op: "remove", copyId, quantity: details.quantity },
@@ -430,8 +435,10 @@ export const setBoxQuantity = mutation({
         });
       }
       const adding = args.quantity - before;
+      // NEO-464: a raise files cards into the box, and lists them (New Listings).
+      const filed = { filedAt: now, listedAt: now };
       const put = photoLine
-        ? await raiseLine(ctx, photoLine, adding, now)
+        ? await raiseLine(ctx, photoLine, adding, now, filed)
         : await putPlain(
             ctx,
             ownerId,
@@ -442,6 +449,7 @@ export const setBoxQuantity = mutation({
             defaultCondition,
             now,
             placeOnce,
+            { filed },
           );
       undo.push(put.undo);
       changes.push(put.change);

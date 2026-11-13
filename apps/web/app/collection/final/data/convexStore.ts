@@ -477,7 +477,12 @@ function toContainer(raw: RawContainer): Container {
 }
 
 function toWant(raw: RawWant): Want {
-  return { cardId: raw.cardId, binderId: raw.binderId ?? null };
+  return {
+    cardId: raw.cardId,
+    binderId: raw.binderId ?? null,
+    // An optimistic want (just set) carries no stamp yet.
+    ...(typeof raw.lastUpdated === "number" ? { lastUpdated: raw.lastUpdated } : {}),
+  };
 }
 
 /** A view copy as the server lists it (for the optimistic engine's fallback). */

@@ -46,6 +46,16 @@ import { api } from "@/convex/_generated/api";
 // claims (`seedMyTestLoosePhotosRun`: loose-1.jpg to loose-4.jpg), so the
 // Pairing column's pair-by-hand button can be driven, and lands on that run.
 //
+// NEO-464: `?hopperScan=1` seeds a run holding one open scan nothing identified
+// (`seedMyTestHopperRun`), the state the signed-in dashboard's In the Hopper
+// counts, and lands on that run's Add cards screen like the seeds above, so
+// the spec can read the run id off the URL and then check the dashboard's link
+// carries the same one.
+//
+// NEO-464: `?clearHopper=1` is the other half: it sets aside the account's open
+// scans (`clearMyTestHopper`) so the dashboard's In the Hopper has nothing to
+// count, then lands on `redirect`.
+//
 // Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutations also fail
 // closed on production Convex (no TESTING_RESET_SECRET there).
 const SAVED_PHOTO_FAILURES = ["scanGone", "unusable", "error"] as const;
@@ -62,11 +72,15 @@ function TestingSeedPlaceholderRunContent() {
   const seedFailedPhoto = useMutation(api.testing.seedMyTestFailedPhotoRun);
   const seedSavedPhotoFailure = useMutation(api.testing.seedMyTestSavedPhotoFailureRun);
   const seedLoosePhotos = useMutation(api.testing.seedMyTestLoosePhotosRun);
+  const seedHopper = useMutation(api.testing.seedMyTestHopperRun);
+  const clearHopper = useMutation(api.testing.clearMyTestHopper);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = searchParams.get("redirect") || "/pipeline-runs";
   const failedPhoto = searchParams.get("failedPhoto") === "1";
   const loosePhotos = searchParams.get("loosePhotos") === "1";
+  const hopperScan = searchParams.get("hopperScan") === "1";
+  const clearHopperScans = searchParams.get("clearHopper") === "1";
   const placeholdersView = searchParams.get("view") === "placeholders";
   const savedPhotoFailure = searchParams.get("savedPhotoFailure");
   const [status, setStatus] = useState("Initializing...");
@@ -112,6 +126,18 @@ function TestingSeedPlaceholderRunContent() {
           );
           return;
         }
+        if (clearHopperScans) {
+          const cleared = await clearHopper();
+          setStatus(`Cleared ${cleared.cleared} open scans — redirecting...`);
+          navigate(redirect);
+          return;
+        }
+        if (hopperScan) {
+          const seeded = await seedHopper();
+          setStatus("Seeded a hopper scan — redirecting...");
+          navigate(`/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`);
+          return;
+        }
         if (loosePhotos) {
           const seeded = await seedLoosePhotos();
           setStatus("Seeded loose photos — redirecting...");
@@ -133,7 +159,10 @@ function TestingSeedPlaceholderRunContent() {
       }
     })();
   }, [
+    clearHopper,
+    clearHopperScans,
     failedPhoto,
+    hopperScan,
     isAuthenticated,
     isLoading,
     loosePhotos,
@@ -143,6 +172,7 @@ function TestingSeedPlaceholderRunContent() {
     resetSessions,
     savedPhotoFailure,
     seedFailedPhoto,
+    seedHopper,
     seedLoosePhotos,
     seedRun,
     seedSavedPhotoFailure,

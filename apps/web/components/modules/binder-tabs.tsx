@@ -21,6 +21,11 @@ export interface NavItem {
    */
   hueClass: string;
   requiresAdmin?: boolean;
+  /**
+   * Match the path exactly, not as a prefix: a tab on `/demo` must
+   * not stay lit on `/demo/inventory`. Default: prefix match.
+   */
+  end?: boolean;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -105,14 +110,20 @@ const STAGGER_STEP_PX = 6;
 // on the `aria-current` NavLink sets: dark lights the current tab with its
 // glow; light gives every tab a 4px edge in its hue (6px when current).
 
-export default function BinderTabs() {
-  const items = useVisibleNavItems();
+/**
+ * `items` replaces the signed-in list (the dashboard demo passes its own
+ * tabs, NEO-464); left out, the tabs are the signed-in shell's.
+ */
+export default function BinderTabs({ items: given }: { items?: NavItem[] }) {
+  const visible = useVisibleNavItems();
+  const items = given ?? visible;
   return (
-    <nav className="fixed right-0 top-1/2 -translate-y-1/2 z-30 hidden lg:flex flex-col gap-2">
+    <nav aria-label="Main" className="fixed right-0 top-1/2 -translate-y-1/2 z-30 hidden lg:flex flex-col gap-2">
       {items.map((item, index) => (
         <NavLink
           key={item.path}
           to={item.path}
+          end={item.end}
           className={({ isActive }) =>
             `binder-tab ${item.hueClass} flex items-center gap-3 rounded-l-xl cursor-pointer
             transition-[transform,background-color,color,box-shadow] duration-200 ease-out

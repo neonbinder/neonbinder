@@ -94,7 +94,8 @@
   white-space: normal;
   text-align: center;
   line-height: 1.05;
-  /* The fitter sizes for lettering down a spine; across tape it is a fixed hand. */
+  /* The fitter sizes for lettering down a spine; across tape it is a fixed hand.
+     The contrast check reads this size as BOX_LETTERING_PX (label.ts): change both. */
   font-size: 15px !important;
 }
 .nb-boxspine-handle {

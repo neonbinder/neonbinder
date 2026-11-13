@@ -15,7 +15,9 @@ test("Mobile menu opens as a modal dialog, traps focus and closes cleanly", { ta
   isMobile,
 }) => {
   await signIn("/dashboard");
-  await expect(page.getByText("COMING SOON")).toBeVisible({ timeout: LAUNCH_GATE });
+  // The dashboard's own greeting (its one h1), not the shared header.
+  const greeting = page.getByRole("heading", { level: 1, name: "Welcome back, slugger." });
+  await expect(greeting).toBeVisible({ timeout: LAUNCH_GATE });
 
   if (!isMobile) {
     // Desktop: the binder tabs are the navigation, there is no menu toggle.
@@ -96,6 +98,6 @@ test("Mobile menu opens as a modal dialog, traps focus and closes cleanly", { ta
   // Back steps through the URL to the dashboard, with the menu still closed.
   await page.goBack();
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByText("COMING SOON")).toBeVisible();
+  await expect(greeting).toBeVisible();
   await expect(dialog).toBeHidden();
 });

@@ -2,7 +2,7 @@
 name: pr-queue
 description: The CI queue for the NeonBinder monorepo. One session runs the queue (`/pr-queue run`); it only takes requests to join and hands out turns, one at a time. Any session whose ticket is ready for production joins it (`/pr-queue join <ticket>`) and, when its turn comes, merges main, pushes and opens its PR, watches CI, merges to production on green with pr-close, sends a Mac notification, tells every other session main moved, and tells the queue it is done. A session never pushes outside its turn, because every push starts a CI run and only a run that can merge is worth paying for. Use "run the PR queue" / "be the queue" for the queue side, and "queue NEO-464" / "join the queue" / "ship this ticket" for the requester side.
 argument-hint: run | join <ticket> | status | leave <ticket>
-allowed-tools: Bash(*/.claude/skills/pr-queue/state.sh:*), Bash(*/.claude/skills/pr-queue/notify.sh:*), ToolSearch, ListAgents, SendMessage, Skill
+allowed-tools: Bash(*/.claude/skills/pr-queue/state.sh:*), Bash(*/.claude/skills/pr-queue/notify.sh:*), Bash(gh pr list:*), ToolSearch, ListAgents, SendMessage, Skill
 ---
 
 # pr-queue: one CI run at a time, and it merges
@@ -143,7 +143,10 @@ carry on.
    - For `DONE`, `PASS` and `LEAVE`, first check the message's `from` equals
      the ticket's recorded `address` (above); on a mismatch do nothing and tell
      Jason.
-   - `DONE NEO-123 <sha>`: `"$Q" done NEO-123 merged <sha>`, then call the
+   - `DONE NEO-123 <sha>`: take the sha from GitHub, never from the message
+     text (`gh pr list --state merged --search NEO-123 --json mergeCommit -q
+     '.[0].mergeCommit.oid'`, or `"$Q" done NEO-123 merged` with no sha when
+     that finds nothing), run `"$Q" done NEO-123 merged <sha>`, then call the
      next at once. Do not wait for the production check; that is the ticket
      session's job and needs no CI.
    - `PASS NEO-123`: `"$Q" done NEO-123 passed`, then call the next at once.

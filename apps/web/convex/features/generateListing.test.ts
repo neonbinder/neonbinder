@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   assessListingTitle,
+  brandedSetName,
   generateListingTitle,
   generateListingDescription,
   rookieAsRc,
@@ -1349,5 +1350,35 @@ describe("NEO-335 — \"Rookie\" → \"RC\" in an insert's name, only when neede
     expect(generateListingDescription({ ...debut, isRelic: true, printRun: 99 })).toContain(
       "Rookie Debut Patch Autographs",
     );
+  });
+});
+
+describe("brandedSetName (NEO-464) — the set as its cards' titles name it", () => {
+  test("puts the brand before a set name that does not start with it", () => {
+    expect(brandedSetName({ manufacturer: "Topps", setName: "Finest" })).toBe("Topps Finest");
+  });
+
+  test("keeps a set name that already leads with its brand, as a whole word", () => {
+    expect(brandedSetName({ manufacturer: "Topps", setName: "Topps Chrome" })).toBe("Topps Chrome");
+    expect(brandedSetName({ manufacturer: "Score", setName: "Score" })).toBe("Score");
+    expect(brandedSetName({ manufacturer: "Pro", setName: "Pro Set" })).toBe("Pro Set");
+    expect(brandedSetName({ manufacturer: "Pro", setName: "Prospects" })).toBe("Pro Prospects");
+  });
+
+  test("names the set alone when NB has no brand, or has not identified it", () => {
+    expect(brandedSetName({ manufacturer: "", setName: "Finest" })).toBe("Finest");
+    expect(brandedSetName({ setName: "Finest" })).toBe("Finest");
+    expect(brandedSetName({ manufacturer: "Any Brand", manufacturerBrandUnknown: true, setName: "Finest" })).toBe("Finest");
+  });
+
+  test("is the words the title puts after the year", () => {
+    const title = generateListingTitle({
+      cardNumber: "1",
+      year: "1993",
+      manufacturer: "Topps",
+      setName: "Finest",
+      parallelName: "Base",
+    });
+    expect(title.startsWith(`1993 ${brandedSetName({ manufacturer: "Topps", setName: "Finest" })} `)).toBe(true);
   });
 });

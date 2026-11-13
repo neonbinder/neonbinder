@@ -1,6 +1,6 @@
 import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-react";
 import { useAuth } from "@clerk/clerk-react";
-import { useRef } from "react";
+import { useRef, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Bars3Icon, KeyIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { BrandMark } from "@/components/primitives/BrandMark";
@@ -11,11 +11,18 @@ import { MOBILE_NAV_ID } from "./mobile-nav";
 interface BinderHeaderProps {
   isMobileMenuOpen: boolean;
   onMobileMenuToggle: () => void;
+  /**
+   * What sits where the account controls are. Left out, the signed-in
+   * account controls (or Sign in, signed out). The dashboard demo passes its
+   * own Sign up button (NEO-464).
+   */
+  actions?: ReactNode;
 }
 
 export default function BinderHeader({
   isMobileMenuOpen,
   onMobileMenuToggle,
+  actions,
 }: BinderHeaderProps) {
   const { isSignedIn, signOut } = useAuth();
   const navigate = useNavigate();
@@ -47,39 +54,50 @@ export default function BinderHeader({
       <div className="flex items-center gap-2 pointer-events-auto">
         <BrandMark />
         {/* The wordmark inherits its colour in dark and takes the deep brand
-            green in light (`--wordmark`, app/theme.css). */}
-        <span className="neon-header neon-header-sm text-wordmark">Neon Binder</span>
+            green in light (`--wordmark`, app/theme.css).
+
+            Under 360px it steps aside (NEO-464 audit). At 320 the mark, the
+            wordmark, the right-hand controls (the demo's Sign up button, or
+            the account button and Sign out) and the 44px menu toggle need
+            more than the 288px between the gutters, so the whole page
+            scrolled sideways. The logo beside it already carries the name
+            "Neon Binder", and every phone from 360 up keeps the wordmark. */}
+        <span className="neon-header neon-header-sm text-wordmark max-[359px]:hidden">Neon Binder</span>
       </div>
       <div className="flex items-center gap-3 pointer-events-auto">
-        <SignedIn>
-          {/* NEO-172 — API Keys hangs off the account menu, not the binder tab
-              staircase. The staircase is the six-item nav NEO-145 settled on
-              and it names FEATURES; an account-level credential screen is the
-              same kind of thing as the rest of /profile, so it belongs where
-              the account already lives.
+        {actions ?? (
+          <>
+            <SignedIn>
+            {/* NEO-172 — API Keys hangs off the account menu, not the binder tab
+                staircase. The staircase is the six-item nav NEO-145 settled on
+                and it names FEATURES; an account-level credential screen is the
+                same kind of thing as the rest of /profile, so it belongs where
+                the account already lives.
 
-              `labelIcon` is required by Clerk, and Clerk renders the node as-is
-              next to the label, so the icon must be hidden from assistive tech
-              or it doubles the item's accessible name. */}
-          <UserButton>
-            <UserButton.MenuItems>
-              <UserButton.Link
-                label="API Keys"
-                labelIcon={<KeyIcon className="w-4 h-4" aria-hidden="true" />}
-                href="/profile/api-keys"
-              />
-            </UserButton.MenuItems>
-          </UserButton>
-          {/* On screen at every width: the mobile menu has no Sign out of its
-              own (playwright/tests/auth/sign-out.spec.ts signs out from here
-              at phone width). */}
-          <NeonButton variant="negative" onClick={handleSignOut}>
-            Sign out
-          </NeonButton>
-        </SignedIn>
-        <SignedOut>
-          <SignInButton />
-        </SignedOut>
+                `labelIcon` is required by Clerk, and Clerk renders the node as-is
+                next to the label, so the icon must be hidden from assistive tech
+                or it doubles the item's accessible name. */}
+            <UserButton>
+              <UserButton.MenuItems>
+                <UserButton.Link
+                  label="API Keys"
+                  labelIcon={<KeyIcon className="w-4 h-4" aria-hidden="true" />}
+                  href="/profile/api-keys"
+                />
+              </UserButton.MenuItems>
+            </UserButton>
+            {/* On screen at every width: the mobile menu has no Sign out of its
+                own (playwright/tests/auth/sign-out.spec.ts signs out from here
+                at phone width). */}
+            <NeonButton variant="negative" onClick={handleSignOut}>
+              Sign out
+            </NeonButton>
+            </SignedIn>
+            <SignedOut>
+              <SignInButton />
+            </SignedOut>
+          </>
+        )}
         {/* One name in both states, with aria-expanded carrying open/closed.
             It used to read "Close menu" while open, the same name as the
             button inside the dialog. While the menu is open this toggle is

@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { ArchiveBoxIcon, BookOpenIcon, PlusIcon, StarIcon as StarSolid } from "@heroicons/react/20/solid";
+import { ArchiveBoxIcon, BookOpenIcon, ExclamationTriangleIcon, PlusIcon, StarIcon as StarSolid } from "@heroicons/react/20/solid";
 import { StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
@@ -45,7 +45,19 @@ import {
   wantToggle,
   writeErrorMessage,
 } from "./data/store";
-import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult, PhotoSide } from "./data/types";
+import type {
+  Card,
+  Container,
+  ContainerId,
+  Copy,
+  CopyDetails,
+  CopyId,
+  ListingPlatform,
+  ListingProblemReason,
+  MoveResult,
+  PhotoSide,
+} from "./data/types";
+import { heldBackNotice } from "./inventory/listing/copy";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
 import OwnCardNote from "./OwnCardNote";
@@ -175,6 +187,23 @@ function formHomes(homes: readonly Container[]): FormHome[] {
  * copy or Cancel brings it back to that copy's Edit button (Remove's and
  * Move's parking are `CopyList`'s).
  */
+/**
+ * NEO-464 — why a card was held back from a sync, when the dashboard's Sync
+ * status opened its panel: the panel says it above "Your copies" and, for a
+ * missing price or photo, opens the for-sale copy's Edit form on that field.
+ */
+export interface HeldBack {
+  platform: ListingPlatform;
+  reason: ListingProblemReason;
+}
+
+/** The field in a copy's Edit form that fixes a held-back reason, when one does. */
+function heldFix(held: HeldBack | undefined, photos: boolean): "price" | "front" | null {
+  if (held?.reason === "noPrice") return "price";
+  if (held?.reason === "noPhoto" && photos) return "front";
+  return null;
+}
+
 export default function CardDetail({
   card,
   onCancelAdd,
@@ -182,6 +211,7 @@ export default function CardDetail({
   focusCopyId,
   editCopyId,
   addBinderId,
+  held,
 }: {
   card: Card;
   /** Escape / Cancel in the add form. */
@@ -198,6 +228,8 @@ export default function CardDetail({
   editCopyId?: CopyId;
   /** The home the add form picks instead of the page's scope (the hunt tray's open binder). */
   addBinderId?: string;
+  /** NEO-464: why this card was held back from a sync (the dashboard's Sync status opened it). */
+  held?: HeldBack;
 }) {
   const api = usePageApi();
   const writes = useCollectionActions();
@@ -315,7 +347,7 @@ export default function CardDetail({
    * Edit button, or into the form's first field. By line key, like `editing`:
    * a save that waited for the line's real id still finds it.
    */
-  const [refocus, setRefocus] = useState<{ key: string; into: "edit" | "form" | PhotoSide } | null>(null);
+  const [refocus, setRefocus] = useState<{ key: string; into: "edit" | "form" | "price" | PhotoSide } | null>(null);
   useEffect(() => {
     if (!refocus) return;
     const frame = requestAnimationFrame(() => {
@@ -326,7 +358,9 @@ export default function CardDetail({
           ? root?.querySelector<HTMLElement>(`${line} [data-copy-edit]`)
           : refocus.into === "form"
             ? root?.querySelector<HTMLElement>(`${line} input, ${line} select`)
-            : root?.querySelector<HTMLElement>(`${line} [data-copy-photo-add="${refocus.into}"]`);
+            : refocus.into === "price"
+              ? root?.querySelector<HTMLElement>(`${line} [data-copy-price]`)
+              : root?.querySelector<HTMLElement>(`${line} [data-copy-photo-add="${refocus.into}"]`);
       target?.focus();
       // Only this move: a newer one asked for meanwhile still runs.
       setRefocus((current) => (current === refocus ? null : current));
@@ -345,6 +379,21 @@ export default function CardDetail({
     setEditing({ key: only.id, value: toForm(only), trade: only.upForTrade });
     setRefocus({ key: only.id, into: "form" });
   }, [copies]);
+  /**
+   * NEO-464 — a held-back card whose fix is a field on its for-sale copy (a
+   * price, a photo): that copy's Edit form opens, the keyboard on the field,
+   * once, as soon as the copies are in (set while rendering, so the form
+   * draws with them).
+   */
+  const [heldEdit, setHeldEdit] = useState(() => (mode === "view" && !editCopyId ? heldFix(held, !!photosExt) : null));
+  if (heldEdit && copies !== undefined) {
+    setHeldEdit(null);
+    const forSale = copies.find((c) => c.homeKind === "box");
+    if (forSale) {
+      setEditing({ key: forSale.id, value: toForm(forSale), trade: forSale.upForTrade });
+      setRefocus({ key: forSale.id, into: heldEdit });
+    }
+  }
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       if (mode === "add") {
@@ -625,6 +674,13 @@ export default function CardDetail({
           {card.own && <OwnCardNote own={card.own} />}
         </div>
       </div>
+
+      {held && (
+        <p className="flex items-start gap-2 rounded-md border border-notice-warn-rule bg-notice-warn-bg px-3 py-2 text-sm text-notice-warn-ink">
+          <ExclamationTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+          <span>{heldBackNotice(held.reason, held.platform)}</span>
+        </p>
+      )}
 
       <CopyList
         name={name}

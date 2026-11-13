@@ -5,7 +5,7 @@ import { FOCUS } from "../prototypes/p1/ui";
 import { useCapabilities, useSide } from "./data/store";
 import type { Side } from "./data/types";
 import DemoThemeToggle from "./DemoThemeToggle";
-import { PUBLIC_DESTINATIONS, SideLink, useCollectionMode } from "./mode";
+import { PUBLIC_DESTINATIONS, SideLink, sideArrivalPending, useCollectionMode } from "./mode";
 import "./demo-chrome.css";
 import NeonButton from "@/components/modules/NeonButton";
 
@@ -38,14 +38,16 @@ const EXIT = "Back to the tour";
  * The demo bar: a yellow tag (the app's for-sale tag) saying this is a demo,
  * what that means, where its links lead, and Reset. In the public demo it
  * takes focus when the demo opens, so a keyboard or screen reader lands at
- * its start; signed in, `/collection` is an ordinary page of the app and
+ * its start (not on a side change: that lands on the side's heading); signed in, `/collection` is an ordinary page of the app and
  * focus stays where the shell puts it.
  */
-export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () => void }) {
+export function DemoBar({ onReset, onExit, shell = false }: { onReset: () => void; onExit?: () => void; shell?: boolean }) {
   const isPublic = useCollectionMode().mode === "public";
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (isPublic) ref.current?.focus({ preventScroll: true });
+    // The demo's first entry only: a side link (the shell remounts the page
+    // on a side change) hands the keyboard to the new side's heading instead.
+    if (isPublic && !sideArrivalPending()) ref.current?.focus({ preventScroll: true });
   }, [isPublic]);
 
   return (
@@ -77,7 +79,8 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
               </p>
             </>
           )}
-          <SideSwitch />
+          {/* Inside the shell the tabs are the two sides, so the switch would repeat them. */}
+          {!shell && <SideSwitch />}
           <DemoThemeToggle className="max-w-80 pt-2" />
         </div>
       </div>
@@ -89,12 +92,12 @@ export function DemoBar({ onReset, onExit }: { onReset: () => void; onExit?: () 
         >
           Reset demo data
         </button>
-        {isPublic && (
+        {isPublic && !shell && (
           <NeonButton asChild className="min-h-10 max-sm:min-h-11 lg:hidden">
             <Link to={PUBLIC_DESTINATIONS.signUp}>{SIGN_UP}</Link>
           </NeonButton>
         )}
-        {isPublic && onExit && (
+        {isPublic && onExit && !shell && (
           <NeonButton type="button" variant="secondary" outline onClick={onExit} className="min-h-10 max-sm:min-h-11 lg:hidden">
             {EXIT}
           </NeonButton>

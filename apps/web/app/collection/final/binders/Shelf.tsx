@@ -23,7 +23,7 @@ import { SideLink, useCollectionMode } from "../mode";
 import { NO_BROWSE_FILTER, type BrowseFilter } from "../store";
 import { useLabelHints } from "./hooks";
 import IdTooltip, { IdLines } from "./IdTooltip";
-import { labelOf } from "./label";
+import { BOX_LETTERING_PX, labelOf } from "./label";
 import { cardCount, filterSets, isFiltering, sportsOf, type ViewKey } from "./model";
 import SpineLabel, { SpineFontFaces } from "./SpineLabel";
 import "./box.css";
@@ -341,7 +341,7 @@ function BoxSpine({
         )}
         <span aria-hidden="true" className="nb-boxspine-lid" />
         <span aria-hidden="true" className="nb-boxspine-end">
-          <SpineLabel name={container.name} label={label} spineWidth={108} />
+          <SpineLabel name={container.name} label={label} spineWidth={108} letteringPx={BOX_LETTERING_PX} />
           <span className="nb-boxspine-handle" />
         </span>
         <span aria-hidden="true" className="nb-longbox-tag nb-boxspine-tag">

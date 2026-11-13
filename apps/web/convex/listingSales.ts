@@ -161,6 +161,25 @@ export function saleDisposition(platform: Platform, status: string): "sale" | "c
   return platform === "ebay" ? ebayStatusDisposition(status) : bscOrderDisposition(status);
 }
 
+/** The platform's own words for an order that has gone out (BSC: shipped; eBay: fulfilled). */
+const SHIPPED_STATUSES: Record<Platform, ReadonlySet<string>> = {
+  bsc: new Set(["SHIPPED", "PARTIALLY_REFUNDED_SHIPPED"]),
+  ebay: new Set(["FULFILLED"]),
+};
+
+/**
+ * NEO-464 — the order still has to go out: it sold (`saleDisposition`) and
+ * the platform does not report it shipped. NB keeps no shipped state of its
+ * own, so the platform's status word is the only answer there is; a
+ * cancelled order, or one whose status NB does not know (eBay's PENDING
+ * payment, a new BSC word), is not one to ship. eBay's stored word prefers
+ * a partial refund over its fulfillment state (`ebayOrderStatus`), so a
+ * partly refunded eBay order reads as still to ship until fulfilled.
+ */
+export function awaitingShipment(platform: Platform, status: string): boolean {
+  return saleDisposition(platform, status) === "sale" && !SHIPPED_STATUSES[platform].has(status);
+}
+
 // ── The cron fan-out ───────────────────────────────────────────────────────
 
 /** The spacing between one tick's `count` polls: 2s, less when they would not fit the window. */
@@ -286,8 +305,9 @@ export const pollInput = internalQuery({
       .take(OPEN_ORDER_SCAN);
     return {
       cursorAt: state.orderCursorAt ?? state._creationTime - INITIAL_CURSOR_GRACE_MS,
-      // A test seed's order (`testing.seedMyTestPickOrder`) is never the
-      // platform's: re-reading it by id would only fail.
+      // A test seed's order (`testing.seedMyTestPickOrder`, the NEO-464
+      // dashboard seeds) is never the platform's: re-reading it by id would
+      // only fail.
       stored: recent
         .filter((s) => s.platform === args.platform && !isTestSaleOrderId(s.orderId))
         .map((s) => ({ orderId: s.orderId, status: s.status, orderDate: s.orderDate })),

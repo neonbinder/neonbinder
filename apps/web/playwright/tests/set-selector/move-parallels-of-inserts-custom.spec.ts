@@ -34,7 +34,9 @@ test(
 
     // The nesting persists across a full navigation away and back.
     await page.goto("/dashboard");
-    await expect(page.getByText("COMING SOON")).toBeVisible({ timeout: 20_000 });
+    // NEO-464: the dashboard is the collector's own screen now; its one h1 is the gate (the
+    // "COMING SOON" page this hop used to land on is gone).
+    await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible({ timeout: LAUNCH_GATE });
     await page.goto("/set-selector");
     await expect(page.getByText("Baseball", { exact: true })).toBeVisible({ timeout: 60_000 });
     await drillToCustomSet(page, env, { set: setName, variantType: "Insert" });

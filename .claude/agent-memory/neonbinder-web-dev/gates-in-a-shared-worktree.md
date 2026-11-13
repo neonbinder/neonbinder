@@ -1,6 +1,6 @@
 ---
 name: gates-in-a-shared-worktree
-description: apps/web gate quirks — eslint "File ignored" on lib/*.ts is baseline; a sibling's npm ci may be mid-flight (wait, never start a second); `npm run test:unit -- <filter>` does NOT filter (use npx vitest run); link-deps.sh checks the wrong dir and main's node_modules can be stale — replace the symlink with the worktree's own npm ci, never an overlay; plain rm not git rm; npm install -D can prune unrelated lock entries
+description: apps/web gate quirks — playwright --output to scratch in a shared worktree; eslint "File ignored" on lib/*.ts is baseline; a sibling's npm ci may be mid-flight (wait, never start a second); `npm run test:unit -- <filter>` does NOT filter (use npx vitest run); link-deps.sh checks the wrong dir and main's node_modules can be stale — replace the symlink with the worktree's own npm ci, never an overlay; plain rm not git rm; npm install -D can prune unrelated lock entries
 metadata:
   type: feedback
 ---
@@ -125,6 +125,37 @@ Things that look like failures during the apps/web fast gates but are not.
    `globalThis.React`; wrap a `useMutation` component in `ConvexProvider`
    with a fake `{ mutation, watchQuery }` client) + headless Chrome over the
    built CSS.
+
+12. **Playwright's `playwright/results/` is shared with siblings running specs.**
+   A spec that passed its body can still fail at teardown with
+   `browserContext.close: ENOENT ... .playwright-artifacts-0/traces/...trace`
+   when a sibling's run wipes the results dir. Not a product or spec bug:
+   pass `--output <scratchpad>/pw-out` on every local `npx playwright test`
+   in a shared worktree (NEO-464).
+13. **Never pipe the full `npm run test:unit` through `grep | head`** for a
+   verdict: `head` closes early, the summary lines are lost and the exit code
+   is `head`'s. Redirect to a scratch log, then grep `Test Files`/`Tests`.
+14. **A local E2E red during a sibling's edit of `src/main.tsx` is the dev
+   server, not the product.** main.tsx cannot hot-update, so Vite full-reloads
+   every open page ("page.evaluate: Execution context was destroyed" mid-axe),
+   and a route the sibling is changing serves its old element for that run
+   (NEO-464: `/binder-tracking?side=inventory` landed on `/demo` while the
+   side-aware redirect was being written). Before diagnosing, compare the
+   trace's request times (`*-trace.network`, `main.tsx?t=` changing between
+   loads) with `stat` mtimes of the source; then rerun on a quiet tree.
+
+15. **A "spare" Vite port is often another worktree's.** Sibling worktrees
+   keep Vites on 3001, 3011, 3031, 308x and more, so `curl :<port>` answering
+   200 proves nothing, and `--strictPort` then dies "Port in use" in the
+   background. Before starting, list listeners (`lsof -iTCP -sTCP:LISTEN -n -P
+   | grep ':30'`), pick a free port, and confirm the listener's cwd is THIS
+   worktree (`lsof -p <pid> | grep cwd`) before pointing APP_URL at it (NEO-464).
+16. **A sibling's in-flight change can red a shared spec before your part runs
+   out.** To still prove your steps live without editing their assertions, copy
+   the spec to a uniquely named `zz-tmp-*.spec.ts` beside it, relax only the
+   sibling's assertion, run it, and `rm` it in the same command. Re-run the
+   `bootstrap` project after any red that skipped the spec's self-cleaning
+   (NEO-464).
 
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.

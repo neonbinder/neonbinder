@@ -135,7 +135,8 @@ re-measure before quoting them for Playwright.
    use shared dev instead.
 4. **Join the queue** (`pr-queue join NEO-123`) once the ticket is ready for
    production: audits applied, gates and covering specs green, main merged, any
-   UI verdict given. **Do not push before your turn.** Every push starts a CI
+   UI verdict given. **Do not push before your turn** (the one exception is a
+   push Jason asks for, such as a preview to look at). Every push starts a CI
    run, a run and its merge take up to an hour, and only one run at a time can
    end in a merge, so CI is handed out one ticket at a time by the queue
    session (`pr-queue run`).

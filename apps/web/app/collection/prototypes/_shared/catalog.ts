@@ -375,9 +375,10 @@ function ensurePlayer(
 
 /**
  * One checklist line: `[number, player name, team id, flags]`.
- * Flags is a comma list: rc, hof, au, relic, sp, `var=Sliding`.
+ * Flags is a comma list: rc, hof, au, relic, sp, `var=Sliding`. A card of two
+ * players names both, split by " / " ("Joe Montana / Jerry Rice").
  */
-type Line = [string | number, string, TeamId, string?];
+export type Line = [string | number, string, TeamId, string?];
 
 interface ParsedFlags {
   features: CardFeature[];
@@ -418,7 +419,7 @@ interface ParallelDef {
   of: (string | number)[];
 }
 
-interface SetDef {
+export interface SetDef {
   set: Omit<CardSet, "variants">;
   base: Line[];
   inserts?: InsertDef[];
@@ -448,14 +449,14 @@ function lineToCard(
 ): Card {
   const [num, name, teamId, flags] = line;
   const parsed = parseFlags(flags);
-  const player = ensurePlayer(name, set.sportId, teamId, set.year, parsed.hallOfFame);
+  const named = name.split(" / ").map((n) => ensurePlayer(n, set.sportId, teamId, set.year, parsed.hallOfFame));
   const cardNumber = String(num);
   return {
     id: cardId(set.id, path, cardNumber, parsed.variation),
     setId: set.id,
     variantPath: path,
     cardNumber,
-    playerIds: [player.id],
+    playerIds: named.map((p) => p.id),
     teamIds: [teamId],
     printRun,
     features: parsed.features,
@@ -915,7 +916,7 @@ export const players: Player[] = [...playerIndex.values()];
 
 // Guard the invariants the helpers rely on. Deterministic data, so a throw
 // here fires on the first page load of any prototype, never later.
-{
+function guard(): void {
   const ids = new Set<string>();
   for (const card of cards) {
     if (ids.has(card.id)) throw new Error(`catalog: duplicate card id ${card.id}`);
@@ -929,4 +930,24 @@ export const players: Player[] = [...playerIndex.values()];
       }
     }
   }
+}
+guard();
+
+/**
+ * Adds more of the catalog: teams, brands and sets, and the players their
+ * checklists name. Only the public demo calls it (`final/data/sample`), so
+ * those checklists ship in the demo's own chunk and never in a signed-in
+ * page's. Callers re-index after it (`refreshDataIndexes` in `./data`).
+ * Throws on a set already in the catalog.
+ */
+export function extendCatalog(more: { teams?: Team[]; brands?: Brand[]; sets: SetDef[] }): void {
+  for (const def of more.sets) {
+    if (sets.some((s) => s.id === def.set.id)) throw new Error(`catalog: set ${def.set.id} is already in the catalog`);
+  }
+  teams.push(...(more.teams ?? []));
+  brands.push(...(more.brands ?? []));
+  for (const def of more.sets) defineSet(def);
+  const known = new Set(players.map((p) => p.id));
+  players.push(...[...playerIndex.values()].filter((p) => !known.has(p.id)));
+  guard();
 }

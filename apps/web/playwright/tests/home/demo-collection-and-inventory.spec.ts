@@ -1,44 +1,59 @@
-// NEO-350 / NEO-364 (R1): the signed-out collection demo on the Binder Tracking
-// tour opens in place and shows BOTH sides of the product: the collection
+// NEO-350 / NEO-364 / NEO-464 (R1): the signed-out demo app (/demo) opens from the
+// Collection Tracking page and shows BOTH sides of the product: the collection
 // (binders I keep: My Cards, Checklists, My Binders) and the inventory (boxes I
-// sell: Inventory, My Boxes, Checklists), joined by the "Collection or
-// Inventory" switch in the demo bar. Each side has its own tabs and h1, a side
-// switch is a view like any other (browser Back returns across it), a card
-// taken off sale crosses to the collection and back, quick quantity entry on
-// the inventory's Checklists boxes a card with Undo, and "Back to the tour"
-// leaves in one step. Light by design: the demo is hard-coded marketing data;
-// its depth is covered by unit tests, and the signed-in inventory by
-// collection/inventory-*.
+// sell: Inventory, My Boxes, Checklists), joined by the shell's own Collection
+// and Inventory tabs (the Menu on a phone). Each side has its own tabs and h1,
+// a side change is a view like any other (browser Back returns across it), a
+// card taken off sale crosses to the collection and back, quick quantity entry
+// on the inventory's Checklists boxes a card with Undo, and the shell's "Back
+// to the tour" link leaves for the home page. Light by design: the demo is
+// hard-coded marketing data; its depth is covered by unit tests, and the
+// signed-in inventory by collection/inventory-*.
+import { goViaShell } from "../../support/collection";
 import { test, expect, expectAccessible } from "../../support/fixtures";
-import type { Locator } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 // A button's accessible name, read from its ARIA snapshot. The snapshot is
 // YAML, which writes an apostrophe as '' ("Artist''s Proof"); undo that.
 const buttonName = async (button: Locator) =>
   (/button "([^"]+)"/.exec(await button.ariaSnapshot())?.[1] ?? "").replace(/''/g, "'");
 
+// The shell tab that is "you are here" (aria-current). On a phone the tabs live in the
+// Menu dialog, so it is opened to look and closed again with Escape.
+async function expectShellOn(page: Page, isMobile: boolean, here: "Collection" | "Inventory") {
+  const other = here === "Collection" ? "Inventory" : "Collection";
+  const menu = page.getByRole("dialog", { name: "Menu" });
+  const tabs = isMobile ? menu : page.getByRole("navigation", { name: "Main" });
+  if (isMobile) {
+    await page.getByRole("button", { name: "Open menu" }).click();
+    await expect(menu).toBeVisible();
+  }
+  await expect(tabs.getByRole("link", { name: here, exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(tabs.getByRole("link", { name: other, exact: true })).not.toHaveAttribute("aria-current", "page");
+  if (isMobile) {
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
+  }
+}
+
 test(
-  "Binder Tracking tour: open the demo, flip between the collection and the inventory, take a box card off sale, box a card, leave",
+  "Demo: open it from Collection Tracking, flip between the collection and the inventory, take a box card off sale, box a card, go back to the tour",
   { tag: ["@smoke", "@home"] },
-  async ({ page }) => {
-    await page.goto("/binder-tracking");
+  async ({ page, isMobile }) => {
+    await page.goto("/collection-tracking");
     const tour = page.getByRole("region", { name: "Take it for a spin" });
     await expect(tour).toBeVisible();
-    await expectAccessible(page, { within: tour, label: "Binder Tracking tour, Take it for a spin" });
+    await expectAccessible(page, { within: tour, label: "Collection Tracking, Take it for a spin" });
 
-    // Opening the demo swaps the tour for it, in place, and lands focus on the demo notice.
+    // The link opens the demo app, and lands focus on the demo notice.
     await tour.getByRole("link", { name: "Open the demo binder" }).click();
-    await expect(page).toHaveURL(/\/binder-tracking\?demo=on$/);
+    await expect(page).toHaveURL(/\/demo\/collection$/);
     const about = page.getByRole("region", { name: "About this demo" });
     await expect(about).toBeFocused();
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
 
-    // The side switch lives in the demo bar: the collection is on, the inventory one click away.
-    const sides = about.getByRole("group", { name: "Collection or Inventory" });
-    const toCollection = sides.getByRole("link", { name: "Binders I keep" });
-    const toInventory = sides.getByRole("link", { name: "Boxes I sell" });
-    await expect(toCollection).toHaveAttribute("aria-current", "page");
-    await expect(toInventory).not.toHaveAttribute("aria-current", "page");
+    // The shell's tabs are the two sides: the collection is on, the inventory one tab away.
+    await expectShellOn(page, isMobile, "Collection");
 
     // The collection's three tabs, each on its own view of the URL, plus
     // the demo's Add cards (NEO-369).
@@ -85,11 +100,14 @@ test(
     await door.click();
     await expect(page).toHaveURL(/[?&]side=inventory/);
     await expect(page).toHaveURL(/[?&]tab=cards/);
-    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
-    await expect(toInventory).toHaveAttribute("aria-current", "page");
-    await expect(toCollection).not.toHaveAttribute("aria-current", "page");
-    // Arriving from a side link puts the keyboard on the new page's h1.
-    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeFocused();
+    // Arriving from the door puts the keyboard on the new side's own heading (takeSideArrival),
+    // not back on the demo notice, which takes focus only when the demo is first opened.
+    // Read before the shell's Menu is opened on a phone: closing it hands focus to its toggle.
+    const inventoryHeading = page.getByRole("heading", { level: 1, name: "Inventory" });
+    await expect(inventoryHeading).toBeVisible();
+    await expect(inventoryHeading).toBeFocused();
+    await expect(about).not.toBeFocused();
+    await expectShellOn(page, isMobile, "Inventory");
 
     // The inventory's three tabs, plus the demo's Add cards (NEO-369) and Pick List (NEO-500).
     const invTabs = page.getByRole("navigation", { name: "Inventory sections" });
@@ -140,7 +158,7 @@ test(
     await expect(page.getByRole("group", { name: "Not sorted into a row yet", exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, an open box" });
 
-    // The pushed stack (binders, the switch, a tab, a box) unwinds one step at a time:
+    // The pushed stack (binders, the side change, a tab, a box) unwinds one step at a time:
     // box, shelf, list, then back ACROSS the side switch to the collection, with no
     // side= on the URL; forward replays it.
     await page.goBack();
@@ -151,7 +169,7 @@ test(
     await expect(page).not.toHaveURL(/[?&]side=/);
     await expect(page).toHaveURL(/[?&]tab=binders/);
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
-    await expect(toCollection).toHaveAttribute("aria-current", "page");
+    await expectShellOn(page, isMobile, "Collection");
     await expect(binders).toBeVisible();
     await page.goForward();
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
@@ -184,9 +202,9 @@ test(
     await expect(drawer).toBeHidden();
     await expect(page.getByRole("heading", { level: 2, name: "Show box", exact: true })).toBeVisible();
 
-    // Across the switch, to the collection: My Binders, where All my cards now
+    // Across to the collection tab: My Binders, where All my cards now
     // counts the card, and shows it, with no sale chip and no sale pocket.
-    await toCollection.click();
+    await goViaShell(page, isMobile, "Collection");
     await expect(page).not.toHaveURL(/[?&]side=/);
     await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
     await tabs.getByRole("link", { name: "My Binders" }).click();
@@ -205,21 +223,26 @@ test(
     await expect(only.getByRole("button", { name: "Rookies" })).toBeVisible();
     await expect(only.getByRole("button", { name: /for sale/i })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /, for sale/ })).toHaveCount(0);
-    // The card is among the pockets (the pile turns in pages: a bounded walk to its page).
-    const pile = page.getByRole("region", { name: "All my cards, open", exact: true });
-    const pocket = // A plain-string name (a substring match), not a RegExp: inside .or(), a
-    // RegExp holding an apostrophe ("Artist's Proof") breaks Playwright's selector parser.
-    pile.getByRole("button", { name: label }).first();
-    const turn = page.getByRole("button", { name: /^Next pages?$/ });
-    for (let i = 0; i < 12; i++) {
-      await expect(pocket.or(turn).first()).toBeVisible();
-      if (await pocket.isVisible()) break;
-      await turn.click();
-    }
-    await expect(pocket).toBeVisible();
     await expectAccessible(page, { label: "Collection demo, All my cards without a for-sale card" });
+    // The card is among the cards the collector owns: the pile is 400-odd pockets in pages, so it is
+    // found the way a collector would, by name and number in the Card hunt, which says where each copy
+    // lives; pressing the place goes straight to its pocket.
+    const player = /#\S+ ([^,]+)/.exec(label)?.[1] ?? "";
+    const cardNumber = /#(\S+) /.exec(label)?.[1] ?? "";
+    expect(`${player} ${cardNumber}`, `a card label with a player and a number (read: ${label})`).toMatch(/\S \S/);
+    await page.getByRole("searchbox", { name: "Hunt for one of your cards" }).fill(`${player} ${cardNumber}`);
+    const owned = page
+      .getByRole("list", { name: "In your binders" })
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("button", { name: `${label}, have ` }) });
+    await expect(owned).toHaveCount(1);
+    await owned.getByRole("button", { name: /^Find .* in Main, page \d+, pocket \d+$/ }).click();
+    const pile = page.getByRole("region", { name: "Main, open", exact: true });
+    const pocket = // A plain-string name (a substring match), not a RegExp: an apostrophe ("Artist's Proof") breaks Playwright's selector parser inside .or().
+    pile.getByRole("button", { name: label }).first();
+    await expect(pocket).toBeVisible();
 
-    // Sell it again from its pocket: the Sell panel, then it is gone from the pile.
+    // Sell it again from its pocket: the Sell panel, then it is gone from Main.
     await pocket.click();
     await drawer.getByRole("button", { name: `Sell ${line}` }).first().click();
     const sellForm = drawer.getByRole("form", { name: /^Sell / });
@@ -235,10 +258,14 @@ test(
     await expect(drawer.getByText(/For sale · Show box/).first()).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
-    await expect(page.getByRole("heading", { level: 2, name: "All my cards", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Main", exact: true })).toBeVisible();
     await expect(pocket).toHaveCount(0);
 
-    // Back to the shelf: All my cards is back to where it started.
+    // Back steps out of Main to the pile the hunt started in (still without a for-sale card), then to the
+    // shelf: All my cards is back to where it started.
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]all=1/);
+    await expect(page.getByRole("heading", { level: 2, name: "All my cards", exact: true })).toBeVisible();
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=binders/);
     await expect(page).not.toHaveURL(/[?&]all=1/);
@@ -249,7 +276,7 @@ test(
 
     // Tab 3, the inventory's Checklists: quick quantity entry. Pick a card from
     // the search, type how many, Tab on: the box takes them, with an Undo.
-    await toInventory.click();
+    await goViaShell(page, isMobile, "Inventory");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
     await invTabs.getByRole("link", { name: "Checklists" }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
@@ -268,16 +295,18 @@ test(
     await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
     await expect(field).toHaveValue("0");
 
-    // "Back to the tour" goes straight out, to the tour, in ONE step however many views
-    // were pushed (collection, tabs, the switch, a box, the drawer...).
-    await page.getByRole("button", { name: "Back to the tour" }).click();
-    await expect(page).toHaveURL(/\/binder-tracking$/);
-    await expect(tour).toBeVisible();
-    await expect(tour.getByRole("link", { name: "Open the demo binder" })).toBeFocused();
+    // The shell's "Back to the tour" tab is a link to the home page; the demo is gone
+    // from it, and browser Back steps into the demo again like any other view.
+    await goViaShell(page, isMobile, "Back to the tour");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("region", { name: "Check it Out" })).toBeVisible();
     await expect(about).toBeHidden();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/demo\/inventory[?].*tab=checklists/);
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible();
 
     // The old links still land: the retired for-sale view opens the Inventory list.
-    await page.goto("/binder-tracking?demo=on&sale=1");
+    await page.goto("/demo/collection?sale=1");
     await expect(page).toHaveURL(/[?&]side=inventory/);
     await expect(page).toHaveURL(/[?&]tab=cards/);
     await expect(page).not.toHaveURL(/[?&]sale=/);
