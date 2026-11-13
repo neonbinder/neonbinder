@@ -154,8 +154,8 @@ re-measure before quoting them for Playwright.
 7. **On a red, pass the turn at once, triage cheaply, then stop.** A Sonnet
    agent finds candidate `ci-fail` tickets in Linear; the session matches
    them against the run's error signature. A known failure (signature
-   matches, nothing in the diff touches it, first rejoin for that ticket on
-   this PR) gets its occurrence count bumped and rejoins the queue unchanged.
+   matches, nothing in the diff touches it) gets its occurrence count bumped
+   and rejoins the queue unchanged, every time.
    Anything else goes to `feature-planner`, which says whether it is an
    outside outage (rerun) or something to fix; report that to Jason and wait
    for his lead: no fix, no rejoin, no rerun until he says. The `pr-queue`

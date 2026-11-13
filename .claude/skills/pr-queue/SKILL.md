@@ -227,13 +227,13 @@ still be open when it starts.
         artifacts against the ticket's recorded error signature (the
         failing line and message, what the screenshot shows), never the
         spec name alone.
-      - **Seen before:** the signature matches a ticket, the spec and the
-        code it exercises are outside your diff, and this PR has not
-        already rejoined once for that ticket. Add the occurrence and bump
+      - **Seen before:** the signature matches a ticket, and the spec and
+        the code it exercises are outside your diff. Every time, however
+        often (Jason, 2026-11-13: "always"). Add the occurrence and bump
         the ticket's `## Occurrences: N` count, then join the queue again,
         at the back, unchanged. Tab `cc-state queue`.
-      - **Anything else** (no match, a spec or the code under it touched by
-        your diff, or a second red of the same ticket on this PR): brief
+      - **Anything else** (no match, or a spec or the code under it touched
+        by your diff): brief
         `feature-planner` with the artifacts. It says whether this is an
         outside outage (rerun on a later turn) or something to fix, and
         what. Report its verdict to Jason, `cc-state answer`, and wait for
@@ -270,9 +270,8 @@ still be open when it starts.
   cannot merge is wasted money. One turn is one main merge, one push, one run
   and one merge. No rerun inside a turn.
 - **A red passes the turn, gets cheap triage, and waits for Jason.** The one
-  exception: its signature matches a `ci-fail` ticket, nothing in the diff
-  touches it, and the PR has not rejoined for it before. Then it rejoins once,
-  unchanged.
+  exception: its signature matches a `ci-fail` ticket and nothing in the diff
+  touches it. Then it rejoins unchanged, every time.
 - **Every stop passes the turn, sends a Mac notification and sets the tab.**
   Never sit on the turn while waiting for Jason.
 - **The queue only takes joins and hands out turns.** It never merges,
