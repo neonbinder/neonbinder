@@ -51,6 +51,11 @@ function review(over: Record<string, unknown> = {}) {
 
 const CHAIN = ["sp", "yr", "br", "st", "base"].map((id) => ({ _id: id }));
 
+/** With others on the set (the fixture's 3), the close note goes to all of them, and the field says so. */
+const TO_EVERYONE = "Note to every collector who reported this set";
+const ids = (el: Element) => (el.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
+const describedBy = (el: Element) => ids(el).map((id) => document.getElementById(id)?.textContent);
+
 function show(onDone = () => {}) {
   return render(
     <MemoryRouter>
@@ -72,7 +77,7 @@ describe("SyncReportReview", () => {
   it("shows the held cards with NB's reason, the sync's detail marked as eBay's, and the rest", () => {
     show();
     expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Sync report: 2024 Topps Chrome Base" }));
-    const cards = screen.getByRole("list", { name: "Cards held back on eBay" });
+    const cards = screen.getByRole("list", { name: "Held back on eBay" });
     const [ohtani, judge] = within(cards).getAllByRole("listitem");
     expect(ohtani.textContent).toContain("#1");
     expect(ohtani.textContent).toContain("Shohei Ohtani");
@@ -81,6 +86,7 @@ describe("SyncReportReview", () => {
     screen.getByText("1 card in the report isn't in NeonBinder anymore.");
     screen.getByText(/1 more card was held back too; the report keeps the first 3\./);
     screen.getByText("Ohtani and Judge never go up.");
+    screen.getByText("Only our crew sees this.");
     screen.getByText("Also reported by 3 other collectors. Closing this closes theirs too.");
     expect(screen.getByRole("link", { name: "Open their Sync status" }).getAttribute("href")).toBe(
       "/admin/sync-status?owner=user_9",
@@ -99,7 +105,7 @@ describe("SyncReportReview", () => {
   it("marks it fixed, with the note when there is one, and lands on the outcome", async () => {
     const onDone = vi.fn();
     show(onDone);
-    fireEvent.change(screen.getByLabelText("Note to the collector"), { target: { value: "  Relinked both.  " } });
+    fireEvent.change(screen.getByLabelText(TO_EVERYONE), { target: { value: "  Relinked both.  " } });
     fireEvent.click(screen.getByRole("button", { name: "Mark fixed" }));
     await waitFor(() =>
       expect(calls).toEqual([{ name: "syncReports:close", args: { id: "sr1", outcome: "fixed", note: "Relinked both." } }]),
@@ -120,24 +126,42 @@ describe("SyncReportReview", () => {
 
   it("won't send Not a bug without a note: it says why and puts the keyboard in the note", () => {
     show();
-    const note = screen.getByLabelText("Note to the collector");
+    const note = screen.getByLabelText(TO_EVERYONE);
+    const helper = "Optional for Mark fixed. Not a bug needs one. Every collector who reported this set reads it.";
+    expect(describedBy(note)).toEqual([helper]);
     fireEvent.change(note, { target: { value: "   " } });
     fireEvent.click(screen.getByRole("button", { name: "Not a bug" }));
     expect(calls).toEqual([]);
     expect(screen.getByRole("alert").textContent).toBe(NOT_A_BUG_NEEDS_A_NOTE);
     expect(document.activeElement).toBe(note);
     expect(note.getAttribute("aria-invalid")).toBe("true");
-    expect(document.getElementById(note.getAttribute("aria-describedby")!)?.textContent).toBe(NOT_A_BUG_NEEDS_A_NOTE);
+    // The helper still describes it, and the complaint with it.
+    expect(describedBy(note)).toEqual([helper, NOT_A_BUG_NEEDS_A_NOTE]);
     // Typing one clears the complaint.
     fireEvent.change(note, { target: { value: "B" } });
     expect(screen.getByRole("alert").textContent).toBe("");
     expect(note.getAttribute("aria-invalid")).toBeNull();
+    expect(describedBy(note)).toEqual([helper]);
+  });
+
+  it("with nobody else on the set, the note is to the one collector, and the helper says so", () => {
+    answers.set("syncReports:review", review({ alsoReportedBy: 0 }));
+    show();
+    const note = screen.getByLabelText("Note to the collector");
+    expect(describedBy(note)).toEqual(["Optional for Mark fixed. Not a bug needs one: they read it."]);
+    expect(screen.queryByLabelText(TO_EVERYONE)).toBeNull();
+  });
+
+  it("says 20 or more at the server's count cap", () => {
+    answers.set("syncReports:review", review({ alsoReportedBy: 20 }));
+    show();
+    screen.getByText("Also reported by 20 or more other collectors. Closing this closes theirs too.");
   });
 
   it("closes as Not a bug with the note", async () => {
     answers.set("syncReports:close", { closed: 1 });
     show();
-    fireEvent.change(screen.getByLabelText("Note to the collector"), {
+    fireEvent.change(screen.getByLabelText(TO_EVERYONE), {
       target: { value: "eBay needs the team; add it on the card." },
     });
     fireEvent.click(screen.getByRole("button", { name: "Not a bug" }));
@@ -173,6 +197,7 @@ describe("SyncReportReview", () => {
     expect(screen.queryByRole("button", { name: "Mark fixed" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Not a bug" })).toBeNull();
     expect(screen.queryByLabelText("Note to the collector")).toBeNull();
+    expect(screen.queryByLabelText(TO_EVERYONE)).toBeNull();
   });
 
   it("says so when the report is gone", () => {

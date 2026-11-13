@@ -230,7 +230,9 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
  * report is open: that comes from the collector's open reports, not from
  * this form, so it holds on a reload and clears when the crew closes it or
  * the collector withdraws it. Focus follows: into the note on open, onto the
- * "Reported" line once sent, back to the button on Cancel.
+ * "Reported" line once sent (or, should the read not say "Reported" by the
+ * render after the send, the button, so focus never sits nowhere waiting to
+ * jump later), back to the button on Cancel.
  */
 function ReportToCrew({ crew, set, variantId }: { crew: Crew; set: SyncProblemSet; variantId: string }) {
   const market = MARKETPLACES[set.marketplace].name;
@@ -243,16 +245,19 @@ function ReportToCrew({ crew, set, variantId }: { crew: Crew; set: SyncProblemSe
   const noteRef = useRef<HTMLInputElement>(null);
   const statusRef = useRef<HTMLParagraphElement>(null);
   const errorId = useId();
-  /** Where focus goes on the next render: set by an open, a send or a cancel, never on a fresh load. */
+  /**
+   * Where focus goes on the next render: set by an open, a send or a cancel,
+   * never on a fresh load. Spent by that render, whether its target is there
+   * or not: a target that is missing falls back to the button.
+   */
   const focusNext = useRef<"note" | "status" | "button" | null>(null);
 
   useEffect(() => {
     const want = focusNext.current;
     if (!want) return;
-    const el = want === "note" ? noteRef.current : want === "status" ? statusRef.current : buttonRef.current;
-    if (!el) return;
     focusNext.current = null;
-    el.focus();
+    const el = want === "note" ? noteRef.current : want === "status" ? statusRef.current : buttonRef.current;
+    (el ?? buttonRef.current)?.focus();
   });
 
   function cancel() {
@@ -354,11 +359,10 @@ function ReportToCrew({ crew, set, variantId }: { crew: Crew; set: SyncProblemSe
           className="w-full px-3 py-2 text-base sm:text-sm"
         />
       </label>
-      {error && (
-        <p id={errorId} role="alert" className="text-sm text-neon-pink-text">
-          {error}
-        </p>
-      )}
+      {/* Mounted with the form, so a refusal is announced; empty, it cancels its own gap. */}
+      <p id={errorId} role="alert" className="text-sm text-neon-pink-text empty:-mt-2">
+        {error}
+      </p>
       <div className="flex flex-wrap gap-2">
         <NeonButton type="submit" variant="primary" size="2" aria-disabled={busy || undefined} className="max-sm:min-h-11">
           {busy ? "Sending" : "Send"}

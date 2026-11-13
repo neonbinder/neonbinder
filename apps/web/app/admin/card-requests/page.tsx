@@ -3,11 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
+import ChipGroup from "@/app/collection/final/ChipGroup";
 import { PLATFORM_NAME } from "@/lib/marketplace/listing-copy";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import RequestReview from "./RequestReview";
 import SyncReportReview from "./SyncReportReview";
-import { alsoReportedLine, heldBackWords, waitedFor } from "./syncReportCopy";
+import { alsoReportedLine, alsoReportedSpoken, heldBackWords, waitedFor } from "./syncReportCopy";
 
 type Status = Doc<"cardRequests">["status"];
 
@@ -22,6 +23,15 @@ export const SYNC_KIND = "sync";
 
 /** What the list shows: card and set requests by status, or open sync reports. */
 type View = { kind: "requests"; status: Status } | { kind: "sync" };
+
+/** The "Show" chips: one per request status, then Sync reports. */
+type Chip = Status | typeof SYNC_KIND;
+const CHIPS: { value: Chip; label: string }[] = [
+  ...FILTERS.map((f) => ({ value: f.id, label: f.label })),
+  { value: SYNC_KIND, label: "Sync reports" },
+];
+const chipOf = (view: View): Chip => (view.kind === "sync" ? SYNC_KIND : view.status);
+const viewOfChip = (chip: Chip): View => (chip === SYNC_KIND ? { kind: "sync" } : { kind: "requests", status: chip });
 
 function viewOf(params: URLSearchParams): View {
   if (params.get("kind") === SYNC_KIND) return { kind: "sync" };
@@ -53,10 +63,16 @@ type OpenState = { fromList?: boolean } | null;
  * row per set and platform; closing one as Fixed or Not a bug closes every
  * open report on it.
  *
- * The view lives in the URL so Back works: the filters (`?status=`,
- * `?kind=sync`) replace the entry, and opening one item (`?open=<id>`, a
- * cardRequests id, or a syncReports id under `kind=sync`) pushes one, so
- * Back returns to the list. The dashboard links straight to one item.
+ * The view lives in the URL so Back works: each "Show" chip (`?status=`,
+ * `?kind=sync`) is a view of its own and pushes an entry, as a tab does, and
+ * opening one item (`?open=<id>`, a cardRequests id, or a syncReports id
+ * under `kind=sync`) pushes one, so Back steps back one view at a time. The
+ * dashboard links straight to one item. A malformed `?open=` id is harmless:
+ * both reviews take a plain string and the server normalizes it, so it reads
+ * as "not there". Whenever an item closes (Back to the list, browser Back or
+ * Forward), the keyboard goes back to the list. The chips are the house
+ * roving radio group (`ChipGroup`): one Tab stop, the arrow keys move and
+ * pick.
  *
  * The h1 lives in the section layout, so this heads its content with an h2.
  */
@@ -72,26 +88,32 @@ export default function AdminCardRequestsPage() {
   const requests = useQuery(api.collectionRequests.queue, view.kind === "requests" ? { status: view.status } : "skip");
   const reports = useQuery(api.syncReports.queue, sync ? {} : "skip");
   const queueRef = useRef<HTMLElement>(null);
+  const chipsRef = useRef<HTMLDivElement>(null);
 
-  // "Back to the list": the review goes, and the keyboard goes back to the
-  // queue once the URL has caught up.
-  const toQueue = useRef(false);
+  // An item closed, however it went (Back to the list, browser Back or
+  // Forward): the review is gone, so the keyboard goes back to the list. Not
+  // when a chip closed it: the keyboard is on the chips and stays there.
+  const wasOpen = useRef(openId);
   useEffect(() => {
-    if (openId === null && toQueue.current) {
-      toQueue.current = false;
-      queueRef.current?.focus();
-    }
+    const closed = wasOpen.current !== null && openId === null;
+    wasOpen.current = openId;
+    if (closed && !chipsRef.current?.contains(document.activeElement)) queueRef.current?.focus();
   }, [openId]);
 
-  const showView = (next: View) => setParams(paramsOf(next), { replace: true });
+  // A chip is a view of its own: it pushes, so Back steps back to the last one.
+  const showView = (next: View) => {
+    if (chipOf(next) === chipOf(view) && openId === null) return;
+    setParams(paramsOf(next));
+  };
   const openItem = (id: string) => {
     if (id === openId) return;
     const next = new URLSearchParams(params);
     next.set("open", id);
     setParams(next, { state: { fromList: openId === null } satisfies OpenState });
   };
+  // Opened from the list: one step back is the list (the chip's own entry
+  // sits before it). Opened from a link: drop the item in place.
   const backToList = () => {
-    toQueue.current = true;
     if ((location.state as OpenState)?.fromList) {
       void navigate(-1);
       return;
@@ -104,7 +126,7 @@ export default function AdminCardRequestsPage() {
   // Ages count from when the page opened; a refresh brings them up to date.
   const [now] = useState(() => Date.now());
   const itemClass = (open: boolean) =>
-    `w-full rounded-md border px-3 py-2 text-left focus-outline ${
+    `w-full min-w-0 rounded-md border px-3 py-2 text-left [overflow-wrap:anywhere] focus-outline ${
       open ? "border-neon-blue bg-raised" : "border-rule-strong hover:border-neon-blue"
     }`;
   const chipClass = (on: boolean) =>
@@ -125,32 +147,23 @@ export default function AdminCardRequestsPage() {
         </p>
       </div>
 
-      <div role="group" aria-label="Show" className="flex flex-wrap gap-2">
-        {FILTERS.map((f) => {
-          const on = view.kind === "requests" && view.status === f.id;
-          return (
-            <button
-              key={f.id}
-              type="button"
-              aria-pressed={on}
-              onClick={() => showView({ kind: "requests", status: f.id })}
-              className={chipClass(on)}
-            >
-              {f.label}
-            </button>
-          );
-        })}
-        <button type="button" aria-pressed={sync} onClick={() => showView({ kind: "sync" })} className={chipClass(sync)}>
-          Sync reports
-        </button>
+      <div ref={chipsRef}>
+        <ChipGroup
+          label="Show"
+          value={chipOf(view)}
+          options={CHIPS}
+          onChange={(chip) => showView(viewOfChip(chip))}
+          className="flex flex-wrap gap-2"
+          chipClass={chipClass}
+        />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(16rem,22rem)_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]">
         <section
           ref={queueRef}
           tabIndex={-1}
           aria-label={sync ? "Reports" : "Requests"}
-          className="space-y-2 rounded-md focus-outline"
+          className="min-w-0 space-y-2 rounded-md focus-outline"
         >
           {view.kind === "requests" ? (
             requests === undefined ? (
@@ -203,7 +216,15 @@ export default function AdminCardRequestsPage() {
                         </span>
                         <span className="block text-xs text-ink-3">
                           {heldBackWords(r.heldBack)}, {waitedFor(r.reportedAt, now)}
-                          {also && <span className="font-semibold text-neon-blue-text"> {also}</span>}
+                          {also && (
+                            <>
+                              <span aria-hidden="true" className="font-semibold text-neon-blue-text">
+                                {" "}
+                                {also}
+                              </span>
+                              <span className="sr-only">, {alsoReportedSpoken(r.alsoReportedBy)}</span>
+                            </>
+                          )}
                         </span>
                         {r.note && <span className="mt-1 block line-clamp-2 text-xs text-ink-2">“{r.note}”</span>}
                       </button>
@@ -218,7 +239,7 @@ export default function AdminCardRequestsPage() {
           )}
         </section>
 
-        <section aria-label="Review">
+        <section aria-label="Review" className="min-w-0">
           {openId ? (
             sync ? (
               <SyncReportReview key={openId} reportId={openId} onDone={backToList} />

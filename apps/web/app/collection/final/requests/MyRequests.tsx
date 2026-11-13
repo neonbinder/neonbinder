@@ -142,7 +142,7 @@ function SyncReportRow({ report: r, onWithdrawn }: { report: MyReport; onWithdra
   return (
     <li className="space-y-2 rounded-md border border-rule-strong px-3 py-2">
       <div className="flex flex-wrap items-start gap-2">
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
           <p className="text-sm text-ink">
             <span className="text-ink-3">{platform}: </span>
             {r.label}
@@ -156,7 +156,7 @@ function SyncReportRow({ report: r, onWithdrawn }: { report: MyReport; onWithdra
         <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${status.cls}`}>{status.label}</span>
       </div>
       {r.closeNote && (
-        <p className="text-sm text-ink-2">
+        <p className="text-sm text-ink-2 [overflow-wrap:anywhere]">
           <span className="font-semibold text-ink">From our crew:</span> {r.closeNote}
         </p>
       )}
@@ -165,15 +165,19 @@ function SyncReportRow({ report: r, onWithdrawn }: { report: MyReport; onWithdra
       )}
       {r.status === "open" && (
         <div className="flex justify-end">
+          {/* The words on it lead its name (WCAG 2.5.3); which report it is, a reader hears after. */}
           <NeonButton
             type="button"
             variant="negative"
             outline
-            aria-label={`Withdraw the report on ${r.label} (${platform})`}
             aria-disabled={busy || undefined}
             onClick={() => void run()}
           >
             {busy ? "Withdrawing…" : "Withdraw"}
+            <span className="sr-only">
+              {" "}
+              the report on {r.label} ({platform})
+            </span>
           </NeonButton>
         </div>
       )}

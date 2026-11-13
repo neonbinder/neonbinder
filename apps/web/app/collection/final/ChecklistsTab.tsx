@@ -126,19 +126,29 @@ function ChecklistsView({
 
   // NEO-536 — `?ask=mine` (the dashboard's link) opens My requests; closing
   // the dialog takes the param off with a replace, so Back never reopens it.
+  // Opened by the link, nothing on the page opened it, so the dialog has
+  // nowhere to hand the keyboard back to: the checklist's heading takes it
+  // (the search box when no checklist is open), never the page's top.
   const [params] = useSearchParams();
   const replaceParams = useReplaceParams();
   const askedMine = params.get(ASK_PARAM) === ASK_MINE && real && canRequest;
   // What's open: the collector's own pick, else the link's ask.
   const asking: RequestsTab | null = requesting ?? (askedMine ? "mine" : null);
+  const landAfterLink = useRef(false);
   const closeRequests = useCallback(() => {
+    if (requesting === null) landAfterLink.current = true;
     setRequesting(null);
     replaceParams((p) => p.delete(ASK_PARAM));
-  }, [replaceParams]);
+  }, [replaceParams, requesting]);
 
   const checklistHeading = useRef<HTMLHeadingElement>(null);
   const entityHeading = useRef<HTMLHeadingElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (asking || !landAfterLink.current) return;
+    landAfterLink.current = false;
+    (checklistHeading.current ?? searchInput.current)?.focus();
+  }, [asking]);
   const entityKey = entity ? `${entity.kind}:${entity.id}` : "";
   useEffect(() => {
     const want = arrivalRef.current;

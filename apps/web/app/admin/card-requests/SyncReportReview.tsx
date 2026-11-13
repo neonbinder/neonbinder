@@ -29,7 +29,9 @@ const OUTCOME = {
  *
  * Close it as Fixed (note optional) or Not a bug (note required, the
  * collector reads it). A close settles every open report on the set and
- * platform. A closed report shows how it closed and nothing to press.
+ * platform, and its note goes to every one of those collectors, so with
+ * others on the set the field says so. Their own note is the crew's alone.
+ * A closed report shows how it closed and nothing to press.
  */
 export default function SyncReportReview({ reportId, onDone }: { reportId: string; onDone: () => void }) {
   const r = useQuery(api.syncReports.review, { id: reportId });
@@ -39,6 +41,8 @@ export default function SyncReportReview({ reportId, onDone }: { reportId: strin
   const heading = useRef<HTMLHeadingElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const problemId = useId();
+  const helperId = useId();
+  const heldId = useId();
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -63,6 +67,8 @@ export default function SyncReportReview({ reportId, onDone }: { reportId: strin
   const platform = PLATFORM_NAME[r.platform];
   const reasons = problemCopyReadOnly(r.platform);
   const also = r.status === "open" ? alsoReportedSentence(r.alsoReportedBy) : null;
+  // The close note goes to everyone who reported the set, not only this one.
+  const toEveryone = r.alsoReportedBy > 0;
   const notKept = r.heldBack - r.cards.length - r.cardsGone;
   const setBuilderHref = chain && chain.length > 0
     ? `/admin/set-builder?${serializeDrillPath(chain.map((c) => c._id))}`
@@ -92,9 +98,9 @@ export default function SyncReportReview({ reportId, onDone }: { reportId: strin
   };
 
   return (
-    <div className="space-y-5 rounded-lg bg-raised p-4 shadow-offset">
+    <div className="min-w-0 space-y-5 rounded-lg bg-raised p-4 shadow-offset [overflow-wrap:anywhere]">
       <div className="space-y-1">
-        <h3 ref={heading} tabIndex={-1} className="text-lg font-semibold text-ink focus:outline-none">
+        <h3 ref={heading} tabIndex={-1} className="rounded-sm text-lg font-semibold text-ink focus-outline">
           Sync report: {r.label}
         </h3>
         <p className="text-xs text-ink-3">
@@ -125,26 +131,31 @@ export default function SyncReportReview({ reportId, onDone }: { reportId: strin
       )}
 
       {r.note && (
-        <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-sm">
+        <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
           <dt className="text-ink-3">Their note</dt>
-          <dd className="text-ink">{r.note}</dd>
+          <dd className="min-w-0 text-ink [overflow-wrap:anywhere]">
+            {r.note}
+            <span className="mt-0.5 block text-xs text-ink-3">Only our crew sees this.</span>
+          </dd>
         </dl>
       )}
 
       <div className="space-y-2">
-        <h4 className="text-sm font-semibold text-ink-2">Held back on {platform}</h4>
+        <h4 id={heldId} className="text-sm font-semibold text-ink-2">
+          Held back on {platform}
+        </h4>
         {r.cards.length > 0 && (
-          <ul className="space-y-1.5" aria-label={`Cards held back on ${platform}`}>
+          <ul className="space-y-1.5" aria-labelledby={heldId}>
             {r.cards.map((c) => (
               <li key={c.cardId} className="flex gap-3 rounded-md border border-rule-strong px-3 py-2">
                 <span className="shrink-0 self-start rounded border border-field-rule px-1.5 py-0.5 text-xs font-semibold tabular-nums text-ink">
                   #{c.cardNumber}
                 </span>
                 <div className="min-w-0 flex-1 space-y-1">
-                  <p className="text-sm text-ink">{c.cardLabel ?? "No name on this card"}</p>
+                  <p className="text-sm text-ink [overflow-wrap:anywhere]">{c.cardLabel ?? "No name on this card"}</p>
                   <p className="text-xs text-ink-2">{reasons[c.reason]}</p>
                   {c.detail && (
-                    <p className="border-l-2 border-neon-blue/60 pl-2 text-xs text-ink-2">
+                    <p className="border-l-2 border-neon-blue/60 pl-2 text-xs text-ink-2 [overflow-wrap:anywhere]">
                       <span className="text-ink-3">
                         {c.reason === "missingAspect" ? `${platform} asked for: ` : "The sync recorded: "}
                       </span>
@@ -185,23 +196,30 @@ export default function SyncReportReview({ reportId, onDone }: { reportId: strin
 
       {r.status === "open" && !done && (
         <div className="space-y-3">
-          <Textarea
-            ref={noteRef}
-            label="Note to the collector"
-            helperText="Optional for Mark fixed. Not a bug needs one: they read it."
-            placeholder="Relinked #41 to the right card. Sync again and it goes up."
-            value={note}
-            maxLength={MAX_SYNC_REPORT_NOTE}
-            aria-invalid={noteMissing || undefined}
-            aria-describedby={noteMissing ? problemId : undefined}
-            onChange={(e) => {
-              setNote(e.target.value);
-              if (noteMissing && e.target.value.trim()) {
-                setNoteMissing(false);
-                setProblem(null);
-              }
-            }}
-          />
+          {/* The helper is ours, not the primitive's, so the field is described by it as well as by a complaint. */}
+          <div className="flex flex-col gap-2">
+            <Textarea
+              ref={noteRef}
+              label={toEveryone ? "Note to every collector who reported this set" : "Note to the collector"}
+              placeholder="Relinked #41 to the right card. Sync again and it goes up."
+              value={note}
+              maxLength={MAX_SYNC_REPORT_NOTE}
+              aria-invalid={noteMissing || undefined}
+              aria-describedby={noteMissing ? `${helperId} ${problemId}` : helperId}
+              onChange={(e) => {
+                setNote(e.target.value);
+                if (noteMissing && e.target.value.trim()) {
+                  setNoteMissing(false);
+                  setProblem(null);
+                }
+              }}
+            />
+            <p id={helperId} className="text-sm text-ink-3">
+              {toEveryone
+                ? "Optional for Mark fixed. Not a bug needs one. Every collector who reported this set reads it."
+                : "Optional for Mark fixed. Not a bug needs one: they read it."}
+            </p>
+          </div>
           <div className="flex flex-wrap justify-end gap-2">
             <NeonButton
               type="button"

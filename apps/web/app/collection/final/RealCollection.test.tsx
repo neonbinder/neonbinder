@@ -1582,6 +1582,22 @@ describe("?ask=mine (NEO-536)", () => {
     expect(pageUrl()).toBe("/collection?tab=checklists");
   });
 
+  it("closing a link-opened My requests hands the keyboard to the search box when no checklist is open", async () => {
+    renderAt("/collection?tab=checklists&ask=mine");
+    const dialog = screen.getByRole("dialog", { name: "Can't find it?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close requests" }));
+    await waitFor(() => expect(document.activeElement).toBe(searchBox()));
+  });
+
+  it("closing a link-opened My requests over an open checklist hands the keyboard to its heading", async () => {
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base&ask=mine`);
+    const dialog = screen.getByRole("dialog", { name: "Can't find it?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close requests" }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base" })),
+    );
+  });
+
   it("leaves it shut on the inventory side, where requests don't live", () => {
     renderAt("/inventory?tab=checklists&ask=mine");
     expect(screen.queryByRole("dialog", { name: "Can't find it?" })).toBeNull();

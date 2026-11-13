@@ -10,8 +10,8 @@ import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
-import { listedCleanlySince } from "./syncReports";
-import { CREW_DESK_SHOWN } from "./crewDesk";
+import { listedCleanlySince, SYNC_REPORT_QUEUE_SCAN } from "./syncReports";
+import { CREW_DESK_REPORT_SCAN, CREW_DESK_SHOWN, CREW_DESK_WAITING } from "./crewDesk";
 import {
   MAX_OPEN_SYNC_REPORTS,
   MAX_SYNC_REPORT_CARDS,
@@ -187,6 +187,39 @@ describe("report", () => {
     expect(await allReports(s)).toHaveLength(1);
   });
 
+  test("a report sent again with nothing new writes nothing; a changed note or card list does", async () => {
+    const s = await setup();
+    const rec = await record(s, { problems: [{ cardId: s.fx.gooden1, reason: "missingAspect", detail: "Team" }] });
+    const first = await s.me.mutation(api.syncReports.report, { variantId: s.fx.baseId, platform: "bsc", note: "same" });
+    // Stamp a known time, so any write shows.
+    await s.t.run((ctx) => ctx.db.patch(first.id, { lastUpdated: 7 }));
+    const lastUpdated = async () => (await allReports(s))[0].lastUpdated;
+
+    // The same note, and a left-out one (which keeps it): nothing to write.
+    expect(await s.me.mutation(api.syncReports.report, { variantId: s.fx.baseId, platform: "bsc", note: " same " })).toEqual({
+      id: first.id,
+      already: true,
+    });
+    expect(await s.me.mutation(api.syncReports.report, { variantId: s.fx.baseId, platform: "bsc" })).toEqual({
+      id: first.id,
+      already: true,
+    });
+    expect(await lastUpdated()).toBe(7);
+
+    // A new note is a change.
+    await s.me.mutation(api.syncReports.report, { variantId: s.fx.baseId, platform: "bsc", note: "different" });
+    expect(await lastUpdated()).toBeGreaterThan(7);
+
+    // So is a changed detail on the same card.
+    await s.t.run((ctx) => ctx.db.patch(first.id, { lastUpdated: 7 }));
+    await s.t.run((ctx) =>
+      ctx.db.patch(rec, { problems: [{ cardId: s.fx.gooden1, reason: "missingAspect", detail: "Year Manufactured" }] }),
+    );
+    await s.me.mutation(api.syncReports.report, { variantId: s.fx.baseId, platform: "bsc" });
+    expect(await lastUpdated()).toBeGreaterThan(7);
+    expect((await allReports(s))[0].cards).toEqual([{ cardId: s.fx.gooden1, reason: "missingAspect", detail: "Year Manufactured" }]);
+  });
+
   test("a closed report does not stop a new one", async () => {
     const s = await setup();
     await record(s, { problems: [{ cardId: s.fx.gooden1, reason: "noLink" }] });
@@ -337,6 +370,67 @@ describe("queue and review", () => {
     ]);
     expect(JSON.stringify(out)).not.toContain(ME.subject);
     expect(JSON.stringify(out)).not.toContain(THEM.subject);
+  });
+
+  test(`queue: reads at most ${SYNC_REPORT_QUEUE_SCAN} + 1 open reports and counts each set among them; past that, "more"`, async () => {
+    const s = await setup();
+    // The oldest set, then enough reports on a second set to run past the scan.
+    const old = await s.t.run((ctx) =>
+      ctx.db.insert("syncReports", {
+        ownerId: ME.subject,
+        platform: "bsc",
+        variantId: s.fx.goldId,
+        label: "gold",
+        cards: [],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      }),
+    );
+    await s.t.run(async (ctx) => {
+      for (let i = 0; i < SYNC_REPORT_QUEUE_SCAN + 2; i++) {
+        await ctx.db.insert("syncReports", {
+          ownerId: `collector_${i}`,
+          platform: "bsc",
+          variantId: s.fx.baseId,
+          label: "base",
+          cards: [],
+          heldBack: 1,
+          status: "open",
+          lastUpdated: 0,
+        });
+      }
+    });
+    // Newest of all, on the oldest set: past the scan, so not counted here (the review counts it).
+    await s.t.run((ctx) =>
+      ctx.db.insert("syncReports", {
+        ownerId: THEM.subject,
+        platform: "bsc",
+        variantId: s.fx.goldId,
+        label: "gold",
+        cards: [],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      }),
+    );
+    const out = await s.admin.query(api.syncReports.queue, {});
+    expect(out.more).toBe(true);
+    expect(out.reports.map((r) => [r.label, r.alsoReportedBy])).toEqual([
+      ["gold", 0],
+      ["base", SYNC_REPORT_GROUP_COUNT_CAP],
+    ]);
+    expect((await s.admin.query(api.syncReports.review, { id: old }))!.alsoReportedBy).toBe(1);
+  });
+
+  test("review: a malformed id, or another table's id, reads as not there rather than throwing", async () => {
+    const s = await setup();
+    const requestId = await s.t.run((ctx) =>
+      ctx.db.insert("cardRequests", { ownerId: ME.subject, kind: "card", status: "waiting", label: "x", lastUpdated: 0 }),
+    );
+    for (const id of ["", " ", "not-an-id", "%00", "j57".repeat(40), requestId]) {
+      expect(await s.admin.query(api.syncReports.review, { id })).toBeNull();
+    }
   });
 
   test("review: the held cards by NB number and name (gone ones counted), the owner, the group, and null for a bad id", async () => {
@@ -494,6 +588,50 @@ describe("crewDesk", () => {
     ]);
     // The same count the admin queue gives.
     expect(out.reports.map((r) => r.alsoReportedBy)).toEqual(queue.reports.map((r) => r.alsoReportedBy));
+  });
+
+  test(`waiting: lists ${CREW_DESK_WAITING} of each kind, what the dashboard draws, and says there is more`, async () => {
+    const s = await setup();
+    await requests(s, ME.subject, CREW_DESK_WAITING + 2);
+    const sets = [s.fx.baseId, s.fx.futureStarsId, s.fx.goldId, s.fx.setId, s.fx.year1986Id];
+    const oldest: Id<"syncReports">[] = [];
+    for (const variantId of sets) {
+      for (const platform of ["bsc", "ebay"] as const) {
+        oldest.push(await openReport(s, ME.subject, variantId, platform));
+        // A second report on the set: one row stands for both.
+        await openReport(s, THEM.subject, variantId, platform);
+      }
+    }
+    expect(oldest.length).toBeGreaterThan(CREW_DESK_WAITING);
+    const out = await s.admin.query(api.crewDesk.waiting, {});
+    expect(out.requests).toHaveLength(CREW_DESK_WAITING);
+    expect(out.requestsMore).toBe(true);
+    expect(out.reports.map((r) => r._id)).toEqual(oldest.slice(0, CREW_DESK_WAITING));
+    expect(out.reports.every((r) => r.alsoReportedBy === 1)).toBe(true);
+    expect(out.reportsMore).toBe(true);
+  });
+
+  test(`waiting: exactly ${CREW_DESK_WAITING} of each is not "more"`, async () => {
+    const s = await setup();
+    await requests(s, ME.subject, CREW_DESK_WAITING);
+    const sets = [s.fx.baseId, s.fx.futureStarsId, s.fx.goldId, s.fx.setId];
+    for (const variantId of sets) {
+      for (const platform of ["bsc", "ebay"] as const) await openReport(s, ME.subject, variantId, platform);
+    }
+    const out = await s.admin.query(api.crewDesk.waiting, {});
+    expect(out.requests).toHaveLength(CREW_DESK_WAITING);
+    expect(out.reports).toHaveLength(CREW_DESK_WAITING);
+    expect(out.requestsMore).toBe(false);
+    expect(out.reportsMore).toBe(false);
+  });
+
+  test(`waiting: stops reading reports at ${CREW_DESK_REPORT_SCAN}, and says "more" rather than guess past them`, async () => {
+    const s = await setup();
+    for (let i = 0; i < CREW_DESK_REPORT_SCAN + 1; i++) await openReport(s, `collector_${i}`, s.fx.baseId, "bsc");
+    await openReport(s, THEM.subject, s.fx.goldId, "bsc");
+    const out = await s.admin.query(api.crewDesk.waiting, {});
+    expect(out.reports.map((r) => r.variantId)).toEqual([s.fx.baseId]);
+    expect(out.reportsMore).toBe(true);
   });
 
   test("waiting: admin-only; everyone's open asks oldest first, one report per set and platform, no collector ids", async () => {

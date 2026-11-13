@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import NeonButton from "@/components/modules/NeonButton";
-import { SYNC_REPORT_GROUP_COUNT_CAP } from "@/lib/collection/sync-report";
+import { alsoReportedLine, alsoReportedSpoken } from "@/app/admin/card-requests/syncReportCopy";
 import { MARKETPLACES } from "../dash-labels";
 import { MarketBadge, RAIL_PANEL, RailHeading } from "./bits";
 import {
@@ -26,19 +26,49 @@ import {
  *   first, each a link into its review on Card Requests.
  *
  * An admin with asks of their own sees both, side by side from `lg`. Nothing
- * open on either side, or no crew at all (the demo): nothing drawn.
+ * open on either side: no panels, only the (empty) line that says what a
+ * withdraw did, mounted from the start so it is announced. No crew at all
+ * (the demo): nothing drawn.
  */
 export default function CrewDesk() {
   const crew = useCrew();
   const desk = crew?.desk;
-  if (!desk) return null;
-  const mine = desk.mine.length > 0;
-  const waiting = (desk.waiting?.length ?? 0) > 0;
-  if (!mine && !waiting) return null;
+  const [withdrew, setWithdrew] = useState<string | null>(null);
+  // The withdrawn report's id until the read has dropped its row; then the
+  // keyboard moves (`focusAfterWithdraw`).
+  const landing = useRef<string | null>(null);
+  useEffect(() => {
+    const gone = landing.current;
+    if (!gone || !desk || desk.mine.some((a) => a.id === gone)) return;
+    landing.current = null;
+    focusAfterWithdraw();
+  }, [desk, withdrew]);
+  if (!crew) return null;
+  const mine = (desk?.mine.length ?? 0) > 0;
+  const waiting = (desk?.waiting?.length ?? 0) > 0;
+  const panels = !!desk && (mine || waiting);
+  // The page spaces its sections with margins (`space-y-*`, zero specificity):
+  // with nothing to draw this one takes no room, its own gap included.
   return (
-    <div className={mine && waiting ? "grid gap-6 lg:grid-cols-2 lg:items-start" : "max-w-2xl"}>
-      {mine && <WithOurCrew asks={desk.mine} more={desk.mineMore} />}
-      {waiting && <FromCollectors asks={desk.waiting!} more={desk.waitingMore} />}
+    <div className={panels || withdrew ? "min-w-0" : "mb-0 min-w-0"}>
+      {panels && (
+        <div className={mine && waiting ? "grid gap-6 lg:grid-cols-2 lg:items-start" : "max-w-2xl"}>
+          {mine && (
+            <WithOurCrew
+              asks={desk!.mine}
+              more={desk!.mineMore}
+              onWithdrawn={(ask, words) => {
+                landing.current = ask.id;
+                setWithdrew(`Withdrew the report on ${words}.`);
+              }}
+            />
+          )}
+          {waiting && <FromCollectors asks={desk!.waiting!} more={desk!.waitingMore} />}
+        </div>
+      )}
+      <p role="status" className={withdrew ? `${panels ? "mt-3 " : ""}text-sm font-semibold text-neon-green-text` : ""}>
+        {withdrew}
+      </p>
     </div>
   );
 }
@@ -59,15 +89,27 @@ function AskTags({ ask }: { ask: CrewAsk }) {
 
 /**
  * After a withdraw the row is gone (and with the last one, the panel): focus
- * goes to the panel's heading, or to Sync status's above it, never the page.
+ * goes to the panel's heading, else Sync status's above it, else the
+ * dashboard's h1 (made focusable, never a tab stop), never the page.
  */
 function focusAfterWithdraw(): void {
-  (document.getElementById(MINE_HEADING) ?? document.getElementById("cb-sync-heading"))?.focus();
+  const heading = document.getElementById(MINE_HEADING) ?? document.getElementById("cb-sync-heading");
+  if (heading) {
+    heading.focus();
+    return;
+  }
+  const h1 = document.querySelector<HTMLElement>("h1");
+  if (!h1) return;
+  if (!h1.hasAttribute("tabindex")) h1.tabIndex = -1;
+  h1.focus();
 }
 
 const MINE_HEADING = "cb-crew-mine-heading";
 
-function WithOurCrew({ asks, more }: { asks: CrewAsk[]; more: number }) {
+/** Said once a report is withdrawn: its set, and its marketplace when it has one. */
+type OnWithdrawn = (ask: CrewAsk, words: string) => void;
+
+function WithOurCrew({ asks, more, onWithdrawn }: { asks: CrewAsk[]; more: number; onWithdrawn: OnWithdrawn }) {
   const total = asks.length + more;
   return (
     <section aria-labelledby={MINE_HEADING} className={`${RAIL_PANEL} min-w-0`}>
@@ -76,7 +118,7 @@ function WithOurCrew({ asks, more }: { asks: CrewAsk[]; more: number }) {
       </RailHeading>
       <ul className="divide-y divide-rule">
         {asks.map((ask) => (
-          <MyAsk key={ask.id} ask={ask} />
+          <MyAsk key={ask.id} ask={ask} onWithdrawn={onWithdrawn} />
         ))}
       </ul>
       {more > 0 && (
@@ -88,7 +130,7 @@ function WithOurCrew({ asks, more }: { asks: CrewAsk[]; more: number }) {
   );
 }
 
-function MyAsk({ ask }: { ask: CrewAsk }) {
+function MyAsk({ ask, onWithdrawn }: { ask: CrewAsk; onWithdrawn: OnWithdrawn }) {
   const crew = useCrew();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,8 +144,8 @@ function MyAsk({ ask }: { ask: CrewAsk }) {
       setError(why);
       setBusy(false);
     } else {
-      // The read has dropped the row by now (a mutation resolves after its reads re-run).
-      focusAfterWithdraw();
+      // The section says so, and moves the keyboard once the row is gone.
+      onWithdrawn(ask, market ? `${ask.label} (${market})` : ask.label);
     }
   }
   return (
@@ -127,18 +169,17 @@ function MyAsk({ ask }: { ask: CrewAsk }) {
           </span>
         </NeonButton>
       )}
-      {error && (
-        <p role="alert" className="w-full text-sm text-neon-pink-text">
-          {error}
-        </p>
-      )}
+      {/* Mounted from the start, so a refusal is announced; empty, it takes no room in the row. */}
+      <p role="alert" className="w-full text-sm text-neon-pink-text empty:-mt-1">
+        {error}
+      </p>
     </li>
   );
 }
 
-/** "+3 reported"; at the count's cap, "20+ reported". */
-export function alsoReportedLabel(n: number): string {
-  return n >= SYNC_REPORT_GROUP_COUNT_CAP ? `${SYNC_REPORT_GROUP_COUNT_CAP}+ reported` : `+${n} reported`;
+/** When an ask was made, for a reader telling two of the same name apart. */
+function askedWhen(at: number): string {
+  return new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 function FromCollectors({ asks, more }: { asks: CrewAsk[]; more: boolean }) {
@@ -162,17 +203,24 @@ function FromCollectors({ asks, more }: { asks: CrewAsk[]; more: boolean }) {
               </span>
               <AskTags ask={ask} />
               {(ask.alsoReportedBy ?? 0) > 0 && (
-                <span className="shrink-0 rounded-full border border-notice-warn-rule bg-notice-warn-bg px-2 py-0.5 text-xs font-bold tabular-nums text-notice-warn-ink">
-                  {alsoReportedLabel(ask.alsoReportedBy!)}
-                </span>
+                <>
+                  <span
+                    aria-hidden="true"
+                    className="shrink-0 rounded-full border border-notice-warn-rule bg-notice-warn-bg px-2 py-0.5 text-xs font-bold tabular-nums text-notice-warn-ink"
+                  >
+                    {alsoReportedLine(ask.alsoReportedBy!)}
+                  </span>
+                  <span className="sr-only"> {alsoReportedSpoken(ask.alsoReportedBy!)}</span>
+                </>
               )}
+              <span className="sr-only"> asked {askedWhen(ask.at)}</span>
             </Link>
           </li>
         ))}
       </ul>
       {(past > 0 || more) && (
         <Link to={ADMIN_REQUESTS_HREF} className={MORE_LINK}>
-          {more ? `${past}+` : past} more on Card Requests
+          {past > 0 ? `${more ? `${past}+` : past} more on Card Requests` : "More on Card Requests"}
         </Link>
       )}
     </section>

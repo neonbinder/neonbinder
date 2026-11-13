@@ -1286,3 +1286,36 @@ describe("NEO-370 — listing reads ship no lease, SKU, order id or marketplace 
     expect(scheduled).toEqual([]);
   });
 });
+
+/**
+ * NEO-536 — `syncReports.review` is the admin's read of one collector's
+ * report. A closed report carries `closedBy` (which admin closed it); the
+ * review answers with how it closed and the note, never who. The collector
+ * reads are pinned the same way in publicFunctionAuth.test.ts.
+ */
+describe("NEO-536 — the admin's sync report review never ships closedBy", () => {
+  test("syncReports.review answers an admin about a closed report without closedBy", async () => {
+    const t = convexTest(schema, modules);
+    const variantId = await seedSport(t);
+    const reportId = await t.run((ctx) =>
+      ctx.db.insert("syncReports", {
+        ownerId: "collector_neo536",
+        platform: "bsc",
+        variantId,
+        label: "1996 Playoff Contenders",
+        cards: [],
+        heldBack: 1,
+        status: "notABug",
+        closedBy: "admin_neo536_HIDDEN",
+        closedAt: 5,
+        closeNote: "Add the team on the card.",
+        lastUpdated: 5,
+      }),
+    );
+    const review = await t.withIdentity(ADMIN).query(api.syncReports.review, { id: reportId });
+    // Not vacuous: the read really answered with the closed report.
+    expect(review).toMatchObject({ status: "notABug", closedAt: 5, closeNote: "Add the team on the card." });
+    expect(review).not.toHaveProperty("closedBy");
+    expect(JSON.stringify(review)).not.toContain("HIDDEN");
+  });
+});

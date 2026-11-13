@@ -47,8 +47,13 @@ type Ctx = Pick<QueryCtx, "db">;
 type ReportRow = Doc<"syncReports">;
 type Platform = Doc<"syncReports">["platform"];
 
-/** Open reports the admin queue reads, oldest first (one more says "more"). */
+/** Sets the admin queue lists, oldest first. */
 export const SYNC_REPORT_QUEUE = 50;
+/**
+ * Open reports the admin queue reads, oldest first (one more says "more"):
+ * its rows and their counts both come from these, with no read per set.
+ */
+export const SYNC_REPORT_QUEUE_SCAN = 200;
 /** The caller's reports `mine` returns, newest first. */
 export const MY_SYNC_REPORTS = 50;
 
@@ -127,12 +132,18 @@ async function openInGroup(ctx: Ctx, variantId: Id<"selectorOptions">, platform:
 
 /**
  * Other open reports on the report's set and platform, counted to
- * `SYNC_REPORT_GROUP_COUNT_CAP`. Shared with the dashboard's admin list
- * (`crewDesk.waiting`), so both count the same way.
+ * `SYNC_REPORT_GROUP_COUNT_CAP`: one capped read of the set's open reports.
+ * The review and the dashboard's admin list (`crewDesk.waiting`, a few rows)
+ * count this way; the queue counts the reports it has already read.
  */
 export async function alsoReportedBy(ctx: Ctx, row: ReportRow): Promise<number> {
   const group = await openInGroup(ctx, row.variantId, row.platform, SYNC_REPORT_GROUP_COUNT_CAP + 1);
   return Math.min(group.filter((r) => r._id !== row._id).length, SYNC_REPORT_GROUP_COUNT_CAP);
+}
+
+/** The same held-back cards, in the same order, with the same reasons and details (key order aside). */
+function sameCards(a: ReportRow["cards"], b: ReportRow["cards"]): boolean {
+  return a.length === b.length && a.every((c, i) => c.cardId === b[i].cardId && c.reason === b[i].reason && c.detail === b[i].detail);
 }
 
 /** The owner's sync record of one set on one platform (one at most). */
@@ -178,7 +189,9 @@ export function listedCleanlySince(
  * record, a failed last sync (NB tries again on its own), or nothing
  * reportable. An open report of the caller's on the same set and platform
  * is refreshed instead (`already: true`); a `note` left out keeps its note,
- * a blank one clears it. At most `MAX_OPEN_SYNC_REPORTS` open per collector.
+ * a blank one clears it. A refresh that changes nothing (same cards, count
+ * and note) writes nothing, so its "refreshed" time stays put. At most
+ * `MAX_OPEN_SYNC_REPORTS` open per collector.
  */
 export const report = mutation({
   args: {
@@ -215,12 +228,18 @@ export const report = mutation({
       )
       .first();
     if (open) {
-      await ctx.db.patch(open._id, {
-        cards,
-        heldBack,
-        ...(args.note !== undefined ? { note } : {}),
-        lastUpdated: now,
-      });
+      // Sent again with nothing new: leave the row (and its "refreshed" time) alone.
+      const nextNote = args.note !== undefined ? note : open.note;
+      const same =
+        heldBack === open.heldBack && nextNote === open.note && sameCards(cards, open.cards);
+      if (!same) {
+        await ctx.db.patch(open._id, {
+          cards,
+          heldBack,
+          ...(args.note !== undefined ? { note } : {}),
+          lastUpdated: now,
+        });
+      }
       return { id: open._id, already: true };
     }
     const mineOpen = await ctx.db
@@ -306,9 +325,14 @@ export const mine = query({
 
 /**
  * Open reports, oldest first: one row per set and platform (the oldest open
- * report on it stands for the others, `alsoReportedBy` counts them), from the
- * oldest `SYNC_REPORT_QUEUE` open reports. `more`: another open report is
- * past them. No collector ids.
+ * report on it stands for the others), at most `SYNC_REPORT_QUEUE` sets, all
+ * from the oldest `SYNC_REPORT_QUEUE_SCAN` open reports. `alsoReportedBy`
+ * counts the set's other reports among those same rows, to
+ * `SYNC_REPORT_GROUP_COUNT_CAP`: exact while that many or fewer are open,
+ * and with more, a floor (newer reports past the scan are not counted; the
+ * review counts them all). One bounded read, no read per set, because the
+ * list is a subscription. `more`: another open report or set is past the
+ * list. No collector ids.
  */
 export const queue = query({
   args: {},
@@ -318,25 +342,29 @@ export const queue = query({
     const rows = await ctx.db
       .query("syncReports")
       .withIndex("by_status_closed", (q) => q.eq("status", "open"))
-      .take(SYNC_REPORT_QUEUE + 1);
+      .take(SYNC_REPORT_QUEUE_SCAN + 1);
+    const read = rows.slice(0, SYNC_REPORT_QUEUE_SCAN);
+    const groupOf = (row: ReportRow) => `${row.variantId}|${row.platform}`;
+    const inGroup = new Map<string, number>();
+    for (const row of read) inGroup.set(groupOf(row), (inGroup.get(groupOf(row)) ?? 0) + 1);
     const seen = new Set<string>();
-    const reports = [];
-    for (const row of rows.slice(0, SYNC_REPORT_QUEUE)) {
-      const group = `${row.variantId}|${row.platform}`;
-      if (seen.has(group)) continue;
-      seen.add(group);
-      reports.push({
-        _id: row._id,
-        label: row.label,
-        platform: row.platform,
-        variantId: row.variantId,
-        heldBack: row.heldBack,
-        ...(row.note !== undefined ? { note: row.note } : {}),
-        reportedAt: row._creationTime,
-        alsoReportedBy: await alsoReportedBy(ctx, row),
-      });
+    const firsts: ReportRow[] = [];
+    for (const row of read) {
+      if (seen.has(groupOf(row))) continue;
+      seen.add(groupOf(row));
+      firsts.push(row);
     }
-    return { reports, more: rows.length > SYNC_REPORT_QUEUE };
+    const reports = firsts.slice(0, SYNC_REPORT_QUEUE).map((row) => ({
+      _id: row._id,
+      label: row.label,
+      platform: row.platform,
+      variantId: row.variantId,
+      heldBack: row.heldBack,
+      ...(row.note !== undefined ? { note: row.note } : {}),
+      reportedAt: row._creationTime,
+      alsoReportedBy: Math.min((inGroup.get(groupOf(row)) ?? 1) - 1, SYNC_REPORT_GROUP_COUNT_CAP),
+    }));
+    return { reports, more: rows.length > SYNC_REPORT_QUEUE_SCAN || firsts.length > SYNC_REPORT_QUEUE };
   },
 });
 

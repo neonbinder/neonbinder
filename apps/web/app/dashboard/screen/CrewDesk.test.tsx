@@ -12,7 +12,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SYNC_REPORT_GROUP_COUNT_CAP } from "@/lib/collection/sync-report";
 import { getDashboard, type DashboardData, type SyncProblemSet } from "../fake-data";
 import DashboardScreen from "./DashboardScreen";
-import { alsoReportedLabel } from "./CrewDesk";
+import { alsoReportedLine } from "@/app/admin/card-requests/syncReportCopy";
+import { CREW_DESK_WAITING } from "@/convex/crewDesk";
 import { CrewProvider, MY_REQUESTS_HREF, WAITING_SHOWN, type Crew, type CrewAsk, type CrewDeskData } from "./crew";
 import { heldLead } from "./SyncStatus";
 
@@ -192,6 +193,36 @@ describe("Report to our crew on Sync status", () => {
     const note = screen.getByRole("textbox", { name: /^Note for our crew/ });
     expect(note.getAttribute("aria-invalid")).toBe("true");
   });
+
+  it("the form's alert is there, empty, before anything goes wrong, so a refusal is announced", () => {
+    const { data, set } = crewSet();
+    draw(data, crewOf());
+    fireEvent.click(reportButton(set)!);
+    const form = screen.getByRole("textbox", { name: /^Note for our crew/ }).closest("form")!;
+    expect(within(form).getByRole("alert").textContent).toBe("");
+  });
+
+  it("sent, but the read never says Reported: the keyboard goes back to the button, and nothing moves it later", async () => {
+    const { data, set } = crewSet();
+    const { rerender } = draw(data, crewOf());
+    fireEvent.click(reportButton(set)!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: `Send report on ${set.setLabel} on eBay` }));
+    });
+    expect(document.activeElement).toBe(reportButton(set));
+    // Focus moves on; a later render must not pull it back.
+    const other = screen.getByRole("heading", { level: 1 });
+    other.tabIndex = -1;
+    other.focus();
+    rerender(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <CrewProvider value={crewOf()}>
+          <DashboardScreen data={data} />
+        </CrewProvider>
+      </MemoryRouter>,
+    );
+    expect(document.activeElement).toBe(other);
+  });
 });
 
 describe("the crew section under Sync status", () => {
@@ -231,6 +262,91 @@ describe("the crew section under Sync status", () => {
     expect(screen.queryByRole("region", { name: "From collectors" })).toBeNull();
   });
 
+  /** A crew whose withdraw drops the row from the desk, as the real read does, when `drop` is pressed (or at once). */
+  function WithdrawHarness({
+    asks,
+    data,
+    dropAtOnce = true,
+  }: {
+    asks: CrewAsk[];
+    data: DashboardData;
+    dropAtOnce?: boolean;
+  }) {
+    const [mine, setMine] = useState(asks);
+    const [gone, setGone] = useState<string | null>(null);
+    const crew = crewOf({
+      desk: { ...EMPTY_DESK, mine },
+      withdraw: async (id) => {
+        if (dropAtOnce) setMine((m) => m.filter((a) => a.id !== id));
+        else setGone(id);
+        return null;
+      },
+    });
+    return (
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <CrewProvider value={crew}>
+          <DashboardScreen data={data} />
+        </CrewProvider>
+        <button type="button" onClick={() => setMine((m) => m.filter((a) => a.id !== gone))}>
+          Read catches up
+        </button>
+      </MemoryRouter>
+    );
+  }
+
+  const REPORT_ASK = ask({ id: "r1", kind: "report", label: "2024 Topps Chrome Base", platform: "ebay" });
+
+  it("the withdraw line is there, empty, before any withdraw, so it is announced", () => {
+    draw(getDashboard(), crewOf({ desk: { ...EMPTY_DESK, mine: [REPORT_ASK] } }));
+    expect(screen.getAllByRole("status").some((el) => el.textContent === "")).toBe(true);
+    // And each report's row has its alert ready too.
+    const mine = screen.getByRole("region", { name: "With our crew" });
+    expect(within(mine).getByRole("alert").textContent).toBe("");
+  });
+
+  it("withdrawing the last ask says so, and the keyboard lands on Sync status's heading", async () => {
+    render(<WithdrawHarness asks={[REPORT_ASK]} data={getDashboard()} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on eBay" }));
+    });
+    expect(screen.queryByRole("region", { name: "With our crew" })).toBeNull();
+    expect(screen.getByText("Withdrew the report on 2024 Topps Chrome Base (eBay).").getAttribute("role")).toBe("status");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Sync status" })));
+  });
+
+  it("with another ask left, the keyboard lands on With our crew's heading", async () => {
+    render(<WithdrawHarness asks={[REPORT_ASK, ask({ id: "c1", kind: "card", label: "A card" })]} data={getDashboard()} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on eBay" }));
+    });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "With our crew" })));
+  });
+
+  it("with no Sync status either, the keyboard lands on the page's h1, never the page", async () => {
+    const data: DashboardData = { ...getDashboard(), syncStatus: null };
+    render(<WithdrawHarness asks={[REPORT_ASK]} data={data} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on eBay" }));
+    });
+    const h1 = screen.getByRole("heading", { level: 1 });
+    await waitFor(() => expect(document.activeElement).toBe(h1));
+    expect(h1.getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("the keyboard waits for the read to drop the row before it moves", async () => {
+    render(<WithdrawHarness asks={[REPORT_ASK]} data={getDashboard()} dropAtOnce={false} />);
+    const withdraw = screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on eBay" });
+    withdraw.focus();
+    await act(async () => {
+      fireEvent.click(withdraw);
+    });
+    // Said at once; the row is still drawn, so nothing moves yet.
+    expect(screen.getByText("Withdrew the report on 2024 Topps Chrome Base (eBay).")).toBeTruthy();
+    expect(document.activeElement).toBe(withdraw);
+    fireEvent.click(screen.getByRole("button", { name: "Read catches up" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Sync status" })));
+  });
+
   it("Withdraw calls the withdraw with the report's id", async () => {
     const desk: CrewDeskData = {
       ...EMPTY_DESK,
@@ -253,7 +369,9 @@ describe("the crew section under Sync status", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on BuySportsCards" }));
     });
-    expect(screen.getByRole("alert").textContent).toBe("The crew closed that report already.");
+    expect(within(screen.getByRole("region", { name: "With our crew" })).getByRole("alert").textContent).toBe(
+      "The crew closed that report already.",
+    );
   });
 
   it("an admin sees every collector's asks, each opening its review", () => {
@@ -276,7 +394,47 @@ describe("the crew section under Sync status", () => {
     expect(within(waiting).getByText("+3 reported")).toBeTruthy();
     expect(within(waiting).queryAllByText(/reported$/)).toHaveLength(1);
     expect(within(waiting).getByText("4 waiting")).toBeTruthy();
+    // The tag is seen; a reader hears who else reported it, and when each was asked.
+    expect(within(waiting).getByText("+3 reported").getAttribute("aria-hidden")).toBe("true");
+    const reportOne = within(waiting).getByRole("link", { name: /^Report one/ });
+    expect(reportOne.textContent).toContain("also reported by 3 other collectors");
+    expect(reportOne.textContent).toMatch(/asked \S/);
     expect(screen.queryByRole("region", { name: "With our crew" })).toBeNull();
+  });
+
+  it("two asks of the same name read apart by when each was asked", () => {
+    const desk: CrewDeskData = {
+      ...EMPTY_DESK,
+      waiting: [
+        ask({ id: "a", kind: "card", label: "1991 Donruss #1 Ripken", at: Date.UTC(2026, 10, 1, 15) }),
+        ask({ id: "b", kind: "card", label: "1991 Donruss #1 Ripken", at: Date.UTC(2026, 10, 9, 15) }),
+      ],
+    };
+    draw(getDashboard(), crewOf({ desk }));
+    const [one, two] = within(screen.getByRole("region", { name: "From collectors" })).getAllByRole("link", { name: /^1991 Donruss/ });
+    expect(one.textContent).not.toBe(two.textContent);
+  });
+
+  it(`"+N reported" reads "${SYNC_REPORT_GROUP_COUNT_CAP}+ reported" at the cap, and a reader hears "${SYNC_REPORT_GROUP_COUNT_CAP} or more"`, () => {
+    const desk: CrewDeskData = {
+      ...EMPTY_DESK,
+      waiting: [ask({ id: "r", kind: "report", label: "Busy set", platform: "bsc", alsoReportedBy: SYNC_REPORT_GROUP_COUNT_CAP })],
+    };
+    draw(getDashboard(), crewOf({ desk }));
+    const link = within(screen.getByRole("region", { name: "From collectors" })).getByRole("link", { name: /^Busy set/ });
+    expect(within(link).getByText(`${SYNC_REPORT_GROUP_COUNT_CAP}+ reported`)).toBeTruthy();
+    expect(link.textContent).toContain(`also reported by ${SYNC_REPORT_GROUP_COUNT_CAP} or more other collectors`);
+  });
+
+  it("more waiting than the read names, but none past what is shown: the link still says there are more", () => {
+    const waiting = Array.from({ length: WAITING_SHOWN }, (_, i) => ask({ id: `c${i}`, kind: "card", at: i }));
+    draw(getDashboard(), crewOf({ desk: { ...EMPTY_DESK, waiting, waitingMore: true } }));
+    const region = screen.getByRole("region", { name: "From collectors" });
+    expect(within(region).getByRole("link", { name: "More on Card Requests" }).getAttribute("href")).toBe("/admin/card-requests");
+  });
+
+  it("the server reads exactly as many of each kind as the dashboard draws", () => {
+    expect(CREW_DESK_WAITING).toBe(WAITING_SHOWN);
   });
 
   it(`an admin's list names the oldest ${WAITING_SHOWN}; the rest open Card Requests`, () => {
@@ -318,8 +476,9 @@ describe("the crew section under Sync status", () => {
     expect(ledWith).toBe(ledWithout);
   });
 
-  it(`"+N reported" reads "${SYNC_REPORT_GROUP_COUNT_CAP}+" at the count's cap`, () => {
-    expect(alsoReportedLabel(1)).toBe("+1 reported");
-    expect(alsoReportedLabel(SYNC_REPORT_GROUP_COUNT_CAP)).toBe(`${SYNC_REPORT_GROUP_COUNT_CAP}+ reported`);
+  it(`"+N reported" is one wording on the dashboard and Card Requests: "${SYNC_REPORT_GROUP_COUNT_CAP}+" at the count's cap`, () => {
+    expect(alsoReportedLine(0)).toBeNull();
+    expect(alsoReportedLine(1)).toBe("+1 reported");
+    expect(alsoReportedLine(SYNC_REPORT_GROUP_COUNT_CAP)).toBe(`${SYNC_REPORT_GROUP_COUNT_CAP}+ reported`);
   });
 });

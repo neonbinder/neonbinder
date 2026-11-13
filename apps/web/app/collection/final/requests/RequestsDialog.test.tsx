@@ -353,6 +353,27 @@ describe("My requests: sync reports (NEO-536)", () => {
     expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Sets you reported" }));
   });
 
+  it("while it withdraws, the name starts with the words on the button (WCAG 2.5.3)", async () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report()]);
+    answers.set("syncReports:withdraw", () => new Promise(() => {}));
+    open("mine");
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw the report on 2024 Topps Chrome Base (BuySportsCards)" }));
+    const busy = await screen.findByRole("button", { name: "Withdrawing… the report on 2024 Topps Chrome Base (BuySportsCards)" });
+    expect(busy.hasAttribute("aria-label")).toBe(false);
+    expect(busy.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("a long unbroken name or note wraps rather than pushing the row past a phone's width", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report({ label: "X".repeat(120), note: "Y".repeat(200) })]);
+    open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
+    const text = within(item).getByText(`Your note: ${"Y".repeat(200)}`).parentElement!;
+    expect(text.className).toContain("min-w-0");
+    expect(text.className).toContain("[overflow-wrap:anywhere]");
+  });
+
   it("shows the server's refusal on a withdraw", async () => {
     answers.set("collectionRequests:mine", []);
     answers.set("syncReports:mine", [report()]);

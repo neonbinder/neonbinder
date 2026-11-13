@@ -14,6 +14,7 @@
  */
 
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import { requireAdmin, requireSignedIn } from "./auth";
 import { MAX_REQUEST_LIST } from "./collectionRequests";
@@ -23,8 +24,18 @@ import { MAX_OPEN_SYNC_REPORTS } from "../lib/collection/sync-report";
 
 /** Asks of each kind `mine` names (the rest are counted). */
 export const CREW_DESK_SHOWN = 6;
-/** Asks of each kind `waiting` lists, oldest first (one more says "more"). */
-export const CREW_DESK_WAITING = 50;
+/**
+ * Asks of each kind `waiting` lists, oldest first: what the dashboard draws
+ * (`app/dashboard/screen/crew.ts` `WAITING_SHOWN`, pinned equal by
+ * `CrewDesk.test.tsx`). The dashboard merges the two kinds oldest first and
+ * draws that many, so neither kind needs more; the rest live on Card Requests.
+ */
+export const CREW_DESK_WAITING = 8;
+/**
+ * Open reports `waiting` reads at most while finding `CREW_DESK_WAITING` + 1
+ * sets (several collectors can report one set). Past it, "more".
+ */
+export const CREW_DESK_REPORT_SCAN = 100;
 
 const requestItemValidator = v.object({
   _id: v.id("cardRequests"),
@@ -119,8 +130,12 @@ export const mine = query({
  * (by `_id`), oldest first, at most `CREW_DESK_WAITING` of each; `…More`:
  * another is past them. One report row per set and platform, the oldest
  * open one standing for the rest (an admin's close settles them together),
- * with how many other collectors have it open too (`alsoReportedBy`, the
- * admin queue's count). No collector ids.
+ * with how many other collectors have it open too (`alsoReportedBy`, counted
+ * only for the rows returned). No collector ids.
+ *
+ * Bounded for a subscription: `CREW_DESK_WAITING` + 1 requests, at most
+ * `CREW_DESK_REPORT_SCAN` reports, and `SYNC_REPORT_GROUP_COUNT_CAP` + 1 per
+ * returned report row, a couple of hundred documents at worst.
  */
 export const waiting = query({
   args: {},
@@ -136,16 +151,24 @@ export const waiting = query({
       .query("cardRequests")
       .withIndex("by_status", (q) => q.eq("status", "waiting"))
       .take(CREW_DESK_WAITING + 1);
-    const reportRows = await ctx.db
-      .query("syncReports")
-      .withIndex("by_status_closed", (q) => q.eq("status", "open"))
-      .take(CREW_DESK_WAITING + 1);
+    // The oldest open report on each set, until one set past what is drawn.
+    const firsts: Doc<"syncReports">[] = [];
     const seen = new Set<string>();
-    const reports = [];
-    for (const r of reportRows.slice(0, CREW_DESK_WAITING)) {
+    let scanned = 0;
+    for await (const r of ctx.db.query("syncReports").withIndex("by_status_closed", (q) => q.eq("status", "open"))) {
+      scanned += 1;
       const group = `${r.variantId}|${r.platform}`;
-      if (seen.has(group)) continue;
-      seen.add(group);
+      if (!seen.has(group)) {
+        seen.add(group);
+        firsts.push(r);
+        if (firsts.length > CREW_DESK_WAITING) break;
+      }
+      if (scanned >= CREW_DESK_REPORT_SCAN) break;
+    }
+    // Past the scan with nothing more found: there may be sets beyond it, so say "more" rather than guess.
+    const reportsMore = firsts.length > CREW_DESK_WAITING || scanned >= CREW_DESK_REPORT_SCAN;
+    const reports = [];
+    for (const r of firsts.slice(0, CREW_DESK_WAITING)) {
       reports.push({
         _id: r._id,
         label: r.label,
@@ -165,7 +188,7 @@ export const waiting = query({
       })),
       requestsMore: requestRows.length > CREW_DESK_WAITING,
       reports,
-      reportsMore: reportRows.length > CREW_DESK_WAITING,
+      reportsMore,
     };
   },
 });

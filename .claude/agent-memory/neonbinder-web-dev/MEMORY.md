@@ -180,7 +180,7 @@
 - [Failure PNG is viewport-only](reference_failure_png_is_viewport_only.md) — under-card content is off a 629px frame; read error-context in the blob zip; grep templated locators too
 - [Clipboard write with a promise](reference_clipboard_write_with_a_promise.md) — copy text that lands after awaits: start clipboard.write in the click with a promise; headless shell denies writes, so specs stub it
 - [useEffectEvent does not evade set-state-in-effect](reference_effect_event_does_not_evade_set_state_rule.md) — compiler traces through it; justified disable for a one-edge effect; rAF is FIFO after close(); one-shot intent → adjust state while rendering
-- [Always-mounted live region in space-y](reference_always_mounted_live_region_in_space_y.md) — empty region still takes the gap; nest beside a min-h line; no sr-only copy of a getByText line
+- [Always-mounted live region in space-y](reference_always_mounted_live_region_in_space_y.md) — empty region still takes the gap; nest beside a min-h line, or mb-0 / empty:-mt-*; no sr-only copy of a getByText line
 - [Failed dynamic import is cached per document](reference_failed_dynamic_import_is_cached_per_document.md) — Chromium: re-import or lazy retry cannot recover, only a reload; prefetch failures poison the route
 - [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
 - [backdrop-filter makes a containing block](reference_backdrop_filter_makes_a_containing_block.md) — a "fixed" button in a blurred scroller scrolls away; blur a sibling. Also h-0 min-h-full

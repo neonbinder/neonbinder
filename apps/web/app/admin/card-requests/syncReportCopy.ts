@@ -1,21 +1,37 @@
 import { SYNC_REPORT_GROUP_COUNT_CAP } from "@/lib/collection/sync-report";
 
 /**
- * NEO-536 — the words the admin's Sync reports list and review say. Admin
- * copy: plain, short, about the collector rather than to them.
+ * NEO-536 — the words the admin's Sync reports list and review say, and the
+ * dashboard's "From collectors" rows with them. Admin copy: plain, short,
+ * about the collector rather than to them.
  */
 
-/** "+3 reported", "20+ more reported" at the server's count cap, nothing for none. */
-export function alsoReportedLine(n: number): string | null {
-  if (n <= 0) return null;
-  return n >= SYNC_REPORT_GROUP_COUNT_CAP ? `${SYNC_REPORT_GROUP_COUNT_CAP}+ more reported` : `+${n} reported`;
+/** How many other collectors, spoken: "3", or "20 or more" at the server's count cap. */
+function othersCount(n: number): string {
+  return n >= SYNC_REPORT_GROUP_COUNT_CAP ? `${SYNC_REPORT_GROUP_COUNT_CAP} or more` : String(n);
 }
 
-/** The review's long form: "Also reported by 2 other collectors". */
-export function alsoReportedSentence(n: number): string | null {
+/**
+ * The short tag on a row, the same on Card Requests and the dashboard: "+3
+ * reported", "20+ reported" at the server's count cap, nothing for none.
+ * Seen only: a reader gets `alsoReportedSpoken` in its place.
+ */
+export function alsoReportedLine(n: number): string | null {
   if (n <= 0) return null;
-  const count = n >= SYNC_REPORT_GROUP_COUNT_CAP ? `${SYNC_REPORT_GROUP_COUNT_CAP}+` : String(n);
-  return `Also reported by ${count} other ${n === 1 ? "collector" : "collectors"}. Closing this closes theirs too.`;
+  return n >= SYNC_REPORT_GROUP_COUNT_CAP ? `${SYNC_REPORT_GROUP_COUNT_CAP}+ reported` : `+${n} reported`;
+}
+
+/** What a reader hears for the tag: "also reported by 3 other collectors", "… 20 or more …". */
+export function alsoReportedSpoken(n: number): string | null {
+  if (n <= 0) return null;
+  return `also reported by ${othersCount(n)} other ${n === 1 ? "collector" : "collectors"}`;
+}
+
+/** The review's long form: "Also reported by 2 other collectors. Closing this closes theirs too." */
+export function alsoReportedSentence(n: number): string | null {
+  const spoken = alsoReportedSpoken(n);
+  if (!spoken) return null;
+  return `${spoken.charAt(0).toUpperCase()}${spoken.slice(1)}. Closing this closes theirs too.`;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
