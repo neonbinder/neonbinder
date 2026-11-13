@@ -119,14 +119,15 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
       )}
 
       {/* The week's score: the number lit in blue, as the Boards' percentages are, so the green
-          button above stays the one thing to press. Read as one phrase, "6 runs sorted this week". */}
+          button above stays the one thing to press. One inline run of text, never flex: flex items
+          are blockified and a reader can stop between "6" and "runs sorted this week". */}
       {intake.sortedThisWeek > 0 && (
         <p
-          className={`flex items-baseline gap-2.5 text-neon-blue-text ${
+          className={`text-neon-blue-text ${
             intake.uploads.length > 0 ? "border-t border-rule pt-3" : intake.total > 0 ? "mt-3" : ""
           }`}
         >
-          <span className="cb-numeral cb-glow text-4xl tabular-nums sm:text-5xl">{intake.sortedThisWeek}</span>{" "}
+          <span className="cb-numeral cb-glow mr-2.5 align-baseline text-4xl tabular-nums sm:text-5xl">{intake.sortedThisWeek}</span>{" "}
           <span className="text-sm font-semibold text-ink-2">{sortedLabel(intake.sortedThisWeek)}</span>
         </p>
       )}
