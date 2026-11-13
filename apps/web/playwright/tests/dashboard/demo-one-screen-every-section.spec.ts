@@ -129,9 +129,9 @@ test(
     // Orders wait to ship, so Out the Door links to the Pick List where they are pulled; Back comes home.
     const orders = page.getByRole("region", { name: "Out the Door" });
     const pullThem = orders.getByRole("link", { name: "Pull them on the Pick List", exact: true });
-    await expect(pullThem).toHaveAttribute("href", "/demo/inventory?tab=pick");
+    await expect(pullThem).toHaveAttribute("href", "/demo/inventory?side=inventory&tab=pick");
     await pullThem.click();
-    await expect(page).toHaveURL(/\/demo\/inventory\?tab=pick$/);
+    await expect(page).toHaveURL(/\/demo\/inventory\?side=inventory&tab=pick$/);
     await expect(pickList(page).heading).toBeVisible();
     await page.goBack();
     await expect(page).toHaveURL(/\/demo$/);
