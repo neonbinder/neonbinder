@@ -332,7 +332,7 @@ describe("every card the dashboard shows opens its panel", () => {
     for (const [region, list] of [
       ["Binders Filling Up", /^New in /],
       ["Could fit your smart binders", /^Cards that could fit /],
-      ["In the Hopper", /^Best guesses waiting on your yes$/],
+      ["In the Hopper", /^Best guesses for .+ on Collection$/],
     ] as const) {
       const lists = within(screen.getByRole("region", { name: region })).getAllByRole("list", { name: list });
       const links = lists.flatMap((l) => within(l).getAllByRole("link"));
@@ -353,7 +353,8 @@ describe("every card the dashboard shows opens its panel", () => {
       intake: { ...base.intake, uploads: [{ ...binderRun, guesses: [card] }, { ...boxRun, guesses: [card] }] },
     });
     const hopper = screen.getByRole("region", { name: "In the Hopper" });
-    const [inBinder, inBox] = within(hopper).getAllByRole("list", { name: "Best guesses waiting on your yes" });
+    const inBinder = within(hopper).getByRole("list", { name: `Best guesses for ${binderRun.name} on Collection` });
+    const inBox = within(hopper).getByRole("list", { name: "Best guesses for Show box on Inventory" });
     expect(within(inBinder).getByRole("link").getAttribute("href")).toBe(hrefOf(card.id));
     expect(within(inBox).getByRole("link").getAttribute("href")).toBe(hrefOf(card.id, "&side=inventory"));
   });

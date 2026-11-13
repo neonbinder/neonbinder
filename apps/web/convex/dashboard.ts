@@ -990,7 +990,8 @@ export const couldFit = query({
  * `INTAKE_READ_BUDGET` across them, one home read per run. `truncated`: a
  * run held more rows than were read, or the budget ran out, so the counts
  * are a floor. All-time counts only the runs read: `sortedAllTimeMore` says
- * there may be more (older runs past `INTAKE_RUNS`, or a read cut short).
+ * there may be more (older runs past `INTAKE_RUNS`, a read cut short, or a
+ * run skipped because its home is gone or not the caller's).
  * Photos still being processed have no match row yet and are not counted.
  */
 export const intake = query({
@@ -1019,7 +1020,7 @@ export const intake = query({
     sortedThisWeek: v.number(),
     /** Sorted runs among those read. */
     sortedAllTime: v.number(),
-    /** `sortedAllTime` is a floor: more runs exist than were read, or a read was cut short. */
+    /** `sortedAllTime` is a floor: more runs exist than were read, a read was cut short, or a run was skipped. */
     sortedAllTimeMore: v.boolean(),
     truncated: v.boolean(),
   }),
@@ -1057,8 +1058,12 @@ export const intake = query({
         break;
       }
       const home = await ctx.db.get(run.homeId);
-      // A run names its home by id; only the caller's own home's name is ever returned.
-      if (!home || home.ownerId !== userId) continue;
+      // A run names its home by id; only the caller's own home's name is ever returned. A run
+      // skipped here is not counted at all, so all-time says it may be more.
+      if (!home || home.ownerId !== userId) {
+        out.sortedAllTimeMore = true;
+        continue;
+      }
       const cap = Math.min(INTAKE_RUN_ROWS, budget);
       const rows = await ctx.db
         .query("intakeMatches")

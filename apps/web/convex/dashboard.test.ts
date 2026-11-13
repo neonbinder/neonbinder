@@ -1217,6 +1217,20 @@ describe("intake", () => {
       { runId: mine.runId, homeName: "Main", side: "collection", needsYou: 0, unidentified: 1, lastActivityAt: expect.any(Number), guesses: [] },
     ]);
     expect(out).toMatchObject({ needsYou: 0, unidentified: 1 });
+    // The skipped run is not counted, so all-time is only a floor.
+    expect(out.sortedAllTimeMore).toBe(true);
+  });
+
+  test("a run whose home is gone is skipped, and all-time says it may be more", async () => {
+    const s = await setup();
+    await run(s, ["saved"]);
+    const gone = await run(s, ["saved"], { homeId: s.homes.box });
+    await s.t.run(async (ctx) => {
+      const r = await ctx.db.get(gone.runId);
+      await ctx.db.delete(r!.homeId);
+    });
+    const out = await s.me.query(api.dashboard.intake, {});
+    expect(out).toMatchObject({ runs: [], sortedThisWeek: 1, sortedAllTime: 1, sortedAllTimeMore: true });
   });
 
   test("nothing in intake, and another collector's runs are theirs: all zero", async () => {

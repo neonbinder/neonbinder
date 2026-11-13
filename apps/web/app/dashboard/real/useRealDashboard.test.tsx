@@ -1282,11 +1282,11 @@ describe("useRealDashboard: sales to ship, the hopper and what could fit", () =>
     expect(data.intake.uploads[0].guesses.map((g) => g.id)).toEqual([cardA.id]);
     render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
     expect(screen.getByRole("heading", { name: "In the Hopper" })).toBeTruthy();
-    expect(screen.getByText("1 scan needs your yes · 2 to identify")).toBeTruthy();
+    expect(screen.getByText(/^1 scan needs your yes/).textContent).toBe("1 scan needs your yes · , 2 to identify");
     expect(screen.queryByText(/processing/)).toBeNull();
     const run = screen.getByRole("link", { name: "Finish this run into Show box on Inventory" });
     expect(run.getAttribute("href")).toBe("/inventory?tab=add&run=run-1");
-    expect(screen.getByText("1 run sorted this week · 4 all-time")).toBeTruthy();
+    expect(screen.getByText(/^1 run sorted this week/).textContent).toBe("1 run sorted this week · , 4 all-time");
   });
 
   it("with no sales, no scans and nothing that could fit: no Out the Door, no hopper, no could-fit strip", () => {

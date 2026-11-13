@@ -17,7 +17,22 @@ import { HELD_PREVIEW, syncFrame } from "./SyncStatus";
 import type { ShelfBinder } from "./shelf-model";
 import { boxLabel, spineCssWidth, STARTER_ROOM_NARROW } from "./Shelf";
 import { NEED_CHIPS } from "./Boards";
-import { intakeCounts, sortedLine } from "./Hopper";
+import { intakeCountParts, runTells, sortedParts } from "./Hopper";
+
+/** An element's text as drawn: the reader-only words left out. */
+function drawnText(el: Element): string {
+  const copy = el.cloneNode(true) as Element;
+  for (const sr of copy.querySelectorAll(".sr-only")) sr.remove();
+  return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+/** An element's text as a reader hears it: the hidden decoration left out. */
+function heardText(el: Element): string {
+  const copy = el.cloneNode(true) as Element;
+  for (const hidden of copy.querySelectorAll("[aria-hidden='true']")) hidden.remove();
+  return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+/** A `getByText` matcher for the line drawn as `text`. */
+const drawn = (text: string) => (_: string, el: Element | null) => el?.tagName === "P" && drawnText(el) === text;
 
 function wrapper({ children }: { children: ReactNode }) {
   return <MemoryRouter initialEntries={["/demo"]}>{children}</MemoryRouter>;
@@ -189,19 +204,21 @@ describe("the hopper", () => {
 
   it("leads with the scans to finish, then one block per open run with a Finish this run link to where it is finished", () => {
     draw(getDashboard());
-    expect(within(hopper()).getByText("2 scans need your yes · 18 to identify")).toBeTruthy();
+    const lead = within(hopper()).getByText(drawn("2 scans need your yes · 18 to identify"));
+    // The dot is drawn only; a reader hears a comma between the parts.
+    expect(heardText(lead)).toBe("2 scans need your yes, 18 to identify");
     const runs = within(hopper()).getByRole("list", { name: "Runs to finish" });
     const blocks = within(runs).getAllByRole("listitem").filter((li) => li.parentElement === runs);
     expect(blocks).toHaveLength(2);
     expect(within(blocks[0]).getByRole("heading", { level: 3, name: "Garage shoebox on Collection" })).toBeTruthy();
-    expect(within(blocks[0]).getByText("2 need your yes · 16 to identify")).toBeTruthy();
+    expect(within(blocks[0]).getByText(drawn("2 need your yes · 16 to identify"))).toBeTruthy();
     const shoebox = within(blocks[0]).getByRole("link", { name: "Finish this run into Garage shoebox on Collection" });
     expect(shoebox.getAttribute("href")).toBe("/demo/collection?tab=add");
-    expect(within(blocks[1]).getByText("2 to identify")).toBeTruthy();
+    expect(within(blocks[1]).getByText(drawn("2 to identify"))).toBeTruthy();
     const show = within(blocks[1]).getByRole("link", { name: "Finish this run into Show pickups on Inventory" });
     expect(show.getAttribute("href")).toBe("/demo/inventory?side=inventory&tab=add");
     // The sorted runs are one line of stats, never rows.
-    expect(within(hopper()).getByText("3 runs sorted this week · 14 all-time")).toBeTruthy();
+    expect(within(hopper()).getByText(drawn("3 runs sorted this week · 14 all-time"))).toBeTruthy();
   });
 
   it("drops the old intake note, the explanation, the processing pile and the progress bars", () => {
@@ -222,7 +239,7 @@ describe("the hopper", () => {
     });
     const block = within(hopper()).getAllByRole("listitem")[0];
     expect(within(block).getByText("On your Want List")).toBeTruthy();
-    const guesses = within(block).getByRole("list", { name: "Best guesses waiting on your yes" });
+    const guesses = within(block).getByRole("list", { name: "Best guesses for Main on Collection" });
     expect(within(guesses).getAllByRole("link")).toHaveLength(2);
     const links = [
       within(guesses).getByRole("link", { name: guess.title }),
@@ -260,9 +277,62 @@ describe("the hopper", () => {
     expect(within(hopper()).queryByText("Last scan 2 days ago")).toBeNull();
   });
 
+  it("two runs into one binder that last moved the same minute read apart by their place too, on screen and in every name", () => {
+    const guess = getDashboard().intake.uploads[0].guesses[0];
+    draw({
+      ...getDashboard(),
+      intake: {
+        ...NO_INTAKE,
+        total: 2,
+        needsYou: 2,
+        uploads: [
+          upload({ id: "a", href: "/collection?tab=add&run=a", guesses: [guess] }),
+          upload({ id: "b", href: "/collection?tab=add&run=b", guesses: [guess] }),
+        ],
+      },
+    });
+    expect(within(hopper()).getByText("Last scan 3:42 PM, run 1 of 2")).toBeTruthy();
+    expect(within(hopper()).getByText("Last scan 3:42 PM, run 2 of 2")).toBeTruthy();
+    expect(
+      within(hopper()).getByRole("link", { name: "Finish this run into Main on Collection, last scan 3:42 PM, run 1 of 2" }).getAttribute("href"),
+    ).toBe("/collection?tab=add&run=a");
+    expect(
+      within(hopper()).getByRole("link", { name: "Finish this run into Main on Collection, last scan 3:42 PM, run 2 of 2" }).getAttribute("href"),
+    ).toBe("/collection?tab=add&run=b");
+    expect(within(hopper()).getByRole("list", { name: "Best guesses for Main on Collection, last scan 3:42 PM, run 1 of 2" })).toBeTruthy();
+    expect(within(hopper()).getByRole("list", { name: "Best guesses for Main on Collection, last scan 3:42 PM, run 2 of 2" })).toBeTruthy();
+  });
+
+  it("runTells: nothing for a name of its own, the last scan for twins, and the place when the last scan ties", () => {
+    const u = (id: string, name: string, lastScan: string, side: "collection" | "inventory" = "collection") =>
+      upload({ id, name, lastScan, side });
+    const tells = runTells([
+      u("solo", "Solo", "Last scan 9:00 AM"),
+      u("a", "Main", "Last scan 3:42 PM"),
+      u("b", "Main", "Last scan yesterday"),
+      u("c", "Main", "Last scan yesterday"),
+      u("box", "Main", "Last scan yesterday", "inventory"),
+    ]);
+    expect(Object.fromEntries(tells)).toEqual({
+      solo: null,
+      a: "Last scan 3:42 PM",
+      b: "Last scan yesterday, run 2 of 3",
+      c: "Last scan yesterday, run 3 of 3",
+      box: null,
+    });
+  });
+
+  it("a Want List guess wears its ring inside the link, so the link's focus outline never covers it", () => {
+    const want = getDashboard().wantList[0];
+    draw({ ...getDashboard(), intake: { ...NO_INTAKE, total: 1, needsYou: 1, uploads: [upload({ guesses: [want] })] } });
+    const link = within(hopper()).getByRole("link", { name: `${want.title}, on your Want List` });
+    expect(link.className).not.toContain("outline-dashed");
+    expect(link.querySelector(".outline-dashed")).not.toBeNull();
+  });
+
   it("with nothing open but a run sorted this week, the hopper is just the stat; with neither, no hopper", () => {
     draw({ ...getDashboard(), intake: { ...NO_INTAKE, sortedThisWeek: 1, sortedAllTime: 1 } });
-    expect(within(hopper()).getByText("1 run sorted this week")).toBeTruthy();
+    expect(within(hopper()).getByText(drawn("1 run sorted this week"))).toBeTruthy();
     expect(within(hopper()).queryByRole("list")).toBeNull();
     expect(within(hopper()).queryByRole("link")).toBeNull();
   });
@@ -297,24 +367,25 @@ describe("Out the Door", () => {
 
 describe("the hopper's words", () => {
   it("counts what is left: a zero part left out, the lead line with its noun", () => {
-    expect(intakeCounts({ needsYou: 7, unidentified: 1 }, "scan")).toBe("7 scans need your yes · 1 to identify");
-    expect(intakeCounts({ needsYou: 1, unidentified: 0 }, "scan")).toBe("1 scan needs your yes");
-    expect(intakeCounts({ needsYou: 0, unidentified: 1 }, "scan")).toBe("1 scan to identify");
-    expect(intakeCounts({ needsYou: 5, unidentified: 1 })).toBe("5 need your yes · 1 to identify");
-    expect(intakeCounts({ needsYou: 1, unidentified: 0 })).toBe("1 needs your yes");
-    expect(intakeCounts({ needsYou: 0, unidentified: 2 })).toBe("2 to identify");
+    const counts = (n: { needsYou: number; unidentified: number }, noun?: string) => intakeCountParts(n, noun).join(" · ");
+    expect(counts({ needsYou: 7, unidentified: 1 }, "scan")).toBe("7 scans need your yes · 1 to identify");
+    expect(counts({ needsYou: 1, unidentified: 0 }, "scan")).toBe("1 scan needs your yes");
+    expect(counts({ needsYou: 0, unidentified: 1 }, "scan")).toBe("1 scan to identify");
+    expect(counts({ needsYou: 5, unidentified: 1 })).toBe("5 need your yes · 1 to identify");
+    expect(counts({ needsYou: 1, unidentified: 0 })).toBe("1 needs your yes");
+    expect(counts({ needsYou: 0, unidentified: 2 })).toBe("2 to identify");
   });
 
   it("says the runs sorted: a zero part left out, all-time only when it adds something, a floor as N+", () => {
     const line = (week: number, all: number, more = false) =>
-      sortedLine({ sortedThisWeek: week, sortedAllTime: all, sortedAllTimeMore: more });
+      sortedParts({ sortedThisWeek: week, sortedAllTime: all, sortedAllTimeMore: more }).join(" · ");
     expect(line(6, 42)).toBe("6 runs sorted this week · 42 all-time");
     expect(line(1, 1)).toBe("1 run sorted this week");
     expect(line(20, 20, true)).toBe("20 runs sorted this week · 20+ all-time");
     expect(line(0, 42)).toBe("42 runs sorted all-time");
     expect(line(0, 1)).toBe("1 run sorted all-time");
     expect(line(0, 18, true)).toBe("18+ runs sorted all-time");
-    expect(line(0, 0)).toBeNull();
+    expect(line(0, 0)).toBe("");
   });
 });
 
