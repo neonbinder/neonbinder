@@ -84,7 +84,6 @@ import type {
   CompletedSet,
   DashboardData,
   IntakeInProgress,
-  IntakeScan,
   IntakeUpload,
   NewListing,
   NewSet,
@@ -130,7 +129,15 @@ import {
 /** The screen's URL parameter for the open binder (`DashboardScreen`). */
 export const BINDER_PARAM = "binder";
 
-const NO_INTAKE: IntakeInProgress = { total: 0, waiting: 0, needsYou: 0, uploads: [], preview: [] };
+const NO_INTAKE: IntakeInProgress = {
+  total: 0,
+  needsYou: 0,
+  unidentified: 0,
+  uploads: [],
+  sortedThisWeek: 0,
+  sortedAllTime: 0,
+  sortedAllTimeMore: false,
+};
 
 /** The chase: the Want List's newest wants, at most this many (and only their cards are read). */
 export const CHASE_CAP = 12;
@@ -722,14 +729,9 @@ export function runHrefOf(side: IntakeUpload["side"], runId: string): string {
 }
 
 /**
- * The hopper from `dashboard.intake`: every open scan is in intake (a best
- * guess waiting on a yes, or one not identified yet). The preview leads with
- * the guesses whose card is hydrated, then the ones with none. Nothing open:
- * empty, so the hopper stays hidden.
- */
-/**
- * When a run last moved, as its hopper link says it: the time on the day
- * itself, then "yesterday", then days ago, on this device's calendar.
+ * When a run last moved, as its hopper block says it when another open run
+ * has the same name: the time on the day itself, then "yesterday", then days
+ * ago, on this device's calendar.
  */
 export function lastScanLabel(at: number, now: number): string {
   const days = daysBetween(localDay(at), localDay(now));
@@ -738,28 +740,37 @@ export function lastScanLabel(at: number, now: number): string {
   return `Last scan ${days} days ago`;
 }
 
+/**
+ * The hopper from `dashboard.intake`: every open scan is in intake (a best
+ * guess waiting on a yes, or one not identified yet), and the server returns
+ * only the runs that still hold one. Each run's thumbnails are its guesses
+ * whose card is hydrated. Nothing open and nothing sorted: empty, so the
+ * hopper stays hidden.
+ */
 export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefined, now: number): IntakeInProgress {
   if (!raw) return NO_INTAKE;
   const total = raw.needsYou + raw.unidentified;
-  if (total === 0) return NO_INTAKE;
-  const guesses: IntakeScan[] = raw.guesses.flatMap((g) => {
-    const card = cards?.get(g.cardId);
-    return card ? [{ id: g.id, guess: toDash(card) }] : [];
-  });
+  if (total === 0 && raw.sortedThisWeek === 0 && raw.sortedAllTime === 0) return NO_INTAKE;
   return {
     total,
-    waiting: raw.unidentified,
     needsYou: raw.needsYou,
+    unidentified: raw.unidentified,
     uploads: raw.runs.map((r) => ({
       id: r.runId,
       name: r.homeName,
-      scans: r.scans,
-      done: r.done,
+      needsYou: r.needsYou,
+      unidentified: r.unidentified,
       side: r.side,
       href: runHrefOf(r.side, r.runId),
       lastScan: lastScanLabel(r.lastActivityAt, now),
+      guesses: r.guesses.flatMap((id) => {
+        const card = cards?.get(id);
+        return card ? [toDash(card)] : [];
+      }),
     })),
-    preview: [...guesses, ...raw.unknown.map((id): IntakeScan => ({ id, guess: null }))],
+    sortedThisWeek: raw.sortedThisWeek,
+    sortedAllTime: raw.sortedAllTime,
+    sortedAllTimeMore: raw.sortedAllTimeMore,
   };
 }
 
@@ -971,7 +982,7 @@ export function useRealDashboard(): DashboardData | undefined {
     for (const done of completions ?? []) ids.push(done.lastCardId, ...done.cardIds);
     for (const line of fresh?.lines ?? []) ids.push(line.cardId);
     ids.push(...couldFitPreviewIds(couldFitRaw));
-    for (const g of intakeRaw?.guesses ?? []) ids.push(g.cardId);
+    for (const run of intakeRaw?.runs ?? []) ids.push(...run.guesses);
     return ids.length > 0 ? ids : null;
   }, [boards, wanted, completions, fresh, couldFitRaw, intakeRaw]);
   const extraCards = useCardMap(extraIds);

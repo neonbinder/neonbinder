@@ -20,7 +20,9 @@ import {
   STAMP_SLACK_MS,
   SYNC_ALERTS_SHOWN,
   SYNC_CARDS_NAMED,
+  INTAKE_PREVIEW_CARDS,
   INTAKE_RECENT_MS,
+  INTAKE_RUNS,
   NEW_SETS_SHOWN,
   SALE_LINES,
   SET_LOAD_MS,
@@ -30,7 +32,7 @@ import {
   arrivalOf,
   baseCompletion,
   checklistLoads,
-  intakeRunShows,
+  intakeRunSorted,
   intakeRunTally,
   legacyStampOf,
   mergeStamped,
@@ -238,7 +240,6 @@ describe("intakeRunTally", () => {
         { id: "m0", cardId: "c0" },
         { id: "m3", cardId: "c3" },
       ],
-      unknown: ["m4"],
     });
   });
 
@@ -250,17 +251,15 @@ describe("intakeRunTally", () => {
   });
 
   test("an empty run counts nothing", () => {
-    expect(intakeRunTally([])).toEqual({ scans: 0, done: 0, needsYou: 0, unidentified: 0, guesses: [], unknown: [] });
+    expect(intakeRunTally([])).toEqual({ scans: 0, done: 0, needsYou: 0, unidentified: 0, guesses: [] });
   });
 });
 
-describe("intakeRunShows", () => {
-  const NOW_MS = 1_000_000_000_000;
-  test("an unfinished run shows however old; a finished one only within the week; an empty one never", () => {
-    expect(intakeRunShows({ scans: 4, done: 1 }, NOW_MS - 90 * DAY, NOW_MS)).toBe(true);
-    expect(intakeRunShows({ scans: 4, done: 4 }, NOW_MS - INTAKE_RECENT_MS, NOW_MS)).toBe(true);
-    expect(intakeRunShows({ scans: 4, done: 4 }, NOW_MS - INTAKE_RECENT_MS - 1, NOW_MS)).toBe(false);
-    expect(intakeRunShows({ scans: 0, done: 0 }, NOW_MS, NOW_MS)).toBe(false);
+describe("intakeRunSorted", () => {
+  test("every scan saved or set aside is sorted; one open scan is not; an empty run never is", () => {
+    expect(intakeRunSorted({ scans: 4, done: 4 })).toBe(true);
+    expect(intakeRunSorted({ scans: 4, done: 3 })).toBe(false);
+    expect(intakeRunSorted({ scans: 0, done: 0 })).toBe(false);
   });
 });
 
@@ -1139,7 +1138,7 @@ describe("intake", () => {
     await expect(s.t.query(api.dashboard.intake, {})).rejects.toThrow(/Not authenticated/);
   });
 
-  test("open scans counted across runs: a guess waits on a yes, none is unidentified; done ones are out", async () => {
+  test("open scans counted across runs and per run: a guess waits on a yes, none is unidentified; done ones are out", async () => {
     const s = await setup();
     const a = await run(s, [s.fx.gooden1, null, "saved", "aside"]);
     const b = await run(s, [s.fx.strawberry2], { homeId: s.homes.box });
@@ -1149,27 +1148,63 @@ describe("intake", () => {
     expect(out.truncated).toBe(false);
     expect(out.runs).toEqual(
       expect.arrayContaining([
-        { runId: a.runId, homeName: "Main", side: "collection", scans: 4, done: 2, lastActivityAt: expect.any(Number) },
-        { runId: b.runId, homeName: "Unsorted", side: "inventory", scans: 1, done: 0, lastActivityAt: expect.any(Number) },
+        {
+          runId: a.runId,
+          homeName: "Main",
+          side: "collection",
+          needsYou: 1,
+          unidentified: 1,
+          lastActivityAt: expect.any(Number),
+          guesses: [s.fx.gooden1],
+        },
+        {
+          runId: b.runId,
+          homeName: "Unsorted",
+          side: "inventory",
+          needsYou: 1,
+          unidentified: 0,
+          lastActivityAt: expect.any(Number),
+          guesses: [s.fx.strawberry2],
+        },
       ]),
     );
-    expect(out.guesses.map((g) => g.cardId).sort()).toEqual([s.fx.gooden1, s.fx.strawberry2].sort());
-    expect(out.unknown).toEqual([a.ids[1]]);
+    expect(out.runs).toHaveLength(2);
+    expect(out).toMatchObject({ sortedThisWeek: 0, sortedAllTime: 0, sortedAllTimeMore: false });
   });
 
-  test("a finished run shows for a week, then leaves; an unfinished one stays however old", async () => {
+  test("a sorted run is a count, never a row: this week within the week, and all-time; an open one stays however old", async () => {
     const s = await setup();
     const old = Date.now() - 30 * DAY;
     const lately = Date.now() - 2 * DAY;
-    const finishedLately = await run(s, ["saved"], { lastActivityAt: lately });
+    await run(s, ["saved", "aside"], { lastActivityAt: lately });
+    await run(s, ["saved"], { lastActivityAt: Date.now() - INTAKE_RECENT_MS + 60_000 });
     await run(s, ["saved"], { lastActivityAt: old });
     const stale = await run(s, [null], { lastActivityAt: old });
+    // No match rows yet (photos still processing): neither open nor sorted.
+    await run(s, []);
     const out = await s.me.query(api.dashboard.intake, {});
-    expect(out.runs.map((r) => r.runId).sort()).toEqual([finishedLately.runId, stale.runId].sort());
-    // Each run carries its last activity, so two runs into one home read apart on the dashboard.
-    expect(out.runs.find((r) => r.runId === finishedLately.runId)?.lastActivityAt).toBe(lately);
-    expect(out.runs.find((r) => r.runId === stale.runId)?.lastActivityAt).toBe(old);
-    expect(out).toMatchObject({ needsYou: 0, unidentified: 1 });
+    expect(out.runs.map((r) => r.runId)).toEqual([stale.runId]);
+    // The open run carries its last activity, so two runs into one home read apart on the dashboard.
+    expect(out.runs[0].lastActivityAt).toBe(old);
+    expect(out).toMatchObject({ needsYou: 0, unidentified: 1, sortedThisWeek: 2, sortedAllTime: 3, sortedAllTimeMore: false });
+  });
+
+  test("past the runs it reads, all-time is a floor", async () => {
+    const s = await setup();
+    for (let i = 0; i < INTAKE_RUNS + 1; i++) await run(s, ["saved"], { lastActivityAt: Date.now() - (i + 1) * 60_000 });
+    const out = await s.me.query(api.dashboard.intake, {});
+    expect(out.runs).toEqual([]);
+    expect(out).toMatchObject({ sortedThisWeek: INTAKE_RUNS, sortedAllTime: INTAKE_RUNS, sortedAllTimeMore: true });
+  });
+
+  test("thumbnails: a few best guesses per run, and a cap across runs", async () => {
+    const s = await setup();
+    const many = Array.from({ length: 5 }, () => s.fx.gooden1);
+    for (let i = 0; i < 4; i++) await run(s, many, { lastActivityAt: Date.now() - (i + 1) * 60_000 });
+    const out = await s.me.query(api.dashboard.intake, {});
+    expect(out.runs.map((r) => r.needsYou)).toEqual([5, 5, 5, 5]);
+    expect(out.runs.map((r) => r.guesses.length)).toEqual([3, 3, 3, 0]);
+    expect(out.runs.reduce((n, r) => n + r.guesses.length, 0)).toBe(INTAKE_PREVIEW_CARDS);
   });
 
   test("a run whose home is another collector's never names that home", async () => {
@@ -1178,8 +1213,10 @@ describe("intake", () => {
     const mine = await run(s, [null]);
     await run(s, [s.fx.gooden1], { homeId: s.homes.theirMain });
     const out = await s.me.query(api.dashboard.intake, {});
-    expect(out.runs).toEqual([{ runId: mine.runId, homeName: "Main", side: "collection", scans: 1, done: 0, lastActivityAt: expect.any(Number) }]);
-    expect(out).toMatchObject({ needsYou: 0, unidentified: 1, guesses: [] });
+    expect(out.runs).toEqual([
+      { runId: mine.runId, homeName: "Main", side: "collection", needsYou: 0, unidentified: 1, lastActivityAt: expect.any(Number), guesses: [] },
+    ]);
+    expect(out).toMatchObject({ needsYou: 0, unidentified: 1 });
   });
 
   test("nothing in intake, and another collector's runs are theirs: all zero", async () => {
@@ -1189,8 +1226,9 @@ describe("intake", () => {
       needsYou: 0,
       unidentified: 0,
       runs: [],
-      guesses: [],
-      unknown: [],
+      sortedThisWeek: 0,
+      sortedAllTime: 0,
+      sortedAllTimeMore: false,
       truncated: false,
     });
   });

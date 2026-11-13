@@ -17,6 +17,7 @@ import { HELD_PREVIEW, syncFrame } from "./SyncStatus";
 import type { ShelfBinder } from "./shelf-model";
 import { boxLabel, spineCssWidth, STARTER_ROOM_NARROW } from "./Shelf";
 import { NEED_CHIPS } from "./Boards";
+import { intakeCounts, sortedLine } from "./Hopper";
 
 function wrapper({ children }: { children: ReactNode }) {
   return <MemoryRouter initialEntries={["/demo"]}>{children}</MemoryRouter>;
@@ -33,7 +34,15 @@ function before(a: Element, b: Element): boolean {
   return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 }
 
-const NO_INTAKE: DashboardData["intake"] = { total: 0, waiting: 0, needsYou: 0, uploads: [], preview: [] };
+const NO_INTAKE: DashboardData["intake"] = {
+  total: 0,
+  needsYou: 0,
+  unidentified: 0,
+  uploads: [],
+  sortedThisWeek: 0,
+  sortedAllTime: 0,
+  sortedAllTimeMore: false,
+};
 
 describe("DashboardScreen: one screen, sections by data", () => {
   it("a collector with a bit of everything sees every section", () => {
@@ -164,89 +173,148 @@ describe("the open binder's place", () => {
 });
 
 describe("the hopper", () => {
-  it("says scan processing, never still being identified, and links each run to where it is finished", () => {
+  type Upload = DashboardData["intake"]["uploads"][number];
+  const upload = (over: Partial<Upload> = {}): Upload => ({
+    id: "r",
+    name: "Main",
+    needsYou: 1,
+    unidentified: 0,
+    side: "collection",
+    href: "/collection?tab=add&run=r",
+    lastScan: "Last scan 3:42 PM",
+    guesses: [],
+    ...over,
+  });
+  const hopper = () => screen.getByRole("region", { name: "In the Hopper" });
+
+  it("leads with the scans to finish, then one block per open run with a Finish this run link to where it is finished", () => {
     draw(getDashboard());
-    const hopper = screen.getByRole("region", { name: "In the Hopper" });
-    expect(within(hopper).getByRole("heading", { name: "18 scans processing" })).toBeTruthy();
-    expect(within(hopper).queryByText(/still being identified/)).toBeNull();
-    const shoebox = within(hopper).getByRole("link", { name: "Garage shoebox 6 of 24 scans done Finish on Collection Last scan 9:14 AM" });
+    expect(within(hopper()).getByText("2 scans need your yes · 18 to identify")).toBeTruthy();
+    const runs = within(hopper()).getByRole("list", { name: "Runs to finish" });
+    const blocks = within(runs).getAllByRole("listitem").filter((li) => li.parentElement === runs);
+    expect(blocks).toHaveLength(2);
+    expect(within(blocks[0]).getByRole("heading", { level: 3, name: "Garage shoebox on Collection" })).toBeTruthy();
+    expect(within(blocks[0]).getByText("2 need your yes · 16 to identify")).toBeTruthy();
+    const shoebox = within(blocks[0]).getByRole("link", { name: "Finish this run into Garage shoebox on Collection" });
     expect(shoebox.getAttribute("href")).toBe("/demo/collection?tab=add");
-    const show = within(hopper).getByRole("link", { name: "Show pickups 0 of 2 scans done Finish on Inventory Last scan yesterday" });
+    expect(within(blocks[1]).getByText("2 to identify")).toBeTruthy();
+    const show = within(blocks[1]).getByRole("link", { name: "Finish this run into Show pickups on Inventory" });
     expect(show.getAttribute("href")).toBe("/demo/inventory?side=inventory&tab=add");
+    // The sorted runs are one line of stats, never rows.
+    expect(within(hopper()).getByText("3 runs sorted this week · 14 all-time")).toBeTruthy();
   });
 
-  it("draws one empty sleeve per scan processing, six at most, then the rest as +N more, all hidden from a reader", () => {
-    const { container } = draw(getDashboard());
-    const hopper = screen.getByRole("region", { name: "In the Hopper" });
-    // 18 processing: six sleeves and "+12 more".
-    expect(within(hopper).getAllByRole("img", { name: "Scan processing", hidden: true })).toHaveLength(6);
-    expect(within(hopper).getByText("+12 more").closest("[aria-hidden='true']")).not.toBeNull();
-    // The strip names nothing of its own: the h3 is the one name for it.
-    expect(within(hopper).queryAllByRole("img")).toHaveLength(0);
-    expect(container.querySelector("[role='img'][aria-label$='scans processing']")).toBeNull();
-  });
-
-  it("a short pile is exactly as deep as the count, with no +N", () => {
-    const intake = getDashboard().intake;
-    draw({ ...getDashboard(), intake: { ...intake, total: intake.needsYou + 3, waiting: 3 } });
-    const hopper = screen.getByRole("region", { name: "In the Hopper" });
-    expect(within(hopper).getByRole("heading", { name: "3 scans processing" })).toBeTruthy();
-    expect(within(hopper).getAllByRole("img", { name: "Scan processing", hidden: true })).toHaveLength(3);
-    expect(within(hopper).queryByText(/more$/)).toBeNull();
-  });
-
-  it("a run link is named by what it shows, with no aria-label of its own", () => {
+  it("drops the old intake note, the explanation, the processing pile and the progress bars", () => {
     draw(getDashboard());
-    const hopper = screen.getByRole("region", { name: "In the Hopper" });
-    for (const link of within(hopper).getAllByRole("link")) expect(link.getAttribute("aria-label")).toBeNull();
+    expect(within(hopper()).queryByText(/in intake/)).toBeNull();
+    expect(within(hopper()).queryByText(/We think we know these/)).toBeNull();
+    expect(within(hopper()).queryByText(/processing/)).toBeNull();
+    expect(within(hopper()).queryByText(/of \d+ scans? done/)).toBeNull();
+    expect(within(hopper()).queryAllByRole("img", { name: "Scan processing", hidden: true })).toHaveLength(0);
   });
 
-  it("the runs' scans not yet done add up to the hopper's total", () => {
-    const { intake } = getDashboard();
-    expect(intake.uploads.reduce((n, u) => n + u.scans - u.done, 0)).toBe(intake.total);
-    expect(intake.waiting + intake.needsYou).toBe(intake.total);
+  it("a run's best guesses open their card panels, named by title; a Want List guess wears its ring and flag", () => {
+    const want = getDashboard().wantList[0];
+    const guess = getDashboard().intake.uploads[0].guesses[0];
+    draw({
+      ...getDashboard(),
+      intake: { ...NO_INTAKE, total: 2, needsYou: 2, uploads: [upload({ needsYou: 2, guesses: [guess, want] })] },
+    });
+    const block = within(hopper()).getAllByRole("listitem")[0];
+    expect(within(block).getByText("On your Want List")).toBeTruthy();
+    const guesses = within(block).getByRole("list", { name: "Best guesses waiting on your yes" });
+    expect(within(guesses).getAllByRole("link")).toHaveLength(2);
+    const links = [
+      within(guesses).getByRole("link", { name: guess.title }),
+      within(guesses).getByRole("link", { name: `${want.title}, on your Want List` }),
+    ];
+    for (const link of links) expect(link.getAttribute("href")).toMatch(/^\/demo\?detail=[^&]+$/);
+    // The pictures name nothing of their own: the title is the one name.
+    expect(within(block).queryAllByRole("img")).toHaveLength(0);
   });
 
-  it("a run with only yeses left still links to its run", () => {
+  it("two open runs into one binder read apart by their last scan, on screen and in the button's name", () => {
     draw({
       ...getDashboard(),
       intake: {
-        total: 1,
-        waiting: 0,
+        ...NO_INTAKE,
+        total: 2,
         needsYou: 1,
+        unidentified: 1,
         uploads: [
-          { id: "r", name: "Main", scans: 1, done: 0, side: "collection", href: "/collection?tab=add&run=r", lastScan: "Last scan 3:42 PM" },
+          upload({ id: "a", href: "/collection?tab=add&run=a" }),
+          upload({ id: "b", needsYou: 0, unidentified: 1, href: "/collection?tab=add&run=b", lastScan: "Last scan yesterday" }),
+          upload({ id: "c", name: "Main", side: "inventory", href: "/inventory?tab=add&run=c", lastScan: "Last scan 2 days ago" }),
         ],
-        preview: [{ id: "s", guess: getDashboard().intake.preview[0].guess }],
       },
     });
-    const hopper = screen.getByRole("region", { name: "In the Hopper" });
-    expect(within(hopper).queryByText(/processing/)).toBeNull();
-    expect(within(hopper).getByRole("link", { name: "Main 0 of 1 scan done Finish on Collection Last scan 3:42 PM" }).getAttribute("href")).toBe(
-      "/collection?tab=add&run=r",
+    expect(within(hopper()).getByText("Last scan 3:42 PM")).toBeTruthy();
+    expect(within(hopper()).getByRole("link", { name: "Finish this run into Main on Collection, last scan 3:42 PM" }).getAttribute("href")).toBe(
+      "/collection?tab=add&run=a",
     );
+    expect(within(hopper()).getByRole("link", { name: "Finish this run into Main on Collection, last scan yesterday" }).getAttribute("href")).toBe(
+      "/collection?tab=add&run=b",
+    );
+    // A box of the same name is told apart by its screen: no time.
+    expect(within(hopper()).getByRole("link", { name: "Finish this run into Main on Inventory" })).toBeTruthy();
+    expect(within(hopper()).queryByText("Last scan 2 days ago")).toBeNull();
   });
 
-  it("two runs into one binder read apart by their last scan, and a sorted run says so instead of Finish", () => {
-    const run = { side: "collection" as const, href: "/collection?tab=add&run=a" };
-    draw({
-      ...getDashboard(),
-      intake: {
-        total: 1,
-        waiting: 1,
-        needsYou: 0,
-        uploads: [
-          { ...run, id: "a", name: "Main", scans: 1, done: 0, lastScan: "Last scan 3:42 PM" },
-          { ...run, id: "b", name: "Main", scans: 2, done: 2, href: "/collection?tab=add&run=b", lastScan: "Last scan yesterday" },
-        ],
-        preview: [],
-      },
-    });
-    const hopper = screen.getByRole("region", { name: "In the Hopper" });
-    expect(within(hopper).getByRole("link", { name: "Main 0 of 1 scan done Finish on Collection Last scan 3:42 PM" })).toBeTruthy();
-    expect(
-      within(hopper).getByRole("link", { name: "Main 2 of 2 scans done All sorted. Open on Collection Last scan yesterday" }).getAttribute("href"),
-    ).toBe("/collection?tab=add&run=b");
+  it("with nothing open but a run sorted this week, the hopper is just the stat; with neither, no hopper", () => {
+    draw({ ...getDashboard(), intake: { ...NO_INTAKE, sortedThisWeek: 1, sortedAllTime: 1 } });
+    expect(within(hopper()).getByText("1 run sorted this week")).toBeTruthy();
+    expect(within(hopper()).queryByRole("list")).toBeNull();
+    expect(within(hopper()).queryByRole("link")).toBeNull();
+  });
+
+  it("all-time on its own does not hold the panel open", () => {
+    draw({ ...getDashboard(), intake: { ...NO_INTAKE, sortedAllTime: 9 } });
+    expect(heading("In the Hopper")).toBeNull();
+  });
+
+  it("the runs' open scans add up to the hopper's total", () => {
+    const { intake } = getDashboard();
+    expect(intake.uploads.reduce((n, u) => n + u.needsYou + u.unidentified, 0)).toBe(intake.total);
+    expect(intake.unidentified + intake.needsYou).toBe(intake.total);
+  });
+});
+
+describe("Out the Door", () => {
+  it("with orders to ship, links to the Pick List where they are pulled", () => {
+    draw(getDashboard());
+    const ship = screen.getByRole("region", { name: "Out the Door" });
+    const pick = within(ship).getByRole("link", { name: "Pull them on the Pick List" });
+    expect(pick.getAttribute("href")).toBe("/demo/inventory?tab=pick");
+  });
+
+  it("all shipped: no Pick List link", () => {
+    const data = getDashboard();
+    draw({ ...data, sales: { ...data.sales!, unshipped: [] } });
+    expect(screen.getByText("All shipped. Nice.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Pull them on the Pick List" })).toBeNull();
+  });
+});
+
+describe("the hopper's words", () => {
+  it("counts what is left: a zero part left out, the lead line with its noun", () => {
+    expect(intakeCounts({ needsYou: 7, unidentified: 1 }, "scan")).toBe("7 scans need your yes · 1 to identify");
+    expect(intakeCounts({ needsYou: 1, unidentified: 0 }, "scan")).toBe("1 scan needs your yes");
+    expect(intakeCounts({ needsYou: 0, unidentified: 1 }, "scan")).toBe("1 scan to identify");
+    expect(intakeCounts({ needsYou: 5, unidentified: 1 })).toBe("5 need your yes · 1 to identify");
+    expect(intakeCounts({ needsYou: 1, unidentified: 0 })).toBe("1 needs your yes");
+    expect(intakeCounts({ needsYou: 0, unidentified: 2 })).toBe("2 to identify");
+  });
+
+  it("says the runs sorted: a zero part left out, all-time only when it adds something, a floor as N+", () => {
+    const line = (week: number, all: number, more = false) =>
+      sortedLine({ sortedThisWeek: week, sortedAllTime: all, sortedAllTimeMore: more });
+    expect(line(6, 42)).toBe("6 runs sorted this week · 42 all-time");
+    expect(line(1, 1)).toBe("1 run sorted this week");
+    expect(line(20, 20, true)).toBe("20 runs sorted this week · 20+ all-time");
+    expect(line(0, 42)).toBe("42 runs sorted all-time");
+    expect(line(0, 1)).toBe("1 run sorted all-time");
+    expect(line(0, 18, true)).toBe("18+ runs sorted all-time");
+    expect(line(0, 0)).toBeNull();
   });
 });
 
@@ -537,7 +605,9 @@ describe("audit fixes (NEO-464)", () => {
     const board = screen.getAllByRole("article").find((a) => a.textContent?.includes("Need:"))!;
     const need = within(board).getAllByRole("link").find((l) => l.getAttribute("href")?.includes("detail="))!;
     expect(need.className).toMatch(/(^| )underline( |$)/);
-    const order = within(screen.getByRole("region", { name: "Out the Door" })).getAllByRole("link").find((l) => !l.getAttribute("aria-hidden"))!;
+    const order = within(screen.getByRole("region", { name: "Out the Door" }))
+      .getAllByRole("link")
+      .find((l) => !l.getAttribute("aria-hidden") && l.getAttribute("href")?.includes("detail="))!;
     expect(order.className).toMatch(/(^| )underline( |$)/);
   });
 });
