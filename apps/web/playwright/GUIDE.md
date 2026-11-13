@@ -1089,7 +1089,7 @@ sessions at once.
    `convex-logs-*-a<attempt>` artifacts, before deciding which branch the spec took.
 5. A red during a `pr-queue` turn is never rerun inside the turn. The turn
    passes at once, and the `pr-queue` skill's triage decides what happens
-   next: a known `ci-fail` failure rejoins the queue once, anything else goes
+   next: a known `ci-fail` failure rejoins the queue every time, anything else goes
    to the planner and then waits for Jason. To fix one, reproduce that spec
    locally on your own deployment or against the PR preview (above), and push
    only on the next turn. A rerun cannot fix a broken preview: only a new

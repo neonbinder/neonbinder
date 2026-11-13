@@ -337,7 +337,7 @@ PR body must contain:
 Label it `dependencies` (and `github_actions` if Actions were bumped).
 
 A red passes the turn and goes through the `pr-queue` triage (a known `ci-fail`
-failure rejoins once; anything else goes to the planner and waits for the user). `main`'s ruleset requires branches be up to
+failure rejoins every time; anything else goes to the planner and waits for the user). `main`'s ruleset requires branches be up to
 date, which is why the batch is one PR, not N.
 
 ---
