@@ -126,7 +126,7 @@
 - [Agent Bash skips load-nvmrc](reference_agent_bash_skips_load_nvmrc.md) — the agent's Bash tool does not run the load-nvmrc function; prepend the pinned node version's bin to PATH for every gate
 - [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel
 - [Container's own cqw resolves upward](reference_container_own_cqw_resolves_upward.md) — size the container itself in %, cqw only on children; a cqw radius on the root made a pill (NEO-350); happy-dom drops min()/cqw inline widths, test a pure helper
-- [Convex-free page harness](reference_convex_free_page_harness.md) — screenshot a page behind ProtectedLayout: temp harness.html + MemoryRouter, spare-port Vite, Playwright
+- [Convex-free page harness](reference_convex_free_page_harness.md) — screenshot a page behind ProtectedLayout: temp harness + MemoryRouter, spare-port Vite, Playwright; out-of-tree scratchpad variant + main/ baseline; measure the real column (side nav gutter at lg)
 - [Print-only region needs the :has() prefix](reference_print_only_region_has_specificity.md) — visible rule must match hide rule weight; fullPage print-emulated shots go blank
 - [Parallel builders share the scratchpad](reference_parallel_builders_share_the_scratchpad.md) — per-agent subdir for scripts/shots; own Vite port; check root for stray folders
 - [Wrapped select name includes its option](reference_wrapping_label_select_name_includes_option.md) — label-wrapped <select> name = "Binder All"; aria-label the select, aria-hide the word
@@ -225,3 +225,6 @@
 - [Picker context league is the row's own feature](reference_picker_context_league_is_the_rows_own_feature.md) — pickerCandidates reads L off the context row only (year walks up); prove tiers on a tree built via addCustomSelectorOption
 - [sr-only suffix in a name is unstable](reference_sr_only_suffix_in_a_name_is_unstable.md) — extra screen-reader words on a role=heading: aria-label, not an sr-only child (happy-dom pads it)
 - [Image-sized link is 0 px wide before decode](reference_image_sized_link_is_zero_wide_before_decode.md) — `h-N w-auto` img in a link fails axe target-size pre-load; frame the link aspect-[5/7] h-N
+- [Setup project is once per seed](reference_setup_project_is_once_per_seed.md) — rerun on a seeded deployment reds at "No manufacturers available" by design; bootstrap only
+- [Device preference store](reference_device_preference_store.md) — per-device setting shared by page + layout: one useSyncExternalStore module, storage try/catch, test reset in afterEach
+- [Segmented switch is a radiogroup](reference_segmented_switch_is_a_radiogroup.md) — one-of-two pill = roving radiogroup; reserve the check slot; padded track keeps focus ring off the cyan fill

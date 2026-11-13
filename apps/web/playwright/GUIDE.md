@@ -274,7 +274,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/pick-list.ts`: the Pick List (NEO-500), one set of handles for the
   public demo and the signed-in list: `pickList(page)` (region, table, views,
   filters, status line, Undo), `pulledToggle` / `pickRow` / `pictureButton` by
-  how a row's name begins, `pickGroup` (a set, Can't find it, Sold since you
+  how a row's name begins, `variantTag` (the variant's own name, titled with
+  its kind) and `nameCell` (the cell naming the player, wide or phone; NEO-522),
+  `pickGroup` (a set, Can't find it, Sold since you
   started), `seen` (the table draws each row twice, one copy hidden),
   `openMoreFilters` / `filterBy` / `sortBy` (a phone folds filters and sorts
   from a select), and the order seed hop: `seedPickOrder` and
