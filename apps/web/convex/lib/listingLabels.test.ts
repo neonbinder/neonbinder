@@ -3,8 +3,15 @@
  * matching the collection screens.
  */
 
+import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { brandedSetLabel, cardLabelOf, setAndVariantLabel } from "./listingLabels";
+import type { Id } from "../_generated/dataModel";
+import schema from "../schema";
+import { brandedSetLabel, cardLabelOf, ListingLabels, setAndVariantLabel, shownBrandName } from "./listingLabels";
+
+const modules = (import.meta as unknown as {
+  glob: (pattern: string) => Record<string, () => Promise<unknown>>;
+}).glob("../**/*.*s");
 
 const parts = (extra: Partial<Parameters<typeof setAndVariantLabel>[0]>) => ({
   season: "1996",
@@ -82,5 +89,74 @@ describe("cardLabelOf", () => {
   test("no player: the card's own NB name; nothing at all: undefined", () => {
     expect(cardLabelOf([], " Team Checklist ")).toBe("Team Checklist");
     expect(cardLabelOf([], "  ")).toBeUndefined();
+  });
+});
+
+describe("NEO-527 — the year's brand-unknown row is never in a label", () => {
+  // Named "Unknown" here, but only the flag may decide: the operator can rename it.
+  const unknown = (name: string, season = "2026") => ({
+    season,
+    name,
+    manufacturer: { _id: "m" as never, name: "Unknown" },
+    manufacturerBrandUnknown: true as const,
+  });
+
+  test("brandedSetLabel names the set alone under the brand-unknown row", () => {
+    expect(brandedSetLabel(unknown("Bowman"))).toBe("2026 Bowman");
+    expect(brandedSetLabel(unknown("Starline Long John Silver", "1990"))).toBe("1990 Starline Long John Silver");
+  });
+
+  test("the flag decides, never the name: a real brand called Unknown is still named", () => {
+    expect(brandedSetLabel({ season: "2026", name: "Bowman", manufacturer: { _id: "m" as never, name: "Unknown" } })).toBe(
+      "2026 Unknown Bowman",
+    );
+    expect(brandedSetLabel({ ...unknown("Bowman"), manufacturer: { _id: "m" as never, name: "Zzz Unsorted" } })).toBe(
+      "2026 Bowman",
+    );
+  });
+
+  test("shownBrandName is null for the brand-unknown row and the name otherwise", () => {
+    expect(shownBrandName(unknown("Bowman"))).toBeNull();
+    expect(shownBrandName({ manufacturer: { _id: "m" as never, name: "Topps" } })).toBe("Topps");
+    expect(shownBrandName({ manufacturer: null })).toBeNull();
+  });
+
+  test("ListingLabels with brand: true names the set and variant without it, a real brand with it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await t.run(async (ctx) => {
+      const row = (level: string, value: string, parentId?: Id<"selectorOptions">, extra: Record<string, unknown> = {}) =>
+        ctx.db.insert("selectorOptions", {
+          level,
+          value,
+          platformData: {},
+          isCustom: false,
+          children: [],
+          ...(parentId ? { parentId } : {}),
+          lastUpdated: 1,
+          ...extra,
+        } as never);
+      const sport = await row("sport", "Baseball");
+      const year = await row("year", "2026", sport);
+      const flagged = await row("manufacturer", "Unknown", year, { metadata: { isBrandUnknown: true } });
+      const set = await row("setName", "Bowman Chrome", flagged);
+      const base = await row("variantType", "Base", set);
+      const parallels = await row("variantType", "Parallels", set);
+      const refractor = await row("insert", "Refractor", parallels);
+      const topps = await row("manufacturer", "Topps", year);
+      const finest = await row("setName", "Finest", topps);
+      const finestBase = await row("variantType", "Base", finest);
+      return { base, refractor, set, finestBase };
+    });
+    const labels = await t.run(async (ctx) => {
+      const branded = new ListingLabels(ctx, { brand: true });
+      return [
+        await branded.setLabel(ids.base),
+        await branded.setLabel(ids.refractor),
+        await branded.setLabel(ids.set),
+        await branded.setLabel(ids.finestBase),
+      ];
+    });
+    expect(labels).toEqual(["2026 Bowman Chrome", "2026 Bowman Chrome Refractor", "2026 Bowman Chrome", "2026 Topps Finest"]);
+    for (const label of labels) expect(label).not.toMatch(/unknown/i);
   });
 });

@@ -54,6 +54,12 @@ export interface StaticColumnProps {
   selectedColor: string;
   /** Keep the given order (a parallel ladder reads low → high) instead of A–Z. */
   keepOrder?: boolean;
+  /**
+   * NEO-527 — what the summary card calls the picked row, when that differs
+   * from the column's title (a set picked in a "Brands and sets" column is a
+   * set). Defaults to `title`.
+   */
+  summaryTitle?: string;
 }
 
 export default function StaticColumn({
@@ -65,6 +71,7 @@ export default function StaticColumn({
   setExpanded,
   selectedColor,
   keepOrder = false,
+  summaryTitle,
 }: StaticColumnProps) {
   const [searchFilter, setSearchFilter] = useState("");
   const baseId = useId();
@@ -75,10 +82,13 @@ export default function StaticColumn({
   const collapsedCardRef = useRef<HTMLButtonElement | null>(null);
 
   const selected = items.find((i) => i.id === selectedId);
-  const sorted = useMemo(
-    () => (keepOrder ? items : [...items].sort((a, b) => compareOptionNames(a.name, b.name))),
-    [items, keepOrder],
-  );
+  const sorted = useMemo(() => {
+    const ordered = keepOrder ? items : [...items].sort((a, b) => compareOptionNames(a.name, b.name));
+    // NEO-527: grouped rows follow the ungrouped ones, group by group, so the
+    // keyboard walks them in the order they are drawn.
+    if (!ordered.some((i) => i.group)) return ordered;
+    return [...ordered.filter((i) => !i.group), ...groupsOf(ordered).flatMap((g) => ordered.filter((i) => i.group === g))];
+  }, [items, keepOrder]);
   const showsCollapsedCard = !!(selectedId && selected && !expanded);
   const needle = searchFilter.toLowerCase();
   const rows = searchFilter ? sorted.filter((i) => i.name.toLowerCase().includes(needle)) : sorted;
@@ -194,19 +204,42 @@ export default function StaticColumn({
     }
   };
 
+  const renderOption = (item: ColumnItem) => {
+    const isSelected = selectedId === item.id;
+    const isHighlighted = highlighted === item.id;
+    return (
+      <button
+        key={item.id}
+        id={optionDomId(item.id)}
+        type="button"
+        role="option"
+        aria-selected={isSelected}
+        tabIndex={-1}
+        onClick={() => select(item.id)}
+        onKeyDown={(e) => activateOnEnter(e, () => select(item.id))}
+        className={`w-full text-left p-3 rounded-md border transition-colors focus-outline ${
+          isSelected ? selectedColor : isHighlighted ? HIGHLIGHT_TINT : ROW_IDLE
+        }${isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""}`}
+      >
+        <span className="block font-semibold">{item.name}</span>
+        {item.description && <span className={`block ${DESCRIPTION_TONE}`}>{item.description}</span>}
+      </button>
+    );
+  };
+
   if (showsCollapsedCard && selected) {
     return (
       <button
         ref={collapsedCardRef}
         type="button"
         className={`w-full text-left ${COLUMN_CARD} flex items-center justify-between gap-3 cursor-pointer text-ink hover:bg-hover-raised focus-outline`}
-        aria-label={`${title}: ${selected.name}, change`}
+        aria-label={`${summaryTitle ?? title}: ${selected.name}, change`}
         aria-expanded={false}
         onClick={() => setExpanded(true)}
         onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
       >
         <span className="min-w-0">
-          <span className="block text-xs text-ink-3">{title}</span>
+          <span className="block text-xs text-ink-3">{summaryTitle ?? title}</span>
           <span className="block font-semibold truncate">{selected.name}</span>
         </span>
         <ChevronDownIcon className="w-5 h-5 shrink-0 text-ink-3" aria-hidden="true" />
@@ -258,7 +291,8 @@ export default function StaticColumn({
       </p>
       {rows.length === 0 ? (
         <p className="text-sm text-ink-3 py-2">
-          {searchFilter ? "No matches found" : `No ${title.toLowerCase()} here yet.`}
+          {/* One line for every title: a column's title can change under it (NEO-527). */}
+          {searchFilter ? "No matches found" : "Nothing here yet."}
         </p>
       ) : (
         <div
@@ -268,32 +302,30 @@ export default function StaticColumn({
           aria-label={title}
           className="space-y-2 max-h-[400px] overflow-y-auto"
         >
-          {rows.map((item) => {
-            const isSelected = selectedId === item.id;
-            const isHighlighted = highlighted === item.id;
-            return (
-              <button
-                key={item.id}
-                id={optionDomId(item.id)}
-                type="button"
-                role="option"
-                aria-selected={isSelected}
-                tabIndex={-1}
-                onClick={() => select(item.id)}
-                onKeyDown={(e) => activateOnEnter(e, () => select(item.id))}
-                className={`w-full text-left p-3 rounded-md border transition-colors focus-outline ${
-                  isSelected ? selectedColor : isHighlighted ? HIGHLIGHT_TINT : ROW_IDLE
-                }${isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""}`}
-              >
-                <span className="block font-semibold">{item.name}</span>
-                {item.description && (
-                  <span className={`block ${DESCRIPTION_TONE}`}>{item.description}</span>
-                )}
-              </button>
-            );
-          })}
+          {rows.filter((item) => !item.group).map(renderOption)}
+          {groupsOf(rows).map((label) => (
+            // NEO-527: a quiet, labelled divider. The label is the group's
+            // name for a screen reader, drawn once and hidden from it; the
+            // keyboard never lands on it (only options are highlighted).
+            <div
+              key={`group:${label}`}
+              role="group"
+              aria-label={label}
+              className="space-y-2 border-t border-rule-strong pt-3 first:border-t-0 first:pt-0"
+            >
+              <p aria-hidden="true" className="px-1 text-xs text-ink-3">
+                {label}
+              </p>
+              {rows.filter((item) => item.group === label).map(renderOption)}
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
+}
+
+/** The group labels among `items`, in the order they first appear. */
+function groupsOf(items: readonly ColumnItem[]): string[] {
+  return [...new Set(items.flatMap((i) => (i.group ? [i.group] : [])))];
 }

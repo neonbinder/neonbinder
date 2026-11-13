@@ -12,14 +12,15 @@
 // the delete takes the set's count back to zero, which hides it from the
 // collector again.
 //
-// R3: the collector cascade is drilled locally, as in
-// tests/collection/card-collectors-own-cannot-be-deleted.spec.ts, because
-// `support/set-builder.ts` drives the admin builder.
+// R3: the collector cascade is drilled through `collectorCascade`
+// (support/collection.ts), the one implementation (NEO-527: it owns the brand
+// column's title).
 //
 // MINTED NAMES are single tokens: the set `cnote-<worker key>-<attempt>`, the card
 // number `367-<attempt>` and the card name `Noted<token>`.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
+import { collectorCascade } from "../../support/collection";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
 
 test(
@@ -70,15 +71,7 @@ test(
     await expect(cardNameBox).toBeHidden();
 
     // --- The collector sees the edited note ----------------------------------
-    const cascade = page.getByRole("group", { name: "Sport, year, brand and set" });
-    const drill = async (column: string, option: string) => {
-      await cascade
-        .getByRole("listbox", { name: column })
-        .getByRole("option")
-        .filter({ has: page.getByText(option, { exact: true }) })
-        .click();
-      await expect(cascade.getByRole("button", { name: `${column}: ${option}, change` })).toBeVisible();
-    };
+    const { drill } = collectorCascade(page);
     const short = `#${number}`;
     const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*#${escapeRe(number)}`) });
     /** The collector's card detail for this card, open. */

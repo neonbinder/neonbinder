@@ -2,6 +2,14 @@
 // NEO-294, two halves of one placement rule on live marketplace data:
 //   1. Sync Sets on a cold year files a BSC set whose name starts with a known
 //      brand (CMC, Baseball 1990) under a brand row the sync CREATES for it.
+//      Since NEO-527 the list also names the majors SportLots used to supply,
+//      so the same sync files the 1990 flagship "Topps" under a Topps row it
+//      creates (with SportLots paused, nothing else can). Topps stands for
+//      the whole list: every major goes through the same matcher, so one live
+//      major proves the path, and `convex/knownBrands.test.ts` pins each name.
+//      The paused-year backfill (`convex/backfillKnownBrands.ts`, re-filing
+//      sets a year already holds under Unknown) is proved by its unit test
+//      only (`convex/backfillKnownBrands.test.ts`); no spec runs it.
 //   2. The operator moves it to Unknown; a FORCED year-wide Sync Sets leaves it
 //      exactly where the operator put it.
 // Sole writer of Baseball 1990; FRESH-ONLY per deployment (a second run finds
@@ -22,6 +30,18 @@ import type { Locator, Page } from "@playwright/test";
 const SPORT = "Baseball";
 const YEAR = "1990";
 const BRAND = "CMC";
+/** NEO-527: a major SportLots used to supply, now on NB's own known-brands list. */
+const MAJOR = "Topps";
+
+/**
+ * The year's flagship set named exactly `MAJOR`, as the All Brands view lists
+ * it: the set's name, then the brand it is filed under ("Topps Topps").
+ */
+function flagship(page: Page, brand: string): Locator {
+  return page
+    .getByRole("listbox", { name: "Sets" satisfies Column })
+    .getByRole("option", { name: `${MAJOR} ${brand}`, exact: true });
+}
 
 /** The first set row in the All Brands view whose name starts with the brand. */
 function brandSet(page: Page): Locator {
@@ -42,6 +62,16 @@ test(
     // ── STEP 1: cold drill to Baseball > 1990 > All Brands; the year-wide Sets sync has run.
     await drillToColdManufacturer(page, env, { sport: SPORT, year: YEAR, manufacturer: "All Brands", expectSets: true });
     await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 15_000 });
+
+    // ── STEP 1b (NEO-527): the list names the majors SportLots used to supply.
+    // With SportLots paused nothing else can mint a Topps row for 1990 (the
+    // seed never drills the year, and this spec is its sole writer), so the
+    // flagship "Topps" set reads as filed under a sync-made Topps brand, never
+    // under Unknown. Live, SportLots' own brand list supplies the row and the
+    // claim still holds.
+    await columnSearch(page, "Sets").fill(MAJOR);
+    await expect(flagship(page, MAJOR)).toBeVisible();
+    await expect(flagship(page, "Unknown")).toHaveCount(0);
 
     // ── STEP 2: the sync created a CMC brand row for the set; picking the set
     // files the cascade under it.

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { ConvexCollectionProvider, UNSAVED_LINE_MESSAGE, __test } from "./convexStore";
+import { ConvexCollectionProvider, UNSAVED_LINE_MESSAGE, __test, toCardWithPath } from "./convexStore";
 import { isOptimisticId } from "../lineKeys";
 import {
   collectionCopiesIn,
@@ -309,6 +309,52 @@ describe("the drill", () => {
   it("rows above a set carry no counts", () => {
     const d = toDrillItem("year", item({ level: "year", name: "2024", kind: null, childCount: 4, cardCount: null, baseCardCount: null }));
     expect(d).toEqual({ id: "x", level: "year", name: "2024", hasChildren: true });
+  });
+
+  it("NEO-527: a set listed in a brand column in place of the brand-unknown row is a set carrying that row's id", () => {
+    const d = toDrillItem(
+      "brand",
+      item({ _id: "set9", level: "setName", name: "Starline", kind: null, childCount: 2, cardCount: null, baseCardCount: null, brandId: "unk" }),
+    );
+    expect(d).toEqual({ id: "set9", level: "set", name: "Starline", hasChildren: true, brandId: "unk" });
+    expect(toDrillItem("brand", item({ level: "manufacturer", name: "Topps", kind: null, childCount: 4 })).brandId).toBeUndefined();
+  });
+});
+
+describe("NEO-527: the brand-unknown row's name never reaches the view", () => {
+  const raw = (setExtra: object) =>
+    ({
+      _id: "c1",
+      cardNumber: "87",
+      cardName: "Purdy",
+      sortOrder: 0,
+      variantId: "vt",
+      features: [],
+      listingTitle: "#87",
+      players: [],
+      teams: [],
+      set: {
+        _id: "set1",
+        name: "Bowman",
+        season: "2026",
+        sport: node("sp", "Football"),
+        year: node("y", "2026"),
+        manufacturer: node("unk", "Unknown"),
+        ...setExtra,
+      },
+      variant: { _id: "vt", level: "variantType", name: "Base", kind: "base", variantType: node("vt", "Base"), insert: null, parallel: null, cardCount: null, baseCardCount: null },
+    }) as never;
+
+  it("keeps the flagged brand's id for navigation but never its name", () => {
+    const card = toCardWithPath(raw({ manufacturerBrandUnknown: true }));
+    expect(card?.set.brand).toEqual({ id: "unk", name: "" });
+    expect(card?.set.brandUnknown).toBe(true);
+  });
+
+  it("a real brand keeps its name and carries no flag", () => {
+    const card = toCardWithPath(raw({ manufacturer: node("b", "Topps") }));
+    expect(card?.set.brand).toEqual({ id: "b", name: "Topps" });
+    expect(card?.set.brandUnknown).toBeUndefined();
   });
 });
 

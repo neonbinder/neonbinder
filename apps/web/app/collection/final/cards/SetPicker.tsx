@@ -2,9 +2,11 @@ import { useState } from "react";
 import { Input } from "@/components/primitives/Input";
 import { FOCUS, LABEL, PRIMARY_BUTTON, SELECT } from "../../prototypes/p3/classes";
 import P3Dialog from "../../prototypes/p3/Dialog";
+import { DrillOptions } from "../catalog/DrillOptions";
+import { brandFieldLabel } from "../catalog/drill";
 import { useSearchText } from "../catalog/search";
 import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
-import { setLabel } from "../data/labels";
+import { setLabel, setWhereLabel } from "../data/labels";
 import { searchable, useBuildingSets, useCollectionActions, useDrill, useSuggestions } from "../data/store";
 import type { DrillItem, NamedRef, SetRef } from "../data/types";
 import { useMyCards } from "./context";
@@ -30,23 +32,30 @@ export default function SetPicker({ onClose }: { onClose: () => void }) {
   const sports = useDrill("sport", {});
   const years = useDrill(sport ? "year" : null, sport ? { sport } : {});
   const brands = useDrill(sport && year ? "brand" : null, sport && year ? { sport, year } : {});
-  const sets = useDrill(sport && year && brand ? "set" : null, sport && year && brand ? { sport, year, brand } : {});
+  // NEO-527: a set listed in the brand column (in place of the year's
+  // brand-unknown row, never shown) is the one set browsed; there is no Sets
+  // list under it to read.
+  const setInBrands = brands?.find((i) => i.id === brand && i.brandId);
+  const sets = useDrill(
+    sport && year && brand && !setInBrands ? "set" : null,
+    sport && year && brand && !setInBrands ? { sport, year, brand } : {},
+  );
   const named = (items: DrillItem[] | undefined, id: string): NamedRef => ({
     id,
     name: items?.find((i) => i.id === id)?.name ?? "",
   });
-  const browsed: SetRef[] =
-    sets?.map((s) => {
-      const y = named(years, year).name;
-      return {
-        id: s.id,
-        name: s.name,
-        season: y,
-        year: Number.parseInt(y, 10) || 0,
-        brand: named(brands, brand),
-        sport: named(sports, sport),
-      };
-    }) ?? [];
+  const browsedFrom = (s: DrillItem): SetRef => {
+    const y = named(years, year).name;
+    return {
+      id: s.id,
+      name: s.name,
+      season: y,
+      year: Number.parseInt(y, 10) || 0,
+      ...(s.brandId ? { brand: { id: s.brandId, name: "" }, brandUnknown: true as const } : { brand: named(brands, brand) }),
+      sport: named(sports, sport),
+    };
+  };
+  const browsed: SetRef[] | undefined = setInBrands ? [browsedFrom(setInBrands)] : sets?.map(browsedFrom);
 
   const searching = searchable(query.trim());
 
@@ -90,10 +99,15 @@ export default function SetPicker({ onClose }: { onClose: () => void }) {
               setYear(v);
               setBrand("");
             }} />
-          <Pick label="Brand" value={brand} items={sport && year ? brands : []} onChange={setBrand} />
+          <Pick
+            label={brandFieldLabel(sport && year ? brands : [])}
+            value={brand}
+            items={sport && year ? brands : []}
+            onChange={setBrand}
+          />
         </div>
       </fieldset>
-      {sport && year && brand && (sets === undefined ? <SkeletonBars rows={3} className="mt-4" /> : <SetRows sets={browsed} />)}
+      {sport && year && brand && (browsed === undefined ? <SkeletonBars rows={3} className="mt-4" /> : <SetRows sets={browsed} />)}
 
       <div className="mt-4 flex justify-end">
         <button type="button" onClick={onClose} className={PRIMARY_BUTTON}>
@@ -139,11 +153,7 @@ function Pick({
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">{items === undefined ? "Loading…" : `Any ${label.toLowerCase()}`}</option>
-        {items?.map((i) => (
-          <option key={i.id} value={i.id}>
-            {i.name}
-          </option>
-        ))}
+        <DrillOptions items={items ?? []} />
       </select>
     </label>
   );
@@ -159,7 +169,7 @@ function SetRows({ sets }: { sets: SetRef[] }) {
       {sets.map((s) => {
         const on = building?.some((b) => b.id === s.id) ?? false;
         const label = setLabel(s);
-        const where = [s.sport.name, s.brand.name].filter(Boolean).join(", ");
+        const where = setWhereLabel(s);
         return (
           <li key={s.id} className="flex items-center gap-3 rounded-lg border border-rule bg-field/60 px-3 py-2">
             <div className="min-w-0 flex-1">
