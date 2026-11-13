@@ -12,7 +12,7 @@ import { useListing } from "../data/store";
 import { SALE_PARAM } from "../inventory/listing/copy";
 import { ParamLink, usePushParams, useReplaceParams } from "../mode";
 import { PageApiContext } from "../pageApi";
-import { SPORT_LINE, SPORT_TAB, VARIANT_CHIP, VARIANT_STRIPE, sportHue } from "./colours";
+import { SPORT_LINE, SPORT_TAB, VARIANT_CHIP, VARIANT_RULE, VARIANT_STRIPE, sportHue } from "./colours";
 import { DemoPickListProvider } from "./demoPickStore";
 import PrintSheet, { usePrinting } from "./PrintSheet";
 import {
@@ -32,7 +32,9 @@ import {
   SORT_KEYS,
   VARIANT_ROLE_LABEL,
   VARIANT_ROLES,
+  variantBreaks,
   variantName,
+  variantTag,
   type BoxStop,
   type PickFilters,
   type PickRow,
@@ -40,10 +42,12 @@ import {
   type SortDir,
   type SortKey,
   type VariantRole,
+  type VariantTag as VariantTagModel,
 } from "./model";
 import { PickListStoreContext } from "./store";
 import type { PickListData, PickListStore, PickOrder } from "./types";
 import "./pick-list.css";
+import { usePickDensity, type PickDensity } from "@/src/hooks/usePickDensity";
 
 /**
  * NEO-500 — the Pick List: every card the seller has sold and not yet pulled
@@ -795,8 +799,9 @@ function FilterBar({
           )}
         </div>
       </div>
-      {/* Back to default rides the last chip's row, never a row of its own. */}
-      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
+      {/* The chips, then the row switch and Back to default on the same line where it fits. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
           <Toggle pressed={Boolean(filters.slabs)} onClick={() => setParam(PICK_PARAMS.slabs, filters.slabs ? null : "1")}>
             Only slabs
           </Toggle>
@@ -809,19 +814,24 @@ function FilterBar({
           <Toggle pressed={groupByOrder} onClick={() => setParam(PICK_PARAMS.group, groupByOrder ? null : "order")}>
             Group by order
           </Toggle>
-        <button
-          type="button"
-          onClick={() => {
-            // The button switches off once the list is back to default: the
-            // keyboard goes to Find first, never down onto the page.
-            find.current?.focus();
-            onDefault();
-          }}
-          disabled={!tweaked}
-          className={`ml-auto rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50 min-h-11 sm:min-h-8 focus-outline`}
-        >
-          Back to default
-        </button>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+          <DensitySwitch />
+          {/* Back to default resets the list (filters, sort, grouping), never the row size: that is this device's setting. */}
+          <button
+            type="button"
+            onClick={() => {
+              // The button switches off once the list is back to default: the
+              // keyboard goes to Find first, never down onto the page.
+              find.current?.focus();
+              onDefault();
+            }}
+            disabled={!tweaked}
+            className={`rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50 min-h-11 sm:min-h-8 focus-outline`}
+          >
+            Back to default
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -840,6 +850,72 @@ function Toggle({ pressed, onClick, children }: { pressed: boolean; onClick: () 
       {pressed && <CheckIcon aria-hidden="true" className="size-4" />}
       {children}
     </button>
+  );
+}
+
+/**
+ * NEO-522 — Spacious (the big rows, read from across the room) or Condensed
+ * (the denser pre-NEO-522 rows). This device remembers it; it is not a filter,
+ * so it stays out of the URL and Back to default leaves it alone.
+ */
+const DENSITIES: { value: PickDensity; text: string }[] = [
+  { value: "spacious", text: "Spacious" },
+  { value: "condensed", text: "Condensed" },
+];
+
+function DensitySwitch() {
+  const [density, setDensity] = usePickDensity();
+  const labelId = useId();
+  const track = useRef<HTMLDivElement>(null);
+  // One of two, so a radio group (the house pill pattern, ../ChipGroup): one Tab
+  // stop on the checked option; the arrow keys, Home and End move AND pick.
+  const pick = (i: number) => {
+    const at = (i + DENSITIES.length) % DENSITIES.length;
+    setDensity(DENSITIES[at].value);
+    track.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[at]?.focus();
+  };
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") pick(i + 1);
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") pick(i - 1);
+    else if (e.key === "Home") pick(0);
+    else if (e.key === "End") pick(DENSITIES.length - 1);
+    else return;
+    e.preventDefault();
+  };
+  return (
+    // The label and the track wrap apart on a narrow phone; the track never breaks.
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <span id={labelId} className="text-sm text-ink-2">
+        Row size
+      </span>
+      {/*
+        The pills sit inside a padded track, so the focus outline (2px out) always has
+        the track's own colour between it and the cyan fill, in both themes.
+      */}
+      <div ref={track} role="radiogroup" aria-labelledby={labelId} className="inline-flex shrink-0 rounded-full border border-control bg-field p-0.5">
+        {DENSITIES.map((d, i) => {
+          const on = density === d.value;
+          return (
+            <button
+              key={d.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              tabIndex={on ? 0 : -1}
+              onClick={() => setDensity(d.value)}
+              onKeyDown={(e) => onKeyDown(e, i)}
+              className={`inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-sm font-medium focus-outline sm:min-h-8 ${
+                on ? "bg-neon-blue text-on-neon-blue ring-1 ring-inset ring-selection" : "text-ink-2 hover:text-ink"
+              }`}
+            >
+              {/* The check's slot is kept on both, so the switch never changes width. */}
+              <CheckIcon aria-hidden="true" className={`size-4 shrink-0 ${on ? "" : "invisible"}`} />
+              {d.text}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -970,7 +1046,7 @@ function BoxView({
 /** How a toggle's name says a row is not in NB: "…, not in NB, BSC 1234". */
 const NOT_IN_NB_NAME = "not in NB";
 
-function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolean } = {}): string {
+function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolean; withTeam?: boolean } = {}): string {
   const c = row.card;
   const extra = row.grade
     ? `${row.grade.grader} ${row.grade.grade}, cert ${row.grade.cert}`
@@ -982,8 +1058,10 @@ function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolea
   // nothing of its order, so its name always carries it: two orders' strays
   // never read alike. One the listing describes also says it is not in NB.
   // The title's " · " joins read as pauses here, never as "dot".
+  // The picture's name carries the team the card shows (the row itself no longer prints it).
+  const team = options.withTeam && c ? c.teams.map((t) => t.name).join(" / ") : "";
   let name = c
-    ? `#${c.cardNumber} ${playerNames(c)}, ${setLabel(c.set)}${variantName(c) ? ` ${variantName(c)}` : ""}, ${extra}`
+    ? `#${c.cardNumber} ${playerNames(c)}${team ? `, ${team}` : ""}, ${setLabel(c.set)}${variantName(c) ? ` ${variantName(c)}` : ""}, ${extra}`
     : `${row.listingTitle.split(" · ").join(", ")}${row.listed ? `, ${NOT_IN_NB_NAME}` : ""}, ${orders}`;
   if (options.withSlot && row.spot?.slot !== undefined) name += `, slot ${row.spot.slot}`;
   if (row.isNew) name += `, ${COPY.fresh.toLowerCase()}`;
@@ -1016,6 +1094,9 @@ function PickTable({
   nameWithOrder?: boolean;
 }) {
   const tableRef = useRef<HTMLTableElement>(null);
+  // NEO-522: Spacious (the default) or this device's Condensed, the pre-NEO-522 rows.
+  const [density] = usePickDensity();
+  const condensed = density === "condensed";
   // A stray's order opens on the Sales tab, where the store has one.
   const salesLink = useListing() !== undefined;
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -1047,7 +1128,9 @@ function PickTable({
   };
 
   // The column headers stick just under the site header (its height is published as `--nb-header-h`, 0 on a phone).
-  const headCell = "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold";
+  const headCell = condensed
+    ? "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold"
+    : "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold md:px-1.5 @min-[62rem]:px-2";
 
   const sortButton = (key: SortKey) => {
     const on = sort === key;
@@ -1075,10 +1158,20 @@ function PickTable({
         aria-sort={which ? (dir === "asc" ? "ascending" : "descending") : "none"}
         className={`${headCell} max-md:hidden ${className}`}
       >
-        {also ? (
+        {also && condensed ? (
           <span className="inline-flex items-center gap-2">
             {sortButton(key)}
             <span aria-hidden="true" className="text-ink-3">
+              ·
+            </span>
+            {sortButton(also)}
+          </span>
+        ) : also ? (
+          // In a compact table the two sorts may stack, so the header never holds the table wider than the screen.
+          <span className="inline-flex flex-wrap items-center gap-x-2 @min-[62rem]:flex-nowrap">
+            {sortButton(key)}
+            {/* Stacked, a lone dot would hang between the two: it shows only side by side. */}
+            <span aria-hidden="true" className="hidden text-ink-3 @min-[62rem]:inline">
               ·
             </span>
             {sortButton(also)}
@@ -1093,18 +1186,29 @@ function PickTable({
   // Qty shows only where a row in view sold two or more (or the list sorts by it).
   const showQty = sort === "qty" || sections.some((s) => s.rows.some((r) => r.quantity > 1));
   // The Set column holds a reading width only where its cells name the set (or
-  // a stray's problem): under a set divider they hold just the variant.
+  // a stray's problem): under a set divider they hold just a numbered copy's serial.
   const setInCells = sections.some((s) => s.kind !== "set" && s.rows.length > 0);
-  const columns = 8 + (showQty ? 1 : 0) + (showSlot ? 1 : 0);
+  // Condensed has no Variant column: the variant rides in the Set column.
+  const columns = (condensed ? 8 : 9) + (showQty ? 1 : 0) + (showSlot ? 1 : 0);
 
   return (
     <>
+      {/*
+        The table sizes itself by the room it has, not by the screen: from 1024px the
+        binder's side nav takes 170px, so a desktop can have less room than a tablet.
+        Below 62rem of room the columns stay compact; the big type needs the full width.
+      */}
+      <div className="@container">
       {/* Not focusable itself: the rows' toggles are, and arrow keys move between them. */}
-      <table ref={tableRef} onKeyDown={onKeyDown} className="nb-pick-table w-full border-separate border-spacing-0 text-sm">
+      <table
+        ref={tableRef}
+        onKeyDown={onKeyDown}
+        className={`nb-pick-table w-full border-separate border-spacing-0 text-sm ${condensed ? "" : "nb-pick-spacious"}`}
+      >
         <caption className="sr-only">{caption}</caption>
         <thead className="text-xs text-ink-2">
           <tr>
-            <th scope="col" className={`${headCell} w-12 px-1`}>
+            <th scope="col" className={`${headCell} ${condensed ? "w-12" : "w-10"} px-1`}>
               <span className="sr-only">Pulled</span>
             </th>
             <th scope="col" className={`${headCell} nb-pick-pic w-14 px-1`}>
@@ -1116,43 +1220,72 @@ function PickTable({
               </th>
             )}
             {showQty && sortHead("qty", "w-14")}
+            {/* The walk already runs Base, then each insert and parallel by name: the variant does not sort apart. */}
+            {!condensed && (
+              <th scope="col" className={`${headCell} max-md:hidden`}>
+                Variant
+              </th>
+            )}
             {sortHead("number", "w-16")}
-            {sortHead("player")}
-            {sortHead("set", setInCells ? "min-w-48" : "", "detail")}
-            {sortHead("condition", "w-28")}
+            {sortHead("player", condensed ? "" : "@min-[62rem]:w-[30%]")}
+            {sortHead("set", setInCells ? (condensed ? "min-w-48" : "@min-[62rem]:min-w-36") : "", "detail")}
+            {sortHead("condition", condensed ? "w-28" : "")}
             {sortHead("order", "w-28")}
             <th scope="col" className={`${headCell} md:hidden`}>
               Card
             </th>
           </tr>
         </thead>
-        {sections.map((section) => (
-          <tbody key={section.key} className="nb-pick-group">
-            <SectionHead section={section} columns={columns} />
-            {section.rows.map((row) => {
-              const key = `${section.key}/${row.key}`;
-              const inSet = section.kind === "set";
-              return (
-                <Row
-                  key={key}
-                  row={row}
-                  pulled={isPulled(row, pulled)}
-                  tabbable={key === active}
-                  onFocus={() => setActiveKey(key)}
-                  onToggle={() => toggle(row)}
-                  onThumb={() => setThumb(row)}
-                  showSlot={showSlot}
-                  showQty={showQty}
-                  salesLink={salesLink}
-                  showSet={!inSet}
-                  showSport={!hideSport && !inSet && section.kind !== "cantFind"}
-                  name={rowName(row, { withOrder: nameWithOrder, withSlot: showSlot })}
-                />
-              );
-            })}
-          </tbody>
-        ))}
+        {sections.map((section) => {
+          const inSet = section.kind === "set";
+          // Inside a set's run, the last row of each variant carries the next variant's rule.
+          const breaks = inSet && !condensed ? variantBreaks(section.rows) : [];
+          return (
+            <tbody key={section.key} className="nb-pick-group">
+              <SectionHead section={section} columns={columns} condensed={condensed} />
+              {section.rows.map((row, i) => {
+                const key = `${section.key}/${row.key}`;
+                return condensed ? (
+                  <CondensedRow
+                    key={key}
+                    row={row}
+                    pulled={isPulled(row, pulled)}
+                    tabbable={key === active}
+                    onFocus={() => setActiveKey(key)}
+                    onToggle={() => toggle(row)}
+                    onThumb={() => setThumb(row)}
+                    showSlot={showSlot}
+                    showQty={showQty}
+                    salesLink={salesLink}
+                    showSet={!inSet}
+                    showSport={!hideSport && !inSet && section.kind !== "cantFind"}
+                    name={rowName(row, { withOrder: nameWithOrder, withSlot: showSlot })}
+                  />
+                ) : (
+                  <Row
+                    key={key}
+                    row={row}
+                    pulled={isPulled(row, pulled)}
+                    tabbable={key === active}
+                    onFocus={() => setActiveKey(key)}
+                    onToggle={() => toggle(row)}
+                    onThumb={() => setThumb(row)}
+                    showSlot={showSlot}
+                    showQty={showQty}
+                    salesLink={salesLink}
+                    showSet={!inSet}
+                    showSport={!hideSport && !inSet && section.kind !== "cantFind"}
+                    ruleBelow={breaks[i]}
+                    name={rowName(row, { withOrder: nameWithOrder, withSlot: showSlot })}
+                    pictureName={rowName(row, { withOrder: nameWithOrder, withSlot: showSlot, withTeam: true })}
+                  />
+                );
+              })}
+            </tbody>
+          );
+        })}
       </table>
+      </div>
       {printing && <PrintSheet sections={sections} pulled={pulled} showSlot={showSlot} />}
       {thumb?.card && (
         <P3Dialog
@@ -1165,7 +1298,7 @@ function PickTable({
             {thumb.photo ? (
               <img
                 src={thumb.photo.imageUrl}
-                alt={`The copy that sold: ${rowName(thumb)}`}
+                alt={`The copy that sold: ${rowName(thumb, { withTeam: true })}`}
                 className="max-h-[60vh] w-auto max-w-full rounded-md"
               />
             ) : (
@@ -1182,8 +1315,384 @@ function PickTable({
   );
 }
 
-function SectionHead({ section, columns }: { section: PickSection; columns: number }) {
+function SectionHead({ section, columns, condensed }: { section: PickSection; columns: number; condensed: boolean }) {
   if (section.kind === "flat") return null;
+  if (condensed) return <CondensedSectionHead section={section} columns={columns} />;
+  const count = section.rows.reduce((n, r) => n + r.quantity, 0);
+  const cards = `${count} ${count === 1 ? "card" : "cards"}`;
+  // A heading element may not sit in a table header cell, so the title takes
+  // the heading role: heading navigation still reaches every set and group.
+  // `label` names a heading apart when its words alone would read like another's.
+  const heading = (className: string, text: ReactNode, label?: string) => (
+    <span role="heading" aria-level={3} aria-label={label} className={className}>
+      {text}
+    </span>
+  );
+  let body: ReactNode;
+  let line = "border-rule-strong";
+  // NEO-522: read from across the room, so the group's name outranks the rows' 28px names.
+  const title = "text-xl font-bold leading-7 text-balance @min-[62rem]:text-3xl @min-[62rem]:leading-9 @min-[84rem]:text-4xl @min-[84rem]:leading-10";
+  if (section.kind === "set") {
+    const hue = sportHue(section.sportCode);
+    line = SPORT_LINE[hue];
+    body = (
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
+        <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-sm font-bold ${SPORT_TAB[hue]}`}>
+          {section.sportName}
+        </span>
+        {heading(`pb-1 text-ink ${title}`, section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+        <span className="pb-1.5 text-sm text-ink-3">{cards}</span>
+      </div>
+    );
+  } else if (section.kind === "order") {
+    body = (
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-1 pb-1">
+        {heading(`text-ink ${title}`, orderLabel(section.order))}
+        <span className="pb-0.5 text-sm text-ink-3">{cards}</span>
+      </div>
+    );
+  } else {
+    const warn = section.kind === "cantFind";
+    // The heading's words and its rule share one hue in both themes.
+    line = warn ? "border-notice-warn-ink" : "border-neon-blue";
+    body = (
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-1 pb-1">
+        {heading(`${title} ${warn ? "text-notice-warn-ink" : "text-neon-blue-text"}`, warn ? COPY.cantFind : COPY.fresh)}
+        <span className="pb-0.5 text-sm text-ink-3">{warn ? COPY.cantFindNote : COPY.freshNote}</span>
+      </div>
+    );
+  }
+  return (
+    <tr>
+      {/* 5px: heavier than a variant's 3px sub-divider, so a set break never reads as one. */}
+      <th scope="rowgroup" colSpan={columns} className={`border-b-[5px] px-0 pt-6 text-left font-normal ${line}`}>
+        {body}
+      </th>
+    </tr>
+  );
+}
+
+/**
+ * NEO-522 — the variant's own name ("Wicked Power", "N43"; "Base" on a base
+ * row) in its divider's colour, sized to sit beside the big name. Its kind
+ * ("Insert") is read out first when the name does not say it, so the colour
+ * never carries it alone. A long name wraps onto more lines, never cut (the
+ * title repeats it). A listing's word NB does not file by gets a plain
+ * tag: NB never guesses its colour.
+ */
+function VariantTag({ tag }: { tag: VariantTagModel }) {
+  const paint = tag.role ? `nb-pick-band ${VARIANT_CHIP[tag.role]}` : "border-rule-strong text-ink";
+  return (
+    <span
+      title={tag.kind ? `${tag.kind}: ${tag.text}` : tag.text}
+      // Capped per width so a long name wraps onto more lines instead of widening the
+      // table, never cut: the whole name always shows (the title is only an extra).
+      className={`nb-pick-chip inline-flex min-h-7 w-max max-w-40 items-center rounded-md border px-2 py-0.5 text-base font-bold leading-5 md:max-w-27 @min-[62rem]:min-h-8 @min-[62rem]:max-w-40 @min-[62rem]:text-lg @min-[62rem]:leading-6 @min-[68rem]:max-w-52 ${paint}`}
+    >
+      {tag.kind && <span className="sr-only">{tag.kind}: </span>}
+      <span className="break-words hyphens-auto">{tag.text}</span>
+    </span>
+  );
+}
+
+function SportChip({ code, name }: { code: string | null; name: string }) {
+  const hue = sportHue(code);
+  return (
+    <span className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center rounded px-1.5 text-xs font-bold leading-5 ${SPORT_TAB[hue]}`}>
+      {name}
+    </span>
+  );
+}
+
+function Markers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
+  const noBox = row.boxUnrecorded && !row.spot;
+  // A sale filed with its set by the listing's words alone: NB has no card
+  // for it, and the chip says so (the dashed edge echoes the "?" picture).
+  // Can't find it never shows it: its heading already says as much.
+  const notInNb = !row.card && rowFacts(row) !== null;
+  if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
+  const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
+  // NEO-522: they ride the name's line, after it, big enough to read beside it.
+  const chip = "nb-pick-chip rounded px-2 text-base font-bold leading-7 @min-[62rem]:text-lg";
+  return (
+    <span className="flex flex-wrap gap-1 whitespace-nowrap">
+      {notInNb && (
+        <span title={why} className={`${chip} border border-dashed border-notice-warn-rule bg-notice-warn-bg text-notice-warn-ink`}>
+          <span>{NOT_IN_NB}</span>
+          <span className="sr-only">. {why}</span>
+        </span>
+      )}
+      {row.isNew && <span className={`${chip} bg-neon-blue text-on-neon-blue`}>New</span>}
+      {row.lastOnes && <span className={`${chip} border border-notice-info-rule bg-notice-info-bg text-notice-info-ink`}>Last ones</span>}
+      {noBox && <span className={`${chip} border border-rule-strong text-ink-2`}>{COPY.noBox}</span>}
+      {row.short > 0 && (
+        <span className={`${chip} border border-notice-warn-rule bg-notice-warn-bg text-notice-warn-ink`}>Short {row.short}</span>
+      )}
+    </span>
+  );
+}
+
+function Row({
+  row,
+  pulled,
+  tabbable,
+  onFocus,
+  onToggle,
+  onThumb,
+  showSlot,
+  showQty,
+  salesLink,
+  showSet,
+  showSport,
+  ruleBelow,
+  name,
+  pictureName,
+}: {
+  row: PickRow;
+  pulled: boolean;
+  tabbable: boolean;
+  onFocus: () => void;
+  onToggle: () => void;
+  onThumb: () => void;
+  showSlot: boolean;
+  showQty: boolean;
+  /** A card-less row's order links to that sale on the Sales tab. */
+  salesLink: boolean;
+  /** Off under a set divider, which already names the set. */
+  showSet: boolean;
+  showSport: boolean;
+  /**
+   * NEO-522: the variant that starts on the next row of a set's run, when it
+   * differs from this row's (null: one of no role); undefined when the next
+   * row carries on this variant, or under any other group.
+   */
+  ruleBelow?: VariantRole | null;
+  name: string;
+  /** The row's name with the card's team, for its picture (the team is on the card, not the row). */
+  pictureName: string;
+}) {
+  const c = row.card;
+  // A card's facts, or a listing's when it says enough to file by (NEO-509).
+  const facts = rowFacts(row);
+  const role = facts?.role ?? null;
+  const tag = facts ? variantTag(facts) : null;
+  const tab = tabbable ? 0 : -1;
+  // The divider card between two variants: a heavier rule in the next one's colour. Same variant: the thin neutral line.
+  // It starts at the Variant column: the tick and picture cells (and slot, qty) keep the thin
+  // line, so it reads as a sub-divider inside the set, never as the set's own break.
+  const thin = "border-b border-rule";
+  const rule =
+    ruleBelow === undefined ? thin : `border-b-[3px] ${ruleBelow ? VARIANT_RULE[ruleBelow] : "border-b-rule-strong"}`;
+  const lead = `${thin} py-1 align-middle`;
+  const cell = `${rule} py-1 align-middle`;
+  // In a compact table (a tablet, or a desktop beside the side nav) a touch less air between columns.
+  const pad = "px-2 md:px-1.5 @min-[62rem]:px-2";
+  // NEO-522: the number and the name are what a picker reads from a few feet away.
+  const big = "text-lg leading-8 @min-[62rem]:text-[1.75rem] @min-[84rem]:text-[2rem] @min-[84rem]:leading-10";
+
+  const onRowClick = (e: MouseEvent<HTMLTableRowElement>) => {
+    if ((e.target as Element).closest("button, a, input, select")) return;
+    if (!rowClickPulls()) return;
+    onToggle();
+  };
+
+  // One copy needs no count; two or more get the loud yellow chip.
+  const qty =
+    row.quantity > 1 ? (
+      <span className="nb-pick-chip inline-flex min-w-8 items-center justify-center rounded-md bg-neon-yellow px-1.5 text-base font-black leading-7 text-on-neon-yellow tabular-nums">
+        ×{row.quantity}
+        <span className="sr-only"> copies</span>
+      </span>
+    ) : null;
+
+  const variant = tag ? <VariantTag tag={tag} /> : null;
+
+  // The set (where no divider names it) and a numbered copy's serial. A sale NB
+  // has no card for wears the Not in NB chip, which says where to look: no note here.
+  // Which numbered copy to pull ("4/5"): read at the row's scale.
+  const serial = row.serial ? (
+    <span className="text-base font-bold leading-6 tabular-nums text-ink @min-[62rem]:text-xl @min-[62rem]:leading-7">{row.serial}</span>
+  ) : null;
+  const setText = facts ? (
+    showSet || serial ? (
+      <span className="flex min-w-0 max-w-60 flex-col gap-1">
+        {showSet && (
+          <span className="flex flex-wrap items-center gap-1.5">
+            {showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
+            <span className="text-ink">{facts.setTitle}</span>
+          </span>
+        )}
+        {serial}
+      </span>
+    ) : null
+  ) : null;
+  // Nothing to file by: the listing's sport, when it names one (the box it might sit in),
+  // and why NB could not file it, the one clue the row has. Wide, the sport keeps the Set
+  // column and the reason rides under the listing's words, where it has room to read.
+  const listedSport = !facts && row.listed?.sportName ? <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} /> : null;
+  const problem = !facts && row.problem ? <span className="block text-base leading-6 text-notice-warn-ink">{row.problem}</span> : null;
+
+  // Condition, or a slab's grade and cert.
+  // NEO-522: big enough to check against the copy in hand (NM or EX), so it reads at the row's scale.
+  const condition = (
+    <span className="flex flex-col text-base leading-6 @min-[62rem]:text-lg @min-[62rem]:leading-7">
+      {row.grade ? (
+        <>
+          <span className="whitespace-nowrap font-semibold text-ink">
+            {row.grade.grader} {row.grade.grade}
+          </span>
+          {/* "Cert" may wrap above its number where the columns are tight. */}
+          <span className="text-sm text-ink-2 tabular-nums">
+            Cert <span className="whitespace-nowrap">{row.grade.cert}</span>
+          </span>
+        </>
+      ) : (
+        <span className="font-semibold text-ink">{row.condition}</span>
+      )}
+    </span>
+  );
+
+  // Venue and number may wrap apart, never inside either. A stray's order
+  // opens that sale on the Sales tab: the order's photo is how to find it.
+  const orderText = (o: PickOrder) => (
+    <>
+      <span className="whitespace-nowrap">{o.venue}</span> <span className="whitespace-nowrap">{o.number}</span>
+    </>
+  );
+  const orders = (
+    <span className="flex flex-col text-sm leading-5 @min-[62rem]:text-base @min-[62rem]:leading-6">
+      {row.orders.map((o) =>
+        !c && salesLink ? (
+          <ParamLink
+            key={o.id}
+            search={{ tab: "sales", [SALE_PARAM]: o.id }}
+            tabIndex={tab}
+            className="rounded-sm text-neon-blue-text underline underline-offset-2 tabular-nums focus-outline"
+          >
+            {orderText(o)}
+            <span className="sr-only"> on your Sales tab</span>
+          </ParamLink>
+        ) : (
+          <span key={o.id} className="text-ink-2 tabular-nums">
+            {orderText(o)}
+          </span>
+        ),
+      )}
+    </span>
+  );
+
+  // The team is on the card's picture: the name stands alone, its tags after it on the same line.
+  const who = c ? playerNames(c) : facts?.players || row.listingTitle;
+
+  return (
+    <tr
+      onClick={onRowClick}
+      onFocus={onFocus}
+      data-pulled={pulled || undefined}
+      className={`nb-pick-row transition-colors md:cursor-pointer md:hover:bg-list-hover ${pulled ? "nb-pick-pulled" : ""}`}
+    >
+      <td className={`${lead} relative w-10 pl-3 pr-1`}>
+        {role ? (
+          <span aria-hidden="true" className={`nb-pick-band absolute inset-y-1 left-0 w-2 rounded-sm border md:w-1.5 ${VARIANT_STRIPE[role]}`} />
+        ) : (
+          <span aria-hidden="true" className="absolute inset-y-1 left-0 w-2 rounded-sm border border-dashed border-notice-warn-rule md:w-1.5" />
+        )}
+        {/*
+          The box is the size of the row's text; the button around it is the
+          target (44px for a finger at any width, 32px for a mouse), never the box.
+        */}
+        <button
+          type="button"
+          data-pick-toggle
+          aria-pressed={pulled}
+          aria-label={`Pulled ${name}`}
+          tabIndex={tab}
+          onClick={onToggle}
+          className="group grid size-11 place-items-center rounded-md focus-outline md:pointer-fine:size-8"
+        >
+          <span
+            aria-hidden="true"
+            className={`grid size-5 place-items-center rounded border-2 ${
+              pulled ? "border-neon-green bg-neon-green text-on-neon-green" : "border-control text-transparent group-hover:border-ink-3"
+            }`}
+          >
+            <CheckIcon className="size-4" />
+          </span>
+        </button>
+      </td>
+      <td className={`${lead} nb-pick-pic w-14 px-1`}>
+        {c ? (
+          <button
+            type="button"
+            tabIndex={tab}
+            onClick={(e) => {
+              // Safari does not focus a clicked button; the dialog hands focus back to it on close.
+              e.currentTarget.focus();
+              onThumb();
+            }}
+            aria-label={`Bigger picture of ${pictureName}`}
+            className="nb-pick-thumb block w-10 rounded-sm focus-outline"
+          >
+            {row.photo ? (
+              <img src={row.photo.thumbUrl} alt="" loading="lazy" className="block aspect-[5/7] w-10 rounded-sm bg-rule object-contain" />
+            ) : (
+              <CardFace model={c} size="fill" serial={row.serial} />
+            )}
+          </button>
+        ) : (
+          <span
+            aria-hidden="true"
+            className="grid h-14 w-10 place-items-center rounded-sm border border-dashed border-notice-warn-rule text-lg font-bold text-notice-warn-ink"
+          >
+            ?
+          </span>
+        )}
+      </td>
+      {showSlot && <td className={`${lead} ${pad} font-semibold tabular-nums text-ink`}>{row.spot?.slot ?? "–"}</td>}
+      {showQty && <td className={`${lead} ${pad} max-md:hidden`}>{qty}</td>}
+      {facts && <td className={`${cell} ${pad} max-md:hidden`}>{variant}</td>}
+      {facts && <td className={`${cell} ${pad} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden ${big}`}>#{facts.cardNumber}</td>}
+      {/* Nothing to file by: the listing's own words take the variant's and the number's columns too. */}
+      <td colSpan={facts ? undefined : 3} className={`${cell} ${pad} max-md:hidden`}>
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className={facts ? `font-semibold text-ink ${big}` : "text-lg font-semibold leading-7 text-ink"}>{who}</span>
+          <Markers row={row} salesLink={salesLink} />
+        </span>
+        {problem}
+      </td>
+      <td className={`${cell} ${pad} max-md:hidden`}>{facts ? setText : listedSport}</td>
+      <td className={`${cell} ${pad} max-md:hidden`}>{condition}</td>
+      <td className={`${cell} ${pad} max-md:hidden`}>{orders}</td>
+      {/* A phone has no room for columns: one cell says it all. */}
+      <td className={`${cell} ${pad} md:hidden`}>
+        <span className="flex min-w-0 flex-col gap-1">
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {qty}
+            {variant}
+            {facts && <span className="text-lg font-bold leading-7 text-ink tabular-nums">#{facts.cardNumber}</span>}
+            <span className="min-w-0 break-words text-lg font-semibold leading-7 text-ink">{who}</span>
+            <Markers row={row} salesLink={salesLink} />
+          </span>
+          {setText}
+          {listedSport && <span className="flex">{listedSport}</span>}
+          {problem}
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {condition}
+            {orders}
+          </span>
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Condensed rows (NEO-522): the Pick List as it read before NEO-522, kept
+// whole as a device setting. Spacious is the default; nothing here changes
+// it. A separate row, not a branch per cell, so neither layout bends the other.
+// ---------------------------------------------------------------------------
+
+function CondensedSectionHead({ section, columns }: { section: PickSection; columns: number }) {
   const count = section.rows.reduce((n, r) => n + r.quantity, 0);
   const cards = `${count} ${count === 1 ? "card" : "cards"}`;
   // A heading element may not sit in a table header cell, so the title takes
@@ -1252,16 +1761,7 @@ function VariantWordChip({ word }: { word: string }) {
   );
 }
 
-function SportChip({ code, name }: { code: string | null; name: string }) {
-  const hue = sportHue(code);
-  return (
-    <span className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center rounded px-1.5 text-xs font-bold leading-5 ${SPORT_TAB[hue]}`}>
-      {name}
-    </span>
-  );
-}
-
-function Markers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
+function CondensedMarkers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
   const noBox = row.boxUnrecorded && !row.spot;
   // A sale filed with its set by the listing's words alone: NB has no card
   // for it, and the chip says so (the dashed edge echoes the "?" picture).
@@ -1300,7 +1800,7 @@ function Markers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
   );
 }
 
-function Row({
+function CondensedRow({
   row,
   pulled,
   tabbable,
@@ -1503,7 +2003,7 @@ function Row({
           <span className={facts ? "whitespace-nowrap font-semibold text-ink" : "text-ink"}>{who}</span>
           {team && <span className="text-xs text-ink-3">{team}</span>}
           <span className="mt-1 empty:hidden">
-            <Markers row={row} salesLink={salesLink} />
+            <CondensedMarkers row={row} salesLink={salesLink} />
           </span>
         </span>
       </td>
@@ -1523,7 +2023,7 @@ function Row({
             {condition}
             {orders}
           </span>
-          <Markers row={row} salesLink={salesLink} />
+          <CondensedMarkers row={row} salesLink={salesLink} />
         </span>
       </td>
     </tr>
