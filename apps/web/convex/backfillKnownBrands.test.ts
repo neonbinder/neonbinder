@@ -681,6 +681,46 @@ describe("backfillKnownBrands — the majors while SportLots is paused (NEO-527)
     });
   });
 
+  test("a year with one set named after each of the 17 new majors: the armed run mints all 17, no SportLots slot, each set under its own brand", async () => {
+    const majors = [
+      "Bowman", "Classic", "Donruss", "Finest", "Fleer", "ITG", "O-Pee-Chee",
+      "Pacific", "Panini", "Pinnacle", "Score", "Skybox", "SP", "Stadium Club",
+      "Topps", "Ultra", "Upper Deck",
+    ];
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t, "1995");
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const ids: Record<string, Id<"selectorOptions">> = {};
+    for (const brand of majors) {
+      ids[brand] = await seedSet(t, unknown, `${brand} Base Set`);
+    }
+
+    const report = await armed(t);
+
+    expect(report.counts.brandsCreated).toBe(17);
+    expect(report.counts.moved).toBe(17);
+    expect(report.counts.noMatch).toBe(0);
+    const mfrs = await manufacturersOf(t, year);
+    expect(mfrs.map((m) => m.value).sort()).toEqual([...majors, "Unknown"].sort());
+    const minted = mfrs.filter((m) => m._id !== unknown);
+    expect(minted).toHaveLength(17);
+    for (const brand of minted) {
+      expect(brand.metadata?.setNamePrefix, brand.value).toBe(brand.value);
+      expect(brand.platformData.sportlots, brand.value).toBeUndefined();
+      expect(brand.platformSlotSeq?.sportlots, brand.value).toBeUndefined();
+    }
+    const brandId = new Map(mfrs.map((m) => [m.value, m._id]));
+    for (const brand of majors) {
+      const row = await t.run(async (ctx) => ctx.db.get(ids[brand]));
+      expect(row?.parentId, brand).toBe(brandId.get(brand));
+      expect(row?.features?.manufacturer, brand).toBe(brand);
+      expect(row?.value, brand).toBe(`${brand} Base Set`);
+    }
+    expect(await setsUnder(t, unknown)).toEqual([]);
+  });
+
   test("a pre-pause year: the SportLots-made Topps row is adopted, never a sibling beside it", async () => {
     const t = convexTest(schema, modules);
     const year = await seedYear(t, "2019");
