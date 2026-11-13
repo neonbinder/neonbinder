@@ -2,7 +2,16 @@ import { useId, useMemo, useState, type ReactNode } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import CardFace from "../../prototypes/_shared/CardFace";
-import { getCard } from "../../prototypes/_shared/data";
+import {
+  getCard,
+  getSet,
+  inkOn,
+  leadPlayer,
+  leadTeam,
+  playerInitials,
+} from "../../prototypes/_shared/data";
+import type { Card } from "../../prototypes/_shared/types";
+import { CardPhoto } from "@/components/modules/CardPhotoViewer/EditedPhoto";
 import {
   COMMON_PRICES,
   DEFAULT_DETAILS,
@@ -18,11 +27,17 @@ import {
   type ScanSide,
   type Stage,
 } from "./sim";
+import type { PhotoEdit } from "@/lib/photo-edit/geometry";
+import { priceProblem } from "./realLanes";
 
 /**
  * NEO-369 — the pieces of the demo's Add cards tab (`./AddCardsTab`): scans,
  * badges, counters, the quantity field, the card picker, the prompts, the
  * fix tools and the detail fields.
+ *
+ * NEO-481 — the per-card price input (`PriceInput`) is shared with the
+ * signed-in tab (`./RealAddCardsTab`); `demoScanUrl` is the demo's picture for
+ * the card photo viewer.
  */
 
 export const RING = "focus-outline";
@@ -61,17 +76,25 @@ const SIZE_WIDTH = { sm: "4.5rem", md: "7.5rem", lg: "13rem" } as const;
  * One side of a scan as the pipeline sees it. While the side is still being
  * cropped it shows the raw scan (tilted, with bed margin) under a sweep; a
  * failed read is blurred; rotation is applied as the user rotates.
+ *
+ * NEO-481 — once the collector turns or crops it in the viewer, the side is
+ * drawn from the same picture the viewer edited (`demoScanUrl`) with the
+ * edit over it (`CardPhoto`'s `shown`), so the crop lands where it was aimed.
+ * The demo never makes a new file.
  */
 export function ScanImage({
   item,
   side,
   size = "md",
   stage,
+  edit,
 }: {
   item: Item;
   side: "front" | "back";
   size?: keyof typeof SIZE_WIDTH;
   stage?: Stage;
+  /** NEO-481 — the collector's turn and crop from the viewer, drawn over the scan (demo only). */
+  edit?: PhotoEdit;
 }) {
   const scan: ScanSide | null = side === "front" ? item.front : item.back;
   const width = SIZE_WIDTH[size];
@@ -88,6 +111,9 @@ export function ScanImage({
   }
   const card = item.truth ? getCard(item.truth) : null;
   const label = `${side === "front" ? "Front" : "Back"} scan, ${scan.file}`;
+  const face =
+    side === "front" && card ? <CardFace card={card} size="fill" /> : <CardBack number={card?.cardNumber ?? "?"} width="100%" />;
+  const edited = !raw && edit ? demoScanUrl(item, side) : undefined;
   return (
     <figure className="m-0 flex flex-col items-center gap-1">
       <div
@@ -96,17 +122,19 @@ export function ScanImage({
         className={`relative overflow-hidden rounded-md ${raw ? "bg-field p-[6%]" : ""}`}
         style={{ width: raw ? `calc(${width} * 1.12)` : width }}
       >
-        <div
-          className={`transition-transform duration-500 ease-out motion-reduce:transition-none ${scan.failed ? "blur-[3px]" : ""}`}
-          style={{ transform: `rotate(${scan.rotation + (raw ? -4 : 0)}deg)` }}
-          aria-hidden="true"
-        >
-          {side === "front" && card ? (
-            <CardFace card={card} size="fill" />
-          ) : (
-            <CardBack number={card?.cardNumber ?? "?"} width="100%" />
-          )}
-        </div>
+        {edited && edit ? (
+          <div aria-hidden="true" className={scan.failed ? "blur-[3px]" : ""}>
+            <CardPhoto src={edited} alt="" shown={edit} className="block h-auto w-full" />
+          </div>
+        ) : (
+          <div
+            className={`transition-transform duration-500 ease-out motion-reduce:transition-none ${scan.failed ? "blur-[3px]" : ""}`}
+            style={{ transform: `rotate(${scan.rotation + (raw ? -4 : 0)}deg)` }}
+            aria-hidden="true"
+          >
+            {face}
+          </div>
+        )}
         {raw && <span aria-hidden="true" className="intake-sweep pointer-events-none absolute inset-0" />}
       </div>
       <figcaption className="max-w-full truncate text-xs text-ink-3" title={scan.file}>
@@ -259,7 +287,7 @@ export function QtyField({ item, sim, onEnter }: { item: Item; sim: IntakeSim; o
             setDraft(null);
           } else save(draft);
         }}
-        className={`w-14 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink ${RING}`}
+        className={`w-14 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink max-sm:min-h-11 ${RING}`}
         aria-describedby={`${id}-hint`}
         aria-keyshortcuts="Enter"
       />
@@ -271,9 +299,123 @@ export function QtyField({ item, sim, onEnter }: { item: Item; sim: IntakeSim; o
 }
 
 /**
- * The card's lowest price, beside its quantity (Jason, 2026-10-28): p jumps
- * here. It starts at the run's default; Enter keeps the price, saves the card
- * and moves on, the way Enter in the quantity does.
+ * NEO-481 — the card's own lowest price, beside its count: shared by the demo
+ * (`PriceField`) and the signed-in box-run tiles. `p` jumps here (the tab's
+ * keys). Enter keeps the price and saves the card; Escape puts back what it
+ * showed (and, while there is typing to undo, stops there, so a drawer stays
+ * open). Leaving the field with a change keeps the price without saving. Only
+ * digits and a point type here: any other key is left to the tab's shortcuts,
+ * so a letter acts on this card instead of landing in the box.
+ *
+ * The caller owns what the text means (`onCommit` and `onEnter` get it raw), so
+ * each side parses it its own way. Its name is "Price, <card>": a column of
+ * tiles has one per card.
+ *
+ * `waiting` (the signed-in tab, NEO-481): the card can't be saved until it has
+ * a price, said under the field with the caller's id, so the card's save
+ * control can point at the same words.
+ */
+export function PriceInput({
+  owner,
+  cardLabel,
+  cents,
+  disabled = false,
+  waiting,
+  onCommit,
+  onEnter,
+}: {
+  /** Marks the field (`PRICE_ATTR`), so `p` can find this card's. */
+  owner: string;
+  /** The tile's name, for the field's own ("Price, #47 Le'Veon Bell"). */
+  cardLabel: string;
+  /** What the field shows while nobody is typing in it; null shows blank. */
+  cents: number | null;
+  disabled?: boolean;
+  /** The card waits for a price: the line under the field, and its id. */
+  waiting?: { id: string; line: string } | null;
+  /** Focus left with a change: keep it, don't save. Only ever handed a price (or a blank). */
+  onCommit: (text: string) => void;
+  /** Enter: keep it and save the card. Only ever handed a price (or a blank). */
+  onEnter: (text: string) => void;
+}) {
+  const id = useId();
+  const [draft, setDraft] = useState<string | null>(null);
+  /** What's wrong with the price typed, shown under the field until a price is typed. */
+  const [problem, setProblem] = useState<string | null>(null);
+  const shown = draft ?? (cents === null ? "" : (cents / 100).toFixed(2));
+  // A text that isn't a price stays in the field, with why under it; nothing is kept.
+  const settle = (text: string, then: (text: string) => void) => {
+    const why = priceProblem(text);
+    setProblem(why);
+    if (why) return;
+    setDraft(null);
+    then(text);
+  };
+  const errorId = `${id}-error`;
+  return (
+    <div className="flex flex-col gap-0.5 text-sm">
+      <div className="flex items-center gap-1">
+        <label htmlFor={id} className="whitespace-nowrap text-ink-3">
+          Price $
+        </label>
+        <Input
+          bare
+          id={id}
+          {...{ [PRICE_ATTR]: owner }}
+          aria-label={`Price, ${cardLabel}`}
+          inputMode="decimal"
+          value={shown}
+          disabled={disabled}
+          aria-invalid={problem ? true : undefined}
+          onChange={(e) => {
+            const text = e.target.value.replace(/[^\d.]/g, "");
+            setDraft(text);
+            if (problem && !priceProblem(text)) setProblem(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              settle(shown, onEnter);
+            } else if (e.key === "Escape") {
+              if (draft !== null) e.stopPropagation();
+              setDraft(null);
+              setProblem(null);
+            } else if (e.key.length === 1 && !/[\d.]/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+              e.preventDefault();
+            }
+          }}
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={() => {
+            if (draft !== null) settle(draft, onCommit);
+          }}
+          className={`w-16 rounded-md border bg-field px-2 py-1 text-right tabular-nums text-ink max-sm:min-h-11 ${
+            problem ? "border-notice-danger-ink" : "border-field-rule"
+          } ${RING}`}
+          aria-describedby={[problem ? errorId : null, waiting ? waiting.id : null, `${id}-hint`].filter(Boolean).join(" ")}
+          aria-keyshortcuts="p"
+        />
+        <span id={`${id}-hint`} className="sr-only">
+          Enter keeps the price, saves and moves to the next card.
+        </span>
+      </div>
+      {problem && (
+        <span id={errorId} role="alert" className="max-w-48 text-xs text-notice-danger-ink">
+          {problem}
+        </span>
+      )}
+      {waiting && (
+        <span id={waiting.id} className="max-w-48 text-xs text-notice-warn-ink">
+          {waiting.line}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The demo's price field (Jason, 2026-10-28): it starts at the run's default,
+ * and Enter keeps the price, saves the card and moves on, the way Enter in the
+ * quantity does.
  */
 export function PriceField({
   item,
@@ -286,50 +428,133 @@ export function PriceField({
   defaults: Details;
   onEnter?: (priceCents: number | null) => void;
 }) {
-  const id = useId();
-  const cents = effectiveDetails(item, defaults).priceCents;
-  const [draft, setDraft] = useState<string | null>(null);
-  const shown = draft ?? (cents === null ? "" : (cents / 100).toFixed(2));
+  // PriceInput hands over only a price or a blank (`priceProblem`).
   const parse = (text: string): number | null => (text ? Math.round(Number(text) * 100) : null);
   return (
-    <div className="flex items-center gap-1 text-sm">
-      <label htmlFor={id} className="whitespace-nowrap text-ink-3">
-        Price $
-      </label>
-      <Input
-        bare
-        id={id}
-        {...{ [PRICE_ATTR]: item.id }}
-        inputMode="decimal"
-        value={shown}
-        disabled={!item.match.cardId}
-        onChange={(e) => setDraft(e.target.value.replace(/[^\d.]/g, ""))}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            setDraft(null);
-            onEnter?.(parse(shown));
-          } else if (e.key === "Escape") {
-            setDraft(null);
-          } else if (e.key.length === 1 && !/[\d.]/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            e.preventDefault();
-          }
-        }}
-        onFocus={(e) => e.currentTarget.select()}
-        onBlur={() => {
-          if (draft === null) return;
-          sim.actions.setDetails(item.id, { priceCents: parse(draft) });
-          setDraft(null);
-        }}
-        className={`w-16 rounded-md border border-field-rule bg-field px-2 py-1 text-right tabular-nums text-ink ${RING}`}
-        aria-describedby={`${id}-hint`}
-        aria-keyshortcuts="p"
-      />
-      <span id={`${id}-hint`} className="sr-only">
-        Enter keeps the price, saves and moves to the next card.
-      </span>
-    </div>
+    <PriceInput
+      owner={item.id}
+      cardLabel={cardTitle(item.match.cardId)}
+      cents={effectiveDetails(item, defaults).priceCents}
+      disabled={!item.match.cardId}
+      onCommit={(text) => sim.actions.setDetails(item.id, { priceCents: parse(text) })}
+      onEnter={(text) => onEnter?.(parse(text))}
+    />
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* The card photo viewer's demo picture                                */
+/* ------------------------------------------------------------------ */
+
+const XML_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
+const xml = (text: string) => text.replace(/[&<>"']/g, (c) => XML_ESCAPES[c]);
+
+/** Cuts `text` to what fits in `width` px at `size` px (a rough bold-sans measure), with an ellipsis. */
+function fitText(text: string, width: number, size: number): string {
+  const max = Math.floor(width / (size * 0.58));
+  return text.length <= max ? text : `${text.slice(0, Math.max(1, max - 1))}…`;
+}
+
+const SVG_FONT = 'font-family="Lexend, system-ui, sans-serif"';
+const GOLD_STOPS = ["#8a6a1c", "#f5d77a", "#b8902c", "#fff1b8", "#9c7a23"];
+
+/**
+ * The front `CardFace` draws, as an SVG 500 x 700 (one container-query unit
+ * of the face is 5 px here): the livery frame, the pinstriped photo window
+ * with its key light and top scrim, the set and the number badge, the big
+ * initials, the print-run stamp and RC tag, and the slanted nameplate. Keep
+ * in step with `../../prototypes/_shared/CardFace` (the refractor and foil
+ * sheens are left out: they are light on top of the print, not the print).
+ */
+function demoFrontSvg(card: Card): string {
+  const set = getSet(card.setId);
+  const player = leadPlayer(card);
+  const team = leadTeam(card);
+  const primary = team.primary;
+  const secondary = team.secondary;
+  const bandInk = inkOn(secondary);
+  const initialsInk = inkOn(primary);
+  const { kind, tint } = card.finish;
+  const frame =
+    kind === "gold" || kind === "superfractor"
+      ? "url(#frame)"
+      : kind === "refractor" && tint
+        ? tint
+        : primary;
+  const frameStops =
+    kind === "gold" || kind === "superfractor"
+      ? GOLD_STOPS
+      : kind === "foil" && tint
+        ? [tint, "#ffffff", tint, "#ffffff", tint]
+        : null;
+  // The inner card: 3.5 units in from the frame; the nameplate overlaps the window by 5.
+  const inner = { x: 17.5, y: 17.5, w: 465, h: 665 };
+  const plateTop = 541;
+  const windowBottom = 566;
+  const number = `#${card.cardNumber}`;
+  const badgeW = number.length * 40 * 0.62 + 24;
+  const stamp = card.printRun === null ? null : card.printRun === 1 ? "1/1" : `/${card.printRun}`;
+  const stampW = stamp ? stamp.length * 37.5 * 0.62 + 22 : 0;
+  const extra = [team.name, card.variation, card.variantPath.type !== "Base" ? card.variantPath.name : null]
+    .filter(Boolean)
+    .join(", ");
+  const defs = `<defs>
+<clipPath id="inner"><rect x="${inner.x}" y="${inner.y}" width="${inner.w}" height="${inner.h}" rx="15"/></clipPath>
+<pattern id="stripes" width="45" height="45" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="35" height="45" fill="${xml(primary)}"/><rect x="35" width="10" height="45" fill="${xml(secondary)}"/></pattern>
+<radialGradient id="key" cx="50%" cy="32%" r="62%"><stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+<linearGradient id="scrim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000000" stop-opacity="0.6"/><stop offset="1" stop-color="#000000" stop-opacity="0"/></linearGradient>
+${frameStops ? `<linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">${frameStops.map((c, i) => `<stop offset="${[0, 0.28, 0.52, 0.74, 1][i]}" stop-color="${xml(c)}"/>`).join("")}</linearGradient>` : ""}
+</defs>`;
+  const frameFill = frameStops ? "url(#frame)" : xml(frame);
+  return `${defs}
+<rect width="500" height="700" rx="25" fill="${frameFill}"/>
+<g clip-path="url(#inner)">
+<rect x="${inner.x}" y="${inner.y}" width="${inner.w}" height="${inner.h}" fill="#0b0f1a"/>
+<rect x="${inner.x}" y="${inner.y}" width="${inner.w}" height="${windowBottom - inner.y}" fill="url(#stripes)"/>
+<rect x="${inner.x}" y="${inner.y}" width="${inner.w}" height="${windowBottom - inner.y}" fill="url(#key)"/>
+<rect x="${inner.x}" y="${inner.y}" width="${inner.w}" height="110" fill="url(#scrim)"/>
+<text x="42.5" y="72" ${SVG_FONT} font-size="32.5" font-weight="700" fill="#ffffff">${xml(fitText(`${set.season} ${set.name}`, 462.5 - badgeW - 52, 32.5))}</text>
+<rect x="${462.5 - badgeW}" y="35" width="${badgeW}" height="54" rx="10" fill="#000000" fill-opacity="0.72"/>
+<text x="${462.5 - badgeW / 2}" y="74" text-anchor="middle" ${SVG_FONT} font-size="40" font-weight="700" fill="#ffffff">${xml(number)}</text>
+<text x="250" y="${inner.y + (windowBottom - inner.y) / 2 + 60}" text-anchor="middle" ${SVG_FONT} font-size="170" font-weight="700" letter-spacing="-6.8" fill="${initialsInk}" fill-opacity="0.92">${xml(playerInitials(player))}</text>
+${card.features.includes("RC") ? `<rect x="37.5" y="${windowBottom - 20 - 46}" width="68" height="46" rx="7.5" fill="#ffffff" stroke="#E0242B" stroke-width="3.5"/><text x="71.5" y="${windowBottom - 20 - 12}" text-anchor="middle" ${SVG_FONT} font-size="32.5" font-weight="700" fill="#000000">RC</text>` : ""}
+${stamp ? `<rect x="${462.5 - stampW}" y="${windowBottom - 20 - 52}" width="${stampW}" height="52" rx="7.5" fill="${card.printRun === 1 ? "#7f1d1d" : "#000000"}" fill-opacity="${card.printRun === 1 ? 1 : 0.78}" stroke="#F5D77A" stroke-width="3.5"/><text x="${462.5 - stampW / 2}" y="${windowBottom - 20 - 14}" text-anchor="middle" ${SVG_FONT} font-size="37.5" font-weight="700" fill="#F5D77A">${xml(stamp)}</text>` : ""}
+<polygon points="${inner.x},${plateTop + 37} ${inner.x + inner.w},${plateTop} ${inner.x + inner.w},${inner.y + inner.h} ${inner.x},${inner.y + inner.h}" fill="${xml(secondary)}"/>
+<text x="42.5" y="616" ${SVG_FONT} font-size="45" font-weight="700" fill="${bandInk}">${xml(fitText(player.name, 415, 45))}</text>
+<text x="42.5" y="656" ${SVG_FONT} font-size="31" fill="${bandInk}">${xml(fitText(extra, 415, 31))}</text>
+</g>`;
+}
+
+/** The back `CardBack` draws (a stats panel), as an SVG 500 x 700. */
+function demoBackSvg(number: string): string {
+  const lines = Array.from(
+    { length: 6 },
+    (_, i) => `<rect x="40" y="${130 + i * 46}" width="${420 * (0.9 - i * 0.09)}" height="18" rx="4" fill="#cbd5e1"/>`,
+  ).join("");
+  const grid = Array.from(
+    { length: 8 },
+    (_, i) => `<rect x="${40 + (i % 4) * 107}" y="${560 + Math.floor(i / 4) * 52}" width="95" height="30" rx="4" fill="#cbd5e1"/>`,
+  ).join("");
+  return `<rect x="1" y="1" width="498" height="698" rx="20" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
+<rect x="40" y="40" width="168" height="44" rx="6" fill="#94a3b8"/>
+<text x="460" y="74" text-anchor="end" ${SVG_FONT} font-size="30" font-weight="700" fill="#475569">#${xml(number)}</text>
+${lines}${grid}`;
+}
+
+/**
+ * NEO-481 — a demo scan as a picture the card photo viewer can draw on (an
+ * SVG, 500 x 700 like a card): the demo has no scanned files, only drawn
+ * faces. It is the face the tile draws (`CardFace`, `CardBack`), and an
+ * edited tile is drawn from it too, so a crop lands where it was aimed.
+ * Undefined while that side hasn't been scanned.
+ */
+export function demoScanUrl(item: Item, side: "front" | "back"): string | undefined {
+  const scan = side === "front" ? item.front : item.back;
+  if (!scan) return undefined;
+  const card = item.truth ? getCard(item.truth) : null;
+  const body = side === "front" && card ? demoFrontSvg(card) : demoBackSvg(card?.cardNumber ?? "?");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="700" viewBox="0 0 500 700">${body}</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 /* ------------------------------------------------------------------ */

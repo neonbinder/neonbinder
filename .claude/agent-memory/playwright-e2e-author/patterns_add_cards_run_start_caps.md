@@ -22,6 +22,13 @@ an `alert` in the failure ARIA snapshot, is a cap, not a regression:
   these caps.
 - A spec that waits on "Sent N photos." under a long ceiling sits the whole
   ceiling when a start is refused; read the alert before believing a hang.
+- **A run a spec never closed holds a slot until Done**: a spec whose body
+  fails with its run still open (e.g. inside a photo viewer) must `page.goto`
+  the run URL in its cleanup before pressing "Done adding photos"; an open modal
+  leaves the page behind it inert, so a bare click times out and the run stays
+  open. Take the run URL from `page.url()` too (a start that never said "Sent").
+  To clear leftovers by hand: the Add cards tab's region `Recent runs` lists
+  `Into <home>, <variant>, <date>` buttons; open each and press Done.
 - Order a local run of several run-starting specs so only one leaves a job
   reading at a time (scanner-code, which starts empty runs, before the photo spec).
 
@@ -33,3 +40,9 @@ An `aria-describedby` that points at an element with its own `aria-label` yields
 the label, not the element's text, as the accessible description: a
 `toHaveAccessibleDescription(<the tray words>)` goes red if the tray region gets
 a label.
+
+The 12-starts window is the deployment env `MAX_JOB_STARTS_PER_WINDOW`
+(`resolveMaxJobStartsPerWindow`, integer 1-200). On YOUR OWN worktree
+deployment you may raise it with `npx convex env set` for a day of reruns
+(say so in the report, and unset it after); never on shared dev or a preview,
+and never in a spec.

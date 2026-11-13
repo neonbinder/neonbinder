@@ -30,6 +30,7 @@
 import { collectorCascade, photoFile } from "../../support/collection";
 import { addCardViaForm, escapeRe } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectHeldPhotoViewOnly } from "../../support/photo-viewer";
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -85,9 +86,11 @@ test(
     await photos.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
     await expect(photos.getByRole("img", { name: "Front of this card", exact: true })).toBeVisible();
     await expect(photos.getByRole("img", { name: "Back of this card", exact: true })).toBeVisible();
-    // Held until Send, so there is nothing to open full size yet.
-    await expect(photos.getByRole("link", { name: /full size/ })).toHaveCount(0);
     await expectAccessible(page, { label: "Request a card, filled with photos" });
+    // Held until Send, so the card photo viewer opens them view-only (NEO-481),
+    // and Escape closes only the viewer: the request form stays filled.
+    await expectHeldPhotoViewOnly(page, photos, "front", "this card", "Card photo viewer in Request a card, view-only");
+    await expect(form.getByLabel("Card number", { exact: true })).toHaveValue(number);
     await form.getByRole("button", { name: "Send request" }).click();
 
     const sent = form.getByRole("status").filter({ hasText: `Sent #${number} ${player}.` });

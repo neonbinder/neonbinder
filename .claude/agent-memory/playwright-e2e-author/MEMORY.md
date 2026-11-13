@@ -73,7 +73,7 @@
 - [Prove a theme by painted colour](patterns_prove_a_theme_by_painted_colour.md) — banner bg + heading colour via toHaveCSS; pre-mount false positive after reload; second-context profile proof; no-flash is a gap
 - [Read a row name with ariaSnapshot](patterns_read_a_row_name_with_aria_snapshot.md) — pick an unknown seed row by role+regex, read its accessible name via ariaSnapshot, then exact names
 - [Collection checklist total and drawer](patterns_collection_checklist_total_and_drawer.md) — NEO-358: T = listed minus variation rows; missing stored count invisible; drawer URL, add-mode route, width
-- [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the server-confirmed notice before leaving /collection; hand-made card names, Insert column
+- [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the server-confirmed notice before leaving /collection or pressing the next Remove (a notice reflow loses the press); hand-made card names, Insert column
 - [Wizard save wait is a commit headroom ruler](patterns_wizard_save_wait_is_a_commit_headroom_ruler.md) — red 'Saved N cards' on a 300-card commit: not thrown; Step 1 of N in the PNG is the review drain; ~3.5s healthy vs 7s budget
 - [Hidden empty levels need app-created rows](patterns_hidden_empty_levels_need_app_created_rows.md) — NEO-358: prove the zero-hide on a spec-made set, sibling visible first, then absent/present/absent
 - [Collection binders flake mechanisms](patterns_collection_binders_flake_mechanisms.md) — NEO-359: Undo-before-write id swap, tray focus-scroll eats clicks, parallel hits break prefix regexes
@@ -103,6 +103,8 @@
 - [Custom-sport player fixture makes no lookup](patterns_custom_sport_player_fixture_makes_no_lookup.md) — NEO-462: minted players in the custom sport, no_match log is a refusal, birth-year forks, Back is an exit
 - [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
+- [Card photo viewer specs](patterns_card_photo_viewer_specs.md) — NEO-481: viewer/tile names, served-file orientation, crop-box drag geometry, More steps, restart a frozen Vite after resync
+- [aria-disabled refusal by keyboard](patterns_aria_disabled_refusal_by_keyboard.md) — focus()+Enter to prove a refusal; blur (Tab) a field before clicking the control its value enables
 - [Shell tabs live in the Menu on a phone](patterns_shell_tabs_phone_menu.md) — use goViaShell for /demo and signed-in shell tabs; match [?&]tab= in URLs
 - [Keep failure artifacts across runs](patterns_keep_failure_artifacts.md) — every run wipes results/; use --output=<scratch> when chasing an intermittent red
 - [Responsive duplicates and text locators](patterns_responsive_duplicates_and_text_locators.md) — getByText matches the CSS-hidden twin; filter({ visible: true }); branch on isMobile only for layout facts
@@ -120,3 +122,4 @@
 - [Optimistic tick, then navigate](patterns_optimistic_tick_then_navigate_reads_from_a_second_tab.md) — NEO-500: a goto right after an optimistic tick loses it; check from a second tab first; disjoint minted suffixes; clean up on a new page
 - [Print emulation + rare-state axe](patterns_print_emulation_and_rare_state_axe.md) — NEO-500: print media keeps the phone viewport; vitest axe-core has no contrast; setup needs the reference bundle
 - [Sibling edits reload a local Vite run](patterns_sibling_edits_reload_a_local_vite_run.md) — one-off red on a step green on rerun: check Vite log for hmr/page reload at that time; eBay unmatched row names
+- [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)

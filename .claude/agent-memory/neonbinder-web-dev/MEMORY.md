@@ -189,6 +189,7 @@
 - [dnd-kit droppables in their own scroll pane](reference_dndkit_droppables_in_their_own_scroll_pane.md) — two-pane drags need no measuring config (Rect tracks its pane's scroll); what autoscroll scrolls; grid-rows-1 + min-h-0
 - [react-hooks/refs flags helper arguments](reference_react_hooks_refs_flags_helper_arguments.md) — a ref-reading closure passed INTO renderRow() trips the lint; build it in the JSX prop instead
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
+- [New precondition on a shared mutation goes in the world fixture](reference_new_precondition_on_a_shared_mutation_goes_in_the_world_fixture.md) — satisfy it in world(), opt out per test; priceEveryVariant skips priced variants, so re-pricing is a silent no-op
 - [convex-test same-ms stamps](reference_convex_test_same_ms_stamps.md) — back-to-back mutations share a Date.now() ms; await a 3 ms setTimeout before a strict-gt stamp assertion
 - [Newest set rows are empty](reference_newest_set_rows_are_empty.md) — "newest sets" by set-row creation finds only empties; walk newest cards per variant, read once
 - [t.run turns undefined into null](reference_convex_test_run_turns_undefined_into_null.md) — absent optional field read via t.run is null; use `?? null` + toBeNull

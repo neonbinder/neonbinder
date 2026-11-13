@@ -66,7 +66,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from app.cropper import birefnet
+from app.cropper import birefnet, boxes
 from app.devcache import birefnet as devcache_birefnet
 from app.timing import measure_current
 
@@ -487,9 +487,15 @@ def analyze(mask: np.ndarray, work: np.ndarray, bg: np.ndarray) -> list[dict[str
 
 
 def final_crop(full: np.ndarray, scale: float, comp: dict[str, Any], pad: float) -> np.ndarray:
-    """Crop the FULL-resolution original along the work-space detection."""
+    """Crop the FULL-resolution original along the work-space detection.
+
+    Reports the box it cut to `boxes.record` (NEO-481's `crop_box`).
+    """
+    src_h, src_w = full.shape[:2]
     if comp["route"] == "quad":
-        crop, _, _ = warp_rect_card(full, comp["quad"] / scale, pad)
+        quad_full = comp["quad"] / scale
+        crop, _, _ = warp_rect_card(full, quad_full, pad)
+        box = boxes.from_quad(expand_quad(order_quad(quad_full), pad), src_w, src_h)
     else:
         r = comp["rect"]
         rect_full = (
@@ -498,8 +504,12 @@ def final_crop(full: np.ndarray, scale: float, comp: dict[str, Any], pad: float)
             r[2],
         )
         crop = crop_oriented_rect(full, rect_full, pad)
+        (cx, cy), (w, h), angle = rect_full
+        box = boxes.from_rotated_rect(cx, cy, w + 2 * pad, h + 2 * pad, angle, src_w, src_h)
     if crop.shape[0] < crop.shape[1]:
         crop = cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        box = boxes.turned_ccw(box) if box is not None else None
+    boxes.record(box)
     return crop
 
 

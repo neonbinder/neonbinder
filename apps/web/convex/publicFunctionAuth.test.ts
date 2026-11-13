@@ -2401,6 +2401,29 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["intakeRuns.ts", "recordIntakePhotoSide", "internalMutation"],
     ["intakePhotos.ts", "attachIntakePhotos", "internalAction"],
     ["intakePhotos.ts", "reattachIntakeRunPhotos", "internalAction"],
+    // NEO-481 — hand photo edits: every row function takes a userId/ownerId
+    // argument, and the renders take keys' parts, so none may ever be public.
+    ["photoEditRows.ts", "scanSourceFacts", "internalQuery"],
+    ["photoEditRows.ts", "copySourceFacts", "internalQuery"],
+    ["photoEditRows.ts", "reserveScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "commitScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "failScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "reserveCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "commitCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "failCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "undoCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "dismissFailure", "internalMutation"],
+    ["photoEditRows.ts", "sweepPhotoEditTickets", "internalMutation"],
+    ["photoEditRows.ts", "claimEditWarmup", "internalMutation"],
+    ["photoEdits.ts", "renderScanEdit", "internalAction"],
+    ["photoEdits.ts", "renderCopyEdit", "internalAction"],
+    ["photoEdits.ts", "warmEditRenderer", "internalAction"],
+    // NEO-481 — the public edit entry points are actions that sign in first.
+    ["photoEdits.ts", "photoEditSource", "action"],
+    ["photoEdits.ts", "saveScanEdit", "action"],
+    ["photoEdits.ts", "saveCopyPhotoEdit", "action"],
+    ["photoEdits.ts", "undoCopyPhotoEdit", "action"],
+    ["photoEdits.ts", "dismissPhotoEditFailure", "action"],
   ])(
     "%s :: %s is declared %s",
     (file, fn, kind) => {
@@ -2698,6 +2721,8 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
       () => t.mutation(api.intakeRuns.setIntakePhotoAside, { runId, entryIndex: 0, setAside: true }),
       // NEO-427: the Saved tile's Try again.
       () => t.action(api.intakePhotos.retryIntakePhotos, { matchId }),
+      // NEO-481: a box tile's own price.
+      () => t.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 100 }),
     ];
     for (const call of writes) await expect(call()).rejects.toThrow(/Not authenticated/);
     expect((await t.run((ctx) => ctx.db.get(matchId)))?.photos).toBe("failed");
@@ -2707,6 +2732,76 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
     expect(await t.query(api.intakeRuns.searchIntakeCards, { runId, q: "1" })).toEqual([]);
     const copies = await t.run(async (ctx) => ctx.db.query("collectionCopies").collect());
     expect(copies).toEqual([]);
+  });
+});
+
+describe("NEO-481: the hand photo edit functions are signed-in", () => {
+  test("every public edit function rejects an anonymous caller and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { copyId, photoId } = await t.run(async (ctx) => {
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        name: "B",
+        lastUpdated: 0,
+      });
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "A",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 0,
+      } as never);
+      const copyId = await ctx.db.insert("collectionCopies", {
+        ownerId: "someone",
+        cardId,
+        variantId: sportId,
+        setId: sportId,
+        homeId,
+        quantity: 1,
+        lastUpdated: 0,
+      });
+      const photoId = await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: "someone",
+        copyId,
+        side: "front",
+        token: "a".repeat(32),
+        contentType: "image/jpeg",
+        imageBytes: 1,
+        thumbBytes: 1,
+        status: "live",
+        since: 0,
+      });
+      return { copyId, photoId };
+    });
+    const jobId = "00000000-0000-4000-8000-000000000000";
+    const edit = { turns: 1 as const, crop: null };
+    const calls = [
+      () => t.action(api.photoEdits.photoEditSource, { ref: { kind: "scan", jobId, entryIndex: 0 } }),
+      () => t.action(api.photoEdits.photoEditSource, { ref: { kind: "copy", copyId, side: "front" } }),
+      () => t.action(api.photoEdits.saveScanEdit, { jobId, entryIndex: 0, edit, expectVersion: 0 }),
+      () =>
+        t.action(api.photoEdits.saveCopyPhotoEdit, {
+          copyId,
+          side: "front",
+          edit,
+          expectToken: "a".repeat(32),
+          mode: "stored",
+        }),
+      () => t.action(api.photoEdits.undoCopyPhotoEdit, { copyId, photoId }),
+      () => t.action(api.photoEdits.dismissPhotoEditFailure, { ref: { kind: "copy", copyId, side: "front" } }),
+    ];
+    for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
+    const photos = await t.run(async (ctx) => ctx.db.query("collectionCopyPhotos").collect());
+    expect(photos.map((p) => [p._id, p.status])).toEqual([[photoId, "live"]]);
   });
 });
 

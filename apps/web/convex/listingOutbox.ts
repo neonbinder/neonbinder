@@ -198,6 +198,12 @@ export async function enqueueListingCards(
     ownerId: string;
     cardIds: ReadonlyArray<string>;
     platforms?: ReadonlyArray<ListingPlatform>;
+    /**
+     * NEO-481 — a photo of these cards changed: flag the rows so the BSC drain
+     * uploads the photo even over an existing seller photo. Set, never cleared
+     * here; the row's delete at its `seq` takes it.
+     */
+    refreshPhotos?: boolean;
   },
 ): Promise<number> {
   if (args.cardIds.length === 0) return 0;
@@ -219,7 +225,7 @@ export async function enqueueListingCards(
     if (!card) continue;
     for (const state of wanted) {
       if (!carriesPlatformRef(card, state.platform)) continue;
-      await upsertOutboxRow(ctx, args.ownerId, state.platform, cardId, card.selectorOptionId, now);
+      await upsertOutboxRow(ctx, args.ownerId, state.platform, cardId, card.selectorOptionId, now, args.refreshPhotos);
       written += 1;
     }
   }
@@ -391,6 +397,7 @@ async function upsertOutboxRow(
   cardId: Id<"cardChecklist">,
   variantId: Id<"selectorOptions">,
   now: number,
+  refreshPhotos?: boolean,
 ): Promise<void> {
   const existing = await ctx.db
     .query("listingOutbox")
@@ -398,11 +405,22 @@ async function upsertOutboxRow(
       q.eq("ownerId", ownerId).eq("platform", platform).eq("cardId", cardId),
     )
     .unique();
+  // NEO-481: the flag only ever goes on; a later upsert without it keeps it.
+  // A new photo change starts the refresh's tries again (`refreshAttempts`).
+  const flag = refreshPhotos ? { refreshPhotos: true as const, refreshAttempts: undefined } : {};
   if (existing) {
-    await ctx.db.patch(existing._id, { seq: existing.seq + 1, changedAt: now, variantId });
+    await ctx.db.patch(existing._id, { seq: existing.seq + 1, changedAt: now, variantId, ...flag });
     return;
   }
-  await ctx.db.insert("listingOutbox", { ownerId, platform, cardId, variantId, seq: 1, changedAt: now });
+  await ctx.db.insert("listingOutbox", {
+    ownerId,
+    platform,
+    cardId,
+    variantId,
+    seq: 1,
+    changedAt: now,
+    ...(refreshPhotos ? { refreshPhotos: true as const } : {}),
+  });
 }
 
 /** What a kick did, for tests and logs. */

@@ -41,7 +41,19 @@
 //      cards; they press the checklist's Sync, follow "See what's syncing" to
 //      Sync status (Back returns), and Sync
 //      status reads the set synced with 2 listed, nothing held back.
+//      NEO-481: before that Sync, the first card's box copy takes a front
+//      photo (the copy drawer's Photos box), so a sending run uploads it
+//      ("Upload photos, done" sits in its ledger before the send).
 //      Admin -> Sync Status shows the same set for this collector, read-only.
+//   3b. NEO-481, the photo refresh: they open that photo in the card photo
+//      viewer, Turn right and Save. Once the new file lands ("All set. Your
+//      edited photo is in."), the card is queued again, flagged for a photo
+//      refresh, so the next Sync sends the new file over the seller photo BSC
+//      already shows: Sync status queues the one card, the press's run holds
+//      "Upload photos, done", the card leaves the queue and nothing is held
+//      back (a refresh BSC refused would be). The same two orders as every
+//      press (below): a poll that lands between the queue's read and the press
+//      sends the photo itself, and the press then sends nothing.
 //   4. They turn the box's "Listed on marketplaces" off, Sync again, and the
 //      set reads 0 listed, with both cards taken to 0.
 //   5. They stop: the BSC sign-in is removed and saved again WITHOUT listing=on
@@ -130,7 +142,8 @@
 // so the copies still sit at Excellent and a run reads the one Excellent
 // sheet. The cards list at a $900 common price (`PRICE`) so no real buyer takes
 // one. Its NB writes are the signed-in user's own rows
-// (the sign-in removed and saved again, a minted box, two box copies, one
+// (the sign-in removed and saved again, a minted box, two box copies, a front
+// photo on one of them turned once in the viewer, one
 // binder copy with a photo that is removed again, the common price, and every
 // other box set to in-person, which is left that way). The
 // quantities end at 0 on BSC and the sign-in is saved again, on a pass by the
@@ -169,6 +182,7 @@ import {
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { bscReadCeiling } from "../../support/marketplace-wait";
+import { EDIT_LANDED, EDIT_LANDS, photoViewer } from "../../support/photo-viewer";
 
 /** The Send step's label. */
 const SEND = "Send changes to BuySportsCards";
@@ -199,6 +213,13 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** A committed intake scan (about 1000 px wide), attached through the copy drawer's Photos box. It is never listed: its copy lives in a binder. */
 const BINDER_PHOTO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", "05-bell-front.jpg");
 
+/**
+ * NEO-481: a committed intake scan (about 1000 px wide) for the first box copy's
+ * front. It IS listed: the first Sync uploads it, and the viewer's turn sends it
+ * again as a photo refresh.
+ */
+const LISTED_PHOTO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", "07-bowe-again-front.jpg");
+
 /** Two committed intake scans (a front and its back): dropped on Add cards to wait for a price. They are removed from the tray, never sent. */
 const HELD_PHOTOS = ["01-mcfadden-front.jpg", "02-mcfadden-back.jpg"].map((n) =>
   path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake", n),
@@ -219,6 +240,21 @@ async function openBinderLine(checklist: Locator, short: string) {
   const form = yourCopies.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
   await expect(form).toBeVisible();
   return { drawer, yourCopies, form, panel: form.getByRole("region", { name: /^Photos of / }) };
+}
+
+/**
+ * NEO-481. On the Inventory Checklists tab: Details on a card with ONE line
+ * opens the drawer already editing that line (the box copy), so its photos
+ * show in the form's Photos box. `short` is the card's `#N First Last`.
+ */
+async function openBoxLine(checklist: Locator, short: string) {
+  const page = checklist.page();
+  await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: new RegExp(`^${escapeRegExp(SET_LABEL)} ${escapeRegExp(short)}`) });
+  const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
+  const form = yourCopies.getByRole("form", { name: "Edit Raw, Excellent", exact: true });
+  await expect(form).toBeVisible();
+  return { drawer, form, panel: form.getByRole("region", { name: /^Photos of / }) };
 }
 
 /** NEO-432: remove the card's one binder copy through its open drawer (Escape closes the form first, as a collector does), then close the drawer. */
@@ -702,6 +738,18 @@ test(
     await expect(rowOf(b).getByText("Saved")).toBeVisible();
     await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(b)}\\.`))).toBeVisible();
 
+    // --- NEO-481: a front photo on A's box copy, so the listing sends it -------
+    // (A photo change on a listed box's copy queues the card: still two cards.)
+    {
+      const line = await openBoxLine(checklist, a);
+      await expect(line.panel.getByText("No front photo yet")).toBeAttached();
+      await line.panel.getByLabel("Front photo file", { exact: true }).setInputFiles(LISTED_PHOTO);
+      await expect(line.panel.getByRole("status")).toHaveText("Front photo saved.");
+      await expect(line.panel.getByRole("button", { name: "Open front of Raw, Excellent", exact: true })).toBeVisible();
+      await line.drawer.getByRole("button", { name: "Close card detail" }).click();
+      await expect(line.drawer).toBeHidden();
+    }
+
     // --- Before Sync: Sync status queues the two cards -------------------------
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
@@ -793,6 +841,8 @@ test(
       // The double-check and the folded ledger (reads, then the send).
       await expect(run.readLanded()).toBeVisible();
       await expect(run.confirmLanded()).toBeVisible();
+      // NEO-481: A's copy has a front photo and BSC showed its own image, so the run sent it.
+      await expect(run.last.getByRole("listitem", { name: "Upload photos, done", exact: true })).toBeVisible();
       // Finished, the set's row folds the run (see "The ledger's steps"): the
       // reads are one "Gathering data", then the update steps in run order (an
       // "Upload photos" may sit before the send); no read or confirm item is left.
@@ -833,6 +883,67 @@ test(
     await pickCollector.selectOption({ label: collector });
     await expect(page).toHaveURL(/[?&]owner=[^&]+/);
     await expect(admin.row.getByText(/^2 listed(, 2 updated)?$/)).toBeVisible();
+
+    // --- 3b. NEO-481: the photo, turned in the viewer, goes up again ----------
+    await page.goto("/inventory?tab=checklists");
+    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
+    await drillToCollectorChecklist(page, FUTURE_STARS);
+    {
+      const line = await openBoxLine(checklist, a);
+      await line.panel.getByRole("button", { name: "Open front of Raw, Excellent", exact: true }).click();
+      const viewer = photoViewer(page, "front", a);
+      await expect(viewer).toBeVisible();
+      const tools = viewer.getByRole("toolbar", { name: "Photo tools" });
+      const viewerSaid = (words: string) => viewer.getByRole("status").filter({ hasText: new RegExp(`^${escapeRegExp(words)}$`) });
+      await tools.getByRole("button", { name: "Turn right", exact: true }).click();
+      await viewer.getByRole("button", { name: "Save photo", exact: true }).click();
+      await expect(viewerSaid("Saved.")).toBeVisible();
+      // The render: the PIPELINE exception (EDIT_LANDS, signed off in support/photo-viewer.ts).
+      await expect(viewerSaid(EDIT_LANDED)).toBeVisible({ timeout: EDIT_LANDS });
+      await page.keyboard.press("Escape");
+      await expect(viewer).toBeHidden();
+      await line.drawer.getByRole("button", { name: "Close card detail" }).click();
+      await expect(line.drawer).toBeHidden();
+    }
+    // The landed edit queued A again (flagged for a photo refresh). This is the
+    // proof the edit reaches listings, so it is asserted hard: the window
+    // between the landing and this read is a few seconds of the poll's 15
+    // minutes (a poll inside it is a rare red, read as such from the ledger).
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    const refreshQueue = platform.getByRole("list", { name: "Queued for the next sync (1)" });
+    const refreshQueued = refreshQueue
+      .getByRole("listitem")
+      .filter({ hasText: new RegExp(`^${escapeRegExp(a.split(" ")[0])} .* in ${escapeRegExp(SET_LABEL)}`) });
+    await expect(refreshQueued).toBeVisible();
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await sync.click();
+    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    const refresh = syncRun(platform, SET_LABEL, BSC);
+    await followRunToRest(platform, refresh, queueSettled(platform, SET_LABEL), bscReadCeiling);
+    // Positives first (R2): the run's folded ledger and its result line.
+    await expect(refresh.last).toBeVisible();
+    await expect(refresh.gathered()).toBeVisible();
+    await expect(row.getByText(/^Synced /)).toBeVisible();
+    // The card left the queue (followRunToRest waited for that) held back by nothing,
+    // a refused photo or a refresh given up on included.
+    await expect(row.getByText(/held back/)).toHaveCount(0);
+    await expect(refreshQueued).toHaveCount(0);
+    const photoSent = await refresh.last.getByRole("listitem", { name: "Upload photos, done", exact: true }).isVisible();
+    if (photoSent) {
+      // Press first: the refresh is this run's own photos step, before its send.
+      await expect(refresh.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Upload photos, done$/]);
+      await expect(refresh.nothingNew()).toHaveCount(0);
+    } else {
+      // Poll first (between the queue's read and the press): the press is a full
+      // read that sent nothing, exactly "Gathering data" then "Nothing new to send".
+      await expectNothingSent(refresh);
+    }
+    await expectAccessible(page, { label: "Inventory Sync status, an edited photo sent again" });
 
     // --- 3. The box goes in-person: Sync takes both off BSC --------------------
     await page.goto("/inventory?tab=boxes");

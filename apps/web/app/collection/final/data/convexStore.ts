@@ -76,6 +76,9 @@ import { resizeCopyPhoto, type ResizedPhoto } from "@/lib/collection/copy-photo-
 import { startCopyPhotoTimer } from "@/lib/collection/copy-photo-timing";
 import { uploadWithRetry, type PhotoFileKind } from "@/lib/collection/upload-with-retry";
 import { CardImagesProvider } from "./cardImages";
+import { asPendingPhotoEdit } from "@/lib/photo-edit/geometry";
+import { copyPreviewKey, inWords, toEditStart, type RawEditSource } from "@/components/modules/CardPhotoViewer/convexEdits";
+import type { PhotoSideSource, PhotoSource } from "@/components/modules/CardPhotoViewer/types";
 
 import {
   bySlot,
@@ -109,6 +112,8 @@ import {
   type CopyDetails,
   type CopyId,
   type CopyPhotos,
+  type PhotoSide,
+  type PhotoUrls,
   type DrillItem,
   type DrillLevel,
   type HeldCount,
@@ -2738,8 +2743,80 @@ function useLinePhotos(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos>
   return useMemo(() => {
     if (args === "skip") return new Map();
     if (rows === undefined) return undefined;
-    return new Map(rows.map((r) => [r.copyId as CopyId, { ...(r.front ? { front: r.front } : {}), ...(r.back ? { back: r.back } : {}) }]));
+    return new Map(rows.map((r) => [r.copyId as CopyId, photosOfRow(r)]));
   }, [args, rows]);
+}
+
+type RawCopyPhotos = FunctionReturnType<typeof api.copyPhotos.photosOf>[number];
+
+/**
+ * NEO-481 — one side of a `photosOf` row, with the edit still rendering (or
+ * failed) on it: the row's `edits` holds the newest per side.
+ */
+function photoSideOf(row: RawCopyPhotos, side: PhotoSide): PhotoUrls | undefined {
+  const urls = row[side];
+  if (!urls) return undefined;
+  const pending = asPendingPhotoEdit(row.edits?.find((e) => e.side === side));
+  return { imageUrl: urls.imageUrl, thumbUrl: urls.thumbUrl, ...(pending ? { pending } : {}) };
+}
+
+/** NEO-377, NEO-481 — a `photosOf` row as the line's photos (a side with none is absent). */
+export function photosOfRow(row: RawCopyPhotos): CopyPhotos {
+  const front = photoSideOf(row, "front");
+  const back = photoSideOf(row, "back");
+  return { ...(front ? { front } : {}), ...(back ? { back } : {}) };
+}
+
+/**
+ * NEO-481 — the viewer's source for a line's photos: where an edit starts
+ * (the server HEADs the scan's original, else it is the stored photo), the
+ * save (accepted at once, rendered in the background), Undo and the failure
+ * note. A hook, mounted only while the viewer is open.
+ *
+ * Undo puts back the photo from before this viewer's last save: the save
+ * answers with the new edit row, and that row is what Undo names.
+ */
+function useConvexCopyPhotoSource(copy: Pick<Copy, "id">, label: string, photos: CopyPhotos | undefined): PhotoSource {
+  const loadSource = useAction(api.photoEdits.photoEditSource);
+  const saveEdit = useAction(api.photoEdits.saveCopyPhotoEdit);
+  const undoEdit = useAction(api.photoEdits.undoCopyPhotoEdit);
+  const dismiss = useAction(api.photoEdits.dismissPhotoEditFailure);
+  const lastEdit = useRef<Partial<Record<PhotoSide, Id<"collectionCopyPhotos">>>>({});
+  return useMemo(() => {
+    const copyId = copy.id as RawCopy["_id"];
+    const side = (s: PhotoSide): PhotoSideSource | undefined => {
+      const p = photos?.[s];
+      if (!p) return undefined;
+      const base = { imageUrl: p.imageUrl, previewKey: copyPreviewKey(copy.id, s), ...(p.pending ? { pending: p.pending } : {}) };
+      if (isOptimisticId(copy.id)) return { ...base, viewOnly: "This copy is still saving. Open it again in a moment." };
+      const ref = { kind: "copy" as const, copyId, side: s };
+      return {
+        ...base,
+        async load() {
+          const raw = (await inWords(loadSource({ ref }), "Couldn't open this photo for editing.")) as RawEditSource;
+          return toEditStart(raw, raw.expectToken);
+        },
+        async save(edit, start) {
+          if (typeof start.guard !== "string") throw new Error("This photo changed. Close it and open it again.");
+          const { photoId } = await inWords(
+            saveEdit({ copyId, side: s, edit, expectToken: start.guard, mode: start.mode }),
+            "That edit didn't save. Try again.",
+          );
+          lastEdit.current[s] = photoId;
+        },
+        async undo() {
+          const photoId = lastEdit.current[s];
+          if (!photoId) throw new Error("There's no edit to undo here.");
+          await inWords(undoEdit({ copyId, photoId }), "Couldn't put the old photo back.");
+          lastEdit.current[s] = undefined;
+        },
+        async dismissFailure() {
+          await inWords(dismiss({ ref }), "Couldn't clear that note.");
+        },
+      };
+    };
+    return { label, front: side("front"), back: side("back") };
+  }, [copy.id, label, photos, loadSource, saveEdit, undoEdit, dismiss]);
 }
 
 /** NEO-377 — the collector's photo of each card on screen (`./cardImages`). */
@@ -2797,6 +2874,7 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
     () => ({
       usePhotos: useLinePhotos,
       useCardImages,
+      usePhotoSource: useConvexCopyPhotoSource,
       preparePhoto: prepareCopyPhoto,
       async addPhoto(copy, side, file, context) {
         // NEO-466: every phase is timed; a slow, retried or failed save logs one line.

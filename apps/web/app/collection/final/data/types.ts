@@ -19,6 +19,7 @@
  */
 
 import type { StoredRule, StoredRuleLeaf, StoredRuleTerm } from "@/lib/collection/binder-rule";
+import type { PendingPhotoEdit } from "@/lib/photo-edit/geometry";
 
 // ---------------------------------------------------------------------------
 // Ids
@@ -380,6 +381,11 @@ export type PhotoSide = "front" | "back";
 export interface PhotoUrls {
   imageUrl: string;
   thumbUrl: string;
+  /**
+   * NEO-481 — a turn or crop saved and still rendering, or one whose render
+   * failed. `imageUrl` is still the old photo until the new file lands.
+   */
+  pending?: PendingPhotoEdit;
 }
 
 /** A copy line's photos. A side with none is absent. */

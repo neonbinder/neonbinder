@@ -23,6 +23,7 @@
 import { escapeRe } from "../../support/cards";
 import { drillToCollectorBase, expectPhotoServed, ordinaryBaseRows, photoFile, quantityField, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectHeldPhotoViewOnly } from "../../support/photo-viewer";
 
 test(
   "Inventory Checklists: a card added with photos counts 1, + makes it 2 on that one line, 0 removes it and Undo brings it back with its photos",
@@ -69,13 +70,14 @@ test(
     const panel = addForm.getByRole("region", { name: /^Photos of / });
     await panel.getByLabel("Front photo file", { exact: true }).setInputFiles(photoFile("front.jpg"));
     await panel.getByLabel("Back photo file", { exact: true }).setInputFiles(photoFile("back.jpg"));
-    // Held tiles are pictures only: nothing to open full size until the copy is saved.
     await expect(panel.getByRole("img", { name: "Front of your new copy", exact: true })).toBeVisible();
     await expect(panel.getByRole("img", { name: "Back of your new copy", exact: true })).toBeVisible();
-    await expect(panel.getByRole("link", { name: /full size/ })).toHaveCount(0);
     // Fully on screen before axe reads it (the drawer slides in).
     await expect(drawer).toBeInViewport({ ratio: 0.99 });
     await expectAccessible(page, { within: drawer, label: "Card drawer, Add form on the Inventory holding a front and a back photo" });
+    // Held tiles open the card photo viewer view-only until the copy is saved (NEO-481).
+    await expectHeldPhotoViewOnly(page, panel, "back", "your new copy", "Card photo viewer on the Inventory, a held back photo, view-only");
+    await expect(addForm).toBeVisible();
     await addForm.getByRole("button", { name: "Add to inventory" }).click();
     await expect(addForm).toBeHidden();
     await expect(
@@ -98,8 +100,8 @@ test(
     await expect(field).not.toHaveAccessibleDescription(/also here/);
     await expectAccessible(page, { label: "Inventory Checklists, the photo line counted 2" });
     const stacked = await openLine("Raw, Excellent ×2");
-    await expect(stacked.getByRole("link", { name: "Front of Raw, Excellent ×2, full size (opens a new tab)", exact: true })).toBeVisible();
-    await expect(stacked.getByRole("link", { name: "Back of Raw, Excellent ×2, full size (opens a new tab)", exact: true })).toBeVisible();
+    await expect(stacked.getByRole("button", { name: "Open front of Raw, Excellent ×2", exact: true })).toBeVisible();
+    await expect(stacked.getByRole("button", { name: "Open back of Raw, Excellent ×2", exact: true })).toBeVisible();
     // Back from the drawer returns to the checklist, the count where it was.
     await page.goBack();
     await expect(drawer).toBeHidden();
@@ -116,10 +118,12 @@ test(
     await expect(said("Undone.")).toBeVisible();
     await expect(field).toHaveValue("2");
     const restored = await openLine("Raw, Excellent ×2");
-    const restoredFront = restored.getByRole("link", { name: "Front of Raw, Excellent ×2, full size (opens a new tab)", exact: true });
+    const restoredFront = restored
+      .getByRole("button", { name: "Open front of Raw, Excellent ×2", exact: true })
+      .getByRole("img", { name: "Front of Raw, Excellent ×2", exact: true });
     await expect(restoredFront).toBeVisible();
-    await expect(restored.getByRole("link", { name: "Back of Raw, Excellent ×2, full size (opens a new tab)", exact: true })).toBeVisible();
-    await expectPhotoServed(page, restoredFront, "href");
+    await expect(restored.getByRole("button", { name: "Open back of Raw, Excellent ×2", exact: true })).toBeVisible();
+    await expectPhotoServed(page, restoredFront, "src");
     await expectAccessible(page, { within: drawer, label: "Card drawer, the photo line back after Undo" });
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();

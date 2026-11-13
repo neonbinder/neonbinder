@@ -2149,6 +2149,38 @@ describe("eBay drain: the sandbox has no picture upload", () => {
     ]);
     expect(await stepsOf(s, v.variantId)).toEqual(["check: done", "photos: done", "items: done", "offers: done", "publish: done"]);
   });
+
+  test("NEO-481: on production a live card's edited photo (a new token) is uploaded again and its item resent with it", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s, 500);
+    await drain(s);
+    const sku = `NB2-${card}-NM`;
+    expect(ebay.items.get(sku)?.product.imageUrls).toEqual(["https://i.ebayimg.com/m1.jpg"]);
+    ebay.calls = [];
+    photoFetches = [];
+    // A rotate or crop commits the copy's photo under a new token; the queue
+    // row carries refreshPhotos, which eBay does not need: the token is enough.
+    await s.t.run(async (ctx) => {
+      const photo = (await ctx.db.query("collectionCopyPhotos").collect())[0];
+      await ctx.db.patch(photo._id, { token: "tokEdited" });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+    await s.t.run(async (ctx) => {
+      const row = (await ctx.db.query("listingOutbox").collect())[0];
+      await ctx.db.patch(row._id, { refreshPhotos: true });
+    });
+
+    await drain(s);
+
+    expect(photoFetches).toEqual(["copy-photos/tokEdited/image.jpg"]);
+    expect(ebay.to(MEDIA_CREATE)).toHaveLength(1);
+    expect(ebay.to("/sell/inventory/v1/bulk_create_or_replace_inventory_item")).toHaveLength(1);
+    expect(ebay.items.get(sku)?.product.imageUrls).toEqual(["https://i.ebayimg.com/m2.jpg"]);
+    expect((await linkOf(s, card, "NM"))?.images).toEqual([
+      expect.objectContaining({ url: "https://i.ebayimg.com/m2.jpg", photoToken: "copy-photos/tokEdited/image.jpg" }),
+    ]);
+    expect(await outbox(s)).toEqual([]);
+  });
 });
 
 describe("inPool", () => {
