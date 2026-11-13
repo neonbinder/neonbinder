@@ -4,7 +4,12 @@
 //      brand (CMC, Baseball 1990) under a brand row the sync CREATES for it.
 //      Since NEO-527 the list also names the majors SportLots used to supply,
 //      so the same sync files the 1990 flagship "Topps" under a Topps row it
-//      creates (with SportLots paused, nothing else can).
+//      creates (with SportLots paused, nothing else can). Topps stands for
+//      the whole list: every major goes through the same matcher, so one live
+//      major proves the path, and `convex/knownBrands.test.ts` pins each name.
+//      The paused-year backfill (`convex/backfillKnownBrands.ts`, re-filing
+//      sets a year already holds under Unknown) is proved by its unit test
+//      only (`convex/backfillKnownBrands.test.ts`); no spec runs it.
 //   2. The operator moves it to Unknown; a FORCED year-wide Sync Sets leaves it
 //      exactly where the operator put it.
 // Sole writer of Baseball 1990; FRESH-ONLY per deployment (a second run finds

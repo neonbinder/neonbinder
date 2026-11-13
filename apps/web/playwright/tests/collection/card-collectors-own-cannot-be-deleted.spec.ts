@@ -23,9 +23,9 @@
 // card is deleted through the UI (the set and its rows stand).
 //
 // R3: add-edit-remove-copy proves the collector's side (Have, drawer, copies)
-// on the seeded Base; this spec owns the set builder's refusal. The cascade
-// drill below is that spec's collector cascade, kept local for the same reason
-// it is local there: `support/set-builder.ts` drives the admin builder.
+// on the seeded Base; this spec owns the set builder's refusal. The cascade is
+// drilled through `collectorCascade` (support/collection.ts), the one
+// implementation (NEO-527: it owns the brand column's title).
 //
 // HIDDEN UNTIL IT HOLDS A CARD (Jason, 2026-10-24: "hide anything that is a
 // zero"): every row the app creates is born with a known subtree count of 0, and
@@ -47,6 +47,7 @@
 // `Held<token>`.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
+import { collectorCascade } from "../../support/collection";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
 
 test(
@@ -75,15 +76,7 @@ test(
     await drillToCustom(page, build);
 
     // --- The collector's cascade -----------------------------------------------
-    const cascade = page.getByRole("group", { name: "Sport, year, brand and set" });
-    const drill = async (column: string, option: string) => {
-      await cascade
-        .getByRole("listbox", { name: column })
-        .getByRole("option")
-        .filter({ has: page.getByText(option, { exact: true }) })
-        .click();
-      await expect(cascade.getByRole("button", { name: `${column}: ${option}, change` })).toBeVisible();
-    };
+    const { cascade, drill } = collectorCascade(page);
     const setOption = cascade
       .getByRole("listbox", { name: "Sets" })
       .getByRole("option")

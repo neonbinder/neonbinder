@@ -28,15 +28,23 @@ the year through All Brands first, then ASSERT `columnOption(page, "Manufacturer
 sets sit in the year's brand column (after a "More sets" group), and picking one skips
 the Sets column. The column's title depends on what else the year holds ("Brands",
 "Sets" when all are sets, "Brands and sets" when mixed); a picked loose set collapses to
-"Sets: <name>, change", a brand to "Brands: <name>, change". Keep the title in one regex
-constant and never assert "Brands" for a column that lists a set. Note `getByRole`'s
-non-exact name is a case-insensitive substring, so `listbox "Brands"` also finds
-"Brands and sets": the shared `drill("Brands", ...)` helper survives a mixed year, but a
-"Sets"-only year has no brand to pick at all.
+"Sets: <name>, change", a brand to "Brands: <name>, change". Assert ONE EXACT title per
+year (`exact: true`), never a regex accepting two: `getByRole`'s non-exact name is a
+case-insensitive substring, so a plain `listbox "Brands"` also matches "Brands and sets"
+and would hide the change. The shared brand drill (`collectorCascade` in
+support/collection.ts) matches `BRAND_COLUMN_TITLE` exactly, so a drilled year gaining a
+carded loose set breaks that one constant.
 A set WITH CARDS under a year's Unknown changes that year's column for every spec that
-drills it (`drill("Brands", ...)` helpers, the request form's "Brand" select), so host
-such a fixture on a year no collector spec drills: Hockey 1995 (its Unknown already holds
-the wizard fixtures' committed sets). Never Baseball 2024 or 2026.
+drills it (brand drills, the request form's "Brand" select), so host such a fixture on a
+year no collector spec drills: Hockey 1995 for an all-loose column (its Unknown already
+holds the wizard fixtures' committed sets), Baseball 1996 for a mixed one (a hand-made set
+under the sync-minted Topps beside one under Unknown). Never Baseball 2024 or 2026.
+The request form and the set pickers label the same field with `brandFieldLabel`: "Set"
+(no separate Set select follows), "Brand or set" when mixed. Request a card PREFILLS from
+the Checklists drill; `selectOption` of the value already shown fires no React change.
+Card search needs every typed word in the card's listing title, which never holds
+"Unknown", so "Unknown <set>" finds no card (set SUGGESTIONS may still match; do not
+assert on them).
 
 **Dashboard surface that proves it per account:** the Fresh Pulls tile (a link named by
 the listing title, "1995 <set> Base Insert #<n> Hockey"). "New on NeonBinder" also names
