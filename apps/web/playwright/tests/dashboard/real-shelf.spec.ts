@@ -69,7 +69,8 @@ test("Dashboard shows the collector's own binder shelf", { tag: ["@smoke", "@das
   await expect(page.getByRole("link", { name: "Pull them on the Pick List", exact: true })).toHaveCount(0);
   const hopper = page.getByRole("region", { name: "In the Hopper" });
   await expect(hopper.getByRole("heading", { level: 2, name: "In the Hopper", exact: true })).toBeVisible();
-  await expect(hopper.getByText(/^\d+ runs? sorted this week/)).toBeVisible();
+  await expect(hopper.getByText(/^\d+ runs? sorted this week$/)).toBeVisible();
+  await expect(hopper.getByText(/all-time/)).toHaveCount(0);
   await expect(hopper.getByRole("list", { name: "Runs to finish", exact: true })).toHaveCount(0);
   await expect(hopper.getByRole("link", { name: /^Finish this run/ })).toHaveCount(0);
   await expect(hopper.getByText(/ to identify| needs? your yes/)).toHaveCount(0);

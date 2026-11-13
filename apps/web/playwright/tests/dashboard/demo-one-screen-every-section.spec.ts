@@ -89,7 +89,8 @@ test(
       "/demo/collection?tab=add",
     );
     // A run sorted is only counted, never a row; no "N of M done" progress is left anywhere.
-    await expect(hopper.getByText(/^3 runs sorted this week · , 14 all-time$/)).toBeVisible();
+    await expect(hopper.getByText("3 runs sorted this week", { exact: true })).toBeVisible();
+    await expect(hopper.getByText(/all-time/)).toHaveCount(0);
     await expect(page.getByText(/\d+ of \d+ scans? done/)).toHaveCount(0);
     await expect(hopper.getByText(/still being identified/)).toHaveCount(0);
     await expect(hopper.getByText(/scans? processing/)).toHaveCount(0);
