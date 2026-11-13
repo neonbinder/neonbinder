@@ -647,10 +647,12 @@ export const selectorOptionFields = {
    * Kept by the same `CardCountLedger` flush as `cardCount`: every flush that
    * lands a card on the row stamps it (even when the mutation also took one
    * off, so the count is unchanged), and a flush that leaves `cardCount` at 0
-   * clears it. A card going off alone never moves it, so after a delete it
-   * may be NEWER than the row's newest card: it is a discovery hint, never a
-   * time to show. ABSENT means no card has landed since the field existed
-   * and the armed backfill (`backfillLastCardAt`) has not reached the row.
+   * clears it, but only when that 0 is known (a row whose recount is skipped
+   * is never cleared). A flush that only takes cards off brings it down to
+   * the newest card left (clears it when none is left). It is still a
+   * discovery hint, never a time to show. ABSENT means no card has landed
+   * since the field existed and the armed backfill (`backfillLastCardAt`)
+   * has not reached the row.
    *
    * Read by New on NeonBinder (`dashboard.newSets`) through
    * `by_last_card_at`, to find the variants with the newest cards without

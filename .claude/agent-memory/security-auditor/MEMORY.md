@@ -105,3 +105,4 @@
 - [Neo495 scoped capped list](patterns_neo495_scoped_capped_list.md) — new arg on a capped admin list: registry must hit the new arg; filter-after-take makes `truncated` lie
 - [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start: ceiling = budget + sum of allowances; uncached gate re-arms per name; pure admin action shape
 - [Neo500 pick list](patterns_neo500_pick_list.md) — skipPollGate grep; hashed line ids opaque; sold-copy photo tokens live; NEO-509 listed re-check; armed BSC backfill: open budget, stop on failures, 10-min limit
+- [Neo532 discovery-hint stamp](patterns_neo532_discovery_hint_stamp.md) — global stamp index feeding a signed-in list: stamp writers, real time returned, whole-row validator reach, page-level arm pin

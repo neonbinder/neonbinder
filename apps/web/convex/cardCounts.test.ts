@@ -18,6 +18,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   createCardCountLedger,
   parseResumeCursor,
+  RECOUNT_MAX,
   recountCards,
 } from "./cardCounts";
 import { insertCardRow } from "./cardRowCreate";
@@ -923,7 +924,7 @@ describe("lastCardAt (NEO-532)", () => {
     expect(await stampOf(t, s.base)).toBe(STAMP - 1000);
   });
 
-  test("a removal alone does not stamp, and leaves an existing stamp where it was", async () => {
+  test("a removal never raises a stamp: one already older than the newest remaining card is left where it was", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     clock(STAMP);
@@ -995,6 +996,183 @@ describe("lastCardAt (NEO-532)", () => {
     expect(await stored(t, s.base)).toMatchObject({ cardCount: 0 });
     expect(await stampOf(t, s.base)).toBeNull();
   });
+
+  /** `s.base` with RECOUNT_MAX + 1 real cards: a recount is skipped. */
+  async function overRecountRow(t: T, s: Seeded) {
+    await t.run(async (ctx) => {
+      for (let i = 0; i <= RECOUNT_MAX; i++) {
+        await insertTestCard(ctx, {
+          selectorOptionId: s.base,
+          cardNumber: String(i),
+          cardName: `Card ${i}`,
+          listingTitle: `Card ${i}`,
+          platformData: {},
+          sortOrder: i,
+          lastUpdated: NOW,
+        });
+      }
+    });
+  }
+
+  test("a row whose recount is skipped (past RECOUNT_MAX) is still stamped and its count left alone", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    await overRecountRow(t, s);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await land(t, s.base, "last");
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("card_count_recount_skipped"))).toBe(true);
+    expect(await stored(t, s.base)).toEqual({ cardCount: undefined, nonVariationCardCount: undefined });
+    expect(await stampOf(t, s.base)).toBe(STAMP);
+  }, 60_000);
+
+  test("remove 2 + add 1 on a row stored at 0 with a skipped recount: stamped, and the count stays 0", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    await overRecountRow(t, s);
+    await t.run((ctx) =>
+      ctx.db.patch(s.base, { cardCount: 0, nonVariationCardCount: 0, lastCardAt: STAMP - 1000 }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      ledger.add(s.base, 1, 1);
+      ledger.add(s.base, -2, -2);
+      await ledger.flush(ctx);
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("card_count_recount_skipped"))).toBe(true);
+    expect(await stored(t, s.base)).toEqual({ cardCount: 0, nonVariationCardCount: 0 });
+    expect(await stampOf(t, s.base)).toBe(STAMP);
+  }, 60_000);
+
+  test("remove only on a row stored at 0 with a skipped recount: the existing stamp (below the cards) is left exactly as it was", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    await overRecountRow(t, s);
+    await t.run((ctx) =>
+      ctx.db.patch(s.base, { cardCount: 0, nonVariationCardCount: 0, lastCardAt: STAMP - 1000 }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      ledger.add(s.base, -1, -1);
+      await ledger.flush(ctx);
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("card_count_recount_skipped"))).toBe(true);
+    expect(await stored(t, s.base)).toEqual({ cardCount: 0, nonVariationCardCount: 0 });
+    expect(await stampOf(t, s.base)).toBe(STAMP - 1000);
+  }, 60_000);
+
+  const createdAt = (t: T, id: Id<"cardChecklist">) =>
+    t.run(async (ctx) => (await ctx.db.get(id))!._creationTime);
+
+  test("removing the newest card lowers the stamp to the next-newest card's creation time", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    const older = await addCard(t, s.base, "1");
+    vi.setSystemTime(STAMP + 1000);
+    const newest = await addCard(t, s.base, "2");
+    await primeCounts(t, s.base);
+    await t.run((ctx) => ctx.db.patch(s.base, { lastCardAt: STAMP + 1000 }));
+    vi.setSystemTime(STAMP + 9000);
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      await removeCardRow(ctx, (await ctx.db.get(newest))!, ledger);
+      await ledger.flush(ctx);
+    });
+    expect(await stampOf(t, s.base)).toBe(await createdAt(t, older));
+  });
+
+  test("a stamp above every card, with an older card removed, is lowered to the remaining newest", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    const gone = await addCard(t, s.base, "1");
+    vi.setSystemTime(STAMP + 1000);
+    const kept = await addCard(t, s.base, "2");
+    await primeCounts(t, s.base);
+    await t.run((ctx) => ctx.db.patch(s.base, { lastCardAt: STAMP + 50_000 }));
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      await removeCardRow(ctx, (await ctx.db.get(gone))!, ledger);
+      await ledger.flush(ctx);
+    });
+    expect(await stampOf(t, s.base)).toBe(await createdAt(t, kept));
+  });
+
+  test("a move lowers the source's stamp to its remaining newest card and stamps the destination", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    const stays = await addCard(t, s.base, "1");
+    vi.setSystemTime(STAMP + 1000);
+    const moves = await addCard(t, s.base, "2");
+    await addCard(t, s.otherBase, "9");
+    await primeCounts(t, s.base, s.otherBase);
+    await t.run((ctx) => ctx.db.patch(s.base, { lastCardAt: STAMP + 1000 }));
+    vi.setSystemTime(STAMP + 5000);
+    await t.run(async (ctx) => {
+      await moveCards(ctx, s.otherBase, [{ card: (await ctx.db.get(moves))!, slotMap: {} }], NOW);
+    });
+    expect(await stampOf(t, s.base)).toBe(await createdAt(t, stays));
+    expect(await stampOf(t, s.otherBase)).toBe(STAMP + 5000);
+  });
+
+  test("a stamp above every card on a skipped-recount remove-only row is lowered to the newest remaining, not cleared", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    await overRecountRow(t, s);
+    await t.run((ctx) =>
+      ctx.db.patch(s.base, { cardCount: 0, nonVariationCardCount: 0, lastCardAt: STAMP + 50_000 }),
+    );
+    const newestAt = await t.run(async (ctx) =>
+      (
+        await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", s.base))
+          .order("desc")
+          .first()
+      )!._creationTime,
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      ledger.add(s.base, -1, -1);
+      await ledger.flush(ctx);
+    });
+    expect(await stored(t, s.base)).toEqual({ cardCount: 0, nonVariationCardCount: 0 });
+    expect(await stampOf(t, s.base)).toBe(newestAt);
+  }, 60_000);
+
+  test("a move-in alongside a subtree move from an unknown-size source stamps the destination only", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    await addCard(t, s.base, "1");
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      // insertType's subtree counts are absent: the unknownMoves path.
+      await ledger.moveSubtree(ctx, s.insertType, s.set, s.otherSet);
+      const id = await insertTestCard(ctx, {
+        selectorOptionId: s.otherBase,
+        cardNumber: "9",
+        cardName: "Nine",
+        platformData: {},
+        sortOrder: 9,
+        lastUpdated: NOW,
+      });
+      ledger.addCard((await ctx.db.get(id))!);
+      await ledger.flush(ctx);
+    });
+    expect(await stampOf(t, s.otherBase)).toBe(STAMP);
+    for (const untouched of [s.base, s.insertType, s.set, s.otherSet, s.brand]) {
+      expect(await stampOf(t, untouched)).toBeNull();
+    }
+  });
 });
 
 describe("backfillLastCardAt (NEO-532)", () => {
@@ -1062,5 +1240,70 @@ describe("backfillLastCardAt (NEO-532)", () => {
       numItems: 1,
     });
     expect(result).toMatchObject({ complete: true, scanned: 5, filled: 3 });
+  });
+
+  test("a run that hits its time budget returns complete:false with a cursor; resuming finishes the rest and the totals add up", async () => {
+    vi.stubEnv("ALLOW_LAST_CARD_AT_BACKFILL", "1");
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await addCard(t, s.base, "1");
+    await addCard(t, s.otherBase, "1");
+    await addCard(t, s.insert, "1");
+    await addCard(t, s.parallel, "1");
+
+    // Every Date.now() reads 200 s later than the last: the budget is spent after the first page.
+    let clockNow = 1_000_000;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => (clockNow += 200_000));
+    const first = await t.action(internal.cardCounts.backfillLastCardAt, {
+      confirm: "BACKFILL",
+      numItems: 1,
+    });
+    spy.mockRestore();
+    expect(first.complete).toBe(false);
+    expect(first.cursor).toBeTruthy();
+    expect(first.scanned).toBe(1);
+
+    const rest = await t.action(internal.cardCounts.backfillLastCardAt, {
+      confirm: "BACKFILL",
+      cursor: first.cursor,
+    });
+    expect(rest.complete).toBe(true);
+    expect(first.scanned + rest.scanned).toBe(5);
+    expect(first.filled + rest.filled).toBe(4);
+    for (const id of [s.base, s.otherBase, s.insert, s.parallel]) {
+      expect(await t.run(async (ctx) => (await ctx.db.get(id))!.lastCardAt ?? null)).not.toBeNull();
+    }
+  });
+
+  test("a dry run paged one row at a time reports the same counts as one page, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await addCard(t, s.base, "1");
+    await addCard(t, s.parallel, "1");
+    const whole = await t.action(internal.cardCounts.backfillLastCardAt, {});
+    const paged = await t.action(internal.cardCounts.backfillLastCardAt, { numItems: 1 });
+    expect(paged).toMatchObject({
+      complete: true,
+      scanned: whole.scanned,
+      filled: whole.filled,
+      alreadyStamped: whole.alreadyStamped,
+      empty: whole.empty,
+    });
+    expect(await t.run(async (ctx) => (await ctx.db.get(s.base))!.lastCardAt ?? null)).toBeNull();
+    expect(await t.run(async (ctx) => (await ctx.db.get(s.parallel))!.lastCardAt ?? null)).toBeNull();
+  });
+
+  test("the page mutation itself refuses an apply on an unarmed deployment and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await addCard(t, s.base, "1");
+    await expect(
+      t.mutation(internal.cardCounts.backfillLastCardAtPage, {
+        level: "variantType",
+        cursor: null,
+        apply: true,
+      }),
+    ).rejects.toThrow(/not armed/);
+    expect(await t.run(async (ctx) => (await ctx.db.get(s.base))!.lastCardAt ?? null)).toBeNull();
   });
 });

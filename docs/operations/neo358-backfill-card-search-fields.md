@@ -23,8 +23,11 @@ by hand, not by reviving the backfill.
 | card counts | `selectorOptions.cardCount` and `nonVariationCardCount` on every variant type, insert and parallel | `ALLOW_CARD_COUNT_BACKFILL` | `cardCounts:backfillVariantCardCounts` |
 | subtree counts + has-cards flags | `selectorOptions.subtreeCardCount` and `subtreeNonVariationCardCount` from the set down to parallel; `hasCards` on every sport, year and brand (NEO-364) | `ALLOW_SUBTREE_CARD_COUNT_BACKFILL` | `cardCounts:backfillSubtreeCardCounts` |
 
-All three are idempotent: a second run reports zeros. All three are internal
-functions, so **no `--identity`** (it hides internal functions from
+A fourth, `lastCardAt` (NEO-532), runs on its own and in any order; see
+[its section](#neo-532--lastcardat-for-new-on-neonbinder) below.
+
+All four are idempotent: a second run reports zeros (for `lastCardAt`,
+`filled: 0`). All four are internal functions, so **no `--identity`** (it hides internal functions from
 `convex run`; the deploy credential is the gate, see the NEO-214 doc).
 
 ## Running one
@@ -116,6 +119,72 @@ shows only the levels a card has landed under since the deploy. From the set
 down, an unknown count is never hidden; after the run, a set or variant with
 no cards is hidden. A row with more than 5,000 rows beneath it refuses its page ("sum it
 by hand").
+
+## NEO-532 — `lastCardAt`, for New on NeonBinder
+
+`selectorOptions.lastCardAt` is when a card last **landed** on a variant
+type, insert or parallel (an insert, or a move in), as the landing mutation's
+clock. New on NeonBinder (`dashboard.newSets`) reads the newest of them off
+the `by_last_card_at` index to find the checklists uploaded most recently,
+instead of walking the whole card table. It is a discovery hint only: the
+dashboard always reads the row's real newest card, so a stamp a little off
+the card's own creation time still lists the checklist at its true time.
+
+| Backfill | Fills | Flag | Command |
+|---|---|---|---|
+| last card time | `selectorOptions.lastCardAt` on every variant type, insert and parallel that holds cards and has no stamp, from its newest card's creation time | `ALLOW_LAST_CARD_AT_BACKFILL` | `cardCounts:backfillLastCardAt` |
+
+It does not depend on the counts above and they do not depend on it. Run it
+straight after the NEO-532 deploy: until it has run, New on NeonBinder lists
+only the checklists a card has landed on since the deploy, and a checklist
+whose cards were all written before it is not found.
+
+```bash
+cd apps/web
+
+# 1. Dry run. Writes nothing, needs no arming, reports what an armed run would do.
+npx convex run --prod cardCounts:backfillLastCardAt '{}'
+
+# 2. Arm, run for real.
+npx convex env set --prod ALLOW_LAST_CARD_AT_BACKFILL 1
+npx convex run --prod cardCounts:backfillLastCardAt '{"confirm":"BACKFILL"}'
+
+# 3. Each call works for about 2.5 minutes. While it returns "complete": false,
+#    re-run with the cursor it returned until it prints "complete": true.
+npx convex run --prod cardCounts:backfillLastCardAt \
+  '{"confirm":"BACKFILL","cursor":"<cursor from the last run>"}'
+
+# 4. Disarm.
+npx convex env remove --prod ALLOW_LAST_CARD_AT_BACKFILL
+```
+
+As above, an armed `confirm` on an unarmed deployment is reported, not
+thrown, and the counts are the dry run's. It is an internal function, so no
+`--identity`.
+
+**Results** — `{ scanned, filled, alreadyStamped, empty }`
+
+- `filled`: rows with cards and no stamp; stamped with the creation time of
+  their newest card.
+- `alreadyStamped`: rows that carry a stamp; never rewritten (a stamp the
+  ledger wrote is newer than anything the backfill would write).
+- `empty`: rows with no stamp and no cards; nothing to stamp.
+
+Idempotent: a second armed run reports `filled: 0`. There is no `repair`: a
+stamp is a hint, and the dashboard corrects a stale one by reading the real
+newest card.
+
+**What keeps it right afterwards.** The same `CardCountLedger` flush that
+keeps the counts stamps `lastCardAt` on every row a card landed on in that
+mutation, in the same patch as the count, even when the mutation also took a
+card off the row. Only the card's own row is stamped, never the set or
+anything above it. A flush that leaves the row's `cardCount` at 0 clears the
+stamp (only when that 0 is known: a row past 10,000 cards whose recount is
+skipped is never cleared, and a card landing on it still stamps). A flush
+that only takes cards off a row brings its stamp down to the newest card
+left on it (cleared if none is left), so a delete never leaves a stamp newer
+than the row's cards; a stamp already older than that card, and an unstamped
+row, are left as they are.
 
 ## What keeps them right afterwards
 

@@ -1276,8 +1276,8 @@ export const syncAlerts = query({
  *     `NEW_SETS_VARIANTS` of `by_last_card_at`, read once. A stamp is a
  *     discovery hint only (`selectorOptions.lastCardAt`): taking a row reads
  *     its REAL newest card (`by_selector_option`, descending), so a stamp
- *     left newer by a deleted card lists the checklist at its true time, and
- *     a row whose cards are all gone is dropped;
+ *     a little off its card's own time lists the checklist at its true time,
+ *     and a row whose cards are all gone is dropped;
  *  2. the uploads found so far and not yet stepped through (`candidates`):
  *     a variant at the time of an upload's newest card.
  *

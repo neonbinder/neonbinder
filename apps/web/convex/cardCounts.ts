@@ -101,10 +101,19 @@
  * from the row leaves the count alone and still stamps it. Only the card's
  * own row is stamped, never an ancestor, so the set and the rows above it
  * take no extra write. A flush that leaves the row's `cardCount` at 0 clears
- * the stamp instead; a card going off alone never moves it, so a stamp may be
- * newer than the row's newest card (New on NeonBinder reads the real newest
- * card; the stamp only says where to look). A row whose recount was skipped
- * (past `RECOUNT_MAX`) is still stamped.
+ * the stamp instead. The clear needs a count KNOWN to be 0 (stored plus
+ * delta, or a real recount): when the recount is skipped (past `RECOUNT_MAX`)
+ * the count is unknown, so a landed card always stamps.
+ *
+ * A row cards only LEFT (`removeCard`; nothing landed on it in this ledger)
+ * and whose count is not known to be 0 has its stamp brought DOWN to its
+ * newest remaining card's `_creationTime` (one `by_selector_option` read, only
+ * when the row carries a stamp), or cleared when no card is left; a stamp
+ * already at or below that card is left alone, and an unstamped row stays
+ * unstamped. So a delete never leaves a stamp newer than the row's cards, and
+ * a page of stale stamps cannot crowd a row with a genuinely newer card out
+ * of New on NeonBinder's read. The stamp is still only a hint: New on
+ * NeonBinder reads the real newest card.
  *
  * Rows from before the field are stamped by `backfillLastCardAt` (below).
  *
@@ -293,6 +302,13 @@ export class CardCountLedger {
    * later `removeCard` nets the delta to zero). Stamped `lastCardAt` at flush.
    */
   private readonly landed = new Set<RowId>();
+  /**
+   * NEO-532 — rows a card LEFT in this ledger (`removeCard`, a delete or a
+   * move out; any negative raw `add`). Gross, like `landed`. At flush, a row
+   * here that nothing landed on has its stamp brought down to its newest
+   * remaining card.
+   */
+  private readonly departed = new Set<RowId>();
 
   /**
    * Raw deltas: `all` cards added to (negative: removed from) `rowId`, of
@@ -301,6 +317,7 @@ export class CardCountLedger {
   add(rowId: RowId, all: number, nonVariation: number): void {
     if (all === 0 && nonVariation === 0) return;
     if (all > 0) this.landed.add(rowId);
+    if (all < 0) this.departed.add(rowId);
     const held = this.deltas.get(rowId) ?? { all: 0, nonVariation: 0 };
     this.deltas.set(rowId, {
       all: held.all + all,
@@ -430,6 +447,8 @@ export class CardCountLedger {
     this.deltas.clear();
     const landed = new Set(this.landed);
     this.landed.clear();
+    const departed = new Set(this.departed);
+    this.departed.clear();
     const chainDeltas = this.chainDeltas;
     this.chainDeltas = [];
     const unknownMoves = this.unknownMoves;
@@ -441,7 +460,8 @@ export class CardCountLedger {
       chainDeltas.length === 0 &&
       unknownMoves.length === 0 &&
       flagChains.length === 0 &&
-      landed.size === 0
+      landed.size === 0 &&
+      departed.size === 0
     ) {
       return;
     }
@@ -520,6 +540,7 @@ export class CardCountLedger {
       ...unknown,
       ...gained,
       ...landed,
+      ...departed,
     ]);
     for (const id of ids) {
       const row = await read(id);
@@ -538,10 +559,14 @@ export class CardCountLedger {
       }
       const patch: Partial<Row> = {};
       const ownDelta = ownById.get(id);
+      // NEO-532 — the row's count after this flush, or undefined when it is
+      // not known: never counted, or a recount skipped past `RECOUNT_MAX`
+      // (the stored value is then the one just shown to be wrong). With no
+      // own delta (a card landed and another left), it is the stored count.
       let cardCountAfter = row.cardCount;
       if (ownDelta) {
         const next = await nextOwnCounts(ctx, row, ownDelta);
-        if (next) cardCountAfter = next.cardCount;
+        cardCountAfter = next ? next.cardCount : undefined;
         if (
           next &&
           (next.cardCount !== row.cardCount ||
@@ -552,11 +577,23 @@ export class CardCountLedger {
       }
       // NEO-532 — only the rows a card landed on or left (`ownDelta`); an
       // ancestor reached for its subtree count is never stamped or cleared.
-      if (ownDelta || landed.has(id)) {
+      // Cleared only on a count KNOWN to be 0; an unknown count never clears,
+      // so a card landing on a row whose recount was skipped always stamps.
+      // A row cards only LEFT keeps no stamp newer than its newest remaining
+      // card: one read, and only when the row carries a stamp to lower.
+      if (ownDelta || landed.has(id) || departed.has(id)) {
         if (cardCountAfter === 0) {
           if (row.lastCardAt !== undefined) patch.lastCardAt = undefined;
         } else if (landed.has(id)) {
           patch.lastCardAt = Date.now();
+        } else if (departed.has(id) && row.lastCardAt !== undefined) {
+          const newest = await ctx.db
+            .query("cardChecklist")
+            .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", id))
+            .order("desc")
+            .first();
+          if (!newest) patch.lastCardAt = undefined;
+          else if (newest._creationTime < row.lastCardAt) patch.lastCardAt = newest._creationTime;
         }
       }
       Object.assign(patch, nextSubtreeCounts(row, subtree.get(id), unknown.has(id)));
