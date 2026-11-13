@@ -1,6 +1,15 @@
 import { useDrill, useSetPath } from "../data/store";
 import type { DrillItem } from "../data/types";
-import { checklistItem, cutAt, EMPTY_DRILL, parentsFor, type Drill, type DrillStep } from "./drill";
+import {
+  brandColumnPick,
+  brandColumnTitle,
+  checklistItem,
+  cutAt,
+  EMPTY_DRILL,
+  parentsFor,
+  type Drill,
+  type DrillStep,
+} from "./drill";
 
 /**
  * NEO-358 — a drill read off the URL, checked against the catalog.
@@ -39,10 +48,9 @@ export interface DrillState {
   pending: boolean;
 }
 
-const TITLES: Record<"sport" | "year" | "brand" | "set" | "type", string> = {
+const TITLES: Record<"sport" | "year" | "set" | "type", string> = {
   sport: "Sports",
   year: "Years",
-  brand: "Brands",
   set: "Sets",
   type: "Variant Types",
 };
@@ -93,9 +101,26 @@ export function useDrillState(url: Drill, enabled = true): DrillState {
   const years = useDrill(yearShown ? "year" : null, parentsFor(acc.drill, "year"));
   const brandShown = settle("year", years, TITLES.year, yearShown);
   const brands = useDrill(brandShown ? "brand" : null, parentsFor(acc.drill, "brand"));
-  const setShown = settle("brand", brands, TITLES.brand, brandShown);
+  // NEO-527: a year's brand-unknown row is never listed; its sets sit in the
+  // brand column in its place. When the drill stands on one of them, that
+  // column shows the set as picked and the Sets column is skipped.
+  const setInBrands =
+    brandShown && brands !== undefined ? brandColumnPick(brands, acc.drill.brand, acc.drill.set) : undefined;
+  let setShown = false;
+  if (setInBrands?.brandId) {
+    columns.push({ step: "brand", title: brandColumnTitle(brands), items: brands, selectedId: setInBrands.id });
+    picked.set = setInBrands;
+  } else {
+    setShown = settle("brand", brands, brandColumnTitle(brands), brandShown);
+  }
   const sets = useDrill(setShown ? "set" : null, parentsFor(acc.drill, "set"));
-  const typeShown = settle("set", sets, TITLES.set, setShown);
+  // While the brand column loads, a drill standing on a set does not know yet
+  // whether that set sits in it: read ahead, but draw no Sets column that
+  // would vanish a moment later.
+  const waitingOnBrands = brandShown && brands === undefined && acc.drill.set !== null;
+  const typeShown = setInBrands?.brandId
+    ? setInBrands.hasChildren
+    : waitingOnBrands || settle("set", sets, TITLES.set, setShown);
   const types = useDrill(typeShown ? "variantType" : null, parentsFor(acc.drill, "type"));
   const variantShown = settle("type", types, TITLES.type, typeShown);
   const variants = useDrill(variantShown ? "variant" : null, parentsFor(acc.drill, "variant"));

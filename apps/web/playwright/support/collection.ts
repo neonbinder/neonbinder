@@ -8,15 +8,33 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAfterMarketplace } from "./marketplace-wait";
 
 /**
+ * NEO-527 — the title of the brand column in every year the suite drills BY
+ * BRAND (`drill("Brands", ...)`: Baseball 2024, Football 2026, the private
+ * sports). The app titles that column with `brandColumnTitle`
+ * (app/collection/final/catalog/drill.ts): "Brands" when it holds only brand
+ * rows, "Sets" when every row is a set listed in place of the year's
+ * brand-unknown row, "Brands and sets" when it holds both. So a drilled year
+ * whose brand-unknown row gains a set WITH CARDS turns its column into
+ * "Brands and sets": every brand drill then fails here, on this one constant,
+ * matched exactly. Picking a brand still collapses to "Brands: <name>, change"
+ * (`brandColumnPickTitle`), whatever the column's title.
+ */
+export const BRAND_COLUMN_TITLE = "Brands";
+
+/**
  * The cascade and a `drill` that picks one option and waits for its summary
  * card. `name` is the cascade's group: Checklists' by default, or the Add
- * cards set pick's ("Sport, year, brand, set and variant").
+ * cards set pick's ("Sport, year, brand, set and variant"). The brand step is
+ * named "Brands" by the caller and found by `BRAND_COLUMN_TITLE`.
  */
 export function collectorCascade(page: Page, name = "Sport, year, brand and set") {
   const cascade = page.getByRole("group", { name });
+  const listbox = (column: string) =>
+    column === "Brands"
+      ? cascade.getByRole("listbox", { name: BRAND_COLUMN_TITLE, exact: true })
+      : cascade.getByRole("listbox", { name: column });
   const drill = async (column: string, option: string, next?: string) => {
-    await cascade
-      .getByRole("listbox", { name: column })
+    await listbox(column)
       .getByRole("option")
       .filter({ has: page.getByText(option, { exact: true }) })
       .click();
@@ -25,7 +43,7 @@ export function collectorCascade(page: Page, name = "Sport, year, brand and set"
     if (next) {
       // The columns sit in one row that scrolls sideways; on a phone the next
       // one starts off screen. It must be reachable (and on a desktop, it is).
-      const nextList = cascade.getByRole("listbox", { name: next });
+      const nextList = listbox(next);
       await nextList.scrollIntoViewIfNeeded();
       await expect(nextList).toBeInViewport();
     }

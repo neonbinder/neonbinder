@@ -7,7 +7,7 @@ import ChipGroup from "../ChipGroup";
 import { haveShort, isComplete, totalKnown } from "../catalog/format";
 import { copiesByCard } from "../catalog/home";
 import { LoadingNote, SkeletonBars, SkeletonPips } from "../catalog/Skeleton";
-import { playerNames, setLabel, variantLabel } from "../data/labels";
+import { playerNames, setLabel, setWhereLabel, variantLabel } from "../data/labels";
 import {
   useBuildingSets,
   useCapabilities,
@@ -144,7 +144,7 @@ export default function Wall({ setId, focusOnMount }: { setId: string; focusOnMo
       <div className="mc-led shadow-offset flex flex-col gap-4 rounded-2xl border border-rule p-4 sm:flex-row sm:items-end sm:p-5">
         <div className="min-w-0 flex-1">
           <p className="text-sm text-ink-3">
-            {set.sport.name}, {set.brand.name}
+            {setWhereLabel(set)}
           </p>
           <h2 id="mc-wall-heading" ref={heading} tabIndex={-1} className="text-2xl font-bold text-ink focus:outline-none sm:text-3xl">
             {label}

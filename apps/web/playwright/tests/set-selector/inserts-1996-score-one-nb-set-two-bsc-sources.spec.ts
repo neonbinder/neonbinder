@@ -1,7 +1,16 @@
 // Origin: .maestro/flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of the 1996 Score Dugout Collection Artists Proofs insert; fresh-only.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { columnOption, columnSearch, drillToSet, pick, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import {
+  columnOption,
+  columnSearch,
+  drillToSet,
+  expectAfterBscSync,
+  pick,
+  setBuilderReady,
+  syncChecklistButton,
+} from "../../support/set-builder";
 import {
   advanceToSave,
   answerPlayerAsNew,
@@ -41,10 +50,11 @@ test(
 
     if (env.SL_PAUSED) {
       // Only BSC answers: the two BSC sets stay separate and nothing reconciles.
-      await expect(page.getByRole("heading", { name: "Inserts", exact: true })).toBeVisible({ timeout: 240_000 });
+      await expect(page.getByRole("heading", { name: "Inserts", exact: true })).toBeVisible();
       await expect(reconcile).toBeHidden();
       await columnSearch(page, "Inserts").fill("Artist");
-      await expect(columnOption(page, "Inserts", SERIES_1)).toBeVisible();
+      // The first visit syncs from BSC (sign-in included): our 7 s plus the time BSC is measured to take.
+      await expectAfterBscSync(page, columnOption(page, "Inserts", SERIES_1), `Inserts row ${SERIES_1}`);
       await expect(columnOption(page, "Inserts", SERIES_2)).toBeVisible();
       await expect(columnOption(page, "Inserts", SERIES_1).getByText("BSC", { exact: true })).toBeVisible();
       await expect(page.getByText("SL", { exact: true })).toBeHidden();
@@ -53,7 +63,8 @@ test(
     }
 
     // ── 1. The first sync opens the reconcile: merge the two BSC series into one NB set ──
-    await expect(reconcile).toBeVisible({ timeout: 240_000 });
+    // The first visit syncs from BSC: our 7 s plus the time BSC is measured to take, never a flat ceiling.
+    await expectAfterMarketplace(page, reconcile, { platform: "BuySportsCards", what: "the Inserts reconcile" });
     await expect(reconcile.getByText(/Ready \([0-9]+/)).toBeVisible();
     await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts dialog" });
 

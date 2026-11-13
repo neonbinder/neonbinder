@@ -41,3 +41,4 @@
 - [NEO-450 sync failure box tests](reference_neo450_sync_failure_box_tests.md) — locate via aria-describedby, stored vs fresh alert mocks, thenable for re-throw/null handlers
 - [NEO-487 lane/wait test patterns](reference_neo487_bsc_lane_wait_test_patterns.md) — stop-rule/cooldown/wait-edge recipes, ledger chain timing, safe shared-worktree mutation runner
 - [NEO-500 pick list apply tests](reference_neo500_pick_list_apply_tests.md) — truncated-read fixture + boundary control, getDocumentSize cap proof, cleared-literal check
+- [NEO-527 paused mint + title fixture](reference_neo527_paused_mint_and_title_fixture.md) — stub PAUSED_PLATFORMS_ENV, resume-links-onto-NB-row recipe, copy-features-down so leaks reach titles

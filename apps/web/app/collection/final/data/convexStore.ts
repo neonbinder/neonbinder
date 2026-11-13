@@ -205,7 +205,12 @@ function toSetRef(raw: RawSetRef): SetRef {
     name: raw.name,
     season: raw.season,
     year: yearOf(raw.year?.name ?? raw.season),
-    brand: raw.manufacturer ? { id: raw.manufacturer._id, name: raw.manufacturer.name } : { id: "", name: "" },
+    // NEO-527: the year's brand-unknown row keeps its id (navigation needs it)
+    // but never its name, so no label can show it.
+    brand: raw.manufacturer
+      ? { id: raw.manufacturer._id, name: raw.manufacturerBrandUnknown ? "" : raw.manufacturer.name }
+      : { id: "", name: "" },
+    ...(raw.manufacturerBrandUnknown ? { brandUnknown: true as const } : {}),
     sport: raw.sport ? { id: raw.sport._id, name: raw.sport.name } : { id: "", name: "" },
   };
 }
@@ -576,6 +581,11 @@ function toDrillItem(level: DrillLevel, raw: RawDrillItem): DrillItem {
   // beneath it (an empty Base is still Base). An "Inserts" type that only
   // holds inserts is a step, not a checklist.
   const isChecklist = cardBearing && (raw.childCount === 0 || (raw.cardCount ?? 0) > 0);
+  // NEO-527: a set the server listed in a year's brand column in place of the
+  // brand-unknown row is a set, carrying that row's id for the brand step.
+  if (raw.brandId) {
+    return { id: raw._id, level: "set", name: raw.name, hasChildren: raw.childCount > 0, brandId: raw.brandId };
+  }
   return {
     id: raw._id,
     level,
@@ -647,7 +657,8 @@ export const CONVEX_DATA: CollectionData = {
       return {
         sport: { id: raw.sport._id, name: raw.sport.name },
         year: { id: raw.year._id, name: raw.season || raw.year.name },
-        brand: { id: raw.manufacturer._id, name: raw.manufacturer.name },
+        // NEO-527: as `toSetRef`, the brand-unknown row's name never leaves here.
+        brand: { id: raw.manufacturer._id, name: raw.manufacturerBrandUnknown ? "" : raw.manufacturer.name },
         set: { id: raw._id, name: raw.name },
       };
     }, [raw]);

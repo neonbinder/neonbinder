@@ -4,7 +4,7 @@ import { FOCUS } from "../../prototypes/p3/classes";
 import { haveShort, isComplete, totalKnown } from "../catalog/format";
 import { copiesByCard } from "../catalog/home";
 import { LoadingNote, SkeletonBars, SkeletonPips } from "../catalog/Skeleton";
-import { setLabel, variantLabel } from "../data/labels";
+import { setLabel, setWhereLabel, variantLabel } from "../data/labels";
 import {
   useBuildingSets,
   useCollectionStore,
@@ -103,7 +103,7 @@ function ScoreCard({ set }: { set: SetRef }) {
     <article className="mc-led shadow-offset relative flex h-full flex-col gap-3 rounded-2xl border border-rule p-4 transition-colors focus-within:border-selection hover:border-selection has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-4 has-[:focus-visible]:outline-focus">
       <div>
         <p className="text-xs text-ink-3">
-          {set.sport.name}, {set.brand.name}
+          {setWhereLabel(set)}
           {scopedName && <span className="text-neon-blue-text">, in {scopedName}</span>}
         </p>
         <h3 className="text-lg font-bold leading-tight text-ink">

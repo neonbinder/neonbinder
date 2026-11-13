@@ -45,6 +45,11 @@ export interface ColumnItem {
   id: string;
   name: string;
   description?: string;
+  /**
+   * NEO-527 — a labelled group this row is listed in, after every row that
+   * has none (the loose sets under "More sets", below the brands).
+   */
+  group?: string;
 }
 
 const allSets = (): CardSet[] => setsInOrder();

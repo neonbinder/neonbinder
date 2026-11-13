@@ -27,3 +27,4 @@
 - [Reference-seed tests run under vitest](reference-seed-tests-run-under-vitest.md) — `node --test` on scripts/reference-seed dies at import even on main; use `npx vitest run scripts/reference-seed`
 - [Edit counter allocates write-once versions](edit-counter-allocates-write-once-versions.md) — reserve bumps the cap counter = version; commit first-wins on expectVersion/token; lineage on the row
 - [Live status rows: one writer per row](live-status-rows-one-writer-per-row.md) — hot-loop UI status: row per action invocation, patch by _id, op-keyed, no shared counter, expiry at insert
+- [Filter after take caps read rows](filter-after-take-caps-read-rows.md) — capped read + in-memory filter hides shown rows; index the filter field; undefined sorts before numbers, so "unknown or >0" = two ranges

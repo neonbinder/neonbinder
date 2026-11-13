@@ -31,8 +31,24 @@ export const MISSING_SET_LABEL = "A set no longer in NeonBinder";
  * (`brandedSetName`): "1993 Topps Finest", "2024 Topps Chrome". The dashboard
  * heads its cards with this, so a heading and the titles under it agree.
  */
-export function brandedSetLabel(set: Pick<SetRef, "season" | "name" | "manufacturer">): string {
-  return `${set.season} ${brandedSetName({ manufacturer: set.manufacturer?.name, setName: set.name })}`.trim();
+export function brandedSetLabel(
+  set: Pick<SetRef, "season" | "name" | "manufacturer" | "manufacturerBrandUnknown">,
+): string {
+  return `${set.season} ${brandedSetName({
+    manufacturer: set.manufacturer?.name,
+    manufacturerBrandUnknown: set.manufacturerBrandUnknown === true,
+    setName: set.name,
+  })}`.trim();
+}
+
+/**
+ * NEO-527 — the set's brand as a label may say it: its NB name, or null when
+ * there is none or the row is the year's brand-unknown row (read by the
+ * flag, never the name). A collector never sees that row.
+ */
+export function shownBrandName(set: Pick<SetRef, "manufacturer" | "manufacturerBrandUnknown">): string | null {
+  if (set.manufacturerBrandUnknown === true) return null;
+  return set.manufacturer?.name ?? null;
 }
 
 /** The pieces of a variant's label, as the collection screens map them. */
@@ -104,7 +120,7 @@ export class ListingLabels {
         ? setAndVariantLabel({
             season: set.season,
             setName: set.name,
-            brand: this.options.brand ? (set.manufacturer?.name ?? null) : null,
+            brand: this.options.brand ? shownBrandName(set) : null,
             level: variant.level,
             typeKind: variant.kind,
             name: variant.name,
