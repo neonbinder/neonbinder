@@ -273,13 +273,14 @@ describe("My Binders", () => {
     expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
   });
 
-  it("Enter in the hunt asks when two cards fit instead of taking the first", () => {
+  it("Enter in the hunt asks when two cards fit instead of taking the first", async () => {
     renderBinders("/collection?tab=binders&all=1");
     const search = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
     // A card number is not unique: #13 is in many sets and parallels.
     fireEvent.change(search, { target: { value: "13" } });
     fireEvent.keyDown(search, { key: "Enter" });
-    expect(screen.getAllByRole("status").some((s) => /we won't guess/.test(s.textContent ?? ""))).toBe(true);
+    // The status line says it a frame after it shows it (NEO-529).
+    await waitFor(() => expect(screen.getAllByRole("status").some((s) => /we won't guess/.test(s.textContent ?? ""))).toBe(true));
     expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
   });
 
@@ -325,7 +326,7 @@ describe("the hunt tray", () => {
     expect(within(mine).getAllByRole("button", { name: /^Add another / }).length).toBeGreaterThan(0);
   });
 
-  it("a place with a pocket opens that binder there and rings the pocket", () => {
+  it("a place with a pocket opens that binder there and rings the pocket", async () => {
     renderBinders();
     fireEvent.change(hunt(), { target: { value: "96 contenders reggie white" } });
     act(() => {
@@ -335,7 +336,8 @@ describe("the hunt tray", () => {
     const ringed = document.querySelector<HTMLElement>('[data-found="true"]');
     expect(ringed?.getAttribute("aria-label")).toMatch(/^1996 Playoff Contenders #4 Reggie White/);
     expect(document.activeElement).toBe(ringed);
-    expect(statusSays(/^Found #4 Reggie White: '96 Contenders, page 1, pocket 4\.$/)).toBe(true);
+    // The status line says it a frame after it shows it (NEO-529).
+    await waitFor(() => expect(statusSays(/^Found #4 Reggie White: '96 Contenders, page 1, pocket 4\.$/)).toBe(true));
     // The results fold away so the pocket is in view.
     expect(screen.queryByRole("list", { name: "In your binders" })).toBeNull();
   });

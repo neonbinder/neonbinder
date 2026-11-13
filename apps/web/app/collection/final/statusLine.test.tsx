@@ -780,3 +780,42 @@ describe("a newer write's success never erases an unread refusal (NEO-529)", () 
     expect(result.current.notice?.kind).toBeUndefined();
   });
 });
+
+describe("a refusal set in front of other words ends its sentence (NEO-529)", () => {
+  type Ticket = ReturnType<ReturnType<typeof useStatusLine>["beginWrite"]>;
+
+  it("gains a period in front of a newer success, and in front of a live Undo; alone it is left as said", () => {
+    const { result } = renderHook(() => useStatusLine());
+    let older!: Ticket;
+    let newer!: Ticket;
+    act(() => {
+      older = result.current.beginWrite();
+      newer = result.current.beginWrite();
+    });
+    act(() => older.refused("No room in that box"));
+    expect(result.current.notice?.message).toBe("No room in that box");
+    act(() => newer.done("Moved it.", () => {}));
+    expect(result.current.notice).toMatchObject({
+      message: "No room in that box. Moved it.",
+      refusal: { words: "No room in that box." },
+      undoFor: { words: "Moved it." },
+    });
+    let late!: Ticket;
+    act(() => {
+      late = result.current.beginWrite();
+    });
+    act(() => result.current.beginWrite().done("Added.", () => {}));
+    act(() => late.refused("Server said no!"));
+    expect(result.current.notice?.message).toBe("Server said no! Added.");
+  });
+});
+
+describe("the line's spoken record", () => {
+  it("is one record for the life of the line", () => {
+    const { result, rerender } = renderHook(() => useStatusLine());
+    const first = result.current.spoken;
+    act(() => result.current.notify("Saved."));
+    rerender();
+    expect(result.current.spoken).toBe(first);
+  });
+});

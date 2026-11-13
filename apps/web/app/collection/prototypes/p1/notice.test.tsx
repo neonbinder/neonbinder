@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import NoticeLine, { type Notice } from "./notice";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
+import NoticeLine, { NoticeSpokenContext, type Notice } from "./notice";
 import { NOTHING_TO_UNDO, STILL_SAVING, useStatusLine, type StatusLine } from "../../final/statusLine";
 
 /**
@@ -37,6 +38,8 @@ const nextFrame = () =>
   });
 
 const region = () => screen.getByRole("status");
+/** The words the line shows (not its live region). */
+const shown = () => screen.getAllByText((_, el) => el?.tagName === "P" && !el.hasAttribute("role"))[0];
 
 let stops: (() => void)[] = [];
 afterEach(() => {
@@ -113,10 +116,15 @@ describe("NoticeLine's live region", () => {
   it("does not say the notice already up when the line mounts, and empties when the line is taken down", async () => {
     const props = { onUndo: () => {}, onDismiss: () => {} };
     const { rerender } = render(<NoticeLine notice={{ id: 4, message: "Moved." }} {...props} />);
+    // Shown, not said: the drawer opening over a notice is not news. The
+    // region is drawn already holding the words (no clear, no frame), which a
+    // screen reader does not read out, so the words can still be found in it.
+    expect(shown().textContent).toBe("Moved.");
+    expect(region().textContent).toBe("Moved.");
+    const live = heard();
     await nextFrame();
-    // Shown, not said: the drawer opening over a notice is not news.
-    expect(screen.getByText("Moved.")).toBeTruthy();
-    expect(region().textContent).toBe("");
+    live.flush();
+    expect(live.said).toEqual([]);
     rerender(<NoticeLine notice={{ id: 5, message: "Saved." }} {...props} />);
     await nextFrame();
     expect(region().textContent).toBe("Saved.");
@@ -149,7 +157,7 @@ describe("NoticeLine's live region", () => {
     await nextFrame();
     live.flush();
     expect(live.said).toEqual(["That didn't save."]);
-    expect(screen.getByText("That didn't save. Moved it.")).toBeTruthy();
+    expect(shown().textContent).toBe("That didn't save. Moved it.");
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
   });
 
@@ -211,7 +219,7 @@ describe("NoticeLine's live region", () => {
     await nextFrame();
     live.flush();
     expect(live.said).toEqual(["That box is full.", "Moved it."]);
-    expect(screen.getByText("That box is full. Moved it.", { selector: "p:not([role])" })).toBeTruthy();
+    expect(shown().textContent).toBe("That box is full. Moved it.");
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
   });
 
@@ -251,5 +259,143 @@ describe("NoticeLine's live region", () => {
     live.flush();
     // R (id 6) came up before this line was drawn: said already, so only C.
     expect(live.said).toEqual(["C."]);
+  });
+
+  it("a refusal in front of a write's words reads apart: its own span in the negative ink, ending its sentence", async () => {
+    const { line } = page();
+    let older!: ReturnType<StatusLine["beginWrite"]>;
+    let newer!: ReturnType<StatusLine["beginWrite"]>;
+    act(() => {
+      older = line().beginWrite();
+      newer = line().beginWrite();
+    });
+    act(() => older.refused("No room in that box"));
+    act(() => newer.done("Moved it.", () => {}));
+    expect(shown().textContent).toBe("No room in that box. Moved it.");
+    const refusal = shown().querySelector("span");
+    expect(refusal?.textContent).toBe("No room in that box.");
+    expect(refusal?.className).toContain("text-neon-pink-text");
+    // The Undo is the write's: it sits outside the refusal's words.
+    expect(refusal?.contains(screen.getByRole("button", { name: "Undo" }))).toBe(false);
+  });
+});
+
+/**
+ * A page whose desk line steps aside while the card drawer is open, as
+ * FinalCollectionPage hands MyBindersTab `drawer ? null : notice`.
+ */
+function DeskAndDrawer({ onLine, shared = true }: { onLine: (line: StatusLine, setDrawer: (open: boolean) => void) => void; shared?: boolean }) {
+  const line = useStatusLine();
+  const [drawer, setDrawer] = useState(false);
+  onLine(line, setDrawer);
+  const body = (
+    <>
+      <section aria-label="Desk">
+        <NoticeLine notice={drawer ? null : line.notice} onUndo={line.undo} onDismiss={line.dismiss} floating />
+      </section>
+      {drawer && (
+        <section aria-label="Drawer">
+          <NoticeLine notice={line.notice} onUndo={line.undo} onDismiss={line.dismiss} />
+        </section>
+      )}
+    </>
+  );
+  return shared ? <NoticeSpokenContext.Provider value={line.spoken}>{body}</NoticeSpokenContext.Provider> : body;
+}
+
+describe("every line of one status line shares what has been said", () => {
+  function setup(shared = true) {
+    let line!: StatusLine;
+    let setDrawer!: (open: boolean) => void;
+    render(
+      <DeskAndDrawer
+        shared={shared}
+        onLine={(l, s) => {
+          line = l;
+          setDrawer = s;
+        }}
+      />,
+    );
+    const regionIn = (name: string) => within(screen.getByRole("region", { name })).getByRole("status");
+    return { line: () => line, drawer: (open: boolean) => act(() => setDrawer(open)), setDrawer: (open: boolean) => setDrawer(open), regionIn };
+  }
+
+  it("drawer open, a write lands (the drawer's line says it), drawer closes: the desk's line says nothing", async () => {
+    const { line, drawer, regionIn } = setup();
+    drawer(true);
+    const inDrawer = listen(regionIn("Drawer"));
+    const atDesk = listen(regionIn("Desk"));
+    stops.push(inDrawer.stop, atDesk.stop);
+    act(() => line().beginWrite().done("Moved it.", () => {}));
+    await nextFrame();
+    drawer(false);
+    await nextFrame();
+    inDrawer.flush();
+    atDesk.flush();
+    expect(inDrawer.said).toEqual(["Moved it."]);
+    expect(atDesk.said).toEqual([]);
+  });
+
+  it("a refusal said in the drawer is not said again by the desk", async () => {
+    const { line, drawer, regionIn } = setup();
+    let older!: ReturnType<StatusLine["beginWrite"]>;
+    let newer!: ReturnType<StatusLine["beginWrite"]>;
+    act(() => {
+      older = line().beginWrite();
+      newer = line().beginWrite();
+    });
+    drawer(true);
+    const atDesk = listen(regionIn("Desk"));
+    stops.push(atDesk.stop);
+    act(() => older.refused("That box is full."));
+    await nextFrame();
+    act(() => newer.done("Moved it.", () => {}));
+    await nextFrame();
+    drawer(false);
+    await nextFrame();
+    atDesk.flush();
+    expect(atDesk.said).toEqual([]);
+  });
+
+  it("a notice that comes up as the drawer closes is said once, by the desk", async () => {
+    const { line, drawer, setDrawer, regionIn } = setup();
+    drawer(true);
+    const atDesk = listen(regionIn("Desk"));
+    stops.push(atDesk.stop);
+    // One render: the drawer's line never drew it, so it is news at the desk.
+    act(() => {
+      line().notify("Took it out.");
+      setDrawer(false);
+    });
+    await nextFrame();
+    atDesk.flush();
+    expect(atDesk.said).toEqual(["Took it out."]);
+  });
+
+  it("a line taken away before its frame ran hands the words on: the desk says them", async () => {
+    const { line, setDrawer, drawer, regionIn } = setup();
+    drawer(true);
+    const atDesk = listen(regionIn("Desk"));
+    stops.push(atDesk.stop);
+    // The drawer's line draws it, then closes before its frame runs.
+    act(() => line().beginWrite().done("Moved it.", () => {}));
+    act(() => setDrawer(false));
+    await nextFrame();
+    atDesk.flush();
+    expect(atDesk.said).toEqual(["Moved it."]);
+  });
+
+  it("a line drawn over a notice another line said holds its words without saying them", async () => {
+    const { line, drawer, regionIn } = setup();
+    act(() => line().notify("Saved."));
+    await nextFrame();
+    drawer(true);
+    // The drawer's region is drawn already holding them: found, not news.
+    expect(regionIn("Drawer").textContent).toBe("Saved.");
+    const inDrawer = listen(regionIn("Drawer"));
+    stops.push(inDrawer.stop);
+    await nextFrame();
+    inDrawer.flush();
+    expect(inDrawer.said).toEqual([]);
   });
 });

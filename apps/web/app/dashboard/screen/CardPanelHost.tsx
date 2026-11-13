@@ -1,6 +1,6 @@
 import { lazy, Suspense, useContext, type ReactNode } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
-import NoticeLine from "@/app/collection/prototypes/p1/notice";
+import NoticeLine, { NoticeSpokenContext } from "@/app/collection/prototypes/p1/notice";
 import { drillToCard } from "@/app/collection/final/catalog/drill";
 import { CARD_PARAM, drillToParams, entityToParams, QUERY_PARAM } from "@/app/collection/final/checklistParams";
 import { CollectionStoreContext, SideProvider } from "@/app/collection/final/data/store";
@@ -108,13 +108,16 @@ function PanelOverDashboard() {
 
   return (
     <PageApiContext.Provider value={pageApi}>
-      <SideProvider value={panelSide(params)}>
-        {isOpen(control) ? (
-          <OpenCardDrawer control={control} line={line} held={panelHeld(params)} />
-        ) : (
-          <NoticeLine notice={line.notice} onUndo={line.undo} onDismiss={line.dismiss} floating />
-        )}
-      </SideProvider>
+      {/* The drawer's line and the toast share what has been said. */}
+      <NoticeSpokenContext.Provider value={line.spoken}>
+        <SideProvider value={panelSide(params)}>
+          {isOpen(control) ? (
+            <OpenCardDrawer control={control} line={line} held={panelHeld(params)} />
+          ) : (
+            <NoticeLine notice={line.notice} onUndo={line.undo} onDismiss={line.dismiss} floating />
+          )}
+        </SideProvider>
+      </NoticeSpokenContext.Provider>
     </PageApiContext.Provider>
   );
 }

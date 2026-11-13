@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Notice } from "../prototypes/p1/notice";
+import { spokenNotices, type Notice, type SpokenNotices } from "../prototypes/p1/notice";
 import { writeErrorMessage } from "./data/store";
 import type { Undo } from "./data/types";
 import type { PageApi, WriteTicket } from "./pageApi";
@@ -49,6 +49,11 @@ function undoFailed(error: unknown): string {
 
 export const NOTICE_MS = 10_000;
 
+/** A refusal set in front of other words ends its sentence first. */
+function endSentence(words: string): string {
+  return /[.!?…]["'’”)\]]?$/.test(words.trimEnd()) ? words.trimEnd() : `${words.trimEnd()}.`;
+}
+
 /** The status line a page holds, and the page API's half that speaks on it. */
 export interface StatusLine extends Pick<PageApi, "notify" | "inform" | "undoLast" | "run"> {
   beginWrite: () => WriteTicket;
@@ -57,6 +62,11 @@ export interface StatusLine extends Pick<PageApi, "notify" | "inform" | "undoLas
   undo: () => void;
   /** The line's dismiss button: takes it down now. */
   dismiss: () => void;
+  /**
+   * Which of this line's notices have been said: give it to every line that
+   * draws them (`NoticeSpokenContext`), so none says one twice.
+   */
+  spoken: SpokenNotices;
 }
 
 export function useStatusLine(): StatusLine {
@@ -74,6 +84,13 @@ export function useStatusLine(): StatusLine {
   // Notices up to this id lost their Undo to a write started since; one said
   // after it (that write's own, say) keeps its Undo.
   const undoFloor = useRef(0);
+  const [spoken] = useState(spokenNotices);
+  useEffect(() => {
+    const outstanding = saving.current;
+    // A page that goes keeps no write counted as saving: whatever answers
+    // late finds nothing to hold "Still saving." up for.
+    return () => outstanding.clear();
+  }, []);
   // No manual memo here: the React Compiler memoizes these handlers itself.
   const notify = (message: string, undo?: () => void) => {
     const id = nextId();
@@ -97,7 +114,7 @@ export function useStatusLine(): StatusLine {
    */
   const refuse = (message: string, ran?: number) => {
     const id = nextId();
-    const refusal = { words: message, id, at: Date.now() };
+    const refusal = { words: endSentence(message), id, at: Date.now() };
     setNotice((prev) => {
       if (prev && prev.id !== ran && prev.undo && !prev.undoing) {
         const undoFor = prev.undoFor ?? { words: prev.message, id: prev.id };
@@ -107,7 +124,7 @@ export function useStatusLine(): StatusLine {
           kind: "refusal",
           refusal,
           undoFor,
-          message: `${message} ${undoFor.words}`,
+          message: `${refusal.words} ${undoFor.words}`,
           announce: message,
         };
       }
@@ -123,6 +140,10 @@ export function useStatusLine(): StatusLine {
    * while it is that young, so it never rides along for good. Only a write's
    * answer does this (`beginWrite`'s `done`, and so `run`): a plain `notify`
    * is a fresh word that replaces whatever is on the line.
+   *
+   * A newer write landing while an undo runs takes the line, and that undo's
+   * "Undone." is then dropped on purpose: the newer words stay (`undo`). A
+   * refused undo is still said, merged in front of them (`refuse`).
    */
   const land = (message: string, undo?: () => void) => {
     const id = nextId();
@@ -244,7 +265,7 @@ export function useStatusLine(): StatusLine {
     }
   };
   const dismiss = () => setNotice(null);
-  return { notice, notify, inform, undoLast, run, beginWrite, undo, dismiss };
+  return { notice, notify, inform, undoLast, run, beginWrite, undo, dismiss, spoken };
 }
 
 /** Room kept under a field the keyboard reaches while the floating status line is up. */
