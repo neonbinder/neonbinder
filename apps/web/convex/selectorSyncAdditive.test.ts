@@ -19,7 +19,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -30,6 +30,8 @@ import {
   loadSyncHoldersElsewhere,
 } from "./selectorSyncStore";
 import { insertTestCard } from "../lib/testing/card-row";
+import { ensureBrandRowForName } from "./brandRehome";
+import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
 
 const modules = (
   import.meta as unknown as {
@@ -2310,4 +2312,103 @@ describe("a row grouped between insert and parallel is not re-created by the nex
     expect(res.heldElsewhereTotal).toBe(0);
     expect(await rowsUnder(t, "setName", parentId)).toHaveLength(1);
   });
+});
+
+// ===========================================================================
+// NEO-527 — a brand NB minted from its own known-brands list while SportLots
+// was paused is the row SportLots links onto when it comes back
+// ===========================================================================
+
+describe("SportLots resuming links onto a brand NB minted while it was paused (NEO-527)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** A sport + year whose chain CAN scope SportLots once it is not paused. */
+  async function insertYear(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: { sportlots: { s0: "FB" } },
+        platformSlotSeq: { sportlots: 1 },
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "2026",
+        platformData: { sportlots: { s0: "2026" } },
+        platformSlotSeq: { sportlots: 1 },
+        parentId: sportId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+    });
+  }
+
+  /**
+   * What `backfillKnownBrands` (and the set sync) leave behind while
+   * SportLots is paused: a "Topps" row from NB's own vocabulary, with no
+   * SportLots slot at all (the pause makes the side unresolvable, so not even
+   * the all-brands placeholder is written).
+   */
+  async function mintToppsWhilePaused(
+    t: ReturnType<typeof convexTest>,
+    yearId: Id<"selectorOptions">,
+  ) {
+    vi.stubEnv(PAUSED_PLATFORMS_ENV, "sportlots");
+    const minted = await t.run((ctx) =>
+      ensureBrandRowForName(ctx, { yearId, name: "Topps" }),
+    );
+    vi.unstubAllEnvs();
+    expect(minted.created).toBe(true);
+    const row = await t.run(async (ctx) => ctx.db.get(minted.id!));
+    // The precondition the linkage case rests on: NB's row, no SL link.
+    expect(row?.platformData.sportlots).toBeUndefined();
+    expect(row?.metadata?.setNamePrefix).toBe("Topps");
+    return minted.id!;
+  }
+
+  test.each([
+    ["spelled as NB spells it", "Topps"],
+    ["spelled in SportLots' capitals", "TOPPS"],
+  ])(
+    "the SportLots id lands on NB's Topps row, %s: one row, nothing inserted, value and prefix kept",
+    async (_label, slSpelling) => {
+      const t = convexTest(schema, modules);
+      const asAdmin = admin(t);
+      const yearId = await insertYear(t);
+      const toppsId = await mintToppsWhilePaused(t, yearId);
+
+      // SportLots is back: Sync Manufacturers lists Topps under its own id.
+      const res = await asAdmin.mutation(
+        api.selectorOptions.storeSelectorOptions,
+        {
+          level: "manufacturer",
+          parentId: yearId,
+          options: [{ value: slSpelling, platformData: { sportlots: "1" } }],
+          coveredSides: ["sportlots"],
+          returnedIds: { sportlots: ["1", SL_ALL_BRANDS_BRAND_ID] },
+        },
+      );
+
+      const rows = await rowsUnder(t, "manufacturer", yearId);
+      // Matched by name, not inserted beside it.
+      expect(rows).toHaveLength(1);
+      expect(rows[0]._id).toBe(toppsId);
+      // The link is attached in a SportLots slot (invariant 5)...
+      expect(Object.values(rows[0].platformData.sportlots ?? {})).toEqual(["1"]);
+      // ...and NB's data is not renamed by the marketplace's spelling
+      // (invariant 3).
+      expect(rows[0].value).toBe("Topps");
+      expect(rows[0].metadata?.setNamePrefix).toBe("Topps");
+      expect(rows[0].metadata?.isBrandUnknown).toBeUndefined();
+      // An attach to an unlinked row, not a re-slug of a live link.
+      expect(res.relinked).toEqual([]);
+      expect(res.unlinked).toEqual([]);
+      // Nothing to upgrade either: the row held no placeholder to replace.
+      expect(res.linkedFromPlaceholder).toBe(0);
+    },
+  );
 });

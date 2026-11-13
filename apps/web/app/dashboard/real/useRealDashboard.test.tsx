@@ -1075,6 +1075,17 @@ describe("New on NeonBinder: newSetsOf", () => {
     expect(newSetsOf(undefined, undefined)).toEqual([]);
   });
 
+  it("NEO-527: a set under the year's brand-unknown row is named alone; a real brand is named", () => {
+    const opens = ref({ _id: "base", level: "variantType", name: "Base", kind: "base", variantType: { _id: "base", name: "Base" } });
+    const entry = (set: Record<string, unknown>) =>
+      newSetsOf([{ set, opens, wholeSet: true, cardCount: 1, coverCardId: null, addedAt: 1 }] as never, undefined)[0].label;
+    const bowman = { ...SET1, name: "Bowman", season: "2026", manufacturer: { _id: "unk", name: "Unknown" } };
+    expect(entry({ ...bowman, manufacturerBrandUnknown: true })).toBe("2026 Bowman");
+    // Only the flag hides it: a real brand row is named whatever it is called.
+    expect(entry(bowman)).toBe("2026 Unknown Bowman");
+    expect(entry({ ...SET1, name: "Finest", season: "1993", manufacturer: { _id: "t", name: "Topps" } })).toBe("1993 Topps Finest");
+  });
+
   it("a lone variant is named for the set and itself, and opens on its own checklist, however deep it sits", () => {
     const parallels = { _id: "pt", name: "Parallels" };
     const raw = [

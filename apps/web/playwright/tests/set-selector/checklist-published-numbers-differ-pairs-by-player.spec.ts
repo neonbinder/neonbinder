@@ -42,15 +42,16 @@
 // Lowell is left teamless.
 //
 // FIXTURE (SET-REGISTRY.md -> "Baseball -> 2026 -> Donruss"): Baseball > 2026 >
-// All Brands > Donruss (brand "Unknown") > Insert > Retro 1997 Donruss Signature
-// Series Autographs, BSC only (SportLots is paused). SOLE WRITER of that insert;
+// All Brands > Donruss (filed under the year's Donruss brand: since NEO-527 the
+// known-brands list mints it; it sat under Unknown before) > Insert > Retro 1997
+// Donruss Signature Series Autographs, BSC only (SportLots is paused). SOLE WRITER of that insert;
 // FRESH-ONLY (it commits in PHASE B), so a re-run fails at "No cards in this
 // checklist yet." by name: re-seed first. Every player and club but Oakland A's
 // is on the catalogue, so no player is minted and no live lookup is waited on.
 //
 // Not a hand-rolled drill by choice (R9): the helpers drill a Base or a brand's
-// set; this set is an INSERT under the year's Unknown brand, reached through the
-// pinned All Brands view like the other one-marketplace real sets.
+// set; this set is an INSERT reached through the pinned All Brands view like the
+// other one-marketplace real sets, which lists it whatever brand files it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import type { Page } from "@playwright/test";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
@@ -107,7 +108,12 @@ test(
     await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2026", manufacturer: "All Brands" });
     await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible();
     await columnSearch(page, "Sets").fill("Donruss");
-    await columnOption(page, "Sets", "Donruss").click();
+    // The view reads each set's name, then its brand ("Donruss Donruss"); a bare
+    // "Donruss" text would also match the brand of "Donruss Elite" and the rest.
+    await page
+      .getByRole("listbox", { name: "Sets" })
+      .getByRole("option", { name: /^Donruss \S+$/ })
+      .click();
     await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
     await columnOption(page, "Variant Types", "Insert").click();
     await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: INSERT_FETCH });

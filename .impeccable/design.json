@@ -188,7 +188,8 @@
       "**Don't** hand-mix a near-neon hex. `#00B7FF` and `#FF2EB3` crept into 80 files before the 2026-10 audit folded them back into Marquee Cyan `#00C2FF` and Show-Sign Pink `#FF2E9A`.",
       "**Don't** put a glow on a resting element.",
       "**Don't** use neon pink for anything but negative actions (cancel and destructive).",
-      "**Don't** reach for a hued palette step (`bg-red-600`). Every hue has a role; the lint rule refuses the step."
+      "**Don't** reach for a hued palette step (`bg-red-600`). Every hue has a role; the lint rule refuses the step.",
+      "**Don't** draw a divider with `border-rule` inside a `bg-raised` card. In dark mode `rule` (#1D293D) matches the card's fill (#1E2939) and the line vanishes; use `border-rule-strong`."
     ]
   }
 }

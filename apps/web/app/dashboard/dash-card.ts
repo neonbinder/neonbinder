@@ -51,13 +51,27 @@ export interface DashCard {
  * alone. The server's labels (`brandedSetLabel`, convex/lib/listingLabels.ts)
  * use the same rule.
  */
-export function dashSetLabel(set: { season: string; name: string; brand: string | null | undefined }): string {
-  return `${set.season} ${brandedSetName({ manufacturer: set.brand ?? undefined, setName: set.name })}`.trim();
+export function dashSetLabel(set: {
+  season: string;
+  name: string;
+  brand: string | null | undefined;
+  /**
+   * NEO-527: true when the brand row is the year's brand-unknown row (its
+   * flag, never its name). The set is then named alone, as its listing
+   * title names it (NEO-272): a collector never sees that row.
+   */
+  brandUnknown?: boolean;
+}): string {
+  return `${set.season} ${brandedSetName({
+    manufacturer: set.brand ?? undefined,
+    manufacturerBrandUnknown: set.brandUnknown === true,
+    setName: set.name,
+  })}`.trim();
 }
 
 /** `dashSetLabel` for the collection's own `SetRef`. */
-export function setRefLabel(set: Pick<SetRef, "season" | "name" | "brand">): string {
-  return dashSetLabel({ season: set.season, name: set.name, brand: set.brand.name });
+export function setRefLabel(set: Pick<SetRef, "season" | "name" | "brand" | "brandUnknown">): string {
+  return dashSetLabel({ season: set.season, name: set.name, brand: set.brand.name, brandUnknown: set.brandUnknown });
 }
 
 /** The generator's inputs, from a card's own fields. Nothing here is marketplace data. */
@@ -69,6 +83,8 @@ function titleInputs(card: Card): ListingCardInputs {
     playerNames: card.players.map((p) => p.nameOnCard ?? p.name),
     year: card.set.season,
     manufacturer: card.set.brand.name,
+    // NEO-527: the brand-unknown row is never in a title (NEO-272).
+    manufacturerBrandUnknown: card.set.brandUnknown === true,
     setName: card.set.name,
     insertName,
     parallelName: variant.kind === "parallel" && variant.name ? variant.name : "Base",

@@ -310,7 +310,7 @@ function ChecklistsView({
       </section>
 
       <section ref={browseRef} aria-label="Browse sets" className="space-y-4">
-        <p className="text-sm text-ink-2">Or drill down: sport, year, brand, set, then base, an insert or a parallel.</p>
+        <p className="text-sm text-ink-2">Or drill down: sport, year, brand or set, then base, an insert or a parallel.</p>
         <Cascade
           key={cascadeKey}
           state={drill}

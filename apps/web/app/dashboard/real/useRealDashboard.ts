@@ -569,7 +569,12 @@ export function newSetsOf(raw: readonly NewSetRaw[] | undefined, cards: CardsByI
     const cover = n.coverCardId ? cards?.get(n.coverCardId as CardId) : undefined;
     return {
       id: n.wholeSet ? n.set._id : `${n.set._id}:${n.opens._id}`,
-      label: dashSetLabel({ season: n.set.season, name: n.set.name, brand: n.set.manufacturer?.name }),
+      label: dashSetLabel({
+        season: n.set.season,
+        name: n.set.name,
+        brand: n.set.manufacturer?.name,
+        brandUnknown: n.set.manufacturerBrandUnknown === true,
+      }),
       variant: n.wholeSet ? null : variantNameOf(n.opens),
       checklist: checklistParamsOf(n.opens, n.set._id),
       sport: n.set.sport?.name ?? null,
