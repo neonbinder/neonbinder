@@ -73,6 +73,15 @@
 //      held back, named, with eBay's no-photo reason. This is the proof the
 //      scanner's photos reach eBay: the first card lists on the photos the save
 //      put on it.
+//   5a. NEO-481, re-list after an edit: they open the second card's photo in
+//      the card photo viewer, Turn right and Save. Once the new file lands
+//      ("All set. Your edited photo is in."), Sync status queues that card
+//      again, and a Sync re-sends its item (the listing's content follows the
+//      photo: "List the cards, done"), the card leaves the queue, and the one
+//      held-back card is still only the third. (The sandbox has no picture
+//      upload, see below, so no "Upload photos" step: the new photo's key is
+//      what changes the item.) A poll between the queue's read and the press
+//      sends it instead, and the press then sends nothing (the two orders).
 //   6. They turn the box's "Listed on marketplaces" off. NEO-433: Sync status,
 //      left open, shows a run the platform killed read as running, then flip by
 //      itself to the set's last result with the step it was on failed (a seed
@@ -213,6 +222,7 @@ import {
 } from "../../support/collection";
 import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { EDIT_LANDED, EDIT_LANDS, photoViewer } from "../../support/photo-viewer";
 
 const EBAY = "eBay";
 const FUTURE_STARS = TOPPS_CHROME_2024_FUTURE_STARS;
@@ -887,6 +897,66 @@ test(
     // The box's quantities with the copies that have photos counted like any other: the same
     // field state as before the Sync (the slow whole-page check waits for the press to be done).
     await expectAccessible(page, { within: boxList, label: "Inventory checklist, boxed copies with their photos counted" });
+
+    // --- 5a. NEO-481: the second card's photo, turned in the viewer, re-lists it ----------
+    {
+      const drawer = page.getByRole("dialog", { name: new RegExp(`^${escapeRegExp(SET_LABEL)} ${escapeRegExp(b)}`) });
+      await checklist.getByRole("button", { name: `Details for ${b}`, exact: true }).click();
+      const yourCopies = drawer.getByRole("region", { name: `Your copies of ${b}`, exact: true });
+      await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)", exact: true })).toBeVisible();
+      const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
+      await expect(editForm).toBeVisible();
+      await editForm.getByRole("button", { name: /^Open front of Raw, / }).click();
+      const viewer = photoViewer(page, "front", b);
+      await expect(viewer).toBeVisible();
+      const viewerSaid = (words: string) => viewer.getByRole("status").filter({ hasText: new RegExp(`^${escapeRegExp(words)}$`) });
+      await viewer.getByRole("toolbar", { name: "Photo tools" }).getByRole("button", { name: "Turn right", exact: true }).click();
+      await viewer.getByRole("button", { name: "Save photo", exact: true }).click();
+      await expect(viewerSaid("Saved.")).toBeVisible();
+      // The render: the PIPELINE exception (EDIT_LANDS, signed off in support/photo-viewer.ts).
+      await expect(viewerSaid(EDIT_LANDED)).toBeVisible({ timeout: EDIT_LANDS });
+      await page.keyboard.press("Escape");
+      await expect(viewer).toBeHidden();
+      await drawer.getByRole("button", { name: "Close card detail" }).click();
+      await expect(drawer).toBeHidden();
+    }
+    // The landed edit queued the card again: the proof the edit reaches listings,
+    // asserted hard (the window since the landing is seconds of the poll's 15 minutes).
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    const relistQueued = platform
+      .getByRole("list", { name: "Queued for the next sync (1)" })
+      .getByRole("listitem")
+      .filter({ hasText: new RegExp(`^${escapeRegExp(b.split(" ")[0])} .* in ${escapeRegExp(SET_LABEL)}`) });
+    await expect(relistQueued).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    // A press inside the minute is still taken: the queued row is newer than the last drain.
+    await sync.click();
+    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    const relist = syncRun(platform, SET_LABEL, EBAY);
+    // Going live keeps its signed-off ceiling (step 5).
+    await followRunToRest(platform, relist, queueSettled(platform, SET_LABEL), { "Go live": 15_000 });
+    // Positives first (R2): the ledger, the line, the one card still held back.
+    await expect(relist.last).toBeVisible();
+    await expect(relist.gathered()).toBeVisible();
+    await expect(row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/)).toBeVisible();
+    await expect(row.getByText("1 held back:", { exact: true })).toBeVisible();
+    await expect(heldBack).toHaveCount(1);
+    await expect(heldBack).toContainText(c.split(" ")[0]);
+    await expect(relistQueued).toHaveCount(0);
+    const relisted = await relist.last.getByRole("listitem", { name: "List the cards, done", exact: true }).isVisible();
+    if (relisted) {
+      // Press first: the item went again with the new photo's key.
+      await expect(relist.nothingNew()).toHaveCount(0);
+    } else {
+      // Poll first (between the queue's read and the press): the press read and sent nothing.
+      await expectNothingSent(relist);
+    }
+    await expectAccessible(page, { label: "Inventory Sync status, eBay re-listed a card after its photo was edited" });
 
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");

@@ -113,6 +113,10 @@ export default function Overlay({
   }, []);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // A layer opened from inside this one is portalled to <body>, but React
+    // still bubbles its keys up here: they are that layer's, never this one's
+    // (its Tab would otherwise be trapped back into this panel, now inert).
+    if (!panelRef.current?.contains(e.target as Node)) return;
     if (e.key === "Escape" && !e.defaultPrevented) {
       e.preventDefault();
       onClose();

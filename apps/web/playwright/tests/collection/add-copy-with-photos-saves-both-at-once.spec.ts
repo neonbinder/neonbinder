@@ -128,6 +128,12 @@ test(
     const removeAny = yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, Raw, Excellent`) });
     await removeAny.first().click();
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
+    // The list drops the line optimistically; "Removed ..." is the server's answer, and it
+    // replaces the taller "Added ... photo(s)." notice above the list. Press the next Remove
+    // only once it has landed, or that reflow moves the button out from under the press.
+    await expect(
+      drawer.getByRole("status").filter({ hasText: new RegExp(`^Removed ${escapeRe(short)}, Raw, Excellent`) }),
+    ).toBeVisible();
     await removeAny.first().click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();

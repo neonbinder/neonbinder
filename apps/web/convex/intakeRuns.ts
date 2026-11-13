@@ -74,8 +74,10 @@ import {
 import { photoUrlsOf } from "./copyPhotos";
 import { intakePhotoPool } from "./intakePhotoPool";
 import { kickOwnerDrains, listsOnMarketplaces } from "./listingOutbox";
-import { ListingGate } from "./listingGate";
+import { commonPriceCentsOf, ListingGate } from "./listingGate";
 import {
+  INTAKE_NEEDS_PRICE,
+  INTAKE_NEEDS_PRICE_LINE,
   intakeNamesFor,
   matchIntakePair,
   normalizeIntakeCardNumber,
@@ -533,6 +535,8 @@ const matchRowValidator = v.object({
   photoCanRetry: v.optional(v.boolean()),
   /** Copies of the proposed card already in the run's home ("You have N here"). */
   haveHere: v.number(),
+  /** NEO-481 — this tile's own price (box runs), cents; absent = the run's default. */
+  minPriceCents: v.optional(v.number()),
 });
 
 /**
@@ -630,6 +634,7 @@ export const listIntakeMatches = query({
         savedAt: row.savedAt,
         ...(await photoStateOf(ctx, row)),
         haveHere: row.cardId ? await haveHere(row.cardId) : 0,
+        minPriceCents: row.minPriceCents,
       });
     }
     return out;
@@ -658,8 +663,9 @@ export const pickIntakeCard = mutation({
     if (row.savedAt !== undefined) throw new Error("That card is already saved");
 
     if (args.cardId === null) {
-      // Clearing the readKey makes the next sync match it afresh.
-      await ctx.db.patch(row._id, { byUser: undefined, readKey: "" });
+      // Clearing the readKey makes the next sync match it afresh. NEO-481: a
+      // tile's price was for the card it named, so a clear drops it.
+      await ctx.db.patch(row._id, { byUser: undefined, readKey: "", minPriceCents: undefined });
       await queueSync(ctx, run);
     } else {
       const card = await ctx.db.get(args.cardId);
@@ -675,6 +681,8 @@ export const pickIntakeCard = mutation({
         reason: "byUser",
         byUser: true,
         variations: variations.map((c) => c._id),
+        // NEO-481: a price set for one card never carries over to another.
+        ...(row.cardId !== card._id ? { minPriceCents: undefined } : {}),
       });
       await queueSync(ctx, run); // re-flags repeats
     }
@@ -716,6 +724,11 @@ async function requireRunRow(
  * retried request) returns the first save and adds nothing. A repeat must be
  * answered first ("second copy" saves; "same card" sets it aside), so a
  * jammed feeder never counts one card twice.
+ *
+ * NEO-481: into a box, a card with no price (its own, the run's Min price,
+ * or a common price for its set) is refused with `INTAKE_NEEDS_PRICE`. This
+ * is the one save door: Yes, Enter, y, "Save this card" and "Save N matched"
+ * all come here, one card per call.
  */
 export const saveIntakeMatch = mutation({
   args: {
@@ -739,10 +752,26 @@ export const saveIntakeMatch = mutation({
     }
 
     // A per-card field overrides the run's; one the card leaves out keeps it.
+    // NEO-481: the price is, in order, the one passed in `details`, the
+    // tile's own (`setIntakeMatchPrice`), then the run's Min price.
     const overrides = Object.fromEntries(
       Object.entries(args.details ?? {}).filter(([, value]) => value !== undefined),
     );
-    const d = cleanDefaults({ ...run.defaults, ...overrides }) ?? {};
+    // A tile's own price is a box run's only: a binder holds no cards for sale,
+    // so a row price left on a binder run's tile (one moved, or written before
+    // the run moved) is never applied.
+    const home = await ctx.db.get(run.homeId);
+    const inBox = home?.kind === "box";
+    const rowPrice = row.minPriceCents !== undefined && inBox ? { minPriceCents: row.minPriceCents } : {};
+    const d = cleanDefaults({ ...run.defaults, ...rowPrice, ...overrides }) ?? {};
+    // NEO-481 (Jason, 2026-11-10): a card goes in a box with a price, synced
+    // or not: the one above, else the collector's common price for the card's
+    // own set (the price its copy lists at). Refused before anything is written.
+    if (inBox && d.minPriceCents === undefined) {
+      const card = await ctx.db.get(row.cardId);
+      const common = card ? await commonPriceCentsOf(ctx, run.userId, card.selectorOptionId) : null;
+      if (common === null) refuse(INTAKE_NEEDS_PRICE, INTAKE_NEEDS_PRICE_LINE);
+    }
     // NEO-370: the run's price goes on the copy (NEO-378's `minPriceCents`),
     // so a listed box's saves list at it. `addOne` refuses a save into a
     // listed box with no price and no common price (`listingGate.ts`).
@@ -782,6 +811,58 @@ export const saveIntakeMatch = mutation({
     return { copyId: result.copyId, alreadySaved: false };
   },
 });
+
+/**
+ * NEO-481 — the collector's own price for one tile of a box run, in cents.
+ * `null` (a blank field) goes back to the default, and so does a price equal
+ * to the default the tile was prefilled with: the run's Min price, else the
+ * collector's common price for the run's set. Writing that number down would
+ * freeze today's default onto this one card. Only ever this row's
+ * `minPriceCents`, which the save puts on the copy; a common price is never
+ * written here. A saved row is refused: its price lives on the copy now.
+ */
+export const setIntakeMatchPrice = mutation({
+  args: {
+    runId: v.id("intakeRuns"),
+    pairId: v.id("placeholderPairs"),
+    priceCents: v.union(v.number(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const row = await requireRunRow(ctx, run, args.pairId);
+    if (row.savedAt !== undefined) {
+      refuse(COLLECTION_ERRORS.invalid, "That card is already saved. Change its price on the card.");
+    }
+    const home = args.priceCents !== null ? await ctx.db.get(run.homeId) : null;
+    if (args.priceCents !== null && home?.kind !== "box") {
+      refuse(COLLECTION_ERRORS.invalid, "Only cards going in a box get a price here.");
+    }
+    if (args.priceCents !== null && !isPriceCents(args.priceCents)) {
+      refuse(COLLECTION_ERRORS.invalid, "Price needs to be a dollar amount of zero or more.");
+    }
+    let next: number | undefined = args.priceCents ?? undefined;
+    if (next !== undefined && next === (await intakePricePrefill(ctx, run))) next = undefined;
+    if (row.minPriceCents !== next) await ctx.db.patch(row._id, { minPriceCents: next });
+    await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * The price a box run's tile shows before the collector types one: the run's
+ * Min price, else their common price for the run's set. Read only.
+ */
+async function intakePricePrefill(ctx: QueryCtx, run: Doc<"intakeRuns">): Promise<number | undefined> {
+  if (run.defaults?.minPriceCents !== undefined) return run.defaults.minPriceCents;
+  const variantId = run.variantId;
+  if (!variantId) return undefined;
+  const common = await ctx.db
+    .query("variantCommonPrices")
+    .withIndex("by_owner_and_variant", (q) => q.eq("ownerId", run.userId).eq("variantId", variantId))
+    .unique();
+  return common?.priceCents;
+}
 
 /**
  * Answer "this card is already in this run": a second copy (it can then be
@@ -944,6 +1025,12 @@ export const intakePhotoWork = internalQuery({
       frontIndex: v.number(),
       backIndex: v.number(),
       photoSidesAttached: v.optional(v.array(v.union(v.literal("front"), v.literal("back")))),
+      /**
+       * NEO-481 — each side's current hand edit version, read when the attach
+       * runs: an edit committed before the save is carried onto the line.
+       */
+      frontEditVersion: v.optional(v.number()),
+      backEditVersion: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -951,6 +1038,13 @@ export const intakePhotoWork = internalQuery({
     if (!row?.savedCopyId) return null;
     const run = await ctx.db.get(row.runId);
     if (!run) return null;
+    const editVersion = async (entryIndex: number) => {
+      const image = await ctx.db
+        .query("placeholderImages")
+        .withIndex("by_job_and_index", (q) => q.eq("jobId", run.jobId).eq("entryIndex", entryIndex))
+        .unique();
+      return image?.edit?.version;
+    };
     return {
       ownerId: row.userId,
       copyId: row.savedCopyId,
@@ -958,6 +1052,8 @@ export const intakePhotoWork = internalQuery({
       frontIndex: row.frontIndex,
       backIndex: row.backIndex,
       photoSidesAttached: row.photoSidesAttached,
+      frontEditVersion: await editVersion(row.frontIndex),
+      backEditVersion: await editVersion(row.backIndex),
     };
   },
 });
@@ -1233,9 +1329,12 @@ export const syncIntakeMatches = internalMutation({
         variations: (answer?.variations ?? []) as Id<"cardChecklist">[],
       };
       if (existing) {
-        // A different card asks the repeat question again.
+        // A different card asks the repeat question again, and (NEO-481) drops
+        // the tile's own price: it was set for the card the row named.
         const patch =
-          existing.cardId === fields.cardId ? fields : { ...fields, repeatIsSecondCopy: undefined };
+          existing.cardId === fields.cardId
+            ? fields
+            : { ...fields, repeatIsSecondCopy: undefined, minPriceCents: undefined };
         await ctx.db.patch(existing._id, patch);
         byPair.set(pair._id, { ...existing, ...patch });
       } else {

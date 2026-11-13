@@ -46,3 +46,13 @@ an `inert` it did not set. Capture the opener BEFORE calling it, call the
 release BEFORE refocusing the opener. `EntityReviewWizard` and `NewTeamDialog`
 both use it. happy-dom's role queries do NOT exclude inert subtrees, so assert
 "live" as `el.closest("[inert]") === null`.
+
+**Nested p1 `Overlay`s in a test (NEO-481):** mount the outer layer FIRST
+(render it closed, then rerender it with the inner one open). If both mount in
+one commit, the child's layout effect runs first and the parent's
+`inertBackground` then inerts the child's portal, so its focus and Tab
+assertions fail for a reason no browser shows. A React portal still bubbles
+keydown through the outer Overlay's `onKeyDown`, so that handler must ignore
+targets outside its own panel. Prove it with `fireEvent.keyDown(...)` returning
+`true` (not prevented) from a mid-toolbar control, with `offsetParent` stubbed
+as `Overlay.test.tsx` does.

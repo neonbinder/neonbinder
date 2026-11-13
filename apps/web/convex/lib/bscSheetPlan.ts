@@ -303,7 +303,9 @@ function isNarrowedSheet(value: readonly unknown[] | NarrowedBscSheet): value is
 /**
  * True when the row still shows BSC's stock or default image on that side
  * (missing, or a `Default…` placeholder): the old platform's rule for when to
- * upload the seller's own photo.
+ * upload the seller's own photo. NEO-481: a card flagged for a photo refresh
+ * uploads over a seller photo too (`refreshPhotoCardIds`); this stays the
+ * rule for every other row.
  */
 export function rowNeedsSellerPhoto(row: BscSheetRow, side: "front" | "back"): boolean {
   const img = side === "front" ? row.sellerImgFront : row.sellerImgBack;
@@ -357,9 +359,16 @@ export interface PlanBscSheetInput {
   cards: readonly NbVariantCard[];
   /**
    * Seller photo keys already uploaded, by `photoKeyFor(bscCardId, condition)`.
-   * Applied only to a "set" row that still shows BSC's image on that side.
+   * Applied only to a "set" row that still shows BSC's image on that side, or
+   * whose card is in `refreshPhotoCardIds`.
    */
   photoKeys?: ReadonlyMap<string, BscPhotoKeys>;
+  /**
+   * NEO-481 — NB cards whose photo changed since they last listed (the outbox
+   * row's `refreshPhotos`). Their rows take an uploaded key even over a seller
+   * photo BSC already shows: NB's photo is the truth.
+   */
+  refreshPhotoCardIds?: ReadonlySet<string>;
   /**
    * Every `cardNumberPrefix` on the variant's chain (`variantSyncInput`), not
    * only the deepest: a parallel's cards are copied from its insert, so NB's
@@ -536,8 +545,9 @@ export function planBscSheet(input: PlanBscSheetInput): BscSheetPlan {
     const photos = input.photoKeys?.get(key);
     const needsPhotoFront = rowNeedsSellerPhoto(row, "front");
     const needsPhotoBack = rowNeedsSellerPhoto(row, "back");
-    const photoFront = needsPhotoFront ? photos?.front : undefined;
-    const photoBack = needsPhotoBack ? photos?.back : undefined;
+    const refresh = input.refreshPhotoCardIds?.has(target.cardId) === true;
+    const photoFront = needsPhotoFront || refresh ? photos?.front : undefined;
+    const photoBack = needsPhotoBack || refresh ? photos?.back : undefined;
 
     listed += 1;
     quantityListed += target.quantity;

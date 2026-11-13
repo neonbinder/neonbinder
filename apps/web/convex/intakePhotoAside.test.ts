@@ -70,7 +70,13 @@ async function world(images: ImageFields[], job: Partial<Doc<"placeholderJobs">>
     });
   });
   const me = t.withIdentity(ME);
-  const runId = await me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId, variantId: fx.baseId });
+  // A box card saves with a price (NEO-481): the run's Min price gives one.
+  const runId = await me.mutation(api.intakeRuns.createIntakeRun, {
+    jobId: JOB,
+    homeId,
+    variantId: fx.baseId,
+    defaults: { minPriceCents: 25 },
+  });
   await drainScheduled(t);
   const aside = (entryIndex: number, setAside = true) =>
     me.mutation(api.intakeRuns.setIntakePhotoAside, { runId, entryIndex, setAside });
@@ -386,7 +392,13 @@ describe("a pair the collector has answered is settled", () => {
       return { homeId, pairId };
     });
     const me = t.withIdentity(ME);
-    const runId = await me.mutation(api.intakeRuns.createIntakeRun, { jobId: JOB, homeId, variantId: fx.baseId });
+    // A box card saves with a price (NEO-481): the run's Min price gives one.
+    const runId = await me.mutation(api.intakeRuns.createIntakeRun, {
+      jobId: JOB,
+      homeId,
+      variantId: fx.baseId,
+      defaults: { minPriceCents: 25 },
+    });
     await drainScheduled(t);
     const pairs = () =>
       t.run(async (ctx) =>

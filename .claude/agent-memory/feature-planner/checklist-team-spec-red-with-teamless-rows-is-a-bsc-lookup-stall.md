@@ -18,6 +18,19 @@ commits teamless cards by design (CLAUDE.md rule 8: a lookup that never
 returned goes to the operator; `processBscTeamEnrichmentQueue` retries at
 +60 s / +5 min, beyond any 7 s bar).
 
+**Second shape, 429 (seen 2026-11-10):** the card-listing fetch returns
+HTTP 429 (`card-listing fetch failed status=429`) instead of timing out, for
+every card, across PR runs that overlap in time. When it hits the **seed**
+job, the seeded 2024 Topps Chrome base (and every parallel built from it) is
+teamless for that whole pass, so collection specs fail far from the cause:
+a "Put here" hunt regex that expects the base name to end at the team
+(`..., <team>$`) instead matches each parallel (`..., Gold Wave Refractors`)
+and Playwright reports a strict-mode violation. Check `convex-logs-seed` for
+`failed == requested` before reading the collection spec.
+
+**Why:** the merged-main diff looks like a suspect (NEO-424 touched
+resolveChecklistEntities), but the teams are lost before that code runs.
+
 When it hits the seed, the collateral is wider: setup builds Gold Wave from Base
 ~30 s after the Base fetch, before the first retry, so the Gold Wave copies are
 teamless while Base rows gain teams piecemeal from the retry queue. Then
