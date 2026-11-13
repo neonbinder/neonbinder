@@ -76,7 +76,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@typescript-eslint/parser": "^8.72.0",
-    "@vercel/node": "^22.0.0",
+    "@vercel/node": "^29.0.1",
     "@vitejs/plugin-react": "^6.1.2",
     "axe-core": "4.13.0",
     "concurrently": "^10.0.6",
