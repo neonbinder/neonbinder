@@ -438,7 +438,7 @@ describe("NEO-522: a row read from across the room", () => {
     expect(thick(box)).toHaveLength(0);
     cleanup();
     renderPick(`${PICK_URL}&pv=box&pbox=cant-find`);
-    expect(thick(await screen.findByRole("table", { name: "Sales NB couldn't tie to a card" }))).toHaveLength(0);
+    expect(thick(await screen.findByRole("table", { name: "Sales NB couldn't place" }))).toHaveLength(0);
   });
 
   it("names the card's team on its picture, where the row no longer prints it", async () => {
@@ -868,8 +868,15 @@ describe("the signed-in Pick List's ways out", () => {
     expect(row.closest("tbody")!.textContent).toContain("Can't find it");
     expect(row.closest("tbody")!.textContent).toContain("NB couldn't place these sales. Each listing's photo shows what sold.");
     // The seller sees the title; the Not in NB chip belongs to rows the listing describes as a card.
-    expect(within(row).getAllByText(title).length).toBeGreaterThan(0);
-    expect(within(row).queryByText("Not in NB", { exact: true })).toBeNull();
+    // Both row sizes name it by its title and keep its problem line (Spacious hides the note only
+    // on a line the listing describes, where the Not in NB chip says it).
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      const line = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` }).closest("tr")!;
+      expect(within(line).getAllByText(title).length).toBeGreaterThan(0);
+      expect(within(line).getAllByText("NB didn't list this one. Check the order's photo.").length).toBeGreaterThan(0);
+      expect(within(line).queryByText("Not in NB", { exact: true })).toBeNull();
+    }
   });
 
   it("NEO-520: a 200-character title with no spaces wraps in the wide cell and the phone's cell (WCAG 1.4.10)", async () => {
@@ -887,9 +894,12 @@ describe("the signed-in Pick List's ways out", () => {
       problem: "NB didn't list this one. Check the order's photo.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
-    const cells = within(region).getAllByText(title);
-    expect(cells).toHaveLength(2);
-    for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      const cells = within(region).getAllByText(title);
+      expect(cells).toHaveLength(2);
+      for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
+    }
   });
 
   it("NEO-520: grouped by order, an order holding a line NB didn't list counts items, and an all-card order counts cards", async () => {
@@ -908,11 +918,14 @@ describe("the signed-in Pick List's ways out", () => {
     });
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, lost("a"), lost("b")] }, true, "/inventory?tab=pick&pgroup=order");
     const countOf = (name: string) => within(region).getByRole("heading", { level: 3, name }).parentElement!.textContent!.slice(name.length);
-    expect(countOf("eBay 27-11111-22222")).toBe("2 items");
-    // An order with one line NB didn't list beside its cards still counts items (the demo's eBay 12-3502).
-    expect(countOf("eBay 12-3502")).toMatch(/^\d+ items?$/);
-    // Every line a card: cards, as before.
-    expect(countOf("eBay 12-3456")).toMatch(/^\d+ cards?$/);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      expect(countOf("eBay 27-11111-22222")).toBe("2 items");
+      // An order with one line NB didn't list beside its cards still counts items (the demo's eBay 12-3502).
+      expect(countOf("eBay 12-3502")).toMatch(/^\d+ items?$/);
+      // Every line a card: cards, as before.
+      expect(countOf("eBay 12-3456")).toMatch(/^\d+ cards?$/);
+    }
   });
 
   it("a line NB couldn't match names its order, and its order opens that sale on the Sales tab", async () => {

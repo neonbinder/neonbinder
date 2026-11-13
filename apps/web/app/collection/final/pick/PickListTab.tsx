@@ -1316,11 +1316,21 @@ function PickTable({
   );
 }
 
+/**
+ * A group's count. NEO-520: a line NB didn't list is never called a card, so
+ * an order holding one counts items; every other group counts cards. Both row
+ * sizes read it from here.
+ */
+function sectionCount(section: PickSection): string {
+  const count = section.rows.reduce((n, r) => n + r.quantity, 0);
+  const items = section.kind === "order" && section.rows.some((r) => !r.card);
+  return `${count} ${items ? (count === 1 ? "item" : "items") : count === 1 ? "card" : "cards"}`;
+}
+
 function SectionHead({ section, columns, condensed }: { section: PickSection; columns: number; condensed: boolean }) {
   if (section.kind === "flat") return null;
   if (condensed) return <CondensedSectionHead section={section} columns={columns} />;
-  const count = section.rows.reduce((n, r) => n + r.quantity, 0);
-  const cards = `${count} ${count === 1 ? "card" : "cards"}`;
+  const cards = sectionCount(section);
   // A heading element may not sit in a table header cell, so the title takes
   // the heading role: heading navigation still reaches every set and group.
   // `label` names a heading apart when its words alone would read like another's.
@@ -1656,7 +1666,8 @@ function Row({
       {/* Nothing to file by: the listing's own words take the variant's and the number's columns too. */}
       <td colSpan={facts ? undefined : 3} className={`${cell} ${pad} max-md:hidden`}>
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className={facts ? `font-semibold text-ink ${big}` : "text-lg font-semibold leading-7 text-ink"}>{who}</span>
+          {/* NEO-520: a listing's own title may be one unspaced run; `wrap-anywhere` lets the cell shrink (WCAG 1.4.10). */}
+          <span className={facts ? `font-semibold text-ink ${big}` : "min-w-0 text-lg font-semibold leading-7 text-ink wrap-anywhere"}>{who}</span>
           <Markers row={row} salesLink={salesLink} />
         </span>
         {problem}
@@ -1671,7 +1682,7 @@ function Row({
             {qty}
             {variant}
             {facts && <span className="text-lg font-bold leading-7 text-ink tabular-nums">#{facts.cardNumber}</span>}
-            <span className="min-w-0 break-words text-lg font-semibold leading-7 text-ink">{who}</span>
+            <span className="min-w-0 text-lg font-semibold leading-7 text-ink wrap-anywhere">{who}</span>
             <Markers row={row} salesLink={salesLink} />
           </span>
           {setText}
@@ -1694,8 +1705,7 @@ function Row({
 // ---------------------------------------------------------------------------
 
 function CondensedSectionHead({ section, columns }: { section: PickSection; columns: number }) {
-  const count = section.rows.reduce((n, r) => n + r.quantity, 0);
-  const cards = `${count} ${count === 1 ? "card" : "cards"}`;
+  const cards = sectionCount(section);
   // A heading element may not sit in a table header cell, so the title takes
   // the heading role: heading navigation still reaches every set and group.
   // `label` names a heading apart when its words alone would read like another's.
@@ -1719,12 +1729,10 @@ function CondensedSectionHead({ section, columns }: { section: PickSection; colu
       </div>
     );
   } else if (section.kind === "order") {
-    // A line NB didn't list is never called a card, so an order holding one counts items.
-    const noun = section.rows.some((r) => !r.card) ? (count === 1 ? "item" : "items") : count === 1 ? "card" : "cards";
     body = (
       <div className="flex items-end gap-3 pb-1">
         {heading("text-base font-bold text-ink", orderLabel(section.order))}
-        <span className="text-xs text-ink-3">{`${count} ${noun}`}</span>
+        <span className="text-xs text-ink-3">{cards}</span>
       </div>
     );
   } else {
