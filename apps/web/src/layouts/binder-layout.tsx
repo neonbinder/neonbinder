@@ -1,8 +1,9 @@
 import { useState, useCallback, type ReactNode } from "react";
-import { Outlet } from "react-router";
+import { Outlet, useLocation } from "react-router";
 import BinderHeader from "@/components/modules/binder-header";
 import BinderTabs, { type NavItem } from "@/components/modules/binder-tabs";
 import MobileNav from "@/components/modules/mobile-nav";
+import { useWidePickPage } from "@/src/hooks/usePickDensity";
 
 /**
  * SCROLL HEADROOM — 208px of empty, non-interactive space below every page in
@@ -56,6 +57,10 @@ export default function BinderLayout({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const closeMobileMenu = useCallback(() => setMobileMenuOpen(false), []);
+  // A spacious Pick List is read from across the room: its table takes the wide
+  // page (signed in and in the demo). Condensed, and every other page, keeps the 6xl column.
+  const { pathname, search } = useLocation();
+  const wide = useWidePickPage(pathname, search);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -72,7 +77,7 @@ export default function BinderLayout({
             min-width:auto pins main to its widest child, the document scrolls
             horizontally, and a deep column slides under the fixed nav (NEO-63). */}
         <main className="flex-1 min-w-0 lg:pr-[170px]">
-          <div className="max-w-6xl mx-auto p-6">
+          <div className={`${wide ? "max-w-[1600px]" : "max-w-6xl"} mx-auto p-6`}>
             <Outlet />
           </div>
           {/* Scroll headroom — read the SCROLL HEADROOM note on this component
