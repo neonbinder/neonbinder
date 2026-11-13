@@ -47,7 +47,7 @@
 // `Held<token>`.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
-import { collectorCascade } from "../../support/collection";
+import { collectorCascade, confirmRemoved } from "../../support/collection";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
 
 test(
@@ -156,7 +156,7 @@ test(
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     // The list empties optimistically; "Removed ..." is the server's answer. The
     // card can only be deleted once that write has landed, so wait for it.
-    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Excellent` })).toBeVisible();
+    await confirmRemoved(drawer);
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();

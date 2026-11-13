@@ -52,6 +52,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnOption, drillToColdManufacturer, drillToCustom, setBuilderReady } from "../../support/set-builder";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
+import { confirmRemoved } from "../../support/collection";
 import type { Locator, Page } from "@playwright/test";
 
 /** Every row of this year's collector brand column is a loose set. */
@@ -333,7 +334,7 @@ test(
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     // "Removed ..." is the server's answer; the card can only be deleted once it has landed.
-    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Excellent` })).toBeVisible();
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 
