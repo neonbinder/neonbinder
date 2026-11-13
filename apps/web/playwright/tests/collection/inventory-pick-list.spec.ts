@@ -29,6 +29,10 @@
 //   - a pull survives a refresh taken the moment "Pulled …" shows (the line is
 //     gone; the notice reads "Saving…" until the server has it), an Undo puts
 //     a pull back (the described line's too);
+//   - NEO-522: Row size opens Spacious; Condensed brings back the old rows (the
+//     kind chip beside the variant's name, the described line's "couldn't match"
+//     note, no Variant column, no insert rule) and, at 1920, a narrower page
+//     than Spacious; it survives a reload, and Spacious brings the tags back;
 //   - an order that lands while the page is open shows at the bottom, New,
 //     and "Pull these 2" (with its confirm) pulls it under an Order filter;
 //   - shipping the first order takes its lines off the list.
@@ -340,6 +344,55 @@ test(
       await expect(page).not.toHaveURL(/[?&]pnotnb=/);
       await expect(pick.matches).toHaveText("6 cards match.");
       await expect(pulledToggle(table, CARD_A.short)).toBeVisible();
+
+      // --- NEO-522: Row size, Spacious (the default) or Condensed (the rows as they were) ---------
+      // A device setting, not a filter: it keeps the Order filter, survives a reload, and the
+      // page frame follows it (only Spacious opens to the wide page).
+      const { rowSize } = pick;
+      await expect(rowSize.spacious).toHaveAttribute("aria-checked", "true");
+      await expect(rowSize.condensed).toHaveAttribute("aria-checked", "false");
+      const viewport = page.viewportSize()!;
+      const regionWidth = async () => (await region.boundingBox())!.width;
+      let spaciousWidth = 0;
+      if (!isMobile) {
+        const atConfigWidth = await regionWidth();
+        await page.setViewportSize({ width: 1920, height: viewport.height });
+        await expect.poll(regionWidth).toBeGreaterThan(atConfigWidth);
+        spaciousWidth = await regionWidth();
+      }
+      await rowSize.condensed.click();
+      await expect(rowSize.condensed).toHaveAttribute("aria-checked", "true");
+      if (!isMobile) {
+        // The old 6xl page: the same screen, a narrower list.
+        await expect.poll(regionWidth).toBeLessThan(spaciousWidth);
+        await page.setViewportSize(viewport);
+      }
+      /** The old rows: the kind chip beside the variant's name, and the described line's note. */
+      const expectCondensed = async () => {
+        await expect(seen(pickRow(table, CARD_I.short).getByText("Insert", { exact: true }))).toBeVisible();
+        await expect(seen(pickRow(table, CARD_I.short).getByText("Future Stars", { exact: true }))).toBeVisible();
+        await expect(seen(rowA.getByText("Base", { exact: true }))).toBeVisible();
+        await expect(
+          seen(pickRow(table, listedTitle).getByText("NB couldn't match this line. Check the order's photo.", { exact: true })),
+        ).toBeVisible();
+        // No heavier rule where the run turns from Base to the insert.
+        await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "1px");
+        if (!isMobile) await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toHaveCount(0);
+      };
+      await expectCondensed();
+      await expect(pick.matches).toHaveText("6 cards match.");
+      // This device remembers it: a reload (a full page load: the launch gate) opens Condensed.
+      await page.reload();
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      await expect(rowSize.condensed).toHaveAttribute("aria-checked", "true");
+      await expectCondensed();
+      // And back to Spacious: the tags and the insert's rule return.
+      await rowSize.spacious.click();
+      await expect(rowSize.spacious).toHaveAttribute("aria-checked", "true");
+      await expect(variantTag(rowI, "Future Stars", "Insert")).toHaveText("Insert: Future Stars");
+      await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "3px");
+      await expect(pickRow(table, listedTitle).getByText("NB couldn't match this line. Check the order's photo.")).toHaveCount(0);
+      if (!isMobile) await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toBeVisible();
 
       // A's bigger picture is the photo of the copy that sold, and it really loads.
       await pictureButton(table, CARD_A.short).click();

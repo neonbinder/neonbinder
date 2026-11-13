@@ -858,34 +858,62 @@ function Toggle({ pressed, onClick, children }: { pressed: boolean; onClick: () 
  * (the denser pre-NEO-522 rows). This device remembers it; it is not a filter,
  * so it stays out of the URL and Back to default leaves it alone.
  */
+const DENSITIES: { value: PickDensity; text: string }[] = [
+  { value: "spacious", text: "Spacious" },
+  { value: "condensed", text: "Condensed" },
+];
+
 function DensitySwitch() {
   const [density, setDensity] = usePickDensity();
   const labelId = useId();
-  const option = (value: PickDensity, text: string) => {
-    const on = density === value;
-    return (
-      <button
-        type="button"
-        aria-pressed={on}
-        onClick={() => setDensity(value)}
-        className={`relative inline-flex min-h-11 items-center gap-1.5 px-3 text-sm font-medium first:rounded-l-full last:rounded-r-full focus-outline focus-visible:z-[1] sm:min-h-8 ${
-          on ? "bg-neon-blue text-on-neon-blue" : "text-ink-2 hover:bg-hover-raised hover:text-ink"
-        }`}
-      >
-        {on && <CheckIcon aria-hidden="true" className="size-4" />}
-        {text}
-      </button>
-    );
+  const track = useRef<HTMLDivElement>(null);
+  // One of two, so a radio group (the house pill pattern, ../ChipGroup): one Tab
+  // stop on the checked option; the arrow keys, Home and End move AND pick.
+  const pick = (i: number) => {
+    const at = (i + DENSITIES.length) % DENSITIES.length;
+    setDensity(DENSITIES[at].value);
+    track.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[at]?.focus();
+  };
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") pick(i + 1);
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") pick(i - 1);
+    else if (e.key === "Home") pick(0);
+    else if (e.key === "End") pick(DENSITIES.length - 1);
+    else return;
+    e.preventDefault();
   };
   return (
-    <div className="flex items-center gap-2">
+    // The label and the track wrap apart on a narrow phone; the track never breaks.
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span id={labelId} className="text-sm text-ink-2">
-        Rows
+        Row size
       </span>
-      <div role="group" aria-labelledby={labelId} className="relative inline-flex rounded-full border border-control">
-        {option("spacious", "Spacious")}
-        <span aria-hidden="true" className="w-px self-stretch bg-control" />
-        {option("condensed", "Condensed")}
+      {/*
+        The pills sit inside a padded track, so the focus outline (2px out) always has
+        the track's own colour between it and the cyan fill, in both themes.
+      */}
+      <div ref={track} role="radiogroup" aria-labelledby={labelId} className="inline-flex shrink-0 rounded-full border border-control bg-field p-0.5">
+        {DENSITIES.map((d, i) => {
+          const on = density === d.value;
+          return (
+            <button
+              key={d.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              tabIndex={on ? 0 : -1}
+              onClick={() => setDensity(d.value)}
+              onKeyDown={(e) => onKeyDown(e, i)}
+              className={`inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-sm font-medium focus-outline sm:min-h-8 ${
+                on ? "bg-neon-blue text-on-neon-blue ring-1 ring-inset ring-selection" : "text-ink-2 hover:text-ink"
+              }`}
+            >
+              {/* The check's slot is kept on both, so the switch never changes width. */}
+              <CheckIcon aria-hidden="true" className={`size-4 shrink-0 ${on ? "" : "invisible"}`} />
+              {d.text}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

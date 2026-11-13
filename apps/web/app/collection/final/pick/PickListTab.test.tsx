@@ -479,8 +479,8 @@ describe("NEO-522: a row read from across the room", () => {
 
 describe("NEO-522: Spacious or Condensed rows", () => {
   const rowOf = async (name: RegExp) => (await screen.findByRole("button", { name })).closest("tr")!;
-  const rows = () => screen.getByRole("group", { name: "Rows" });
-  const option = (name: "Spacious" | "Condensed") => within(rows()).getByRole("button", { name });
+  const rows = () => screen.getByRole("radiogroup", { name: "Row size" });
+  const option = (name: "Spacious" | "Condensed") => within(rows()).getByRole("radio", { name });
   /** The row's own words, outside the card picture (whose face prints the team). */
   const rowWords = (row: HTMLElement) =>
     [...row.querySelectorAll("td")]
@@ -491,13 +491,13 @@ describe("NEO-522: Spacious or Condensed rows", () => {
   it("opens Spacious; Condensed brings back the old rows: the team line, the kind chip and variant name in the Set column, the couldn't-match note", async () => {
     renderPick();
     const table = await screen.findByRole("table", { name: "Cards to pull" });
-    expect(option("Spacious").getAttribute("aria-pressed")).toBe("true");
-    expect(option("Condensed").getAttribute("aria-pressed")).toBe("false");
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("false");
     expect(table.className).toContain("nb-pick-spacious");
 
     fireEvent.click(option("Condensed"));
-    expect(option("Condensed").getAttribute("aria-pressed")).toBe("true");
-    expect(option("Spacious").getAttribute("aria-pressed")).toBe("false");
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("false");
     expect(window.localStorage.getItem(PICK_DENSITY_KEY)).toBe("condensed");
     expect(table.className).not.toContain("nb-pick-spacious");
     // No Variant column: the variant rides in the Set column, as before NEO-522.
@@ -529,11 +529,11 @@ describe("NEO-522: Spacious or Condensed rows", () => {
 
   it("is remembered on this device and read back on the next visit", async () => {
     renderPick();
-    fireEvent.click(within(await screen.findByRole("group", { name: "Rows" })).getByRole("button", { name: "Condensed" }));
+    fireEvent.click(within(await screen.findByRole("radiogroup", { name: "Row size" })).getByRole("radio", { name: "Condensed" }));
     cleanup();
     resetPickDensityForTests();
     renderPick();
-    expect((await screen.findByRole("group", { name: "Rows" })).querySelector("[aria-pressed='true']")?.textContent).toBe("Condensed");
+    expect((await screen.findByRole("radiogroup", { name: "Row size" })).querySelector("[aria-checked='true']")?.textContent).toBe("Condensed");
     expect(rowWords(await rowOf(/^Pulled #27 Mike Trout/))).toContain("Angels");
   });
 
@@ -544,7 +544,7 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     try {
       renderPick();
       await screen.findByRole("table", { name: "Cards to pull" });
-      expect(option("Spacious").getAttribute("aria-pressed")).toBe("true");
+      expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
       expect(rowWords(await rowOf(/^Pulled #27 Mike Trout/))).not.toContain("Angels");
     } finally {
       get.mockRestore();
@@ -558,7 +558,7 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     fireEvent.click(screen.getByRole("button", { name: "Only slabs" }));
     fireEvent.click(screen.getByRole("button", { name: "Back to default" }));
     expect(pageUrl().get("pslabs")).toBeNull();
-    expect(option("Condensed").getAttribute("aria-pressed")).toBe("true");
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
     // Nor does the row size ride on the URL.
     expect([...pageUrl().keys()].some((k) => /dens|rows/i.test(k))).toBe(false);
   });
@@ -572,6 +572,46 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(frame().className).toContain("max-w-6xl");
     fireEvent.click(option("Spacious"));
     expect(frame().className).toContain("max-w-[1600px]");
+  });
+
+  it("is one Tab stop: the checked option; the arrow keys, Home and End move and pick", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    expect(option("Spacious").tabIndex).toBe(0);
+    expect(option("Condensed").tabIndex).toBe(-1);
+    act(() => option("Spacious").focus());
+    fireEvent.keyDown(option("Spacious"), { key: "ArrowRight" });
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(option("Condensed"));
+    expect(option("Condensed").tabIndex).toBe(0);
+    expect(option("Spacious").tabIndex).toBe(-1);
+    // Wraps round, both ways.
+    fireEvent.keyDown(option("Condensed"), { key: "ArrowDown" });
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(option("Spacious"), { key: "ArrowUp" });
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(option("Condensed"), { key: "Home" });
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(option("Spacious"));
+    fireEvent.keyDown(option("Spacious"), { key: "End" });
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(option("Condensed"), { key: "ArrowLeft" });
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+    expect(window.localStorage.getItem(PICK_DENSITY_KEY)).toBe("spacious");
+  });
+
+  it("keeps the check's slot on both options, so the switch never changes width", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    for (const name of ["Spacious", "Condensed"] as const) {
+      const icon = option(name).querySelector("svg")!;
+      expect(icon).toBeTruthy();
+      expect(icon.getAttribute("aria-hidden")).toBe("true");
+      expect(icon.getAttribute("class")).toContain(name === "Spacious" ? "size-4" : "invisible");
+    }
+    fireEvent.click(option("Condensed"));
+    expect(option("Spacious").querySelector("svg")!.getAttribute("class")).toContain("invisible");
+    expect(option("Condensed").querySelector("svg")!.getAttribute("class")).not.toContain("invisible");
   });
 });
 
