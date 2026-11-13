@@ -25,7 +25,7 @@
 // R3: `drillToSet` drives the admin Set Builder; this is the collector's
 // cascade (group "Sport, year, brand and set"), a different screen with its
 // own listboxes, so it drills through `support/collection.ts`.
-import { collectorCascade } from "../../support/collection";
+import { collectorCascade, confirmRemoved } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -329,8 +329,10 @@ test(
     // Remove every copy: the card needs again.
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Very Good ×2`, exact: true }).click();
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
+    await confirmRemoved(drawer);
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(drawer);
     await expect(drawer.getByText("Need it")).toBeVisible();
 
     await drawer.getByRole("button", { name: "Close card detail" }).click();

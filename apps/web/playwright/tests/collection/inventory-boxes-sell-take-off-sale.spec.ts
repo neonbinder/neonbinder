@@ -26,21 +26,7 @@
 // R3: the collector's cascade and the box helpers come from `support/collection.ts`.
 // Minted names are single tokens from `env.ATTEMPT_TOKEN` (never rebuilt by hand).
 import type { Locator } from "@playwright/test";
-import {
-  backToBoxes,
-  cardsWord,
-  countOf,
-  createBox,
-  deleteOpenBox,
-  drillToCollectorBase,
-  forSaleOnMyBoxes,
-  goViaShell,
-  inventoryTabs,
-  myBoxesStock,
-  numberOf,
-  ordinaryBaseRows,
-  shortNameOf,
-} from "../../support/collection";
+import { backToBoxes, cardsWord, confirmRemoved, countOf, createBox, deleteOpenBox, drillToCollectorBase, forSaleOnMyBoxes, goViaShell, inventoryTabs, myBoxesStock, numberOf, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -340,8 +326,10 @@ test(
     await expect(where.getByRole("option", { name: "Main", exact: true })).toHaveCount(0);
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent`, exact: true }).click();
     await expect(lines(1)).toBeVisible();
+    await confirmRemoved(drawer);
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent ×2`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 
