@@ -67,7 +67,7 @@ export { MAX_SORTED_LINES };
 /** Checklists a binder sorted by checklist draws empty slots for. */
 export const MAX_NEED_CHECKLISTS = 30;
 /** Catalog cards one empty-slot read may look at before it stops early. */
-const MAX_CANDIDATES = 4000;
+export const MAX_CANDIDATES = 4000;
 /** Lines of one card the Declined view lists. */
 const DECLINED_LINES_PER_CARD = 10;
 
@@ -961,8 +961,10 @@ export const refreshStaleFits = internalMutation({
 /**
  * Is a variant row a parallel: a sub-variant, or an insert under a Parallel
  * type (the kind is the type's own title, `variantRole`)? Cached per call.
+ * Also the dashboard's smart-binder checklist (`dashboard.smartChecklist`),
+ * so its count and the binder's empty slots skip the same parallels.
  */
-function parallelReader(ctx: Ctx) {
+export function parallelReader(ctx: Ctx) {
   const seen = new Map<string, boolean>();
   return async (variantId: Id<"selectorOptions">): Promise<boolean> => {
     const key = variantId as string;

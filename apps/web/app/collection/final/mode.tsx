@@ -556,12 +556,35 @@ export function useGoToSide(): (side: Side, next: ParamsInit, options?: { replac
  * the collector follows sets it; a redirect to the other side does not.
  */
 let arrivingSide: Side | null = null;
+let clearingArrival = false;
 
-/** True once, on the side a side link just headed for. */
+/**
+ * True on the side a side link just headed for, for the rest of the commit
+ * that takes it, then never again. Not cleared on the spot: in development
+ * StrictMode runs a fresh mount's effects twice in one go (the demo shell
+ * remounts the page on a side change, NEO-464), and the second run must see
+ * the arrival too, or the heading loses the keyboard to whatever else
+ * focuses on mount.
+ */
 export function takeSideArrival(side: Side): boolean {
   if (arrivingSide !== side) return false;
-  arrivingSide = null;
+  if (!clearingArrival) {
+    clearingArrival = true;
+    queueMicrotask(() => {
+      arrivingSide = null;
+      clearingArrival = false;
+    });
+  }
   return true;
+}
+
+/**
+ * Whether a side link's arrival is on its way: the page it opens puts the
+ * keyboard on its heading, so nothing else on that page takes focus on mount
+ * (the demo notice, `DemoBar`, which mounts first as the page's child).
+ */
+export function sideArrivalPending(): boolean {
+  return arrivingSide !== null;
 }
 
 /**

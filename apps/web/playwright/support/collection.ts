@@ -215,11 +215,16 @@ export async function countOf(control: Locator, re: RegExp): Promise<number> {
 }
 
 /**
- * Follow a link of the signed-in shell (the top tabs on a desktop, the Menu
- * dialog on a phone) to another screen: "Collection" or "Inventory". The tab
- * is a plain link named for the screen.
+ * Follow a link of the shell (the top tabs on a desktop, the Menu dialog on a
+ * phone) to another screen: "Collection" or "Inventory". The tab is a plain
+ * link named for the screen. The logged-out demo (/demo) wears the same shell,
+ * so its own "Back to the tour" tab goes through here too.
  */
-export async function goViaShell(page: Page, isMobile: boolean, name: "Collection" | "Inventory"): Promise<void> {
+export async function goViaShell(
+  page: Page,
+  isMobile: boolean,
+  name: "Collection" | "Inventory" | "Back to the tour",
+): Promise<void> {
   if (isMobile) {
     await page.getByRole("button", { name: "Open menu" }).click();
     const menu = page.getByRole("dialog", { name: "Menu" });
@@ -302,6 +307,25 @@ export async function deleteOpenBox(
   if (confirmed) await confirmed(confirm);
   await confirm.getByRole("button", { name: "Yes, delete it" }).click();
   await expect(confirm).toBeHidden();
+}
+
+/**
+ * From anywhere: open My Boxes, open the box with this name and delete it
+ * through its "Rename or delete" dialog (an empty box; the spec has emptied it).
+ * The box must exist: a hook calls it only for a box whose creation the body saw
+ * finish (`createBox` returned), and the click waits for the box like any other.
+ * (A "skip it when it is not listed" branch was tried and leaked boxes: a shelf
+ * that has painted is no proof that a name is absent.)
+ */
+export async function deleteBoxNamed(page: Page, name: string): Promise<void> {
+  await page.goto("/inventory?tab=boxes");
+  const spine = page
+    .getByRole("list", { name: "Your boxes" })
+    .getByLabel(new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, box, `));
+  await spine.click();
+  await deleteOpenBox(page, name);
+  await expect(page.getByRole("list", { name: "Your boxes" })).toBeVisible();
+  await expect(spine).toHaveCount(0);
 }
 
 /** A checklist row's quantity field on the inventory side: "Quantity of <card> in <box>". */

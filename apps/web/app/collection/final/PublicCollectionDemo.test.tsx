@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
@@ -68,6 +69,34 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+});
+
+/** The demo remounted on every side change, as the `/demo` shell's two routes do (NEO-464), under StrictMode as in the app. */
+function RemountOnSide() {
+  const { search } = useLocation();
+  const side = new URLSearchParams(search).get("side") ?? "collection";
+  return <PublicCollectionDemo key={side} onExit={vi.fn()} keepParams={{ demo: "on" }} />;
+}
+
+describe("focus when the demo remounts on a side change (NEO-464)", () => {
+  it("lands on the new side's heading, not the demo notice; the notice takes it only on first entry", async () => {
+    render(
+      <StrictMode>
+        <Theme>
+          <MemoryRouter initialEntries={[DEMO_URL]}>
+            <Routes>
+              <Route path="/binder-tracking" element={<RemountOnSide />} />
+            </Routes>
+          </MemoryRouter>
+        </Theme>
+      </StrictMode>,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("region", { name: "About this demo" }));
+    fireEvent.click(within(sideSwitch()).getByRole("link", { name: "Boxes I sell" }));
+    const heading = await screen.findByRole("heading", { level: 1, name: "Inventory" });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(document.activeElement).not.toBe(screen.getByRole("region", { name: "About this demo" }));
+  });
 });
 
 describe("the public collection demo", () => {
@@ -246,7 +275,9 @@ describe("the public demo never touches Convex", () => {
 
     const hunt = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
     fireEvent.change(hunt, { target: { value: "jim kelly" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Move here: / }));
+    // Two Jim Kellys answer (his '96 Contenders and his 1989 Score): move the Contenders one.
+    expect(screen.getAllByRole("button", { name: /^Move here: / }).length).toBeGreaterThan(1);
+    fireEvent.click(screen.getByRole("button", { name: /^Move here: .*#12 Jim Kelly/ }));
     await waitFor(() =>
       expect(
         screen.getAllByRole("status").some((s) => /^Moved #12 Jim Kelly from '96 Contenders to Bills PC, page 1, pocket 1\.$/.test(s.textContent ?? "")),

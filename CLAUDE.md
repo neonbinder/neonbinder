@@ -133,17 +133,21 @@ re-measure before quoting them for Playwright.
 3. **Run the specs covering the change on this worktree's own Convex
    deployment**, before the first push (below). Seller specs and cloud threads
    use shared dev instead.
-4. Push and open the PR. CI runs the full suite. On a red spec: **run that one
-   spec locally** on your deployment again, or against the PR's own preview
-   stack when your deployment cannot reproduce it (below).
-5. Push again **only once that spec passes locally.** This step is the actual
+4. **Join the merge queue with your ticket** (`pr-queue join NEO-123`) once
+   the gates and those specs are green locally. Do not push or open the PR
+   yet; a push starts the full CI run the queue rations. The one exception is
+   a push Jason asks for (a preview to look at). One session runs the queue
+   (`pr-queue run`).
+5. **On your turn:** merge main, push, open the PR (title
+   `NEO-123(<PR#>) Description`) and record its number with the queue
+   (the `pr-queue` skill's `set-pr`, then a `PR` message). CI runs the
+   full suite. On a red spec: **run that one spec locally** on your
+   deployment again, or against the PR's own preview stack when your
+   deployment cannot reproduce it (below).
+6. Push again **only once that spec passes locally.** This step is the actual
    cost control — push-and-hope is what burns CI cycles, not the first push.
-6. Watch to green.
-7. Join the merge queue (`pr-queue join <pr>`) and merge only when it calls
-   your turn: merge main, one run against it, then the `pr-close` skill
-   (merge → verify the prod deploy actually reached READY → smoke → Linear →
-   reclaim the worktree). One session runs the queue (`pr-queue run`); pushing
-   for testing never waits for it.
+7. Watch to green, then the `pr-close` skill (merge → verify the prod deploy
+   actually reached READY → smoke → Linear → reclaim the worktree).
 
 #### The fast gates, by area
 

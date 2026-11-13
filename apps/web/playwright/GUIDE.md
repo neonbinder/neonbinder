@@ -578,7 +578,7 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   System (the default), so every spec sees the dark theme between axe checks.
   `expectAccessible` flips the OS itself and puts it back dark (above). Only
   the theme specs (`profile/theme-setting` and
-  `home/binder-tracking-demo-theme`) otherwise call `page.emulateMedia` or
+  `home/demo-theme-switch`) otherwise call `page.emulateMedia` or
   change the saved theme, and each restores what it changed: System saved and
   the OS dark again, in a `finally` block (R7), so a later spec on the same
   worker never runs light. No other spec forces a colour scheme or picks a
