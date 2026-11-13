@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016  # $names inside single quotes are jq variables
-# pr-queue state: one JSON file shared by every checkout and worktree of this
-# repo (it lives in the git common dir, so it is never committed or pushed).
+# pr-queue state: one JSON file shared by every checkout and worktree of the
+# monorepo. It lives in the monorepo's git common dir (found from this script's
+# own location, so a session launched from the workspace root and one in a
+# worktree read the same file). It is never committed or pushed.
 # Entries are keyed by Linear ticket (NEO-123), because a session joins before
 # its PR exists.
 #
@@ -9,31 +11,27 @@
 # reaches a command the queue types):
 #   state.sh join <ticket> <branch> <address> <title...>
 #                                      append to the waiting line (no-op if present)
-#   state.sh set-pr <ticket> <pr>      record the ticket's PR once it exists; refused
-#                                      unless the PR's head is the entry's branch in
-#                                      this repo (not a fork)
 #
 # Run by the QUEUE session (arguments are a ticket plus fixed words or digits):
 #   state.sh path | show | owner       read the state
 #   state.sh set-owner <address>       record the session running the queue
 #   state.sh clear-owner               the queue session is stopping
-#   state.sh position <ticket>         print the ticket's entry and place (0 = in flight)
-#   state.sh call                      move the head of the line in flight; print it
+#   state.sh position <ticket>         print the ticket's entry and place (0 = its turn)
+#   state.sh call                      give the turn to the head of the line; print it
 #   state.sh done <ticket> <outcome> [sha]
-#                                      clear the in-flight ticket (or drop a waiting one)
-#                                      and log merged|out|withdrawn|skipped|expired;
+#                                      end the ticket's turn (or drop a waiting entry)
+#                                      and log merged|passed|withdrawn|skipped;
 #                                      merged takes the merge sha (hex);
 #                                      an old PR-keyed entry is cleared by its number
 #   state.sh move <ticket> <position>  reorder the waiting line (1 = next)
-#   state.sh hold <ticket>             the in-flight ticket waits on Jason (starts the hold clock)
-#   state.sh resume <ticket>           Jason answered; stop the hold clock
 #
 # Every write takes a mkdir lock, so concurrent sessions cannot lose an update.
 set -euo pipefail
 
 command -v jq >/dev/null || { echo "pr-queue: jq is required" >&2; exit 2; }
 
-dir="$(git rev-parse --path-format=absolute --git-common-dir)/pr-queue"
+here="$(cd "$(dirname "$0")" && pwd -P)"
+dir="$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)/pr-queue"
 file="$dir/state.json"
 lock="$dir/lock"
 mkdir -p "$dir"
@@ -76,10 +74,6 @@ position_of() { # position_of <ticket>: the entry plus its place (0 = in flight)
       | if $i == null then null else .waiting[$i] + {position: ($i + 1)} end end' "$file"
 }
 
-entry() { # entry <ticket>: the ticket's entry (in flight or waiting), or null
-  jq -c --arg k "$1" '[(.inFlight // empty), .waiting[]] | map(select(.ticket == $k)) | .[0] // null' "$file"
-}
-
 cmd="${1:-show}"; shift || true
 case "$cmd" in
   path) echo "$file" ;;
@@ -107,20 +101,6 @@ case "$cmd" in
       --arg k "$k" --arg b "$branch" --arg a "$addr" --arg title "$title" --arg t "$(now)"
     position_of "$k" ;;
   position) position_of "$(ticket_arg "${1:-}")" ;;
-  set-pr)
-    k="$(ticket_arg "${1:-}")"; pr="${2:-}"; pr="${pr#\#}"
-    [[ "$pr" =~ ^[0-9]{1,7}$ ]] || die "not a PR number"
-    e="$(entry "$k")"
-    [ "$e" != null ] || die "$k is not in the queue; join first"
-    branch="$(jq -r '.branch // ""' <<<"$e")"
-    view="$(gh pr view "$pr" --json headRefName,isCrossRepository)" || die "could not read PR #$pr"
-    [ "$(jq -r .isCrossRepository <<<"$view")" = false ] || die "PR #$pr comes from a fork; refused"
-    [ "$(jq -r .headRefName <<<"$view")" = "$branch" ] || die "PR #$pr is not on branch $branch; refused"
-    with_lock update '
-      (if .inFlight.ticket == $k then .inFlight.pr = $pr else . end)
-      | .waiting = [.waiting[] | if .ticket == $k then .pr = $pr else . end]' \
-      --arg k "$k" --argjson pr "$pr"
-    entry "$k" ;;
   call)
     with_lock update '
       if .inFlight != null or (.waiting | length) == 0 then .
@@ -131,9 +111,9 @@ case "$cmd" in
     # with its number: done 499 <outcome>.
     if [[ "${1:-}" =~ ^#?[0-9]{1,7}$ ]]; then k=""; legacy="${1#\#}"; else k="$(ticket_arg "${1:-}")"; legacy=0; fi
     outcome="${2:-}"; sha="${3:-}"
-    case "$outcome" in merged|out|withdrawn|skipped|expired) ;; *) die "outcome must be merged, out, withdrawn, skipped or expired" ;; esac
+    case "$outcome" in merged|passed|withdrawn|skipped) ;; *) die "outcome must be merged, passed, withdrawn or skipped" ;; esac
     [ -z "$sha" ] || [[ "$sha" =~ ^[0-9a-f]{7,40}$ ]] || die "sha must be 7-40 hex characters"
-    [ "$#" -le 3 ] || die "done takes no free text; tell Jason the reason in prose"
+    [ "$#" -le 3 ] || die "done takes no free text; give the reason in prose"
     with_lock update '
       def hit: if $k == "" then (.ticket == null and .pr == $lp) else .ticket == $k end;
       ([(.inFlight // empty), .waiting[]] | map(select(hit)) | .[0]) as $e
@@ -152,16 +132,5 @@ case "$cmd" in
         else .waiting = ([.waiting[] | select(.ticket != $k)] | .[:($p - 1)] + $m + .[($p - 1):]) end' \
       --arg k "$k" --argjson p "$pos"
     jq -c '[.waiting[] | .ticket // ("#" + (.pr | tostring))]' "$file" ;;
-  hold)
-    k="$(ticket_arg "${1:-}")"
-    [ "$#" -le 1 ] || die "hold takes no free text; tell Jason the reason in prose"
-    with_lock update 'if .inFlight.ticket == $k then .inFlight += {holdSince: $t} else . end' \
-      --arg k "$k" --arg t "$(now)"
-    jq -c '.inFlight' "$file" ;;
-  resume)
-    k="$(ticket_arg "${1:-}")"
-    with_lock update 'if .inFlight.ticket == $k then .inFlight |= del(.holdSince, .holdReason) else . end' \
-      --arg k "$k"
-    jq -c '.inFlight' "$file" ;;
   *) die "unknown command" ;;
 esac

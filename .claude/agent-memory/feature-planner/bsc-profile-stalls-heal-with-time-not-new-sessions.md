@@ -30,4 +30,4 @@ When a plan needs the BSC profile read (the seller id) to succeed, plan for
   logs `seed_bsc_relogin` with `attempt`, `idSaved` and `elapsedMs` per cycle.
 
 Related: [[bsc-cold-sheet-read-is-per-job-not-per-condition]],
-[[seller-spec-red-with-no-step-ledger-is-the-sales-poll]].
+[[listing-specs-race-the-sales-poll]].
