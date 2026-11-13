@@ -1,12 +1,31 @@
-import { useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import { XMarkIcon } from "@heroicons/react/20/solid";
 import { FOCUS } from "./ui";
 
 /** What the last add/remove said, and how to take it back. */
 export interface Notice {
-  /** Bumps on every notice, so the same words twice still re-announce. */
+  /**
+   * Bumps on every notice, so the same words twice still re-announce: the
+   * line's live region speaks on a new id, never on a re-render of the same
+   * one (`useLiveWords`).
+   */
   id: number;
+  /** What the line shows. */
   message: string;
+  /**
+   * What the live region says when it is not `message`: a refusal merged in
+   * front of a newer write's words says only itself, and "Still saving."
+   * is said with the words on the line left as they are.
+   */
+  announce?: string;
+  /** A refusal: never replaced by an aside (`useStatusLine`'s `inform`). */
+  kind?: "refusal";
+  /**
+   * On a refusal merged in front of a newer write's live Undo: that write's
+   * own words, which the Undo still belongs to. A later refusal replaces the
+   * one in front of them rather than stacking.
+   */
+  undoWords?: string;
   undo?: () => void;
   /** The undo is running: Undo stays put but does nothing until it lands. */
   undoing?: boolean;
@@ -15,9 +34,40 @@ export interface Notice {
 export type Notify = (message: string, undo?: () => void) => void;
 
 /**
- * The status line with its Undo. The `role="status"` element is ALWAYS
- * mounted (a live region inserted with text already in it says nothing), and
- * holds only the message; Undo sits beside it so it is never read twice.
+ * The line's live region speaks once per notice id. A live region only
+ * speaks when its text changes, so the same words twice ("Nothing to undo."
+ * after "Nothing to undo.", one refusal after the same refusal) would go
+ * unsaid: on every new id it is cleared, then given the words a frame later.
+ * The same notice drawn again says nothing, and the notice already up when
+ * the line mounts (the card drawer opening over it) is not news either. A
+ * line taken down empties it, so no stale words are left to find.
+ */
+function useLiveWords(notice: Notice | null) {
+  const region = useRef<HTMLParagraphElement>(null);
+  const id = notice?.id ?? null;
+  const spokeFor = useRef(id);
+  const words = useEffectEvent(() => (notice ? (notice.announce ?? notice.message) : ""));
+  useEffect(() => {
+    const el = region.current;
+    if (!el || id === spokeFor.current) return;
+    spokeFor.current = id;
+    el.textContent = "";
+    if (id === null) return;
+    const said = words();
+    const frame = requestAnimationFrame(() => {
+      el.textContent = said;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [id]);
+  return region;
+}
+
+/**
+ * The status line with its Undo. Its live region (`role="status"`) is a
+ * visually hidden sibling, ALWAYS mounted (a live region inserted with text
+ * already in it says nothing), that speaks once per notice (`useLiveWords`).
+ * The words shown are not a live region of their own, so nothing is said
+ * twice, and Undo sits outside both, so it is never read as part of them.
  *
  * `floating` is the page toast (bottom centre, above the content); inline is
  * the line at the top of the detail drawer, next to the form that caused it.
@@ -46,8 +96,10 @@ export default function NoticeLine({
       }`
     : "";
   const dismissRef = useRef<HTMLButtonElement>(null);
+  const live = useLiveWords(notice);
   return (
     <div className={shell} data-notice-hold="">
+      <p ref={live} role="status" className="sr-only" />
       <div
         className={
           notice
@@ -55,14 +107,14 @@ export default function NoticeLine({
             : ""
         }
       >
-        <p role="status" className={notice ? "flex-1 text-ink" : "sr-only"}>
-          {notice?.message ?? ""}
-        </p>
+        {notice && <p className="flex-1 text-ink">{notice.message}</p>}
         {notice?.undo && (
           <button
             type="button"
             ref={(el) => () => {
-              // Unmounting while focused (Undo was pressed): keep the keyboard on the line.
+              // Unmounting while focused (Undo was pressed, or a new write took
+              // it): keep the keyboard on the line. Focus moves to Dismiss and
+              // the words stay, so nothing is lost from under the keyboard.
               if (el && document.activeElement === el) requestAnimationFrame(() => dismissRef.current?.focus());
             }}
             aria-disabled={notice.undoing || undefined}

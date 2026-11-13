@@ -1,0 +1,184 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import NoticeLine, { type Notice } from "./notice";
+import { NOTHING_TO_UNDO, STILL_SAVING, useStatusLine, type StatusLine } from "../../final/statusLine";
+
+/**
+ * NEO-529 — the status line's live region speaks once per notice: the same
+ * words twice are said twice, the same notice drawn again says nothing, and
+ * only the `announce` words are said when the line shows more than that.
+ */
+
+/** Every set of words the live region was given, in order (a cleared region adds none). */
+function listen(region: Element) {
+  const said: string[] = [];
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) if (node.textContent) said.push(node.textContent);
+    }
+  });
+  observer.observe(region, { childList: true, characterData: true, subtree: true });
+  return {
+    said,
+    /** Delivers what the observer has queued. */
+    flush: () => {
+      for (const record of observer.takeRecords()) {
+        for (const node of record.addedNodes) if (node.textContent) said.push(node.textContent);
+      }
+    },
+    stop: () => observer.disconnect(),
+  };
+}
+
+/** Lets the frame the live region waits for run. */
+const nextFrame = () =>
+  act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+
+const region = () => screen.getByRole("status");
+
+let stops: (() => void)[] = [];
+afterEach(() => {
+  for (const stop of stops) stop();
+  stops = [];
+});
+function heard() {
+  const l = listen(region());
+  stops.push(l.stop);
+  return l;
+}
+
+/** A page holding the line, as FinalCollectionPage does. */
+function Page({ onLine }: { onLine: (line: StatusLine) => void }) {
+  const line = useStatusLine();
+  onLine(line);
+  return <NoticeLine notice={line.notice} onUndo={line.undo} onDismiss={line.dismiss} floating />;
+}
+
+function page() {
+  let line!: StatusLine;
+  const view = render(<Page onLine={(l) => (line = l)} />);
+  return { view, line: () => line };
+}
+
+describe("NoticeLine's live region", () => {
+  it("says Ctrl/⌘+Z's \"Nothing to undo.\" twice when it is pressed twice", async () => {
+    const { line } = page();
+    const live = heard();
+    act(() => line().undoLast());
+    await nextFrame();
+    expect(region().textContent).toBe(NOTHING_TO_UNDO);
+    act(() => line().undoLast());
+    // Cleared first, so the same words land as a change.
+    expect(region().textContent).toBe("");
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual([NOTHING_TO_UNDO, NOTHING_TO_UNDO]);
+    expect(region().textContent).toBe(NOTHING_TO_UNDO);
+  });
+
+  it("says \"Undone.\" each time an undo lands, even twice in a row", async () => {
+    const { line } = page();
+    const live = heard();
+    act(() => line().notify("Removed.", () => {}));
+    await nextFrame();
+    act(() => line().undo());
+    await nextFrame();
+    act(() => line().notify("Removed again.", () => {}));
+    await nextFrame();
+    act(() => line().undo());
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual(["Removed.", "Undone.", "Removed again.", "Undone."]);
+  });
+
+  it("says nothing when the same notice is drawn again", async () => {
+    const notice: Notice = { id: 1, message: "Saved." };
+    const props = { onUndo: () => {}, onDismiss: () => {} };
+    const { rerender } = render(<NoticeLine notice={null} {...props} />);
+    const live = heard();
+    rerender(<NoticeLine notice={notice} {...props} />);
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual(["Saved."]);
+    // The same notice, and a copy of it with the same id (Undo dropped, an undo running).
+    rerender(<NoticeLine notice={notice} {...props} />);
+    rerender(<NoticeLine notice={{ ...notice, undoing: true }} {...props} />);
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual(["Saved."]);
+  });
+
+  it("does not say the notice already up when the line mounts, and empties when the line is taken down", async () => {
+    const props = { onUndo: () => {}, onDismiss: () => {} };
+    const { rerender } = render(<NoticeLine notice={{ id: 4, message: "Moved." }} {...props} />);
+    await nextFrame();
+    // Shown, not said: the drawer opening over a notice is not news.
+    expect(screen.getByText("Moved.")).toBeTruthy();
+    expect(region().textContent).toBe("");
+    rerender(<NoticeLine notice={{ id: 5, message: "Saved." }} {...props} />);
+    await nextFrame();
+    expect(region().textContent).toBe("Saved.");
+    rerender(<NoticeLine notice={null} {...props} />);
+    expect(region().textContent).toBe("");
+  });
+
+  it("the words shown are not a live region, and Undo sits outside the one that is", async () => {
+    const { line } = page();
+    act(() => line().notify("Added.", () => {}));
+    await nextFrame();
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    const shown = screen.getByText("Added.", { selector: "p:not([role])" });
+    expect(shown.closest("[role=status]")).toBeNull();
+    const undo = screen.getByRole("button", { name: "Undo" });
+    expect(region().contains(undo)).toBe(false);
+    expect(region().textContent).toBe("Added.");
+  });
+
+  it("a refusal merged in front of a newer write's words says only the refusal; the line shows both", async () => {
+    const { line } = page();
+    let older!: ReturnType<StatusLine["beginWrite"]>;
+    act(() => {
+      older = line().beginWrite();
+    });
+    act(() => line().beginWrite().done("Moved it.", () => {}));
+    await nextFrame();
+    const live = heard();
+    act(() => older.refused("That didn't save."));
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual(["That didn't save."]);
+    expect(screen.getByText("That didn't save. Moved it.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+  });
+
+  it("Ctrl/⌘+Z while a write saves says \"Still saving.\" and leaves the words shown", async () => {
+    const { line } = page();
+    act(() => line().notify("Added.", () => {}));
+    await nextFrame();
+    act(() => void line().beginWrite());
+    const live = heard();
+    act(() => line().undoLast());
+    await nextFrame();
+    act(() => line().undoLast());
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual([STILL_SAVING, STILL_SAVING]);
+    expect(screen.getByText("Added.", { selector: "p:not([role])" })).toBeTruthy();
+    expect(screen.queryByText(STILL_SAVING, { selector: "p:not([role])" })).toBeNull();
+  });
+
+  it("Undo pressed by the keyboard leaves focus on Dismiss, the words still shown", async () => {
+    const undo = vi.fn();
+    const { line } = page();
+    act(() => line().notify("Removed.", undo));
+    const button = screen.getByRole("button", { name: "Undo" });
+    act(() => button.focus());
+    act(() => void fireEvent.click(button));
+    await nextFrame();
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Dismiss message" }));
+    expect(screen.getByText("Undone.", { selector: "p:not([role])" })).toBeTruthy();
+  });
+});

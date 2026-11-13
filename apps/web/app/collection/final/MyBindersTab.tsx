@@ -1186,6 +1186,7 @@ export default function MyBindersTab({
       if (input.smartRule) setDialog("find");
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1218,6 +1219,7 @@ export default function MyBindersTab({
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1247,6 +1249,7 @@ export default function MyBindersTab({
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1354,6 +1357,7 @@ export default function MyBindersTab({
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };

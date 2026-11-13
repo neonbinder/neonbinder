@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { NOTHING_TO_UNDO, NOTICE_MS, useFloatingClearance, useStatusLine } from "./statusLine";
+import { NOTHING_TO_UNDO, NOTICE_MS, STILL_SAVING, useFloatingClearance, useStatusLine } from "./statusLine";
 
 /**
  * NEO-464 — the status line a page holds (`useStatusLine`) and the scroll
@@ -117,7 +117,7 @@ describe("run: the Undo belongs to the write that is on the line (NEO-460)", () 
     // The remove has not landed: the add's Undo must not be offered.
     expect(result.current.notice?.undo).toBeUndefined();
     act(() => result.current.undoLast());
-    expect(result.current.notice?.message).toBe(NOTHING_TO_UNDO);
+    expect(result.current.notice).toMatchObject({ message: "Added.", announce: STILL_SAVING });
     expect(addUndo).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -434,7 +434,7 @@ describe("overlapping writes (NEO-460)", () => {
     expect(result.current.notice?.undo).toBeUndefined();
     act(() => result.current.undoLast());
     expect(undo).not.toHaveBeenCalled();
-    expect(result.current.notice?.message).toBe(NOTHING_TO_UNDO);
+    expect(result.current.notice).toMatchObject({ message: "Added.", announce: STILL_SAVING });
   });
 
   it("a ticket that is the newest lands with its Undo", () => {
@@ -536,5 +536,144 @@ describe("useFloatingClearance", () => {
   it("leaves the page alone while the line is not floating", () => {
     renderHook(() => useFloatingClearance(false));
     expect(padding()).toBe("");
+  });
+});
+
+describe("Ctrl/Cmd+Z while a write is saving (NEO-529)", () => {
+  it("says \"Still saving.\" without touching the words, a fresh id each press; once it lands, Undo is back", async () => {
+    const write = deferred<{ undo: () => Promise<void> }>();
+    const undo = vi.fn(async () => {});
+    const { result } = renderHook(() => useStatusLine());
+    act(() => result.current.notify("Added.", () => {}));
+    let p!: Promise<unknown>;
+    act(() => {
+      p = result.current.run(() => write.promise, () => "Moved.");
+    });
+    act(() => result.current.undoLast());
+    const first = result.current.notice!;
+    expect(first).toMatchObject({ message: "Added.", announce: STILL_SAVING });
+    act(() => result.current.undoLast());
+    expect(result.current.notice).toMatchObject({ message: "Added.", announce: STILL_SAVING });
+    expect(result.current.notice!.id).toBeGreaterThan(first.id);
+    await act(async () => {
+      write.resolve({ undo });
+      await p;
+    });
+    expect(result.current.notice).toMatchObject({ message: "Moved.", undo });
+    expect(result.current.notice?.announce).toBeUndefined();
+    await act(async () => result.current.undoLast());
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("says \"Still saving.\" on its own when the line was empty", () => {
+    const { result } = renderHook(() => useStatusLine());
+    act(() => void result.current.beginWrite());
+    act(() => result.current.undoLast());
+    expect(result.current.notice?.message).toBe(STILL_SAVING);
+  });
+
+  it("a Ctrl/Cmd+Z in the same tick as beginWrite never runs the earlier write's Undo", () => {
+    const addUndo = vi.fn();
+    const { result } = renderHook(() => useStatusLine());
+    act(() => result.current.notify("Added.", addUndo));
+    // One handle on the hook, so both calls see the notice from before beginWrite.
+    const line = result.current;
+    act(() => {
+      line.beginWrite();
+      line.undoLast();
+      line.undo();
+    });
+    expect(addUndo).not.toHaveBeenCalled();
+    expect(result.current.notice).toMatchObject({ message: "Added.", announce: STILL_SAVING });
+    expect(result.current.notice?.undo).toBeUndefined();
+  });
+
+  it("goes back to \"Nothing to undo.\" once the write was refused, here or in a dialog of its own", async () => {
+    const { result } = renderHook(() => useStatusLine());
+    let ticket!: ReturnType<typeof result.current.beginWrite>;
+    act(() => {
+      ticket = result.current.beginWrite();
+    });
+    act(() => ticket.refusedElsewhere());
+    act(() => result.current.undoLast());
+    expect(result.current.notice?.message).toBe(NOTHING_TO_UNDO);
+    act(() => {
+      ticket = result.current.beginWrite();
+    });
+    act(() => ticket.refused("No room in that box."));
+    act(() => result.current.undoLast());
+    expect(result.current.notice?.message).toBe(NOTHING_TO_UNDO);
+  });
+
+  it("an older write still saving does not hide the Undo a newer write brought", async () => {
+    const newerUndo = vi.fn();
+    const { result } = renderHook(() => useStatusLine());
+    act(() => void result.current.beginWrite());
+    act(() => result.current.beginWrite().done("Newer.", newerUndo));
+    act(() => result.current.undoLast());
+    expect(newerUndo).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a refusal on the line (NEO-529)", () => {
+  it("merged in front of a newer write's words, announces only itself; the Undo is still that write's", () => {
+    const newerUndo = vi.fn();
+    const { result } = renderHook(() => useStatusLine());
+    let older!: ReturnType<typeof result.current.beginWrite>;
+    act(() => {
+      older = result.current.beginWrite();
+    });
+    act(() => result.current.beginWrite().done("Moved it.", newerUndo));
+    act(() => older.refused("R1."));
+    expect(result.current.notice).toMatchObject({
+      message: "R1. Moved it.",
+      announce: "R1.",
+      kind: "refusal",
+      undo: newerUndo,
+    });
+  });
+
+  it("a second refusal replaces the first in front of the words rather than stacking", () => {
+    const newerUndo = vi.fn();
+    const { result } = renderHook(() => useStatusLine());
+    let one!: ReturnType<typeof result.current.beginWrite>;
+    let two!: ReturnType<typeof result.current.beginWrite>;
+    act(() => {
+      one = result.current.beginWrite();
+      two = result.current.beginWrite();
+    });
+    act(() => result.current.beginWrite().done("B.", newerUndo));
+    act(() => one.refused("R1."));
+    act(() => two.refused("R2."));
+    expect(result.current.notice).toMatchObject({ message: "R2. B.", announce: "R2.", undo: newerUndo });
+    act(() => result.current.undoLast());
+    expect(newerUndo).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stale success never erases a refusal: write 1 starts, write 2 starts, write 2 is refused, write 1 lands", () => {
+    const firstUndo = vi.fn();
+    const { result } = renderHook(() => useStatusLine());
+    let first!: ReturnType<typeof result.current.beginWrite>;
+    let second!: ReturnType<typeof result.current.beginWrite>;
+    act(() => {
+      first = result.current.beginWrite();
+    });
+    act(() => {
+      second = result.current.beginWrite();
+    });
+    act(() => second.refused("That box is full."));
+    act(() => first.done("Added.", firstUndo));
+    expect(result.current.notice).toMatchObject({ message: "That box is full.", kind: "refusal" });
+    expect(result.current.notice?.undo).toBeUndefined();
+  });
+
+  it("an aside never replaces a refusal", async () => {
+    const { result } = renderHook(() => useStatusLine());
+    await act(async () => {
+      await result.current.run(() => Promise.reject(new Error("Nope.")), () => "Done.");
+    });
+    expect(result.current.notice).toMatchObject({ message: "Nope.", kind: "refusal" });
+    act(() => result.current.inform("Aside."));
+    expect(result.current.notice?.message).toBe("Nope.");
   });
 });

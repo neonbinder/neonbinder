@@ -777,11 +777,12 @@ describe("the status line while a quantity saves (NEO-460)", () => {
     type(field(), "4");
     fireEvent.keyDown(field(), { key: "Enter" });
     await flush();
-    // The second write is still saving: no Undo, the words stay, Ctrl+Z has nothing.
+    // The second write is still saving: no Undo, the words stay, and Ctrl+Z
+    // only says "Still saving." (NEO-529: `statusLine.test`), leaving them up.
     expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
     expect(screen.getByRole("status").textContent).toBe(words);
     fireEvent.click(screen.getByRole("button", { name: "Press Ctrl+Z" }));
-    expect(screen.getByRole("status").textContent).toBe("Nothing to undo.");
+    expect(screen.getByRole("status").textContent).toBe(words);
     expect(firstUndo).not.toHaveBeenCalled();
 
     await act(async () => finish({ before: 3, after: 4, undo: secondUndo }));
