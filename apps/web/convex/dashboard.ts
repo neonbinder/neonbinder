@@ -160,8 +160,21 @@ export const SYNC_ALERTS_SHOWN = 6;
 export const SYNC_CARDS_NAMED = 30;
 /** New on NeonBinder: how many entries (a set, or one variant of it) it shows. */
 export const NEW_SETS_SHOWN = 6;
-/** How many variants' worth of newest cards it steps back through to find them. */
+/** How many variants' uploads it steps back through to find them. */
 export const NEW_SETS_HOPS = 100;
+/**
+ * NEO-532 — how many card-bearing rows it reads off `by_last_card_at`
+ * (newest stamp first), once, to find the variants with the newest cards.
+ */
+export const NEW_SETS_VARIANTS = 100;
+/**
+ * NEO-532 — how far a card's `_creationTime` may sit past its row's
+ * `lastCardAt` (the landing mutation's `Date.now()`, frozen at the start of
+ * the transaction, while the card's own time is taken at its insert). The
+ * walk treats a stamp as "newest card at most this much later". Its own
+ * constant: `STAMP_SLACK_MS` is the collection lines' filed-stamp slack.
+ */
+export const CARD_STAMP_SLACK_MS = 5_000;
 /**
  * One upload of a variant's checklist: its cards written within this of its
  * newest one. The walk steps back past them in one go, and no further, so a
@@ -1251,17 +1264,48 @@ export const syncAlerts = query({
  * opens.
  *
  * Read from the cards, not the set rows: most set rows are made long before
- * any card (a marketplace's list of sets). The newest card names a variant;
- * the walk then steps back past that variant's upload (its cards within
- * `VARIANT_UPLOAD_MS` of that card, found on `by_selector_option`, whose last
- * key is `_creationTime`) and asks again, never further: a late card on an
- * old checklist never carries the walk back to that checklist's first upload.
- * A variant in a set known to hold no cards is passed over.
+ * any card (a marketplace's list of sets).
  *
- * Bounded: at most `NEW_SETS_HOPS` steps of two cards and a variant's chain,
- * stopping early once the top entries are settled (`newSetsSettled`), then
- * one card for each entry's cover. The dashboard reads it once on load, not
- * subscribed: every card added anywhere would re-run it.
+ * NEO-532 — found per variant, not per card. Walking the whole checklist
+ * table by creation time and stepping back past each variant's upload
+ * skipped every OTHER variant's cards inside that window: two checklists
+ * uploaded side by side, or a late card on an earlier upload, hid a set.
+ * Now the walk merges two newest-first sources:
+ *
+ *  1. the card-bearing rows whose cards landed most recently: the top
+ *     `NEW_SETS_VARIANTS` of `by_last_card_at`, read once. A stamp is a
+ *     discovery hint only (`selectorOptions.lastCardAt`): taking a row reads
+ *     its REAL newest card (`by_selector_option`, descending), so a stamp
+ *     a little off its card's own time lists the checklist at its true time,
+ *     and a row whose cards are all gone is dropped;
+ *  2. the uploads found so far and not yet stepped through (`candidates`):
+ *     a variant at the time of an upload's newest card.
+ *
+ * Each step takes whichever is newer (a stamp counts as up to
+ * `CARD_STAMP_SLACK_MS` later than it says). Stepping through a candidate
+ * makes it a hop (unless its set is gone or known to hold no cards), then
+ * finds the start of that upload (the variant's oldest card within
+ * `VARIANT_UPLOAD_MS` of its newest) and the variant's newest card below it,
+ * which becomes the candidate for its previous upload. So each variant's
+ * uploads are visited newest first, interleaved with every other variant's,
+ * and a late card on an old checklist still never carries the walk back to
+ * that checklist's first upload in one step.
+ *
+ * The walk stops once the top entries are settled (`newSetsSettled`) below
+ * the frontier: the newest time any hop still to come can carry (the next
+ * stamp plus slack, the newest candidate, and, once a full page of stamps is
+ * used up, the last stamp read, which bounds every row past the page).
+ *
+ * A row with cards but no stamp (written before the field, and not reached
+ * by `cardCounts.backfillLastCardAt` yet) is not found.
+ *
+ * Read bound, worst case about 1,100 documents: `NEW_SETS_VARIANTS` stamped
+ * rows and one card each (200); `NEW_SETS_HOPS` hops of two card reads each
+ * (200); each new variant's chain up to its set, sport, year and brand
+ * through the shared `CatalogReader` cache (about 4 rows a variant when sets
+ * share nothing, 400 at most at 100 variants, far fewer in practice); then
+ * one card for each of the `NEW_SETS_SHOWN` covers. The dashboard reads it
+ * once on load, not subscribed: every card added anywhere would re-run it.
  */
 export const newSets = query({
   args: {},
@@ -1284,39 +1328,88 @@ export const newSets = query({
     const reader = new CatalogReader(ctx);
     type Hop = UploadHop & { set: SetRef; variant: VariantRef; setRow: OptionRow };
     const hops: Hop[] = [];
-    let before: number | null = null;
-    for (let hop = 0; hop < NEW_SETS_HOPS; hop++) {
-      const below = before;
-      const card = await ctx.db
-        .query("cardChecklist")
-        .withIndex("by_creation_time", (q) => (below === null ? q : q.lt("_creationTime", below)))
-        .order("desc")
-        .first();
-      if (!card) break;
+
+    // Source 1: the rows whose cards landed most recently, newest stamp first.
+    const stamped = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_last_card_at", (q) => q.gt("lastCardAt", 0))
+      .order("desc")
+      .take(NEW_SETS_VARIANTS);
+    // Every row past the page carries a stamp no newer than the last one read.
+    const pastPage =
+      stamped.length === NEW_SETS_VARIANTS ? (stamped[stamped.length - 1].lastCardAt ?? 0) + CARD_STAMP_SLACK_MS : null;
+    let nextStamped = 0;
+
+    // Source 2: uploads found and not yet stepped through, newest first.
+    type Candidate = { variantId: Id<"selectorOptions">; at: number };
+    const candidates: Candidate[] = [];
+    const addCandidate = (c: Candidate) => {
+      let i = 0;
+      while (i < candidates.length && candidates[i].at >= c.at) i++;
+      candidates.splice(i, 0, c);
+    };
+
+    for (let hop = 0; hop < NEW_SETS_HOPS; ) {
+      const stampRow = nextStamped < stamped.length ? stamped[nextStamped] : null;
+      const stampBound = stampRow ? (stampRow.lastCardAt ?? 0) + CARD_STAMP_SLACK_MS : null;
+      const newest = candidates.length > 0 ? candidates[0] : null;
+      if (stampBound === null && newest === null) break;
+
+      // The newest time any hop still to come can carry.
+      const frontier = Math.max(stampBound ?? pastPage ?? -Infinity, newest?.at ?? -Infinity);
+      // `newSetsSettled` reads `before` as exclusive (the old walk's `lt`);
+      // the frontier is inclusive, so step one past it.
+      if (newSetsSettled(checklistLoads(hops), frontier + 1, NEW_SETS_SHOWN)) break;
+
+      if (stampRow && stampBound !== null && (newest === null || stampBound >= newest.at)) {
+        nextStamped++;
+        const card = await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", stampRow._id))
+          .order("desc")
+          .first();
+        // No card left (a stale stamp): nothing to list.
+        if (card) addCandidate({ variantId: stampRow._id, at: card._creationTime });
+        continue;
+      }
+
+      // The newest candidate: one hop.
+      const cand = candidates.shift();
+      if (!cand) break;
+      hop++;
+      const variant = await reader.variantRef(cand.variantId);
+      const set = variant ? await reader.setRef(cand.variantId) : null;
+      const setRow = set ? await reader.row(set._id) : null;
+      // Gone, or orphaned above: none of its uploads can be listed.
+      if (!variant || !set || !setRow) continue;
+      if (!hiddenAsEmpty(setRow)) {
+        hops.push({
+          variantId: variant._id,
+          setId: set._id,
+          // The Base's cards sit on the Base type itself (`variantRole`).
+          isBase: variant.level === "variantType" && variant.kind === "base",
+          at: cand.at,
+          set,
+          variant,
+          setRow,
+        });
+      }
+      // This upload's first card, then the variant's newest card before it.
       const uploadStart = await ctx.db
         .query("cardChecklist")
         .withIndex("by_selector_option", (q) =>
-          q.eq("selectorOptionId", card.selectorOptionId).gte("_creationTime", card._creationTime - VARIANT_UPLOAD_MS),
+          q.eq("selectorOptionId", cand.variantId).gte("_creationTime", cand.at - VARIANT_UPLOAD_MS),
         )
         .first();
-      before = Math.min(card._creationTime, uploadStart?._creationTime ?? card._creationTime);
-
-      const variant = await reader.variantRef(card.selectorOptionId);
-      const set = variant ? await reader.setRef(card.selectorOptionId) : null;
-      const setRow = set ? await reader.row(set._id) : null;
-      if (!variant || !set || !setRow || hiddenAsEmpty(setRow)) continue;
-      hops.push({
-        variantId: variant._id,
-        setId: set._id,
-        // The Base's cards sit on the Base type itself (`variantRole`).
-        isBase: variant.level === "variantType" && variant.kind === "base",
-        at: card._creationTime,
-        set,
-        variant,
-        setRow,
-      });
-      if (newSetsSettled(checklistLoads(hops), before, NEW_SETS_SHOWN)) break;
+      const startAt = Math.min(cand.at, uploadStart?._creationTime ?? cand.at);
+      const previous = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", cand.variantId).lt("_creationTime", startAt))
+        .order("desc")
+        .first();
+      if (previous) addCandidate({ variantId: cand.variantId, at: previous._creationTime });
     }
+
     const out = [];
     for (const entry of checklistLoads(hops).slice(0, NEW_SETS_SHOWN)) {
       const { set, variant, setRow } = entry.opens;

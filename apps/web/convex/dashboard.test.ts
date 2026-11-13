@@ -10,9 +10,10 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { createCardCountLedger } from "./cardCounts";
 import {
   COULD_FIT_CARDS,
   FILED_ONLY_ERA_END,
@@ -21,7 +22,10 @@ import {
   SYNC_ALERTS_SHOWN,
   SYNC_CARDS_NAMED,
   INTAKE_RECENT_MS,
+  CARD_STAMP_SLACK_MS,
+  NEW_SETS_HOPS,
   NEW_SETS_SHOWN,
+  NEW_SETS_VARIANTS,
   SALE_LINES,
   SET_LOAD_MS,
   SALES_SHOWN,
@@ -828,12 +832,24 @@ describe("newSets", () => {
   // Driven on Date only (convex-test stamps `_creationTime` from it), from a
   // moment after the real clock, so a later upload is truly later.
   const BASE = Date.now() + 365 * DAY;
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  /** The armed lastCardAt backfill, as the operator runs it on rows from before the field. */
+  async function stampFromCards(t: S["t"]) {
+    vi.stubEnv("ALLOW_LAST_CARD_AT_BACKFILL", "1");
+    return t.action(internal.cardCounts.backfillLastCardAt, { confirm: "BACKFILL" });
+  }
 
   async function fakeSetup() {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(BASE);
-    return setup();
+    const s = await setup();
+    // The fixture's cards were written without a ledger; stamp them the way the backfill does.
+    await stampFromCards(s.t);
+    return s;
   }
 
   /** A row under `parentId`. */
@@ -843,9 +859,10 @@ describe("newSets", () => {
     );
   }
 
-  /** `n` cards uploaded now onto `variantId`. */
+  /** `n` cards uploaded now onto `variantId`, through a ledger like every real writer (so the row is stamped). */
   function upload(s: S, variantId: Id<"selectorOptions">, n: number, title = "Card") {
     return s.t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
       const cards: Id<"cardChecklist">[] = [];
       for (let i = 0; i < n; i++) {
         cards.push(
@@ -860,9 +877,33 @@ describe("newSets", () => {
             lastUpdated: 0,
           } as never),
         );
+        ledger.addCard((await ctx.db.get(cards[cards.length - 1]))!);
       }
+      await ledger.flush(ctx);
       return cards;
     });
+  }
+
+  /** One card written straight to the table, with no ledger: a row from before the stamp. */
+  function unstampedCard(s: S, variantId: Id<"selectorOptions">) {
+    return s.t.run((ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Player 1",
+        listingTitle: "Old #1",
+        sportId: s.fx.sportId,
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 0,
+      } as never),
+    );
+  }
+
+  /** A set under 1986 Topps with a bare Base type (no cards yet). */
+  async function emptyBase(s: S, name: string) {
+    const setId = await option(s, "setName", name, s.fx.topps86Id);
+    return { setId, baseId: await option(s, "variantType", "Base", setId) };
   }
 
   /** A set under 1986 Topps with a Base of `n` cards, uploaded now. */
@@ -957,6 +998,196 @@ describe("newSets", () => {
     expect(mine[0].set.name).toBe(`Set ${NEW_SETS_SHOWN + 1}`);
     expect(mine.every((e) => e.wholeSet)).toBe(true);
     expect(await s.them.query(api.dashboard.newSets, {})).toEqual(mine);
+  });
+
+  test("two variants uploaded side by side (interleaved) are both listed", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    const a = await emptyBase(s, "Set A");
+    const b = await emptyBase(s, "Set B");
+    // A at T, T+2, T+4 min; B at T+1, T+3 min.
+    for (const [who, min] of [["a", 0], ["b", 1], ["a", 2], ["b", 3], ["a", 4]] as const) {
+      vi.setSystemTime(T + min * 60_000);
+      await upload(s, who === "a" ? a.baseId : b.baseId, 1);
+    }
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Set A", "Set B", "Topps Chrome"]);
+  });
+
+  test("a late card on an earlier upload does not hide a set uploaded between", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    const a = await emptyBase(s, "Set A");
+    const b = await emptyBase(s, "Set B");
+    vi.setSystemTime(T);
+    await upload(s, a.baseId, 1);
+    vi.setSystemTime(T + 60_000);
+    await upload(s, b.baseId, 1);
+    vi.setSystemTime(T + 2 * 60_000);
+    await upload(s, a.baseId, 1);
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Set A", "Set B", "Topps Chrome"]);
+  });
+
+  test("a stamp left newer by a deleted card lists the checklist at its real newest card's time", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    const x = await emptyBase(s, "Set X");
+    const y = await emptyBase(s, "Set Y");
+    vi.setSystemTime(T);
+    const [kept] = await upload(s, x.baseId, 1);
+    vi.setSystemTime(T + 10 * 60_000);
+    const [gone] = await upload(s, x.baseId, 1);
+    vi.setSystemTime(T + 5 * 60_000);
+    await upload(s, y.baseId, 1);
+    // The newest card is deleted straight off the table; X's stamp (T+10m) now outruns its cards.
+    await s.t.run((ctx) => ctx.db.delete(gone));
+    const keptAt = await s.t.run(async (ctx) => (await ctx.db.get(kept))!._creationTime);
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Set Y", "Set X", "Topps Chrome"]);
+    expect(out[1].addedAt).toBe(keptAt);
+  });
+
+  test("a stamped row whose cards are all gone lists nothing", async () => {
+    const s = await fakeSetup();
+    vi.setSystemTime(BASE + 30 * DAY);
+    const z = await emptyBase(s, "Set Z");
+    const [only] = await upload(s, z.baseId, 1);
+    await s.t.run((ctx) => ctx.db.delete(only));
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Topps Chrome"]);
+  });
+
+  test("a variant with cards but no stamp is not listed until the backfill stamps it", async () => {
+    const s = await fakeSetup();
+    vi.setSystemTime(BASE + 30 * DAY);
+    const old = await emptyBase(s, "Old Set");
+    await unstampedCard(s, old.baseId);
+    expect((await s.me.query(api.dashboard.newSets, {})).map((e) => e.set.name)).toEqual(["Topps Chrome"]);
+    await stampFromCards(s.t);
+    expect((await s.me.query(api.dashboard.newSets, {})).map((e) => e.set.name)).toEqual(["Old Set", "Topps Chrome"]);
+  });
+
+  test("more than NEW_SETS_VARIANTS stamped variants: still NEW_SETS_SHOWN entries, the newest ones", async () => {
+    const s = await fakeSetup();
+    const total = NEW_SETS_VARIANTS + 50;
+    for (let i = 0; i < total; i++) {
+      vi.setSystemTime(BASE + (i + 1) * DAY);
+      await setWithBase(s, `Bulk ${i}`, 1);
+    }
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out).toHaveLength(NEW_SETS_SHOWN);
+    expect(out.map((e) => e.set.name)).toEqual(
+      Array.from({ length: NEW_SETS_SHOWN }, (_, k) => `Bulk ${total - 1 - k}`),
+    );
+  });
+
+  /**
+   * Six sets F1..F6 a day apart (each with a Base card), and Set X, whose
+   * card lands 2 s after F1's (creation times only move forward, so X is
+   * written between F1 and F2). Returns F1's card time and X's Base.
+   */
+  async function sixFillers(s: S) {
+    const T = BASE + 30 * DAY;
+    let f1At = 0;
+    let xBase: Id<"selectorOptions"> | undefined;
+    for (let i = 1; i <= 6; i++) {
+      vi.setSystemTime(T + i * DAY);
+      const f = await emptyBase(s, `F${i}`);
+      const [card] = await upload(s, f.baseId, 1);
+      if (i === 1) {
+        f1At = await s.t.run(async (ctx) => (await ctx.db.get(card))!._creationTime);
+        vi.setSystemTime(f1At + 2000);
+        const x = await emptyBase(s, "Set X");
+        await upload(s, x.baseId, 1);
+        xBase = x.baseId;
+      }
+    }
+    return { f1At, xBase: xBase! };
+  }
+
+  test("a stamp whose slack reaches the settled frontier is read: X outranks F1 (boundary pins CARD_STAMP_SLACK_MS)", async () => {
+    const s = await fakeSetup();
+    const { f1At, xBase } = await sixFillers(s);
+    await s.t.run((ctx) => ctx.db.patch(xBase, { lastCardAt: f1At - SET_LOAD_MS - CARD_STAMP_SLACK_MS }));
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["F6", "F5", "F4", "F3", "F2", "Set X"]);
+  });
+
+  test("a stamp one ms short of the frontier is never read: the settled walk stops first (older stamp unread)", async () => {
+    const s = await fakeSetup();
+    const { f1At, xBase } = await sixFillers(s);
+    await s.t.run((ctx) => ctx.db.patch(xBase, { lastCardAt: f1At - SET_LOAD_MS - CARD_STAMP_SLACK_MS - 1 }));
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["F6", "F5", "F4", "F3", "F2", "F1"]);
+  });
+
+  test("a stamped variant whose set row is gone is skipped and the other sets still list", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    vi.setSystemTime(T);
+    const ok = await emptyBase(s, "Set Ok");
+    await upload(s, ok.baseId, 1);
+    vi.setSystemTime(T + DAY);
+    const gone = await emptyBase(s, "Set Gone");
+    await upload(s, gone.baseId, 1);
+    await s.t.run((ctx) => ctx.db.delete(gone.setId));
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Set Ok", "Topps Chrome"]);
+  });
+
+  test("more than NEW_SETS_HOPS single-card uploads of one variant: the walk stops at the cap and still returns", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    const h = await emptyBase(s, "Set H");
+    for (let i = 0; i < NEW_SETS_HOPS + 10; i++) {
+      vi.setSystemTime(T + i * 25 * 3_600_000);
+      await upload(s, h.baseId, 1);
+    }
+    const out = await s.me.query(api.dashboard.newSets, {});
+    // One entry for the variant; the older Topps Chrome sits past the hop cap.
+    expect(out.map((e) => e.set.name)).toEqual(["Set H"]);
+  });
+
+  test("a set known to hold no cards still lets the walk reach its earlier upload and the sets behind it", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    vi.setSystemTime(T);
+    const q = await emptyBase(s, "Set Q");
+    await upload(s, q.baseId, 1);
+    vi.setSystemTime(T + DAY);
+    const hid = await emptyBase(s, "Set Hidden");
+    await upload(s, hid.baseId, 1);
+    vi.setSystemTime(T + 3 * DAY);
+    await upload(s, hid.baseId, 1);
+    await s.t.run((ctx) => ctx.db.patch(hid.setId, { subtreeCardCount: 0 }));
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Set Q", "Topps Chrome"]);
+  });
+
+  test("past a full page of stamps, a variant inside the page with an earlier upload newer than the last stamp read changes nothing", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 10 * DAY;
+    const total = NEW_SETS_VARIANTS + 5;
+    for (let i = 0; i < total; i++) {
+      vi.setSystemTime(T + i * DAY);
+      await setWithBase(s, `P${i}`, 1);
+    }
+    // W: an early upload among the newest fillers, and a later one that makes it the newest stamp.
+    const w = await emptyBase(s, "Set W");
+    vi.setSystemTime(T + (total - 2) * DAY + 12 * 3_600_000);
+    await upload(s, w.baseId, 1);
+    vi.setSystemTime(T + (total + 2) * DAY);
+    await upload(s, w.baseId, 1);
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual([
+      "Set W",
+      `P${total - 1}`,
+      `P${total - 2}`,
+      `P${total - 3}`,
+      `P${total - 4}`,
+      `P${total - 5}`,
+    ]);
   });
 
   test("an empty catalog: nothing", async () => {

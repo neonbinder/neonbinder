@@ -638,6 +638,29 @@ export const selectorOptionFields = {
    * NB data only: no adapter or sync reads or writes it.
    */
   hasCards: v.optional(v.boolean()),
+  /**
+   * NEO-532 — when a card last LANDED on this row (an insert, or a move in),
+   * as the landing mutation's `Date.now()`. Meaningful on the card-bearing
+   * levels (`variantType`, `insert`, `parallel`); absent elsewhere, never
+   * written on an ancestor.
+   *
+   * Kept by the same `CardCountLedger` flush as `cardCount`: every flush that
+   * lands a card on the row stamps it (even when the mutation also took one
+   * off, so the count is unchanged), and a flush that leaves `cardCount` at 0
+   * clears it, but only when that 0 is known (a row whose recount is skipped
+   * is never cleared). A flush that only takes cards off brings it down to
+   * the newest card left (clears it when none is left). It is still a
+   * discovery hint, never a time to show. ABSENT means no card has landed
+   * since the field existed and the armed backfill (`backfillLastCardAt`)
+   * has not reached the row.
+   *
+   * Read by New on NeonBinder (`dashboard.newSets`) through
+   * `by_last_card_at`, to find the variants with the newest cards without
+   * walking the whole checklist table.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  lastCardAt: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 
@@ -1466,6 +1489,10 @@ export default defineSchema({
     .index("by_parent", ["parentId"])
     .index("by_value", ["value"])
     .index("by_level_and_parent", ["level", "parentId"])
+    // NEO-532: New on NeonBinder (`dashboard.newSets`) reads the rows whose
+    // cards landed most recently, newest first. Rows without the stamp sort
+    // first and are ranged out (`gt 0`).
+    .index("by_last_card_at", ["lastCardAt"])
     // NEO-358: the collector's set suggestions ("Topps Chrome" → the set, so
     // picking it opens its checklist). Filtered to `level: "setName"` by the
     // reader (`collectionCatalog.suggest`), which re-checks every word.
