@@ -7,7 +7,7 @@ description: |
   - "Add a card-detail drawer to the set builder that autosaves each field on the live row" → neonbinder-web-dev builds the drawer, its Convex mutation with validators, and the row update path.
   - "The entity-review wizard should show a team's location and name as separate fields" → neonbinder-web-dev changes the wizard form, the `teams` mutations it calls, and the display row.
   - "Add an admin page listing leagues with alias dedup" → neonbinder-web-dev adds the route under `app/admin/`, the `AdminLayout`-gated `<Route>` in `src/main.tsx`, and the indexed Convex queries.
-model: opus
+model: sonnet
 effort: high
 memory: project
 color: purple

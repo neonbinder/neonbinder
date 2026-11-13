@@ -1087,14 +1087,13 @@ sessions at once.
    usually visibly different from what is there.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
    `convex-logs-*-a<attempt>` artifacts, before deciding which branch the spec took.
-5. A red during a `pr-queue` turn gets one full rerun (`gh run rerun`, never
-   `--failed`) only when the evidence names an outside service (BuySportsCards,
-   SportLots, eBay, ESPN, Wikidata, Clerk, Vercel, Convex's platform, GitHub's
-   runners). Anything pointing at our own code passes the turn: reproduce that
-   one spec locally on your own deployment or against the PR preview (above),
-   fix it, join the queue again, and push only on the next turn. A real failure
-   just fails again on a rerun. A rerun cannot fix a broken
-   preview: only a new commit forces fresh ones.
+5. A red during a `pr-queue` turn is never rerun inside the turn. The turn
+   passes at once, and the `pr-queue` skill's triage decides what happens
+   next: a known `ci-fail` failure rejoins the queue every time, anything else goes
+   to the planner and then waits for Jason. To fix one, reproduce that spec
+   locally on your own deployment or against the PR preview (above), and push
+   only on the next turn. A rerun cannot fix a broken preview: only a new
+   commit forces fresh ones.
 Published artifacts are failure screenshots plus the blob/HTML report, which
 embeds each failure's `error-context.md` (an ARIA snapshot, input values in
 plaintext) and the sanitised axe JSON. That is accepted: real marketplace

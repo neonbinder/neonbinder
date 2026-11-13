@@ -7,7 +7,7 @@ description: |
   - "SportLots checklists should carry player names, and a BSC/SportLots roster disagreement is a contention" → adapter-dev changes the SportLots checklist parse, the merge, and the diff that surfaces the contention.
   - "The BSC checklist gate must read the same facet plan the query builder reads" → adapter-dev aligns `bscFacets` consumers so both sides resolve from the tagged facet.
   - "Add a field to the login request the browser service returns" → adapter-dev bumps the contract version on both sides and updates the Convex caller behind the version check.
-model: opus
+model: sonnet
 effort: high
 memory: project
 color: green
