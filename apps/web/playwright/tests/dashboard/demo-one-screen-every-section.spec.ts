@@ -69,9 +69,8 @@ test(
     // The fake collector's two runs: Show pickups (into a box: Inventory) and Garage shoebox (a binder:
     // Collection). The demo adds a Want List guess to Show pickups, so it waits on one more yes.
     const hopper = page.getByRole("region", { name: "In the Hopper" });
-    // Each line is parts joined by a dot on screen and a comma for a reader, so its parts are read one by one.
-    await expect(hopper.getByText("3 scans need your yes")).toBeVisible();
-    await expect(hopper.getByText("18 to identify")).toBeVisible();
+    // A line's parts are joined by a dot on screen and a comma for a reader ("... yes · , 18 ..." in its text).
+    await expect(hopper.getByText(/^3 scans need your yes · , 18 to identify$/)).toBeVisible();
     const runs = hopper.getByRole("list", { name: "Runs to finish", exact: true });
     const blockOf = (title: string) =>
       runs.getByRole("listitem").filter({ has: page.getByRole("heading", { level: 3, name: title, exact: true }) });
@@ -80,10 +79,8 @@ test(
     await expect(pickups).toBeVisible();
     await expect(shoebox).toBeVisible();
     await expect(runs.getByRole("heading", { level: 3 })).toHaveCount(2);
-    await expect(pickups.getByText("1 needs your yes")).toBeVisible();
-    await expect(pickups.getByText("2 to identify")).toBeVisible();
-    await expect(shoebox.getByText("2 need your yes")).toBeVisible();
-    await expect(shoebox.getByText("16 to identify")).toBeVisible();
+    await expect(pickups.getByText(/^1 needs your yes · , 2 to identify$/)).toBeVisible();
+    await expect(shoebox.getByText(/^2 need your yes · , 16 to identify$/)).toBeVisible();
     // Each block's link names its run and its screen, and goes to that screen's Add cards tab.
     const finishPickups = pickups.getByRole("link", { name: "Finish this run into Show pickups on Inventory", exact: true });
     await expect(finishPickups).toHaveAttribute("href", "/demo/inventory?side=inventory&tab=add");
@@ -92,8 +89,7 @@ test(
       "/demo/collection?tab=add",
     );
     // A run sorted is only counted, never a row; no "N of M done" progress is left anywhere.
-    await expect(hopper.getByText("3 runs sorted this week")).toBeVisible();
-    await expect(hopper.getByText("14 all-time")).toBeVisible();
+    await expect(hopper.getByText(/^3 runs sorted this week · , 14 all-time$/)).toBeVisible();
     await expect(page.getByText(/\d+ of \d+ scans? done/)).toHaveCount(0);
     await expect(hopper.getByText(/still being identified/)).toHaveCount(0);
     await expect(hopper.getByText(/scans? processing/)).toHaveCount(0);
@@ -101,8 +97,14 @@ test(
     // The demo's Want List guess waits in Show pickups: the block says so, and the guess opens its card panel.
     await expect(pickups.getByText("On your Want List", { exact: true })).toBeVisible();
     await expect(shoebox.getByText("On your Want List", { exact: true })).toHaveCount(0);
-    const wantedGuess = pickups.getByRole("link", { name: /^1996 Playoff Contenders Deion Sanders #13\b.*, on your Want List$/ });
+    // Each run's guesses are a list of their own, named for the run and its screen.
+    const wantedTitle = "1996 Playoff Contenders Deion Sanders #13 Dallas Cowboys Football";
+    const pickupGuesses = pickups.getByRole("list", { name: "Best guesses for Show pickups on Inventory", exact: true });
+    const wantedGuess = pickupGuesses.getByRole("link", { name: `${wantedTitle}, on your Want List`, exact: true });
     await expect(wantedGuess).toBeVisible();
+    const shoeboxGuesses = shoebox.getByRole("list", { name: "Best guesses for Garage shoebox on Collection", exact: true });
+    await expect(shoeboxGuesses.getByRole("link")).toHaveCount(2);
+    await expect(shoeboxGuesses.getByRole("link", { name: /, on your Want List$/ })).toHaveCount(0);
     await expectAccessible(page, { label: "Dashboard demo" });
     await wantedGuess.click();
     await expect(page).toHaveURL(/\/demo\?(.*&)?detail=[^&]+/);
