@@ -24,7 +24,8 @@
 //     titled "Brands and sets", the brand comes first, the loose set sits in a
 //     group "More sets" that holds no brand, nothing reads "Unknown", and the
 //     loose set opens as in the first year. Request a card calls the field
-//     "Brand or set" there.
+//     "Brand or set" there; picking the loose set in it takes the Set field
+//     away and says so: "Set picked: <set>. On to the checklist."
 // The admin set builder still shows the row: that is where the spec puts its
 // sets, by picking "Unknown" in the Manufacturers column.
 //
@@ -314,7 +315,14 @@ test(
     await page.getByRole("button", { name: "Request a card", exact: true }).click();
     await form.getByRole("combobox", { name: "Sport", exact: true }).selectOption({ label: MIXED.sport });
     await form.getByRole("combobox", { name: "Year", exact: true }).selectOption({ label: MIXED.year });
-    await expect(form.getByRole("combobox", { name: "Brand or set", exact: true })).toBeVisible();
+    const brandOrSet = form.getByRole("combobox", { name: "Brand or set", exact: true });
+    await expect(brandOrSet).toBeVisible();
+    // Picking the loose set there picks the set: the Set field goes, and the
+    // form says so (a screen reader would otherwise hear a field vanish).
+    await brandOrSet.selectOption({ label: looseSet });
+    await expect(form.getByRole("status").filter({ hasText: `Set picked: ${looseSet}. On to the checklist.` })).toBeAttached();
+    await expect(form.getByRole("combobox", { name: "Set", exact: true })).toHaveCount(0);
+    await expect(form.getByRole("combobox", { name: "Checklist", exact: true })).toBeVisible();
     await expect(requestDialog).not.toContainText("Unknown");
     await page.keyboard.press("Escape");
     await expect(requestDialog).toBeHidden();
