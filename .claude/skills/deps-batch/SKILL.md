@@ -1,6 +1,6 @@
 ---
 name: deps-batch
-description: Consolidate all open Dependabot PRs in the NeonBinder monorepo into one maintainer-authored, locally-validated batch PR — triage the bumps, integrate them one at a time in a fresh worktree with a validation gate after each, run the full local lint/unit/build gates, push, let CI run the full E2E suite, watch CI, and on approval merge and close out every Dependabot artifact (PRs, branches, Linear ticket, worktree). Use when Dependabot PRs have piled up (e.g. "deal with the dependabot PRs", "batch the dependency updates", "run the deps batch"). Never merges a Dependabot PR directly; never adds secrets to the Dependabot secret store; requires explicit approval before merging the batch.
+description: Consolidate all open Dependabot PRs in the NeonBinder monorepo into one maintainer-authored, locally-validated batch PR — triage the bumps, integrate them one at a time in a fresh worktree with a validation gate after each, run the full local lint/unit/build gates, get approval, join the pr-queue and on its turn push, let CI run the full E2E suite, merge on green and close out every Dependabot artifact (PRs, branches, Linear ticket, worktree). Use when Dependabot PRs have piled up (e.g. "deal with the dependabot PRs", "batch the dependency updates", "run the deps batch"). Never merges a Dependabot PR directly; never adds secrets to the Dependabot secret store; requires explicit approval before the batch joins the queue.
 argument-hint: [--repo <dir>] [--exclude <pr#>[,<pr#>...]]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, ToolSearch, AskUserQuestion, WebFetch, mcp__linear-server__get_issue, mcp__linear-server__list_issues, mcp__linear-server__save_issue, mcp__linear-server__list_issue_statuses, mcp__linear-server__list_teams
 ---
@@ -286,9 +286,9 @@ batch touched). Record the counts for the PR body.
 **E2E is CI's job here, not the laptop's.** The batch is maintainer-authored, so it
 gets the full 8-shard Playwright matrix on the PR, and a local full-suite run costs far
 more than it proves (see CLAUDE.md, "The PR loop"). Run the specs a bump plausibly
-touches on this worktree's own deployment before step 7 pushes (CLAUDE.md, "Run your
+touches on this worktree's own deployment before step 7 asks for approval (CLAUDE.md, "Run your
 specs on your own Convex deployment before the first push"), not the whole suite. Do
-not skip or defer anything silently: the E2E result is part of step 8's verdict, and a
+not skip or defer anything silently: the local spec results are part of step 7's report, and a
 red spec is debugged with that one spec on that deployment, or against the PR preview
 when it cannot reproduce it
 (`apps/web/playwright/GUIDE.md` -> **Running**).
@@ -300,7 +300,23 @@ also run `npm run test:e2e:typecheck` and `npx eslint playwright` locally, and
 
 ---
 
-## Step 7 — Push and open the batch PR
+## Step 7 — Ask for approval, then join the queue
+
+CI is handed out one ticket at a time by the `pr-queue` skill, and a turn's run
+ends in a merge on green, so **approval comes before the push**. Report the bump
+table, the toolchain each bump was validated on, the local gate counts, the
+majors' safety reasons and the audit delta, and stop. Joining requires the
+user's explicit approval for this batch, every time.
+
+Once approved: `/pr-queue join <NEO-###>`. Do not push until the turn comes.
+
+---
+
+## Step 8 — On the turn: push, open the PR, watch, merge
+
+Follow the `pr-queue` turn steps (merge main, push and open the PR, watch CI,
+one rerun only for a flake that names an outside service, merge on green with
+`pr-close`, notify, tell the other sessions, tell the queue). For this skill:
 
 ```bash
 git push -u origin "$BR"
@@ -320,28 +336,15 @@ PR body must contain:
 
 Label it `dependencies` (and `github_actions` if Actions were bumped).
 
-**Then launch `/pr-watch <PR>` in the background and tell the user** — this is required
-after every push to a PR branch.
-
----
-
-## Step 8 — Wait for approval
-
-CI green is **not** authorization to merge. Report the verdict and stop. Merging
-requires the user's explicit per-PR approval, every time.
-
-While waiting: if CI goes red, diagnose from the actual failure log before pushing any
-fix. A `gh run rerun` of the PR Pipeline re-runs the E2E workflow from setup
-(scripted reset and seed included), so it is a valid retry for a flake; push a fresh
-commit when the code changed. Also note that `main`'s ruleset requires branches be
-up to date, so every trailing PR merged ahead of this one costs a branch update and a
-full ~25-minute re-run — another reason the batch is one PR, not N.
+A red that is not an outside-service flake passes the turn: diagnose from the actual
+failure log, fix locally, and join again. `main`'s ruleset requires branches be up to
+date, which is why the batch is one PR, not N.
 
 ---
 
 ## Step 9 — Close out EVERY Dependabot artifact
 
-Run `/pr-close <PR> <NEO-###>` for the merge → prod-verify → smoke-test → Linear →
+The turn's `/pr-close <PR> <NEO-###>` does the merge → prod-verify → smoke-test → Linear →
 worktree gates. That skill handles the batch PR itself. **This step covers what it does
 not know about: the Dependabot fleet.**
 
@@ -424,8 +427,10 @@ that went `READY`, which Dependabot PRs/branches were closed or deleted, what wa
   ~30 phantom browser failures and ~31 silently-dropped web tests.
 - **Never batch a major in with the grouped minors.** Majors go last, one commit each.
 - **Never let one failing bump block the batch** — drop it, park it, ticket it, and say
-  so. And never call a failure flaky.
-- **Never merge without the user's explicit per-PR approval**, no matter how green.
+  so. And never call a failure flaky unless its evidence names an outside service
+  (the `pr-queue` flake rule).
+- **Never join the queue without the user's explicit approval for this batch.** The
+  turn merges on green, so that approval is the merge approval.
 - **Never close a parked bump's Dependabot PR.** It is still the tracking artifact.
 - **Never delete a remote branch without asking**, and never remove a worktree with
   uncommitted changes.
