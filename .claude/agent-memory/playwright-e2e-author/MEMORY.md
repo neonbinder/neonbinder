@@ -126,3 +126,4 @@
 - [Checklist is a Match Cards source](patterns_checklist_is_a_match_cards_source.md) — NEO-496: BSC + checklist opens Match Cards paused; paste heading has no digit; no-checklist branches are dead
 - [Blocked parallel via a collector copy](patterns_blocked_parallel_via_a_collector_copy.md) — NEO-496: Have one built-parallel card; list/ledger strings; finally cleanup
 - [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)
+- [List scroll vs page scroll in a viewport red](patterns_split_list_scroll_from_page_scroll_in_a_viewport_red.md) — read which scroll failed from the PNG; prod-build + main-snapshot probes rule out dev-only/branch height
