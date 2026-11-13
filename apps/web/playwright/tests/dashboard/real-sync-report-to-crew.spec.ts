@@ -190,6 +190,9 @@ test(
     await mine.getByRole("button", { name: WITHDRAW_REPORT }).click();
     await expect(mine).toHaveCount(0);
     written.reported = false;
+    await expect(
+      page.getByRole("status").filter({ hasText: `Withdrew the report on ${setLabel}` }).filter({ hasText: "BuySportsCards" }),
+    ).toBeVisible();
     await expect(reportButton).toBeVisible();
     await expect(set.getByText(REPORTED)).toHaveCount(0);
     await reportWithNote();

@@ -7,8 +7,10 @@
  * newest requests (at most `MAX_REQUEST_LIST`) and open reports (at most
  * `MAX_OPEN_SYNC_REPORTS`; every one is in `reportedKeys`, which says
  * "Reported" on Sync status); `crewDesk.waiting`, asked only for an admin,
- * reads at most `CREW_DESK_WAITING` + 1 of each, and for each report set the
- * others who reported it, counted to `SYNC_REPORT_GROUP_COUNT_CAP`. Neither re-runs on the
+ * reads at most `CREW_DESK_WAITING` + 1 requests, and scans open reports
+ * lazily to `CREW_DESK_WAITING` + 1 distinct sets (bounded by
+ * `CREW_DESK_REPORT_SCAN`), counting for each the others who reported it, to
+ * `SYNC_REPORT_GROUP_COUNT_CAP`. Neither re-runs on the
  * dashboard's own writes, only on a request or report changing, which is
  * exactly when the screen should move ("Reported" after a send, a row gone
  * after a withdraw).
