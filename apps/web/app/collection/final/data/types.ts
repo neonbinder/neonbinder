@@ -1141,6 +1141,12 @@ export interface SaleItem {
   problem?: SaleItemProblem;
   /** `oversold` only: how many sold that NB had no box copy for. */
   shortBy?: number;
+  /**
+   * NEO-520 — the listing's own title as the platform sent it (eBay only).
+   * Shown only on a line with no NB card: the one thing that says what sold
+   * when NeonBinder didn't list it. Never read as card data.
+   */
+  title?: string;
 }
 
 /** One order a collector received on a platform. Money is integer cents. */

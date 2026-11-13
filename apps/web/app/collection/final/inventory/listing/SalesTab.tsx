@@ -18,7 +18,7 @@ import {
   saleCondition,
   saleItemProblem,
   SALE_PARAM,
-  unmatchedCard,
+  unmatchedSale,
 } from "./copy";
 
 /** The order the platforms read in, wherever more than one shows. */
@@ -55,6 +55,10 @@ function either(platforms: ListingPlatform[]): string {
  * NEO-500: `?sorder=<sale id>` (the Pick List's link for a line NB couldn't
  * match) brings that order into view, marked, with focus on its heading;
  * an order past the first page loads more pages to reach it.
+ *
+ * NEO-520: every eBay line shows, listed by NB or not. A line with no NB
+ * card is named by the listing's own title (never called a card), and an
+ * order with such a line counts "items", not "cards".
  *
  * Hidden in a store with no listing (the demo): the page leaves the tab out.
  */
@@ -220,6 +224,8 @@ function Order({
   const name = PLATFORM_NAME[sale.platform];
   const total = sale.totals.totalCents ?? sale.totals.subtotalCents;
   const copies = sale.items.reduce((n, item) => n + item.quantity, 0);
+  // NEO-520: a line with no NB card may not be a card at all, so the count says items.
+  const unit = sale.items.some((item) => item.cardId === undefined) ? "item" : "card";
   return (
     <li>
       <article
@@ -237,7 +243,7 @@ function Order({
           </span>
           <span className="text-sm text-ink-3">{orderDay(sale.orderDate)}</span>
           <span className="ml-auto text-sm text-ink-2">
-            {copies} {copies === 1 ? "card" : "cards"}
+            {copies} {copies === 1 ? unit : `${unit}s`}
             {total !== undefined && (
               <>
                 {", "}
@@ -279,12 +285,17 @@ function Order({
 
 function Line({ item, platform, card }: { item: SaleItem; platform: ListingPlatform; card: Card | undefined }) {
   const problem = saleItemProblem(item, platform);
-  const name = card ? cardLabel(card) : item.cardId ? "A card that has left the catalog" : unmatchedCard(platform);
+  // No NB card: the listing's own title when the platform sent one (eBay), else plain words that never guess.
+  const name = card
+    ? cardLabel(card)
+    : item.cardId
+      ? "A card that has left the catalog"
+      : item.title?.trim() || unmatchedSale(platform);
   const condition = saleCondition(item.condition, platform);
   return (
     <li className="text-sm">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-        <span className="min-w-0 flex-1 text-ink">
+        <span className="min-w-0 flex-1 break-words text-ink">
           <span className="font-semibold tabular-nums">{item.quantity}×</span> {name}
           {condition && <span className="text-ink-3"> ({condition})</span>}
         </span>

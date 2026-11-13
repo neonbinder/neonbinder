@@ -6,6 +6,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { toCardWithPath } from "../data/convexStore";
 import type { Card, Condition } from "../data/types";
+import { EBAY_UNTITLED_SALE } from "../inventory/listing/copy";
 import { PageApiContext } from "../pageApi";
 import { listedTitle } from "./model";
 import { PickListStoreContext } from "./store";
@@ -39,7 +40,9 @@ export { listedTitle };
  * for it (`listed`). The store reads its sport through `sports` (once per
  * sport, like `cards`), turns the words into a `ListedCard`, and titles the
  * line with them (`listedTitle`): "2021 Score 1991 Throwback #TB2 · Justin Fields".
- * Only a line that says nothing is "Unmatched sale (n of m)".
+ * Only a line that says nothing is "Unmatched sale (n of m)"; on eBay,
+ * where NB may never have listed it, "A sale with no title (n of m)" (NEO-520),
+ * the same words the Sales tab uses.
  */
 
 type OpenAnswer = FunctionReturnType<typeof api.pickList.open>;
@@ -161,6 +164,8 @@ export function toListedCard(raw: RawListed, sport: SportRow | null | undefined)
     // A word NB does not file by ("Variation") is how the seller tells the copy from the base: kept as written.
     ...(variant && !kind ? { variantWord: variant } : {}),
     ...(variantName ? { variantName } : {}),
+    // NEO-520: the listing's own title (eBay), a label only; never parsed for a place.
+    ...(words(raw.title) ? { title: words(raw.title) } : {}),
   };
   return Object.keys(out).length ? out : undefined;
 }
@@ -188,15 +193,21 @@ export function toSaleLines(
     const nth = options.lostIndex && options.lostIndex.of > 1 ? ` (${options.lostIndex.n} of ${options.lostIndex.of})` : "";
     // The Order column (a link to the sale) says which order; the toggle's name adds it.
     const said = options.listed ? listedTitle(options.listed) : "";
-    return `${said || "Unmatched sale"}${nth}`;
+    // NEO-520: an eBay line may be anything NB didn't list, so it is never called a card or a match.
+    return `${said || (raw.platform === "ebay" ? EBAY_UNTITLED_SALE : "Unmatched sale")}${nth}`;
   };
 
   if (raw.cantFind || !raw.cardId || !hydrated?.card) {
+    // NEO-520: an eBay line NB can't tie to a card is one NB didn't list (as `saleItemProblem` says it).
+    const unmatchedProblem =
+      raw.platform === "ebay"
+        ? "NB didn't list this one. Check the order's photo."
+        : "NB couldn't match this line. Check the order's photo.";
     const problem =
       raw.cantFind === "linkMismatch"
         ? "This listing's card doesn't match NB's card. Check the order's photo."
         : raw.cantFind === "unmatched" || !raw.cardId
-          ? "NB couldn't match this line. Check the order's photo."
+          ? unmatchedProblem
           : "This card isn't in NB's catalog any more. Check the order's photo.";
     const listed = options.listed && listedTitle(options.listed) ? options.listed : undefined;
     return [

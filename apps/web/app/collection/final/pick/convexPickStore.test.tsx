@@ -18,6 +18,7 @@ vi.mock("convex/react", () => ({
   useMutation: () => mutate,
 }));
 
+import { unmatchedSale } from "../inventory/listing/copy";
 import { ConvexPickListProvider, listedTitle, listedYear, toListedCard } from "./convexPickStore";
 import { PickListStoreContext } from "./store";
 import type { PickListStore } from "./types";
@@ -246,6 +247,9 @@ describe("NEO-509: a sale's own words for its card", () => {
       2021, 2023, 2023, undefined, undefined, undefined, undefined,
     ]);
     expect(toListedCard({ sport: " ", players: "" }, undefined)).toBeUndefined();
+    // NEO-520: a title alone is a listed card (a label); a blank one is nothing.
+    expect(toListedCard({ title: "Lot of 10" }, undefined)).toEqual({ title: "Lot of 10" });
+    expect(toListedCard({ title: "  " }, undefined)).toBeUndefined();
   });
 });
 
@@ -358,6 +362,49 @@ describe("NEO-509: the sports a sale names", () => {
     // Every control name is the title plus its order: unique across the list.
     const names = store!.data!.lines.map((l) => `${l.listingTitle}|${l.order.id}`);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("NEO-520: an eBay line with only a title is named by it, carries it as listed, and keeps its next step", async () => {
+    await mountWith([lostLine(1, { title: "  Vintage   binder lot " }, { platform: "ebay", orderNo: "27-1" })]);
+    const [only] = store!.data!.lines;
+    expect(only.listingTitle).toBe("Vintage binder lot");
+    expect(only.listed).toEqual({ title: "Vintage binder lot" });
+    expect(only.order.venue).toBe("eBay");
+    expect(only.problem).toBe("NB didn't list this one. Check the order's photo.");
+  });
+
+  it("NEO-520: an eBay line with no title and no card words reads as the Sales tab does, never a card or a match", async () => {
+    await mountWith([
+      lostLine(1, {}, { platform: "ebay", orderNo: "27-1" }),
+      lostLine(2, {}, { platform: "ebay", orderNo: "27-1" }),
+      lostLine(3, {}, { id: "s2~lost3", saleId: "s2", platform: "ebay", orderNo: "27-2" }),
+    ]);
+    const [first, second, alone] = store!.data!.lines;
+    expect(alone.listingTitle).toBe("A sale with no title");
+    expect(alone.listingTitle).toBe(unmatchedSale("ebay"));
+    expect([first.listingTitle, second.listingTitle]).toEqual(["A sale with no title (1 of 2)", "A sale with no title (2 of 2)"]);
+    for (const line of [first, second, alone]) {
+      expect(line.problem).toBe("NB didn't list this one. Check the order's photo.");
+      expect(`${line.listingTitle} ${line.problem}`).not.toMatch(/\bcard\b|match/i);
+    }
+  });
+
+  it("NEO-520: a BuySportsCards line with nothing to say keeps its words", async () => {
+    await mountWith([lostLine(1, {})]);
+    const [only] = store!.data!.lines;
+    expect(only.order.venue).toBe("BSC");
+    expect(only.listingTitle).toBe("Unmatched sale");
+    expect(only.problem).toBe("NB couldn't match this line. Check the order's photo.");
+  });
+
+  it("NEO-520: lines of one order with the same title are numbered like any other twins", async () => {
+    await mountWith([lostLine(1, { title: "Same lot" }), lostLine(2, { title: "Same lot" })]);
+    expect(store!.data!.lines.map((l) => l.listingTitle)).toEqual(["Same lot (1 of 2)", "Same lot (2 of 2)"]);
+  });
+
+  it("NEO-520: card words keep naming the line when a title rides along", async () => {
+    await mountWith([lostLine(1, { title: "Eight cards", year: "2021", setName: "Score", cardNo: "5" })]);
+    expect(store!.data!.lines[0].listingTitle).toBe("2021 Score #5");
   });
 
   it("keeps the described line's listed card and its next step, and an undescribed one carries none", async () => {

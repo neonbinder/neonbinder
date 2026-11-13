@@ -666,6 +666,33 @@ describe("NEO-509: which NB set a listing joins", () => {
   });
 });
 
+describe("NEO-520: a listing named only by its own title", () => {
+  const titled = (title: string, over: Partial<ListedCard> = {}): ListedCard => ({ title, ...over });
+
+  it("a listing with no card words is named by its title, trimmed", () => {
+    expect(listedTitle(titled("  2024 Topps Chrome #205 Some Player RC  "))).toBe("2024 Topps Chrome #205 Some Player RC");
+    expect(listedTitle(titled("   "))).toBe("");
+  });
+
+  it("card words win over the title; the title is never mixed in", () => {
+    expect(listedTitle(titled("Whole lot of cards", { season: "2021", year: 2021, setName: "Score", cardNumber: "5" }))).toBe("2021 Score #5");
+    expect(listedTitle(titled("Whole lot of cards", { players: "Someone" }))).toBe("Someone");
+  });
+
+  it("a title-only line stays in Can't find it, however much its title reads like a set, and never joins an NB set", () => {
+    const nb = line(card({ setId: "a", setName: "Topps Chrome", sport: "Baseball", season: "2024", number: "205" }));
+    const only = line(null, { order: EBAY_1, listingTitle: "2024 Topps Chrome #205 Some Player", sportCode: null, listed: titled("2024 Topps Chrome #205 Some Player") });
+    const sections = buildSections([nb, only], {}, { sort: null, dir: "asc", groupByOrder: false });
+    const cant = sections.find((x) => x.kind === "cantFind")!;
+    expect(cant.rows).toHaveLength(1);
+    expect(cant.rows[0].card).toBeNull();
+    const set = sections.find((x) => x.kind === "set")!;
+    expect(set.rows).toHaveLength(1);
+    expect(rowFacts(cant.rows[0])).toBeNull();
+    expect(listedSetFor(only.listed!, setsOnList([nb, only]))).toBeNull();
+  });
+});
+
 describe("NEO-509: the variant words a listing gives", () => {
   const listed = (over: Partial<ListedCard> = {}): ListedCard => ({
     sportName: "Football",

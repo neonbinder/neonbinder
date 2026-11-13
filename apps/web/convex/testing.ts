@@ -43,10 +43,12 @@ import type { ActionCtx } from "./_generated/server";
 import {
   applySaleLinesCore,
   eraOfVariant,
+  projectEbayOrderForRecord,
   recordOrderCore,
   SALE_ITEMS_PER_APPLY,
   type ProjectedOrder,
 } from "./listingSales";
+import { ebayLineTitle, projectEbayOrder } from "./lib/ebayListing";
 import { TEST_OUTBOX_SEQ, TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK } from "./lib/testSeedMarks";
 import { bscConditionFor, type BscEra } from "./lib/bscConditions";
 import { buildListingSku } from "./lib/listingSku";
@@ -2267,6 +2269,167 @@ export const seedMyTestPickOrder = mutation({
     }
 
     const recorded = await recordOrderCore(ctx, { ownerId, platform: "bsc", order }, { skipPollGate: true });
+    if (recorded.saleId === null) throw new Error("The order was not recorded");
+    let applied = 0;
+    for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
+      const r = await applySaleLinesCore(
+        ctx,
+        { ownerId, saleId: recorded.saleId, indexes: recorded.toApply.slice(i, i + SALE_ITEMS_PER_APPLY) },
+        { skipPollGate: true },
+      );
+      applied += r.applied;
+    }
+    return { saleId: recorded.saleId, lines: order.items.length, applied };
+  },
+});
+
+// ── NEO-520: an eBay order NB didn't list, for the unmatched-sale spec ─────
+
+/** Lines one seeded eBay order may carry, and copies one line may sell. */
+const EBAY_SEED_MAX_LINES = 3;
+const EBAY_SEED_MAX_QUANTITY = 10;
+
+/**
+ * A line's quantity, bounded in the validator: one of the whole numbers
+ * 1..`EBAY_SEED_MAX_QUANTITY`, so a zero, fractional or huge quantity is
+ * refused before the handler runs (typed `number` for the caller). The
+ * line count and the title cannot be bounded by a Convex validator, so
+ * `ebaySeedLinesProblem` checks them first thing in the handler.
+ */
+const ebaySeedQuantityValidator = v.union(
+  ...Array.from({ length: EBAY_SEED_MAX_QUANTITY }, (_, i) => v.literal(i + 1)),
+);
+
+/**
+ * Why `lines` is out of bounds, or null: at most `EBAY_SEED_MAX_LINES`
+ * lines, each quantity a whole number 1..`EBAY_SEED_MAX_QUANTITY` (again,
+ * beside the validator), each title one `ebayLineTitle` keeps (bounded,
+ * no control or format character). Runs before any read, on every call that
+ * names lines (a retry or `ship` included), so nothing unbounded goes
+ * further. Whether a new order names at least one line is checked where the
+ * order is built.
+ */
+function ebaySeedLinesProblem(lines: ReadonlyArray<{ title?: string; quantity: number }>): string | null {
+  if (lines.length > EBAY_SEED_MAX_LINES) return `lines must name 1-${EBAY_SEED_MAX_LINES} lines`;
+  for (let i = 0; i < lines.length; i += 1) {
+    const { quantity, title } = lines[i];
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > EBAY_SEED_MAX_QUANTITY) {
+      return `quantity must be 1-${EBAY_SEED_MAX_QUANTITY}`;
+    }
+    if (title !== undefined && ebayLineTitle(title) === null) return `lines[${i}].title is not a title NB would keep`;
+  }
+  return null;
+}
+
+/**
+ * NEO-520 — an eBay order on the CALLER's account whose every line is one
+ * NeonBinder didn't list (no NB SKU), recorded and applied exactly as the
+ * order poll would, for the unmatched-sale spec. A real sandbox order can't
+ * be made on cue, so this builds the raw Fulfillment `Order` the poll reads
+ * and runs it through the poll's own path: `projectEbayOrder` (the real
+ * projection, title bounds included) → `projectEbayOrderForRecord` (with no
+ * date floor) → `recordOrderCore` → `applySaleLinesCore`, skipping only the
+ * poll gate (whether the account's listing state polls sales).
+ *
+ * The order: PAID, NOT_STARTED, created now, `orderId` =
+ * `TEST_SALE_ORDER_PREFIX` + `orderNo` (so the poll never re-reads it from
+ * eBay; the order number shown is the spec's own token). One line per
+ * `lines` entry (1-3): legacy item id `nb-test-item-<n>`, SKU
+ * `nb-test-other-<n>` (not NB's, so the apply refuses it as unmatched and
+ * touches no box), the given quantity at $1.00 each, and the given title (a
+ * title the projection would drop is refused here instead, so the spec never
+ * lands on the no-title words by accident; an absent title sends none). No
+ * buyer, ship-to or any other buyer field is written.
+ * Seeding an `orderNo` that exists records the stored order again as it is;
+ * `ship` re-records it as FULFILLED, which takes it off the Pick List.
+ *
+ * Safety, in the same shape as `seedMyTestPickOrder`:
+ *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
+ *   - only the CALLER's rows (no owner argument to spoof);
+ *   - calls no marketplace, and refuses outright while the caller pushes
+ *     counts to any platform (`listsAnywhere`);
+ *   - every argument is bounded before any read: the quantity in the
+ *     validator, the order number, line count and titles first thing in the
+ *     handler.
+ */
+export const seedMyTestEbayOrder = mutation({
+  args: {
+    orderNo: v.string(),
+    lines: v.optional(v.array(v.object({ title: v.optional(v.string()), quantity: ebaySeedQuantityValidator }))),
+    ship: v.optional(v.boolean()),
+  },
+  returns: v.object({ saleId: v.id("marketplaceSales"), lines: v.number(), applied: v.number() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The eBay order seed is not enabled on this deployment");
+    }
+    const ownerId = await getCurrentUserId(ctx);
+    if (!ownerId) throw new Error("Not authenticated");
+    if (!PICK_SEED_ORDER_NO_RE.test(args.orderNo)) throw new Error("orderNo must be one token (letters, digits, - or _)");
+    const linesProblem = args.lines !== undefined ? ebaySeedLinesProblem(args.lines) : null;
+    if (linesProblem !== null) throw new Error(linesProblem);
+    if (await listsAnywhere(ctx, ownerId)) {
+      throw new Error("The eBay order seed refuses an account that pushes to a marketplace");
+    }
+    const orderId = `${TEST_SALE_ORDER_PREFIX}${args.orderNo}`;
+    const existing = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_platform_order", (q) => q.eq("ownerId", ownerId).eq("platform", "ebay").eq("orderId", orderId))
+      .unique();
+
+    let order: ProjectedOrder;
+    if (args.ship && !existing) throw new Error(`No seeded eBay order ${args.orderNo} to ship`);
+    if (existing) {
+      // Seeded before: record the stored order again (a retried hop, or `ship`).
+      order = {
+        orderId,
+        orderNo: existing.orderNo,
+        orderDate: existing.orderDate,
+        status: args.ship ? "FULFILLED" : existing.status,
+        totals: existing.totals,
+        items: existing.items.map((item) => ({
+          platformCardId: item.platformCardId,
+          condition: item.condition,
+          quantity: item.quantity,
+          priceCents: item.priceCents,
+          ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
+          graded: false,
+        })),
+      };
+    } else {
+      // Bounded above (`ebaySeedLinesProblem`); a new order needs a line.
+      const lines = args.lines ?? [];
+      if (lines.length === 0) throw new Error(`lines must name 1-${EBAY_SEED_MAX_LINES} lines`);
+      const lineItems = lines.map((line, i) => ({
+        lineItemId: `nb-test-line-${i + 1}`,
+        legacyItemId: `nb-test-item-${i + 1}`,
+        sku: `nb-test-other-${i + 1}`,
+        ...(line.title !== undefined ? { title: line.title } : {}),
+        quantity: line.quantity,
+        lineItemCost: { value: line.quantity.toFixed(2), currency: "USD" },
+      }));
+      const subtotal = lines.reduce((sum, line) => sum + line.quantity, 0).toFixed(2);
+      const created = new Date().toISOString();
+      const raw = {
+        orderId,
+        creationDate: created,
+        lastModifiedDate: created,
+        orderPaymentStatus: "PAID",
+        orderFulfillmentStatus: "NOT_STARTED",
+        pricingSummary: {
+          priceSubtotal: { value: subtotal, currency: "USD" },
+          total: { value: subtotal, currency: "USD" },
+        },
+        lineItems,
+      };
+      const projected = projectEbayOrder(raw);
+      const recordable = projected ? projectEbayOrderForRecord(projected, { otherOrdersFrom: null }) : null;
+      if (!recordable) throw new Error("The seeded eBay order did not project");
+      // eBay shows the order id as its number; the spec reads its own token.
+      order = { ...recordable, orderNo: args.orderNo };
+    }
+
+    const recorded = await recordOrderCore(ctx, { ownerId, platform: "ebay", order }, { skipPollGate: true });
     if (recorded.saleId === null) throw new Error("The order was not recorded");
     let applied = 0;
     for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {

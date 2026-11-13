@@ -177,7 +177,9 @@ export default function PrivacyPage() {
               <P>
                 When a card sells on a marketplace you&apos;ve connected, we pull the order back so your
                 counts stay right: the order number, date, status, the cards sold, their prices and the
-                totals. We don&apos;t store the buyer&apos;s name, address, email or phone number.
+                totals. Things you sell on eBay that NeonBinder didn&apos;t list come back too, so you can
+                pack them. For those we keep the order number and the listing&apos;s title, quantity and
+                price. We don&apos;t store the buyer&apos;s name, address, email or phone number.
               </P>
             </Sub>
             <Sub title="Card photos">
@@ -312,7 +314,10 @@ export default function PrivacyPage() {
                 read your business policies and ship-from location, and create NeonBinder&apos;s standard
                 ones on your account if you press &ldquo;Set me up&rdquo;;
               </li>
-              <li>read your orders, so sales come back to your boxes;</li>
+              <li>
+                read your orders, so sales come back to your boxes. We read every order on the account,
+                including ones for listings NeonBinder didn&apos;t make, so you can pack those too;
+              </li>
               <li>read your eBay user id and username, so we know which account is yours.</li>
             </List>
             <P>

@@ -43,6 +43,9 @@ import {
   readFulfillmentPolicies,
   readReturnPolicies,
   ebayListingText,
+  ebayLineTitle,
+  EBAY_ORDER_MAX_LINES,
+  LISTED_TITLE_MAX,
   type EbayListingCopy,
 } from "./ebayListing";
 import type { NbCondition } from "./bscConditions";
@@ -670,7 +673,7 @@ describe("projectEbayOrder (NEO-415)", () => {
       disposition: "sale",
       totals: { subtotalCents: 3000, shippingCents: 100, feesCents: 400, totalCents: 3100 },
     });
-    expect(p?.lines).toEqual([{ legacyItemId: "123456", sku: "NB2-x-NM", quantity: 2, unitPriceCents: 1500 }]);
+    expect(p?.lines).toEqual([{ legacyItemId: "123456", sku: "NB2-x-NM", quantity: 2, unitPriceCents: 1500, title: null }]);
   });
 
   test("never carries buyer or ship-to data", () => {
@@ -718,6 +721,105 @@ describe("projectEbayOrder (NEO-415)", () => {
   test("a missing lastModifiedDate falls back to the creation date", () => {
     const p = projectEbayOrder(order({ lastModifiedDate: undefined }));
     expect(p?.lastModified).toBe(p?.orderDate);
+  });
+
+  describe("line titles and unreadable lines (NEO-520)", () => {
+    /** A line copied from the shape of a real Fulfillment getOrders `lineItems[]` entry. */
+    const realLine = () => ({
+      lineItemId: "10064392097327",
+      legacyItemId: "110554812345",
+      sku: "MY-OWN-SKU-7",
+      title: "2024 Topps Chrome #205 Some Player RC Rookie",
+      lineItemCost: { value: "4.99", currency: "USD" },
+      quantity: 1,
+      soldFormat: "FIXED_PRICE",
+      listingMarketplaceId: "EBAY_US",
+      purchaseMarketplaceId: "EBAY_US",
+      lineItemFulfillmentStatus: "NOT_STARTED",
+      total: { value: "4.99", currency: "USD" },
+      deliveryCost: { shippingCost: { value: "0.00", currency: "USD" } },
+      appliedPromotions: [],
+      taxes: [],
+      properties: { buyerProtection: true },
+      lineItemFulfillmentInstructions: { minEstimatedDeliveryDate: "2026-11-14T08:00:00.000Z", shipByDate: "2026-11-13T07:00:00.000Z" },
+    });
+
+    test("reads the line's title from a real getOrders line and nothing else of it", () => {
+      const p = projectEbayOrder(order({ lineItems: [realLine()] }));
+      expect(p?.lines).toEqual([
+        { legacyItemId: "110554812345", sku: "MY-OWN-SKU-7", quantity: 1, unitPriceCents: 499, title: "2024 Topps Chrome #205 Some Player RC Rookie" },
+      ]);
+      expect(p?.unreadableLines).toBe(0);
+    });
+
+    test("never carries a buyer key even with a title present", () => {
+      const text = JSON.stringify(projectEbayOrder(order({ lineItems: [realLine()] })));
+      for (const word of ["secretbuyer", "Hidden Person", "buyer"]) expect(text).not.toContain(word);
+    });
+
+    test("trims a title; a missing, blank or non-string title is null", () => {
+      const lines = [
+        { ...realLine(), legacyItemId: "1", title: "  padded title  " },
+        { ...realLine(), legacyItemId: "2", title: undefined },
+        { ...realLine(), legacyItemId: "3", title: "   " },
+        { ...realLine(), legacyItemId: "4", title: 42 },
+      ];
+      const p = projectEbayOrder(order({ lineItems: lines }));
+      expect(p?.lines.map((l) => l.title)).toEqual(["padded title", null, null, null]);
+    });
+
+    test("a title with a control or invisible format character is dropped to null, the line kept", () => {
+      const lines = ["bad\u0000title", "bad\ntitle", "zero\u200bwidth"].map((title, i) => ({ ...realLine(), legacyItemId: String(i + 1), title }));
+      const p = projectEbayOrder(order({ lineItems: lines }));
+      expect(p?.lines.map((l) => l.title)).toEqual([null, null, null]);
+      expect(p?.lines).toHaveLength(3);
+    });
+
+    test("a title hiding U+034F, U+061C or U+180E is dropped, inside or at either edge", () => {
+      for (const ch of ["\u034f", "\u061c", "\u180e"]) {
+        for (const title of [`Some${ch} Player`, `${ch}Some Player`, `Some Player${ch}`]) {
+          expect(ebayLineTitle(title)).toBeNull();
+        }
+      }
+    });
+
+    test("a title is kept at exactly the bound and dropped, never cut, one past it", () => {
+      const atBound = "a".repeat(LISTED_TITLE_MAX);
+      const past = "a".repeat(LISTED_TITLE_MAX + 1);
+      expect(ebayLineTitle(atBound)).toBe(atBound);
+      expect(ebayLineTitle(past)).toBeNull();
+      const p = projectEbayOrder(order({ lineItems: [{ ...realLine(), title: past }] }));
+      expect(p?.lines[0].title).toBeNull();
+    });
+
+    test("counts every line it drops: not an object, no item id, bad quantity, bad cost", () => {
+      const p = projectEbayOrder(
+        order({
+          lineItems: [
+            "not a line",
+            null,
+            { ...realLine(), legacyItemId: undefined },
+            { ...realLine(), quantity: 0 },
+            { ...realLine(), lineItemCost: { value: "x" } },
+            realLine(),
+          ],
+        }),
+      );
+      expect(p?.lines).toHaveLength(1);
+      expect(p?.unreadableLines).toBe(5);
+    });
+
+    test("lines past the per-order cap count as unreadable", () => {
+      const lineItems = Array.from({ length: EBAY_ORDER_MAX_LINES + 3 }, (_, i) => ({ ...realLine(), legacyItemId: `i${i}` }));
+      const p = projectEbayOrder(order({ lineItems }));
+      expect(p?.lines).toHaveLength(EBAY_ORDER_MAX_LINES);
+      expect(p?.unreadableLines).toBe(3);
+    });
+
+    test("an order with no lineItems array has zero lines and zero unreadable", () => {
+      const p = projectEbayOrder(order({ lineItems: undefined }));
+      expect(p).toMatchObject({ lines: [], unreadableLines: 0 });
+    });
   });
 
   test("ordersModifiedSinceFilter is eBay's lastmodifieddate range in UTC", () => {

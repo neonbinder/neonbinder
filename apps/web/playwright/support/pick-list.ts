@@ -41,20 +41,20 @@ export function pickList(page: Page) {
   return {
     region,
     heading: region.getByRole("heading", { level: 2, name: "Pick List" }),
-    /** "3 of 29 cards pulled". */
+    /** "3 of 29 pulled". */
     progress: (got: number, total: number) =>
-      region.getByText(`${got} of ${total} ${total === 1 ? "card" : "cards"} pulled`, { exact: true }),
+      region.getByText(`${got} of ${total} pulled`, { exact: true }),
     /** The whole list's table; By the Box has one per stop (`boxTable`). */
     table: region.getByRole("table", { name: "Cards to pull" }),
     boxTable: (boxName: string) => region.getByRole("table", { name: `Cards to pull from ${boxName}`, exact: true }),
     /** By the Box, the "Not in a box" stop: sales NB has no card for but whose listing says what they are, by set. */
     notInBoxTable: region.getByRole("table", { name: "Sales not in NB, by set", exact: true }),
     /** By the Box, the last stop: sales that say too little to file. */
-    cantFindTable: region.getByRole("table", { name: "Sales NB couldn't tie to a card", exact: true }),
+    cantFindTable: region.getByRole("table", { name: "Sales NB couldn't place", exact: true }),
     /** The "Only not in NB" quick filter (a toggle: `aria-pressed`). */
     onlyNotInNb: region.getByRole("group", { name: "Quick filters" }).getByRole("button", { name: "Only not in NB", exact: true }),
     views: region.getByRole("navigation", { name: "Pick List views" }),
-    /** The list's own filter count ("4 cards match."), always mounted, empty when unfiltered. */
+    /** The list's own filter count ("4 match."), always mounted, empty when unfiltered. */
     matches: region.getByRole("status"),
     find: region.getByRole("textbox", { name: "Find a card" }),
     quickFilters: region.getByRole("group", { name: "Quick filters" }),
@@ -248,6 +248,39 @@ export function listedLine(setTitle: string, players: string, cardNumber: string
 /** Marks a seeded order shipped (the hop's `ship=1`): its lines leave the Pick List. */
 export async function shipPickOrder(page: Page, orderNo: string, redirect = PICK_LIST_PATH): Promise<void> {
   const query = new URLSearchParams({ order: orderNo, ship: "1", redirect });
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/** How the list names an eBay order: "eBay <order number>" (its Order filter option and a row's order link). */
+export function ebayOrder(orderNo: string): string {
+  return `eBay ${orderNo}`;
+}
+
+/**
+ * Seeds one eBay order NeonBinder did not list (NEO-520,
+ * `/testing/seed-pick-order?platform=ebay`, testing deployments only): the
+ * caller's own order, recorded and applied exactly as the order poll does,
+ * with no marketplace call and no box touched (a line with no NeonBinder SKU
+ * is refused as unmatched). `lines` is 1-3 lines, each a `quantity` and the
+ * title eBay sent (leave `title` out for a line that sends none). It refuses
+ * an account that lists anywhere. `orderNo` must be one token. Opens `page`
+ * on the hop, so the browser does a full load (callers gate on the
+ * destination with `LAUNCH_GATE`).
+ */
+export async function seedEbayOrder(
+  page: Page,
+  order: { orderNo: string; lines: ReadonlyArray<{ quantity: number; title?: string }> },
+  redirect = PICK_LIST_PATH,
+): Promise<void> {
+  const query = new URLSearchParams({ platform: "ebay", order: order.orderNo, redirect });
+  // A repeated param, one per line, in the order given: "<quantity>:<title>" ("<quantity>:" sends no title).
+  for (const line of order.lines) query.append("line", `${line.quantity}:${line.title ?? ""}`);
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/** Marks a seeded eBay order shipped (the hop's `ship=1`): its lines leave the Pick List. */
+export async function shipEbayOrder(page: Page, orderNo: string, redirect = PICK_LIST_PATH): Promise<void> {
+  const query = new URLSearchParams({ platform: "ebay", order: orderNo, ship: "1", redirect });
   await page.goto(`/testing/seed-pick-order?${query.toString()}`);
 }
 

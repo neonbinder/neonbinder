@@ -106,11 +106,11 @@ const LIST_TWEAKS = [
 const COPY = {
   empty: "Nothing to pull. Go sell something rad.",
   done: "All pulled! Totally tubular.",
-  doneNote: "Every card on the list is out of its box. Hit Undo to put the last one back.",
+  doneNote: "Everything on the list is pulled. Hit Undo to put the last one back.",
   noMatch: "Nothing on the list matches these filters.",
-  matches: (n: number) => (n === 1 ? "1 card matches." : `${n} cards match.`),
+  matches: (n: number) => (n === 1 ? "1 match." : `${n} match.`),
   cantFind: "Can't find it",
-  cantFindNote: "NB couldn't tie these sales to one card. Check each listing's photo to find it.",
+  cantFindNote: "NB couldn't place these sales. Each listing's photo shows what sold.",
   cantFindStopNote: "These sales don't say enough to file. The order's photo is your best clue.",
   notInBox: "Not in a box",
   notInBoxNote: "NB has no copy of these, so no box to check. Go by each listing, set by set.",
@@ -121,7 +121,7 @@ const COPY = {
   truncated: "Your Pick List is too long to show at once, so it starts with your oldest orders. Pull these and the rest will show up.",
   saving: "Saving…",
   pullFailed: "That pull didn't save. Try it again.",
-  putBackFailed: "That card didn't go back on the list. Try it again.",
+  putBackFailed: "That one didn't go back on the list. Try it again.",
   noBox: "Box not recorded",
   noBoxNote: "These sold before NB kept track of boxes. Look wherever you keep the set.",
   fresh: "Sold since you started",
@@ -129,8 +129,8 @@ const COPY = {
   boxesDone: "Every box is clear. Totally tubular.",
   lastStop: (n: number) =>
     n === 1
-      ? "Plus 1 sale NB couldn't tie to a card. It waits after the boxes."
-      : `Plus ${n} sales NB couldn't tie to a card. They wait after the boxes.`,
+      ? "Plus 1 sale NB couldn't place. It waits after the boxes."
+      : `Plus ${n} sales NB couldn't place. They wait after the boxes.`,
 };
 
 function filtersFrom(params: URLSearchParams): PickFilters {
@@ -297,11 +297,11 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
       const message =
         scope.kind === "all"
           ? n === 1
-            ? "Pulled the last card. Pull complete!"
-            : `Pulled the last ${n} cards. Pull complete!`
+            ? "Pulled the last one. Pull complete!"
+            : `Pulled the last ${n}. Pull complete!`
           : scope.kind === "filtered"
             ? n === 1
-              ? "Pulled the 1 card that matches."
+              ? "Pulled the 1 that matches."
               : `Pulled all ${n} that match.`
             : scope.unrecorded
               ? `Pulled ${n} with no box noted.`
@@ -404,7 +404,7 @@ function PickHeader({
         </h2>
         <p className="text-sm text-ink-2">
           <span className="font-semibold text-ink tabular-nums">{got}</span> of{" "}
-          <span className="tabular-nums">{total}</span> {total === 1 ? "card" : "cards"} pulled
+          <span className="tabular-nums">{total}</span> pulled
         </p>
         {total > 0 && (
           <div aria-hidden="true" className="nb-pick-noprint h-1.5 w-56 max-w-full overflow-hidden rounded-full bg-rule">
@@ -1015,7 +1015,7 @@ function BoxView({
       <PickTable
         caption={
           stop.cantFind
-            ? "Sales NB couldn't tie to a card"
+            ? "Sales NB couldn't place"
             : stop.notInBox
               ? "Sales not in NB, by set"
               : stop.unrecorded
@@ -1054,9 +1054,10 @@ function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolea
       ? `${row.condition}, ${row.serial}`
       : row.condition;
   const orders = row.orders.map(orderLabel).join(" and ");
-  // A card-less row's title (the listing's words, or "Unmatched sale") says
-  // nothing of its order, so its name always carries it: two orders' strays
-  // never read alike. One the listing describes also says it is not in NB.
+  // A card-less row's title (the listing's words, "Unmatched sale" or "A sale
+  // with no title") says nothing of its order, so its name always carries it:
+  // two orders' strays never read alike. One the listing describes also says
+  // it is not in NB.
   // The title's " · " joins read as pauses here, never as "dot".
   // The picture's name carries the team the card shows (the row itself no longer prints it).
   const team = options.withTeam && c ? c.teams.map((t) => t.name).join(" / ") : "";
@@ -1315,11 +1316,21 @@ function PickTable({
   );
 }
 
+/**
+ * A group's count. NEO-520: a line NB didn't list is never called a card, so
+ * an order holding one counts items; every other group counts cards. Both row
+ * sizes read it from here.
+ */
+function sectionCount(section: PickSection): string {
+  const count = section.rows.reduce((n, r) => n + r.quantity, 0);
+  const items = section.kind === "order" && section.rows.some((r) => !r.card);
+  return `${count} ${items ? (count === 1 ? "item" : "items") : count === 1 ? "card" : "cards"}`;
+}
+
 function SectionHead({ section, columns, condensed }: { section: PickSection; columns: number; condensed: boolean }) {
   if (section.kind === "flat") return null;
   if (condensed) return <CondensedSectionHead section={section} columns={columns} />;
-  const count = section.rows.reduce((n, r) => n + r.quantity, 0);
-  const cards = `${count} ${count === 1 ? "card" : "cards"}`;
+  const cards = sectionCount(section);
   // A heading element may not sit in a table header cell, so the title takes
   // the heading role: heading navigation still reaches every set and group.
   // `label` names a heading apart when its words alone would read like another's.
@@ -1655,7 +1666,8 @@ function Row({
       {/* Nothing to file by: the listing's own words take the variant's and the number's columns too. */}
       <td colSpan={facts ? undefined : 3} className={`${cell} ${pad} max-md:hidden`}>
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className={facts ? `font-semibold text-ink ${big}` : "text-lg font-semibold leading-7 text-ink"}>{who}</span>
+          {/* NEO-520: a listing's own title may be one unspaced run; `wrap-anywhere` lets the cell shrink (WCAG 1.4.10). */}
+          <span className={facts ? `font-semibold text-ink ${big}` : "min-w-0 text-lg font-semibold leading-7 text-ink wrap-anywhere"}>{who}</span>
           <Markers row={row} salesLink={salesLink} />
         </span>
         {problem}
@@ -1670,7 +1682,7 @@ function Row({
             {qty}
             {variant}
             {facts && <span className="text-lg font-bold leading-7 text-ink tabular-nums">#{facts.cardNumber}</span>}
-            <span className="min-w-0 break-words text-lg font-semibold leading-7 text-ink">{who}</span>
+            <span className="min-w-0 text-lg font-semibold leading-7 text-ink wrap-anywhere">{who}</span>
             <Markers row={row} salesLink={salesLink} />
           </span>
           {setText}
@@ -1693,8 +1705,7 @@ function Row({
 // ---------------------------------------------------------------------------
 
 function CondensedSectionHead({ section, columns }: { section: PickSection; columns: number }) {
-  const count = section.rows.reduce((n, r) => n + r.quantity, 0);
-  const cards = `${count} ${count === 1 ? "card" : "cards"}`;
+  const cards = sectionCount(section);
   // A heading element may not sit in a table header cell, so the title takes
   // the heading role: heading navigation still reaches every set and group.
   // `label` names a heading apart when its words alone would read like another's.
@@ -2000,7 +2011,7 @@ function CondensedRow({
       {/* Nothing to file by: the listing's own words take the number's column too. */}
       <td colSpan={facts ? undefined : 2} className={`${cell} max-md:hidden`}>
         <span className="flex flex-col">
-          <span className={facts ? "whitespace-nowrap font-semibold text-ink" : "text-ink"}>{who}</span>
+          <span className={facts ? "whitespace-nowrap font-semibold text-ink" : "text-ink wrap-anywhere"}>{who}</span>
           {team && <span className="text-xs text-ink-3">{team}</span>}
           <span className="mt-1 empty:hidden">
             <CondensedMarkers row={row} salesLink={salesLink} />
@@ -2016,7 +2027,7 @@ function CondensedRow({
           <span className="flex flex-wrap items-baseline gap-x-2">
             {qty}
             {facts && <span className="font-bold text-ink tabular-nums">#{facts.cardNumber}</span>}
-            <span className="font-semibold text-ink">{who}</span>
+            <span className="min-w-0 font-semibold text-ink wrap-anywhere">{who}</span>
           </span>
           {setText}
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">

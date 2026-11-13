@@ -215,7 +215,7 @@ test(
       await filterBy(page, isMobile, "Order", bscOrder(first));
       await expect(page).toHaveURL(/[?&]porder=/);
       // A, B, I, the stray line, the described line and the no-number line.
-      await expect(pick.matches).toHaveText("6 cards match.");
+      await expect(pick.matches).toHaveText("6 match.");
 
       // A: the sale took the box's last copy, and NB held one fewer than sold.
       const rowA = pickRow(table, CARD_A.short);
@@ -332,7 +332,7 @@ test(
       await pick.onlyNotInNb.click();
       await expect(pick.onlyNotInNb).toHaveAttribute("aria-pressed", "true");
       await expect(page).toHaveURL(/[?&]pnotnb=1(&|$)/);
-      await expect(pick.matches).toHaveText("3 cards match.");
+      await expect(pick.matches).toHaveText("3 match.");
       await expect(pulledToggle(table, listedTitle)).toBeVisible();
       await expect(nonumToggle(cantFind)).toBeVisible();
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toBeVisible();
@@ -342,7 +342,7 @@ test(
       await pick.onlyNotInNb.click();
       await expect(pick.onlyNotInNb).toHaveAttribute("aria-pressed", "false");
       await expect(page).not.toHaveURL(/[?&]pnotnb=/);
-      await expect(pick.matches).toHaveText("6 cards match.");
+      await expect(pick.matches).toHaveText("6 match.");
       await expect(pulledToggle(table, CARD_A.short)).toBeVisible();
 
       // --- NEO-522: Row size, Spacious (the default) or Condensed (the rows as they were) ---------
@@ -380,7 +380,7 @@ test(
         if (!isMobile) await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toHaveCount(0);
       };
       await expectCondensed();
-      await expect(pick.matches).toHaveText("6 cards match.");
+      await expect(pick.matches).toHaveText("6 match.");
       // This device remembers it: a reload (a full page load: the launch gate) opens Condensed.
       await page.reload();
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
@@ -421,7 +421,7 @@ test(
       }
       // No box holds the three sales NB has no card for: the first box says they wait after the boxes.
       await expect(
-        region.getByText("Plus 3 sales NB couldn't tie to a card. They wait after the boxes.", { exact: true }),
+        region.getByText("Plus 3 sales NB couldn't place. They wait after the boxes.", { exact: true }),
       ).toBeVisible();
       await expectAccessible(page, { label: "Pick List, By the Box" });
 
@@ -466,7 +466,7 @@ test(
       await page.goBack();
       await expect(pick.views.getByRole("link", { name: "Whole list", exact: true })).toHaveAttribute("aria-current", "page");
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("6 cards match.");
+      await expect(pick.matches).toHaveText("6 match.");
 
       // --- The stray line's order opens on the Sales tab, that order focused; Back returns -----
       const toSales = pickRow(cantFind, unmatchedLine(first)).getByRole("link", {
@@ -488,7 +488,7 @@ test(
       await page.goBack();
       await expect(pick.heading).toBeVisible();
       await expect(page).toHaveURL(/[?&]porder=/);
-      await expect(pick.matches).toHaveText("6 cards match.");
+      await expect(pick.matches).toHaveText("6 match.");
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toHaveAttribute("aria-pressed", "false");
 
       // --- Pull B and Undo it; pull the described line and Undo it; pull A -------------------
@@ -518,7 +518,7 @@ test(
       // in its set and the no-number one still under Can't find it.
       await page.reload();
       await expect(pick.heading).toBeVisible();
-      await expect(pick.matches).toHaveText("5 cards match.");
+      await expect(pick.matches).toHaveText("5 match.");
       await expect(pulledToggle(table, CARD_B.short)).toHaveAttribute("aria-pressed", "false");
       await expect(pulledToggle(cantFind, unmatchedLine(first))).toBeVisible();
       await expect(nonumToggle(cantFind)).toHaveAttribute("aria-pressed", "false");
@@ -549,7 +549,7 @@ test(
 
       // --- Pull these 2: the new order, with its confirm ------------------------------------
       await filterBy(page, isMobile, "Order", bscOrder(second));
-      await expect(pick.matches).toHaveText("2 cards match.");
+      await expect(pick.matches).toHaveText("2 match.");
       await region.getByRole("button", { name: "Pull these 2", exact: true }).click();
       const confirm = region.getByRole("button", { name: "Pull these 2?", exact: true });
       await expect(confirm).toBeVisible();

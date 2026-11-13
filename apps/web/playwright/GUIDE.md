@@ -280,7 +280,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `shipPickOrder` (`/testing/seed-pick-order`, the caller's own box, no
   marketplace call; it refuses an account that lists anywhere), with
   `bscOrder` / `unmatchedLine` for how the list names an order and a line NB
-  could not tie to a card. A tick is optimistic and the list shows no
+  could not tie to a card; `seedEbayOrder` / `shipEbayOrder` / `ebayOrder`
+  (NEO-520, `platform=ebay`) seed an eBay order NB did not list, lines given
+  as a quantity and an optional title, touching no box. A tick is optimistic and the list shows no
   "saved" state, so a spec that reloads or navigates after a pull first reads
   the list in a second tab (`inventory-pick-list`'s `fromServer`).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,

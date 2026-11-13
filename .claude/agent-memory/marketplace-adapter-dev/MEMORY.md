@@ -81,3 +81,4 @@
 - [Convex doc-size budget counts framing](reference_convex_doc_size_budget_counts_framing.md) — getDocumentSize adds ~3 B/field + ~10 B/object; test both fat and many-tiny worst shapes
 - [Edit tool decodes \u escapes](reference_edit_tool_decodes_unicode_escapes.md) — format/bidi escapes land as literal chars; U+2028 in a regex = PARSE_ERROR; write via python, grep -P after
 - [Lint crashes beside a vitest run](reference_lint_crashes_beside_a_vitest_run.md) — eslint glob stack trace when .vitest/ vanishes mid-walk is not a result; rerun lint alone
+- [Date-cutoff rules need a frozen clock](reference_date_cutoff_rules_need_a_frozen_clock_in_convex_test.md) — _creationTime is real time; freeze Date per describe; ceil/floor fractional ms

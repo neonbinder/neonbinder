@@ -180,6 +180,10 @@ export const BSC_LISTED_BOUNDS = {
  * around them reads without showing themselves. A U+202E inside a card number
  * or set name can visually reorder what a seller reads on the Pick List or the
  * print sheet, so they pull the wrong card. Matched:
+ * - U+034F combining grapheme joiner (invisible; NEO-520),
+ * - U+061C Arabic letter mark (a bidi mark like LRM/RLM; NEO-520),
+ * - U+180E Mongolian vowel separator (zero width, and not JS whitespace, so
+ *   trim() leaves it; NEO-520),
  * - U+200B–U+200F zero-width space/joiners and the LRM/RLM marks,
  * - U+2028, U+2029 line and paragraph separators,
  * - U+202A–U+202E bidi embeddings and overrides,
@@ -188,7 +192,7 @@ export const BSC_LISTED_BOUNDS = {
  * - U+FEFF zero-width no-break space (byte-order mark).
  */
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u034f\u061c\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
 
 /**
  * A trimmed display string within `max`; null when absent, blank, carrying a
