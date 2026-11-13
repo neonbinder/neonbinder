@@ -262,7 +262,26 @@ afterEach(() => {
 
 const SKU = (s: S, code = "NM", cardId: Id<"cardChecklist"> = s.cardId) => `NB2-${cardId}-${code}`;
 
+const F = EBAY_OTHER_ORDERS_FLOOR_MS;
+const CUTOFF = EBAY_FLOOR_LEGACY_CUTOFF_MS;
+const DAY = 24 * 60 * 60 * 1000;
+/** A moment before the legacy cutoff: a row made then is a legacy row (floor F). */
+const LEGACY_NOW = F + DAY;
+/**
+ * Freezes `Date` for a describe block, so the state rows its tests make are
+ * created at `at` whatever day the suite runs (the floor depends on it).
+ */
+function clockAt(at: number) {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+}
 describe("an eBay sale lowers NB's copies", () => {
+  clockAt(LEGACY_NOW);
   test("a paid order lowers the oldest matching box copy once, stores unit price and the bucket, and no buyer data", async () => {
     const s = await setup();
     await add(s, s.cardId, { homeId: s.box2, condition: "Near Mint", acquiredOn: "2026-03-01" });
@@ -349,6 +368,7 @@ describe("an eBay sale lowers NB's copies", () => {
 });
 
 describe("the exactly-one guard", () => {
+  clockAt(LEGACY_NOW);
   async function oneListed() {
     const s = await setup();
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2 });
@@ -455,6 +475,7 @@ describe("the exactly-one guard", () => {
 });
 
 describe("cancelled, refunded and unpaid orders", () => {
+  clockAt(LEGACY_NOW);
   async function listed() {
     const s = await setup();
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2 });
@@ -507,6 +528,7 @@ describe("cancelled, refunded and unpaid orders", () => {
 });
 
 describe("paging and the cursor", () => {
+  clockAt(LEGACY_NOW);
   async function listed() {
     const s = await setup();
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 10 });
@@ -593,6 +615,7 @@ describe("paging and the cursor", () => {
 });
 
 describe("a sale re-queues every platform", () => {
+  clockAt(LEGACY_NOW);
   test("lowering a copy on eBay queues the card for eBay and for BuySportsCards", async () => {
     const s = await setup({ bsc: true });
     await add(s, s.cardId, { homeId: s.box, condition: "Near Mint", quantity: 2 });
@@ -621,6 +644,7 @@ describe("a sale re-queues every platform", () => {
 });
 
 describe("the cron fan-out", () => {
+  clockAt(LEGACY_NOW);
   test("pollAll schedules an eBay owner's poll when eBay is wired, and none when it is not or is paused", async () => {
     const s = await setup();
     await startEbay(s);
@@ -644,24 +668,6 @@ describe("the cron fan-out", () => {
 
 // ── NEO-520: every eBay line is stored; non-NB lines are refused as unmatched ──
 
-const F = EBAY_OTHER_ORDERS_FLOOR_MS;
-const CUTOFF = EBAY_FLOOR_LEGACY_CUTOFF_MS;
-const DAY = 24 * 60 * 60 * 1000;
-/** A moment before the legacy cutoff: a row made then is a legacy row (floor F). */
-const LEGACY_NOW = F + DAY;
-/**
- * Freezes `Date` for a describe block, so the state rows its tests make are
- * created at `at` whatever day the suite runs (the floor depends on it).
- */
-function clockAt(at: number) {
-  beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(at);
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-}
 const OTHER = (n = 1, title?: string) => ({ legacyItemId: `X${n}`, sku: `MY-OWN-${n}`, ...(title !== undefined ? { title } : {}) });
 const projected = (o: RawOrder) => {
   const p = projectEbayOrder(raw(o));
