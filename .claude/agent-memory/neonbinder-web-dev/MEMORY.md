@@ -213,3 +213,5 @@
 - [Demo content column is ~806px at 1024](reference_demo_content_column_is_806px_at_e2e_width.md) — lg:pr-170 rail gutter; budget demo tables to ~800px or they slide under the exit rail
 - [Picker context league is the row's own feature](reference_picker_context_league_is_the_rows_own_feature.md) — pickerCandidates reads L off the context row only (year walks up); prove tiers on a tree built via addCustomSelectorOption
 - [sr-only suffix in a name is unstable](reference_sr_only_suffix_in_a_name_is_unstable.md) — extra screen-reader words on a role=heading: aria-label, not an sr-only child (happy-dom pads it)
+- [Setup project is once per seed](reference_setup_project_is_once_per_seed.md) — rerun on a seeded deployment reds at "No manufacturers available" by design; bootstrap only
+- [Device preference store](reference_device_preference_store.md) — per-device setting shared by page + layout: one useSyncExternalStore module, storage try/catch, test reset in afterEach

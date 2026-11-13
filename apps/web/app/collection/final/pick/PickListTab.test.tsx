@@ -7,6 +7,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "../PublicCollectionDemo";
+import { PICK_DENSITY_KEY, resetPickDensityForTests } from "@/src/hooks/usePickDensity";
 
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: false }) }));
 vi.mock("convex/react", () => ({}));
@@ -52,6 +53,9 @@ const toggle = (name: RegExp) => screen.getByRole("button", { name });
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  // NEO-522: the row size is this device's; each test starts Spacious.
+  window.localStorage.clear();
+  resetPickDensityForTests();
 });
 
 describe("the Pick List demo", () => {
@@ -470,6 +474,104 @@ describe("NEO-522: a row read from across the room", () => {
     expect(screen.queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
     const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
     expect(within(witt).getAllByText("NB has no 2026 Topps Heritage checklist yet.").length).toBeGreaterThan(0);
+  });
+});
+
+describe("NEO-522: Spacious or Condensed rows", () => {
+  const rowOf = async (name: RegExp) => (await screen.findByRole("button", { name })).closest("tr")!;
+  const rows = () => screen.getByRole("group", { name: "Rows" });
+  const option = (name: "Spacious" | "Condensed") => within(rows()).getByRole("button", { name });
+  /** The row's own words, outside the card picture (whose face prints the team). */
+  const rowWords = (row: HTMLElement) =>
+    [...row.querySelectorAll("td")]
+      .filter((td) => !td.querySelector(".nb-pick-thumb"))
+      .map((td) => td.textContent)
+      .join(" ");
+
+  it("opens Spacious; Condensed brings back the old rows: the team line, the kind chip and variant name in the Set column, the couldn't-match note", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    expect(option("Spacious").getAttribute("aria-pressed")).toBe("true");
+    expect(option("Condensed").getAttribute("aria-pressed")).toBe("false");
+    expect(table.className).toContain("nb-pick-spacious");
+
+    fireEvent.click(option("Condensed"));
+    expect(option("Condensed").getAttribute("aria-pressed")).toBe("true");
+    expect(option("Spacious").getAttribute("aria-pressed")).toBe("false");
+    expect(window.localStorage.getItem(PICK_DENSITY_KEY)).toBe("condensed");
+    expect(table.className).not.toContain("nb-pick-spacious");
+    // No Variant column: the variant rides in the Set column, as before NEO-522.
+    expect(within(table).queryByRole("columnheader", { name: "Variant" })).toBeNull();
+    expect(within(table).getByRole("button", { name: "Serial" })).toBeTruthy();
+
+    // The team line under the name.
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    expect(rowWords(trout)).toContain("Angels");
+    expect(within(trout).getAllByText("Angels").some((el) => el.className.includes("text-xs"))).toBe(true);
+    // The kind chip, then the variant's name beside it.
+    const ohtani = await rowOf(/^Pulled #8B-7 Shohei Ohtani/);
+    const kind = within(ohtani).getAllByText("Insert", { exact: true })[0];
+    expect(kind.className).toContain("bg-variant-insert");
+    expect(kind.className).toContain("text-xs");
+    expect(within(ohtani).getAllByText("8 Bit Ballers", { exact: true }).length).toBeGreaterThan(0);
+    const schlittler = await rowOf(/^Pulled #111 Cam Schlittler/);
+    expect(within(schlittler).getAllByText("Parallel", { exact: true }).length).toBeGreaterThan(0);
+    // A sale filed with its set keeps the old note under its variant.
+    const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
+    expect(within(nabers).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
+    // The old 40px checkbox: the bordered button is the box.
+    const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
+    expect(tick.className).toContain("size-11");
+    expect(tick.className).toContain("border-2");
+    // The old thin dividers: no heavier variant rule inside a set.
+    expect(table.querySelector("td[class*='border-b-[3px]']")).toBeNull();
+  });
+
+  it("is remembered on this device and read back on the next visit", async () => {
+    renderPick();
+    fireEvent.click(within(await screen.findByRole("group", { name: "Rows" })).getByRole("button", { name: "Condensed" }));
+    cleanup();
+    resetPickDensityForTests();
+    renderPick();
+    expect((await screen.findByRole("group", { name: "Rows" })).querySelector("[aria-pressed='true']")?.textContent).toBe("Condensed");
+    expect(rowWords(await rowOf(/^Pulled #27 Mike Trout/))).toContain("Angels");
+  });
+
+  it("opens Spacious when this browser's storage throws", async () => {
+    const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    try {
+      renderPick();
+      await screen.findByRole("table", { name: "Cards to pull" });
+      expect(option("Spacious").getAttribute("aria-pressed")).toBe("true");
+      expect(rowWords(await rowOf(/^Pulled #27 Mike Trout/))).not.toContain("Angels");
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it("Back to default resets the list, never the row size", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
+    fireEvent.click(screen.getByRole("button", { name: "Only slabs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to default" }));
+    expect(pageUrl().get("pslabs")).toBeNull();
+    expect(option("Condensed").getAttribute("aria-pressed")).toBe("true");
+    // Nor does the row size ride on the URL.
+    expect([...pageUrl().keys()].some((k) => /dens|rows/i.test(k))).toBe(false);
+  });
+
+  it("keeps the demo's page at the 6xl column when Condensed, and widens it on Spacious", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    const frame = () => table.closest<HTMLElement>("[class*='max-w-[1600px]'], [class*='max-w-6xl']")!;
+    expect(frame().className).toContain("max-w-[1600px]");
+    fireEvent.click(option("Condensed"));
+    expect(frame().className).toContain("max-w-6xl");
+    fireEvent.click(option("Spacious"));
+    expect(frame().className).toContain("max-w-[1600px]");
   });
 });
 

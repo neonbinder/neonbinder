@@ -11,16 +11,20 @@
 .nb-pick-pulled td:not(:first-child) {
   color: var(--ink-3);
   text-decoration: line-through;
-  /* Scales with the type, so the strike still reads on a 28px name. */
+  text-decoration-thickness: 1px;
+}
+/* NEO-522, Spacious rows: the strike scales with the type, so it still reads on a 28px name. */
+.nb-pick-spacious .nb-pick-pulled td:not(:first-child) {
   text-decoration-thickness: 0.08em;
 }
 
 /*
- * NEO-522: the row the keyboard is on reads from across the room, in both
- * modes: the hover band, framed above and below in the focus colour.
- * Keyboard focus only (a click already shows the row under the pointer).
+ * NEO-522, Spacious rows: the row the keyboard is on reads from across the
+ * room, in both modes: the hover band, framed above and below in the focus
+ * colour. Keyboard focus only (a click already shows the row under the
+ * pointer). Condensed rows keep the pre-NEO-522 look, the toggle's own ring.
  */
-.nb-pick-row:has(:focus-visible) > td {
+.nb-pick-spacious .nb-pick-row:has(:focus-visible) > td {
   background-color: var(--list-hover);
   box-shadow:
     inset 0 3px 0 var(--focus),

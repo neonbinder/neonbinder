@@ -59,6 +59,16 @@ export function pickList(page: Page) {
     find: region.getByRole("textbox", { name: "Find a card" }),
     quickFilters: region.getByRole("group", { name: "Quick filters" }),
     backToDefault: region.getByRole("button", { name: "Back to default", exact: true }),
+    /**
+     * NEO-522: the "Rows" switch, Spacious (the default) or Condensed (the
+     * pre-NEO-522 rows), each a toggle (`aria-pressed`). This device keeps the
+     * choice; Back to default leaves it alone.
+     */
+    rowSize: {
+      group: region.getByRole("group", { name: "Rows", exact: true }),
+      spacious: region.getByRole("group", { name: "Rows", exact: true }).getByRole("button", { name: "Spacious", exact: true }),
+      condensed: region.getByRole("group", { name: "Rows", exact: true }).getByRole("button", { name: "Condensed", exact: true }),
+    },
     /** The page's status line (outside the region): a pull says so here, with Undo. */
     notice: (message: string) => page.getByRole("status").filter({ hasText: message }),
     undo: page.getByRole("button", { name: "Undo", exact: true }),

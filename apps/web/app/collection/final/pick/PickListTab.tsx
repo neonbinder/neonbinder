@@ -47,6 +47,7 @@ import {
 import { PickListStoreContext } from "./store";
 import type { PickListData, PickListStore, PickOrder } from "./types";
 import "./pick-list.css";
+import { usePickDensity, type PickDensity } from "@/src/hooks/usePickDensity";
 
 /**
  * NEO-500 — the Pick List: every card the seller has sold and not yet pulled
@@ -798,8 +799,9 @@ function FilterBar({
           )}
         </div>
       </div>
-      {/* Back to default rides the last chip's row, never a row of its own. */}
-      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
+      {/* The chips, then the row switch and Back to default on the same line where it fits. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
           <Toggle pressed={Boolean(filters.slabs)} onClick={() => setParam(PICK_PARAMS.slabs, filters.slabs ? null : "1")}>
             Only slabs
           </Toggle>
@@ -812,19 +814,24 @@ function FilterBar({
           <Toggle pressed={groupByOrder} onClick={() => setParam(PICK_PARAMS.group, groupByOrder ? null : "order")}>
             Group by order
           </Toggle>
-        <button
-          type="button"
-          onClick={() => {
-            // The button switches off once the list is back to default: the
-            // keyboard goes to Find first, never down onto the page.
-            find.current?.focus();
-            onDefault();
-          }}
-          disabled={!tweaked}
-          className={`ml-auto rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50 min-h-11 sm:min-h-8 focus-outline`}
-        >
-          Back to default
-        </button>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+          <DensitySwitch />
+          {/* Back to default resets the list (filters, sort, grouping), never the row size: that is this device's setting. */}
+          <button
+            type="button"
+            onClick={() => {
+              // The button switches off once the list is back to default: the
+              // keyboard goes to Find first, never down onto the page.
+              find.current?.focus();
+              onDefault();
+            }}
+            disabled={!tweaked}
+            className={`rounded-md px-2 text-sm text-ink-2 underline underline-offset-4 hover:text-ink disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50 min-h-11 sm:min-h-8 focus-outline`}
+          >
+            Back to default
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -843,6 +850,44 @@ function Toggle({ pressed, onClick, children }: { pressed: boolean; onClick: () 
       {pressed && <CheckIcon aria-hidden="true" className="size-4" />}
       {children}
     </button>
+  );
+}
+
+/**
+ * NEO-522 — Spacious (the big rows, read from across the room) or Condensed
+ * (the denser pre-NEO-522 rows). This device remembers it; it is not a filter,
+ * so it stays out of the URL and Back to default leaves it alone.
+ */
+function DensitySwitch() {
+  const [density, setDensity] = usePickDensity();
+  const labelId = useId();
+  const option = (value: PickDensity, text: string) => {
+    const on = density === value;
+    return (
+      <button
+        type="button"
+        aria-pressed={on}
+        onClick={() => setDensity(value)}
+        className={`relative inline-flex min-h-11 items-center gap-1.5 px-3 text-sm font-medium first:rounded-l-full last:rounded-r-full focus-outline focus-visible:z-[1] sm:min-h-8 ${
+          on ? "bg-neon-blue text-on-neon-blue" : "text-ink-2 hover:bg-hover-raised hover:text-ink"
+        }`}
+      >
+        {on && <CheckIcon aria-hidden="true" className="size-4" />}
+        {text}
+      </button>
+    );
+  };
+  return (
+    <div className="flex items-center gap-2">
+      <span id={labelId} className="text-sm text-ink-2">
+        Rows
+      </span>
+      <div role="group" aria-labelledby={labelId} className="relative inline-flex rounded-full border border-control">
+        {option("spacious", "Spacious")}
+        <span aria-hidden="true" className="w-px self-stretch bg-control" />
+        {option("condensed", "Condensed")}
+      </div>
+    </div>
   );
 }
 
@@ -1021,6 +1066,9 @@ function PickTable({
   nameWithOrder?: boolean;
 }) {
   const tableRef = useRef<HTMLTableElement>(null);
+  // NEO-522: Spacious (the default) or this device's Condensed, the pre-NEO-522 rows.
+  const [density] = usePickDensity();
+  const condensed = density === "condensed";
   // A stray's order opens on the Sales tab, where the store has one.
   const salesLink = useListing() !== undefined;
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -1052,8 +1100,9 @@ function PickTable({
   };
 
   // The column headers stick just under the site header (its height is published as `--nb-header-h`, 0 on a phone).
-  const headCell =
-    "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold md:px-1.5 @min-[62rem]:px-2";
+  const headCell = condensed
+    ? "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold"
+    : "sticky top-[var(--nb-header-h,0px)] z-[5] border-b border-rule bg-surface px-2 py-2 text-left font-semibold md:px-1.5 @min-[62rem]:px-2";
 
   const sortButton = (key: SortKey) => {
     const on = sort === key;
@@ -1081,7 +1130,15 @@ function PickTable({
         aria-sort={which ? (dir === "asc" ? "ascending" : "descending") : "none"}
         className={`${headCell} max-md:hidden ${className}`}
       >
-        {also ? (
+        {also && condensed ? (
+          <span className="inline-flex items-center gap-2">
+            {sortButton(key)}
+            <span aria-hidden="true" className="text-ink-3">
+              ·
+            </span>
+            {sortButton(also)}
+          </span>
+        ) : also ? (
           // In a compact table the two sorts may stack, so the header never holds the table wider than the screen.
           <span className="inline-flex flex-wrap items-center gap-x-2 @min-[62rem]:flex-nowrap">
             {sortButton(key)}
@@ -1103,7 +1160,8 @@ function PickTable({
   // The Set column holds a reading width only where its cells name the set (or
   // a stray's problem): under a set divider they hold just a numbered copy's serial.
   const setInCells = sections.some((s) => s.kind !== "set" && s.rows.length > 0);
-  const columns = 9 + (showQty ? 1 : 0) + (showSlot ? 1 : 0);
+  // Condensed has no Variant column: the variant rides in the Set column.
+  const columns = (condensed ? 8 : 9) + (showQty ? 1 : 0) + (showSlot ? 1 : 0);
 
   return (
     <>
@@ -1114,11 +1172,15 @@ function PickTable({
       */}
       <div className="@container">
       {/* Not focusable itself: the rows' toggles are, and arrow keys move between them. */}
-      <table ref={tableRef} onKeyDown={onKeyDown} className="nb-pick-table w-full border-separate border-spacing-0 text-sm">
+      <table
+        ref={tableRef}
+        onKeyDown={onKeyDown}
+        className={`nb-pick-table w-full border-separate border-spacing-0 text-sm ${condensed ? "" : "nb-pick-spacious"}`}
+      >
         <caption className="sr-only">{caption}</caption>
         <thead className="text-xs text-ink-2">
           <tr>
-            <th scope="col" className={`${headCell} w-10 px-1`}>
+            <th scope="col" className={`${headCell} ${condensed ? "w-12" : "w-10"} px-1`}>
               <span className="sr-only">Pulled</span>
             </th>
             <th scope="col" className={`${headCell} nb-pick-pic w-14 px-1`}>
@@ -1131,13 +1193,15 @@ function PickTable({
             )}
             {showQty && sortHead("qty", "w-14")}
             {/* The walk already runs Base, then each insert and parallel by name: the variant does not sort apart. */}
-            <th scope="col" className={`${headCell} max-md:hidden`}>
-              Variant
-            </th>
+            {!condensed && (
+              <th scope="col" className={`${headCell} max-md:hidden`}>
+                Variant
+              </th>
+            )}
             {sortHead("number", "w-16")}
-            {sortHead("player", "@min-[62rem]:w-[30%]")}
-            {sortHead("set", setInCells ? "@min-[62rem]:min-w-36" : "", "detail")}
-            {sortHead("condition")}
+            {sortHead("player", condensed ? "" : "@min-[62rem]:w-[30%]")}
+            {sortHead("set", setInCells ? (condensed ? "min-w-48" : "@min-[62rem]:min-w-36") : "", "detail")}
+            {sortHead("condition", condensed ? "w-28" : "")}
             {sortHead("order", "w-28")}
             <th scope="col" className={`${headCell} md:hidden`}>
               Card
@@ -1147,13 +1211,29 @@ function PickTable({
         {sections.map((section) => {
           const inSet = section.kind === "set";
           // Inside a set's run, the last row of each variant carries the next variant's rule.
-          const breaks = inSet ? variantBreaks(section.rows) : [];
+          const breaks = inSet && !condensed ? variantBreaks(section.rows) : [];
           return (
             <tbody key={section.key} className="nb-pick-group">
-              <SectionHead section={section} columns={columns} />
+              <SectionHead section={section} columns={columns} condensed={condensed} />
               {section.rows.map((row, i) => {
                 const key = `${section.key}/${row.key}`;
-                return (
+                return condensed ? (
+                  <CondensedRow
+                    key={key}
+                    row={row}
+                    pulled={isPulled(row, pulled)}
+                    tabbable={key === active}
+                    onFocus={() => setActiveKey(key)}
+                    onToggle={() => toggle(row)}
+                    onThumb={() => setThumb(row)}
+                    showSlot={showSlot}
+                    showQty={showQty}
+                    salesLink={salesLink}
+                    showSet={!inSet}
+                    showSport={!hideSport && !inSet && section.kind !== "cantFind"}
+                    name={rowName(row, { withOrder: nameWithOrder, withSlot: showSlot })}
+                  />
+                ) : (
                   <Row
                     key={key}
                     row={row}
@@ -1207,8 +1287,9 @@ function PickTable({
   );
 }
 
-function SectionHead({ section, columns }: { section: PickSection; columns: number }) {
+function SectionHead({ section, columns, condensed }: { section: PickSection; columns: number; condensed: boolean }) {
   if (section.kind === "flat") return null;
+  if (condensed) return <CondensedSectionHead section={section} columns={columns} />;
   const count = section.rows.reduce((n, r) => n + r.quantity, 0);
   const cards = `${count} ${count === 1 ? "card" : "cards"}`;
   // A heading element may not sit in a table header cell, so the title takes
@@ -1571,6 +1652,350 @@ function Row({
             {condition}
             {orders}
           </span>
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Condensed rows (NEO-522): the Pick List as it read before NEO-522, kept
+// whole as a device setting. Spacious is the default; nothing here changes
+// it. A separate row, not a branch per cell, so neither layout bends the other.
+// ---------------------------------------------------------------------------
+
+function CondensedSectionHead({ section, columns }: { section: PickSection; columns: number }) {
+  const count = section.rows.reduce((n, r) => n + r.quantity, 0);
+  const cards = `${count} ${count === 1 ? "card" : "cards"}`;
+  // A heading element may not sit in a table header cell, so the title takes
+  // the heading role: heading navigation still reaches every set and group.
+  // `label` names a heading apart when its words alone would read like another's.
+  const heading = (className: string, text: ReactNode, label?: string) => (
+    <span role="heading" aria-level={3} aria-label={label} className={className}>
+      {text}
+    </span>
+  );
+  let body: ReactNode;
+  let line = "border-rule-strong";
+  if (section.kind === "set") {
+    const hue = sportHue(section.sportCode);
+    line = SPORT_LINE[hue];
+    body = (
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
+        <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-xs font-bold ${SPORT_TAB[hue]}`}>
+          {section.sportName}
+        </span>
+        {heading("pb-1 text-base font-bold text-ink", section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+        <span className="pb-1 text-xs text-ink-3">{cards}</span>
+      </div>
+    );
+  } else if (section.kind === "order") {
+    body = (
+      <div className="flex items-end gap-3 pb-1">
+        {heading("text-base font-bold text-ink", orderLabel(section.order))}
+        <span className="text-xs text-ink-3">{cards}</span>
+      </div>
+    );
+  } else {
+    const warn = section.kind === "cantFind";
+    // The heading's words and its rule share one hue in both themes.
+    line = warn ? "border-notice-warn-ink" : "border-neon-blue";
+    body = (
+      <div className="pb-1">
+        {heading(`text-base font-bold ${warn ? "text-notice-warn-ink" : "text-neon-blue-text"}`, warn ? COPY.cantFind : COPY.fresh)}
+        <span className="ml-3 text-xs text-ink-3">{warn ? COPY.cantFindNote : COPY.freshNote}</span>
+      </div>
+    );
+  }
+  return (
+    <tr>
+      <th scope="rowgroup" colSpan={columns} className={`border-b-[3px] px-0 pt-6 text-left font-normal ${line}`}>
+        {body}
+      </th>
+    </tr>
+  );
+}
+
+function VariantChip({ role }: { role: VariantRole }) {
+  return (
+    <span className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center rounded border px-1.5 text-xs font-semibold leading-5 ${VARIANT_CHIP[role]}`}>
+      {VARIANT_ROLE_LABEL[role]}
+    </span>
+  );
+}
+
+/** A listing's own variant word NB does not file by: plain, no divider colour, since NB never guesses its role. */
+function VariantWordChip({ word }: { word: string }) {
+  return (
+    <span className="nb-pick-chip inline-flex shrink-0 items-center rounded border border-rule-strong px-1.5 text-xs font-semibold leading-5 text-ink">
+      {word}
+    </span>
+  );
+}
+
+function CondensedMarkers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
+  const noBox = row.boxUnrecorded && !row.spot;
+  // A sale filed with its set by the listing's words alone: NB has no card
+  // for it, and the chip says so (the dashed edge echoes the "?" picture).
+  // Can't find it never shows it: its heading already says as much.
+  const notInNb = !row.card && rowFacts(row) !== null;
+  if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
+  const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
+  return (
+    <span className="flex flex-wrap gap-1 whitespace-nowrap">
+      {notInNb && (
+        <span
+          title={why}
+          className="nb-pick-chip rounded border border-dashed border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink"
+        >
+          <span>{NOT_IN_NB}</span>
+          <span className="sr-only">. {why}</span>
+        </span>
+      )}
+      {row.isNew && <span className="nb-pick-chip rounded bg-neon-blue px-1.5 text-xs font-bold leading-5 text-on-neon-blue">New</span>}
+      {row.lastOnes && (
+        <span className="nb-pick-chip rounded border border-notice-info-rule bg-notice-info-bg px-1.5 text-xs font-semibold leading-5 text-notice-info-ink">
+          Last ones
+        </span>
+      )}
+      {noBox && (
+        <span className="nb-pick-chip rounded border border-rule-strong px-1.5 text-xs font-semibold leading-5 text-ink-2">
+          {COPY.noBox}
+        </span>
+      )}
+      {row.short > 0 && (
+        <span className="nb-pick-chip rounded border border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink">
+          Short {row.short}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function CondensedRow({
+  row,
+  pulled,
+  tabbable,
+  onFocus,
+  onToggle,
+  onThumb,
+  showSlot,
+  showQty,
+  salesLink,
+  showSet,
+  showSport,
+  name,
+}: {
+  row: PickRow;
+  pulled: boolean;
+  tabbable: boolean;
+  onFocus: () => void;
+  onToggle: () => void;
+  onThumb: () => void;
+  showSlot: boolean;
+  showQty: boolean;
+  /** A card-less row's order links to that sale on the Sales tab. */
+  salesLink: boolean;
+  /** Off under a set divider, which already names the set. */
+  showSet: boolean;
+  showSport: boolean;
+  name: string;
+}) {
+  const c = row.card;
+  // A card's facts, or a listing's when it says enough to file by (NEO-509).
+  const facts = rowFacts(row);
+  const role = facts?.role ?? null;
+  const vWord = facts?.variantWord ?? null;
+  const vName = facts?.variantName ?? null;
+  const tab = tabbable ? 0 : -1;
+  const cell = "border-b border-rule px-2 py-2 align-middle";
+
+  const onRowClick = (e: MouseEvent<HTMLTableRowElement>) => {
+    if ((e.target as Element).closest("button, a, input, select")) return;
+    if (!rowClickPulls()) return;
+    onToggle();
+  };
+
+  // One copy needs no count; two or more get the loud yellow chip.
+  const qty =
+    row.quantity > 1 ? (
+      <span className="nb-pick-chip inline-flex min-w-8 items-center justify-center rounded-md bg-neon-yellow px-1.5 text-base font-black leading-7 text-on-neon-yellow tabular-nums">
+        ×{row.quantity}
+        <span className="sr-only"> copies</span>
+      </span>
+    ) : null;
+
+  // The variant leads: its chip, its name, and a numbered copy's serial beside
+  // it. A listing's own word NB does not file by ("Variation") gets a plain
+  // chip of its own: it is what keeps the seller off the base copy.
+  const variantLine = facts ? (
+    <span className="flex flex-wrap items-center gap-1.5 empty:hidden">
+      {role && <VariantChip role={role} />}
+      {vWord && <VariantWordChip word={vWord} />}
+      {(vName || row.serial) && (
+        <span className="text-ink-2">
+          {vName}
+          {vName && row.serial && " · "}
+          {row.serial && <span className="font-semibold tabular-nums text-ink">{row.serial}</span>}
+        </span>
+      )}
+    </span>
+  ) : null;
+
+  // A sale NB has no card for keeps its next step (check the order's photo) under the variant.
+  const problem = !c && row.problem ? <span className="text-xs text-notice-warn-ink">{row.problem}</span> : null;
+  const setText = facts ? (
+    <span className="flex min-w-0 flex-col gap-1">
+      {showSet && (
+        <span className="flex flex-wrap items-center gap-1.5">
+          {showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
+          <span className="text-ink">{facts.setTitle}</span>
+        </span>
+      )}
+      {variantLine}
+      {problem}
+    </span>
+  ) : (
+    <span className="flex min-w-0 flex-col items-start gap-1">
+      {/* The listing's sport, when it names one: the box it might sit in. */}
+      {row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />}
+      <span className="text-notice-warn-ink">{row.problem}</span>
+    </span>
+  );
+
+  // Condition, or a slab's grade and cert.
+  const condition = (
+    <span className="flex flex-col">
+      {row.grade ? (
+        <>
+          <span className="font-semibold text-ink">
+            {row.grade.grader} {row.grade.grade}
+          </span>
+          <span className="text-xs text-ink-3 tabular-nums">Cert {row.grade.cert}</span>
+        </>
+      ) : (
+        <span className="text-ink-2">{row.condition}</span>
+      )}
+    </span>
+  );
+
+  // Venue and number may wrap apart, never inside either. A stray's order
+  // opens that sale on the Sales tab: the order's photo is how to find it.
+  const orderText = (o: PickOrder) => (
+    <>
+      <span className="whitespace-nowrap">{o.venue}</span> <span className="whitespace-nowrap">{o.number}</span>
+    </>
+  );
+  const orders = (
+    <span className="flex flex-col">
+      {row.orders.map((o) =>
+        !c && salesLink ? (
+          <ParamLink
+            key={o.id}
+            search={{ tab: "sales", [SALE_PARAM]: o.id }}
+            tabIndex={tab}
+            className="rounded-sm text-neon-blue-text underline underline-offset-2 tabular-nums focus-outline"
+          >
+            {orderText(o)}
+            <span className="sr-only"> on your Sales tab</span>
+          </ParamLink>
+        ) : (
+          <span key={o.id} className="text-ink-2 tabular-nums">
+            {orderText(o)}
+          </span>
+        ),
+      )}
+    </span>
+  );
+
+  const who = c ? playerNames(c) : facts?.players || row.listingTitle;
+  const team = c?.teams.map((t) => t.name).join(" / ");
+
+  return (
+    <tr
+      onClick={onRowClick}
+      onFocus={onFocus}
+      data-pulled={pulled || undefined}
+      className={`nb-pick-row transition-colors md:cursor-pointer md:hover:bg-list-hover ${pulled ? "nb-pick-pulled" : ""}`}
+    >
+      <td className={`${cell} relative w-12 pl-3`}>
+        {role ? (
+          <span aria-hidden="true" className={`nb-pick-band absolute inset-y-1 left-0 w-2 rounded-sm border md:w-1.5 ${VARIANT_STRIPE[role]}`} />
+        ) : (
+          <span aria-hidden="true" className="absolute inset-y-1 left-0 w-2 rounded-sm border border-dashed border-notice-warn-rule md:w-1.5" />
+        )}
+        <button
+          type="button"
+          data-pick-toggle
+          aria-pressed={pulled}
+          aria-label={`Pulled ${name}`}
+          tabIndex={tab}
+          onClick={onToggle}
+          className={`grid size-11 place-items-center rounded-md border-2 focus-outline ${
+            pulled ? "border-neon-green bg-neon-green text-on-neon-green" : "border-control text-transparent hover:border-ink-3"
+          }`}
+        >
+          <CheckIcon aria-hidden="true" className="size-6" />
+        </button>
+      </td>
+      <td className={`${cell} nb-pick-pic w-14 px-1`}>
+        {c ? (
+          <button
+            type="button"
+            tabIndex={tab}
+            onClick={(e) => {
+              // Safari does not focus a clicked button; the dialog hands focus back to it on close.
+              e.currentTarget.focus();
+              onThumb();
+            }}
+            aria-label={`Bigger picture of ${name}`}
+            className="nb-pick-thumb block w-10 rounded-sm focus-outline"
+          >
+            {row.photo ? (
+              <img src={row.photo.thumbUrl} alt="" loading="lazy" className="block aspect-[5/7] w-10 rounded-sm bg-rule object-contain" />
+            ) : (
+              <CardFace model={c} size="fill" serial={row.serial} />
+            )}
+          </button>
+        ) : (
+          <span
+            aria-hidden="true"
+            className="grid h-14 w-10 place-items-center rounded-sm border border-dashed border-notice-warn-rule text-lg font-bold text-notice-warn-ink"
+          >
+            ?
+          </span>
+        )}
+      </td>
+      {showSlot && <td className={`${cell} font-semibold tabular-nums text-ink`}>{row.spot?.slot ?? "–"}</td>}
+      {showQty && <td className={`${cell} max-md:hidden`}>{qty}</td>}
+      {facts && <td className={`${cell} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden`}>#{facts.cardNumber}</td>}
+      {/* Nothing to file by: the listing's own words take the number's column too. */}
+      <td colSpan={facts ? undefined : 2} className={`${cell} max-md:hidden`}>
+        <span className="flex flex-col">
+          <span className={facts ? "whitespace-nowrap font-semibold text-ink" : "text-ink"}>{who}</span>
+          {team && <span className="text-xs text-ink-3">{team}</span>}
+          <span className="mt-1 empty:hidden">
+            <CondensedMarkers row={row} salesLink={salesLink} />
+          </span>
+        </span>
+      </td>
+      <td className={`${cell} max-md:hidden`}>{setText}</td>
+      <td className={`${cell} max-md:hidden`}>{condition}</td>
+      <td className={`${cell} max-md:hidden`}>{orders}</td>
+      {/* A phone has no room for columns: one cell says it all. */}
+      <td className={`${cell} md:hidden`}>
+        <span className="flex min-w-0 flex-col gap-1">
+          <span className="flex flex-wrap items-baseline gap-x-2">
+            {qty}
+            {facts && <span className="font-bold text-ink tabular-nums">#{facts.cardNumber}</span>}
+            <span className="font-semibold text-ink">{who}</span>
+          </span>
+          {setText}
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            {condition}
+            {orders}
+          </span>
+          <CondensedMarkers row={row} salesLink={salesLink} />
         </span>
       </td>
     </tr>
