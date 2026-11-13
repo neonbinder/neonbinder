@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router";
 import { ArchiveBoxIcon, CheckCircleIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import type { DashboardData, SaleLine, SaleProblem, SalesData, UnshippedSale } from "../fake-data";
 import { daysAgoLabel, isLate, MARKETPLACES } from "../dash-labels";
-import { CardTitle, count, MarketBadge, orderAnchor, sideHref, Thumb } from "./bits";
+import { CardTitle, count, MarketBadge, orderAnchor, Thumb } from "./bits";
 import { PanelLink } from "./panelLink";
 
 /**
@@ -44,6 +44,17 @@ function lookItems(data: DashboardData): number {
 
 // ------------------------------------------------------------- Out the Door
 
+/**
+ * Inventory's Pick List, as the page itself writes it, so the link lands
+ * with no rewrite (and no extra history step): signed in, `/inventory?tab=pick`
+ * (the route is the side); in the demo, `side=inventory` first, then the tab,
+ * as the demo's own tab links build it (`mode.tsx`, `useSideTarget`).
+ */
+export function pickListHref(pathname: string): string {
+  return pathname.startsWith("/demo") ? "/demo/inventory?side=inventory&tab=pick" : "/inventory?tab=pick";
+}
+
+
 export function OutTheDoor({ sales }: { sales: SalesData }) {
   const { pathname } = useLocation();
   const orders = sales.unshipped;
@@ -77,7 +88,7 @@ export function OutTheDoor({ sales }: { sales: SalesData }) {
             {late > 0 ? `, ${late} waiting 2 days or more.` : "."}
           </p>
           <Link
-            to={sideHref(pathname, "inventory", { tab: "pick" })}
+            to={pickListHref(pathname)}
             className="inline-flex min-h-9 items-center gap-1 rounded-sm text-sm font-semibold text-neon-blue-text underline decoration-neon-blue-text/50 underline-offset-2 hover:decoration-current focus-outline max-sm:min-h-11"
           >
             Pull them on the Pick List

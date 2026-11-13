@@ -18,6 +18,7 @@ import type { ShelfBinder } from "./shelf-model";
 import { boxLabel, spineCssWidth, STARTER_ROOM_NARROW } from "./Shelf";
 import { NEED_CHIPS } from "./Boards";
 import { intakeCountParts, runTells, sortedParts } from "./Hopper";
+import { pickListHref } from "./ToDo";
 
 /** An element's text as drawn: the reader-only words left out. */
 function drawnText(el: Element): string {
@@ -354,7 +355,13 @@ describe("Out the Door", () => {
     draw(getDashboard());
     const ship = screen.getByRole("region", { name: "Out the Door" });
     const pick = within(ship).getByRole("link", { name: "Pull them on the Pick List" });
-    expect(pick.getAttribute("href")).toBe("/demo/inventory?tab=pick");
+    // The demo's own tab links write the side first, so the link needs no rewrite on arrival.
+    expect(pick.getAttribute("href")).toBe("/demo/inventory?side=inventory&tab=pick");
+  });
+
+  it("signed in, the Pick List is the inventory route's own tab", () => {
+    expect(pickListHref("/dashboard")).toBe("/inventory?tab=pick");
+    expect(pickListHref("/demo")).toBe("/demo/inventory?side=inventory&tab=pick");
   });
 
   it("all shipped: no Pick List link", () => {
