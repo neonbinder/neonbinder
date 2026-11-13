@@ -133,21 +133,23 @@ re-measure before quoting them for Playwright.
 3. **Run the specs covering the change on this worktree's own Convex
    deployment**, before the first push (below). Seller specs and cloud threads
    use shared dev instead.
-4. **Join the merge queue with your ticket** (`pr-queue join NEO-123`) once
-   the gates and those specs are green locally. Do not push or open the PR
-   yet; a push starts the full CI run the queue rations. The one exception is
-   a push Jason asks for (a preview to look at). One session runs the queue
-   (`pr-queue run`).
-5. **On your turn:** merge main, push, open the PR (title
-   `NEO-123(<PR#>) Description`) and record its number with the queue
-   (the `pr-queue` skill's `set-pr`, then a `PR` message). CI runs the
-   full suite. On a red spec: **run that one spec locally** on your
-   deployment again, or against the PR's own preview stack when your
-   deployment cannot reproduce it (below).
-6. Push again **only once that spec passes locally.** This step is the actual
-   cost control — push-and-hope is what burns CI cycles, not the first push.
-7. Watch to green, then the `pr-close` skill (merge → verify the prod deploy
-   actually reached READY → smoke → Linear → reclaim the worktree).
+4. **Join the queue** (`pr-queue join NEO-123`) once the ticket is ready for
+   production: audits applied, gates and covering specs green, main merged, any
+   UI verdict given. **Do not push before your turn** (the one exception is a
+   push Jason asks for, such as a preview to look at). Every push starts a CI
+   run, a run and its merge take up to an hour, and only one run at a time can
+   end in a merge, so CI is handed out one ticket at a time by the queue
+   session (`pr-queue run`).
+5. **On your turn** (the `pr-queue` skill has the steps): merge main, push and
+   open the PR, watch CI, one rerun only for a flake that names an outside
+   service (BuySportsCards, SportLots, eBay and the like, never our own code),
+   merge on green with `pr-close`, send the Mac notification, tell every other
+   session main moved, and tell the queue you are done.
+6. **On any other red, pass the turn** at once (and send the Mac notification),
+   reproduce the failing spec locally on your own deployment, or against the
+   PR's own preview stack when your deployment cannot reproduce it (below), fix
+   it, and join again. Push again only on your next turn. This is the actual
+   cost control: push-and-hope is what burns CI cycles.
 
 #### The fast gates, by area
 
