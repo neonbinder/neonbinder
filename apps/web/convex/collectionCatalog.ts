@@ -183,35 +183,39 @@ const drillItemValidator = v.object({
  * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of
  * the admin screen") — a year's brand column with the brand-unknown row
  * (read by its flag, never its name) swapped for the sets beneath it, each
- * remembering that row's id (`brandOf`). Every other row passes through.
- * The sets are read off the index, at most `MAX_DRILL_ITEMS`; `truncated`
- * says when there were more.
+ * remembering that row's id (`brandOf`).
+ *
+ * Majors first: the real brand rows come first, by name, and are never cut;
+ * the loose sets follow, by name. The reads are capped for the whole column:
+ * nothing makes the flagged row unique, so every flagged row's sets share
+ * what is left of `MAX_DRILL_ITEMS` once the brand rows are counted, each
+ * expansion reading only that remainder (plus one, to tell whether there was
+ * more). `truncated` says when a loose set was left out. A column without a
+ * flagged row is returned untouched (`spliced: false`).
  */
-async function withUnknownBrandSets(
+export async function withUnknownBrandSets(
   ctx: Ctx,
   rows: Row[],
-): Promise<{ rows: Row[]; brandOf: Map<string, Id<"selectorOptions">>; truncated: boolean }> {
+): Promise<{ rows: Row[]; brandOf: Map<string, Id<"selectorOptions">>; truncated: boolean; spliced: boolean }> {
   const brandOf = new Map<string, Id<"selectorOptions">>();
-  if (!rows.some(isBrandUnknownBrand)) return { rows, brandOf, truncated: false };
-  const out: Row[] = [];
+  if (!rows.some(isBrandUnknownBrand)) return { rows, brandOf, truncated: false, spliced: false };
+  const brands = rows.filter((row) => !isBrandUnknownBrand(row));
+  const loose: Row[] = [];
   let truncated = false;
   for (const row of rows) {
-    if (!isBrandUnknownBrand(row)) {
-      out.push(row);
-      continue;
-    }
-    if (hiddenAsEmpty(row)) continue;
+    if (!isBrandUnknownBrand(row) || hiddenAsEmpty(row)) continue;
+    const left = Math.max(0, MAX_DRILL_ITEMS - brands.length - loose.length);
     const sets = await ctx.db
       .query("selectorOptions")
       .withIndex("by_level_and_parent", (q) => q.eq("level", "setName").eq("parentId", row._id))
-      .take(MAX_DRILL_ITEMS + 1);
-    if (sets.length > MAX_DRILL_ITEMS) truncated = true;
-    for (const set of sets.slice(0, MAX_DRILL_ITEMS)) {
+      .take(left + 1);
+    if (sets.length > left) truncated = true;
+    for (const set of sets.slice(0, left)) {
       brandOf.set(set._id as string, row._id);
-      out.push(set);
+      loose.push(set);
     }
   }
-  return { rows: out, brandOf, truncated };
+  return { rows: [...sortColumn(brands), ...sortColumn(loose)], brandOf, truncated, spliced: true };
 }
 
 /** The year's brand-unknown row, by its flag (NEO-272); never by its name. */
@@ -266,12 +270,14 @@ export const drill = query({
             .withIndex("by_parent", (q) => q.eq("parentId", parentId))
             .take(MAX_DRILL_ITEMS + 1);
     }
+    // NEO-527: a brand column with the brand-unknown row comes back in its
+    // final order (brands, then the loose sets) and already within the cap.
     const spliced = await withUnknownBrandSets(ctx, rows.slice(0, MAX_DRILL_ITEMS));
-    const listed = sortColumn(spliced.rows);
-    const truncated = rows.length > MAX_DRILL_ITEMS || spliced.truncated || listed.length > MAX_DRILL_ITEMS;
+    const listed = spliced.spliced ? spliced.rows : sortColumn(spliced.rows);
+    const truncated = rows.length > MAX_DRILL_ITEMS || spliced.truncated;
     const budget = { left: COUNT_FALLBACK_BUDGET };
     const items = [];
-    for (const row of listed.slice(0, MAX_DRILL_ITEMS)) {
+    for (const row of listed) {
       if (hiddenAsEmpty(row)) continue;
       const brandId = spliced.brandOf.get(row._id as string);
       const totals = CARD_BEARING.has(row.level)

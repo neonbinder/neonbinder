@@ -6,7 +6,8 @@ import { Textarea } from "@/components/primitives/Textarea";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { LABEL, SELECT_PANEL } from "../../prototypes/p1/ui";
-import { brandColumnPick, brandColumnTitle, type Drill } from "../catalog/drill";
+import { DrillOptions } from "../catalog/DrillOptions";
+import { brandColumnPick, brandColumnTitle, brandFieldLabel, type Drill } from "../catalog/drill";
 import { useCard, useDrill, writeErrorMessage } from "../data/store";
 import type { Card, DrillItem } from "../data/types";
 import { HeldPhotosField, type HeldPhotos } from "../CopyPhotosField";
@@ -72,7 +73,9 @@ export default function RequestCardForm({
   const brandPick = brands ? brandColumnPick(brands, brand || null, set || null) : undefined;
   const setInBrands = brandPick?.brandId !== undefined;
   const onlySets = brandColumnTitle(brands) === "Sets";
-  const sets = useDrill(sport && year && brand && !setInBrands ? "set" : null, { sport, year, brand });
+  // Only a brand the Brand select shows picked opens its sets; a `brand`
+  // still holding the hidden row's id (no set with it) opens nothing.
+  const sets = useDrill(brandPick && !setInBrands ? "set" : null, { sport, year, brand });
   const types = useDrill(set ? "variantType" : null, { sport, year, brand, set });
   const pickedType = types?.find((t) => t.id === type);
   const variants = useDrill(pickedType?.hasChildren ? "variant" : null, { sport, year, brand, set, variantType: type });
@@ -101,7 +104,14 @@ export default function RequestCardForm({
   /** The first required field left empty: its `name`, and what to say. */
   const missing = (): [string, string] | null => {
     if (where === "catalog") {
-      if (!set) return [!sport ? "sport" : !year ? "year" : !brand ? "brand" : "set", "Pick the set it's from."];
+      if (!set) {
+        // NEO-527: the Brand select is read by what it shows picked
+        // (`brandPick`), never by a `brand` still holding the hidden row's id;
+        // and with the Set select hidden, the Brand select is where the set is
+        // picked.
+        const at = !sport ? "sport" : !year ? "year" : !brandPick || onlySets || setInBrands ? "brand" : "set";
+        return [at, "Pick the set it's from."];
+      }
       if (typing && !typedVariant.trim()) return ["typedVariant", "Add the checklist it's in."];
       if (!typing && !checklist) {
         const at = pickedVariant?.hasChildren ? "sub" : pickedType?.hasChildren ? "variant" : "type";
@@ -208,14 +218,14 @@ export default function RequestCardForm({
                 setSet("");
                 setType("");
               }} />
-            <Pick name="brand" flag={flag} label={onlySets ? "Set" : "Brand"} value={brandPick?.id ?? brand} items={sport && year ? brands : []} onChange={(v) => {
+            <Pick name="brand" flag={flag} label={brandFieldLabel(sport && year ? brands : [])} value={brandPick?.id ?? brand} items={sport && year ? brands : []} onChange={(v) => {
                 const item = brands?.find((i) => i.id === v);
                 setBrand(item?.brandId ?? v);
                 setSet(item?.brandId ? item.id : "");
                 setType("");
               }} />
             {!onlySets && !setInBrands && (
-              <Pick name="set" flag={flag} label="Set" value={set} items={sport && year && brand ? sets : []} onChange={(v) => {
+              <Pick name="set" flag={flag} label="Set" value={set} items={brandPick ? sets : []} onChange={(v) => {
                   setSet(v);
                   setType("");
                 }} />
@@ -395,11 +405,7 @@ function Pick({
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">{items === undefined ? "Loading…" : "Pick one"}</option>
-        {items?.map((i) => (
-          <option key={i.id} value={i.id}>
-            {i.name}
-          </option>
-        ))}
+        <DrillOptions items={items ?? []} />
         {typed && <option value={TYPED}>{typed}</option>}
       </select>
     </label>

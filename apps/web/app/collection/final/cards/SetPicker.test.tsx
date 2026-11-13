@@ -1,8 +1,9 @@
 /**
  * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of the
  * admin screen") — "Start building a set" browses sport, year and brand. The
- * year's brand-unknown row is never offered: its sets sit in the Brand
- * select in its place (each carrying the row's id as `brandId`). Picking one
+ * year's brand-unknown row is never offered: its sets sit in the brand
+ * select in its place, after the brands under "More sets" (each carrying the
+ * row's id as `brandId`), and the select is labelled by what it holds. Picking one
  * lists just that set, captioned with its sport alone. The store is a stub;
  * no test here reaches a server.
  */
@@ -60,10 +61,12 @@ function browseTo(year: string) {
 }
 
 describe("Start building a set under a brand-unknown row", () => {
-  it("offers the row's sets as brands and, picked, lists that one set by its sport alone", () => {
+  it("offers the brands first, then the row's sets under More sets and, picked, lists that one set by its sport alone", () => {
     browseTo("y90");
-    expect(optionsOf(screen.getByLabelText("Brand"))).toEqual(["Any brand", "Starline Long John Silver", "Topps"]);
-    fireEvent.change(screen.getByLabelText("Brand"), { target: { value: "s9" } });
+    const select = screen.getByLabelText("Brand or set");
+    expect(optionsOf(select)).toEqual(["Any brand or set", "Topps", "Starline Long John Silver"]);
+    expect(select.querySelector("optgroup")?.label).toBe("More sets");
+    fireEvent.change(select, { target: { value: "s9" } });
     expect(screen.getByRole("button", { name: "Building 1990 Starline Long John Silver" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Building 1990 Classic" })).toBeNull();
     const row = screen.getByRole("listitem");
@@ -73,7 +76,7 @@ describe("Start building a set under a brand-unknown row", () => {
 
   it("a real brand lists its sets, captioned with sport and brand", () => {
     browseTo("y90");
-    fireEvent.change(screen.getByLabelText("Brand"), { target: { value: "m-topps" } });
+    fireEvent.change(screen.getByLabelText("Brand or set"), { target: { value: "m-topps" } });
     expect(screen.getByRole("button", { name: "Building 1990 Topps Traded" })).toBeTruthy();
     expect(screen.getByRole("listitem").textContent).toBe("1990 Topps TradedBaseball, ToppsBuilding");
   });
@@ -82,5 +85,11 @@ describe("Start building a set under a brand-unknown row", () => {
     browseTo("y89");
     expect(optionsOf(screen.getByLabelText("Set"))).toEqual(["Any set", "Pacific Legends"]);
     expect(screen.queryByLabelText("Brand")).toBeNull();
+    expect(screen.queryByLabelText("Brand or set")).toBeNull();
+  });
+
+  it("before a year is picked, the field is a Brand field", () => {
+    render(<SetPicker onClose={() => {}} />);
+    expect(screen.getByLabelText("Brand")).toBeTruthy();
   });
 });

@@ -76,8 +76,9 @@ export const setRefValidator = v.object({
    * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of
    * the admin screen") — true when `manufacturer` is the year's brand-unknown
    * row (`metadata.isBrandUnknown`, read by the flag and never by its name).
-   * The node stays, because navigation needs its id; every user-facing label
-   * leaves its name out, as the listing title does (NEO-272).
+   * The node stays, because navigation needs its id, but its name is sent
+   * blank; every user-facing label leaves it out, as the listing title does
+   * (NEO-272).
    */
   manufacturerBrandUnknown: v.optional(v.literal(true)),
 });
@@ -247,14 +248,18 @@ export class CatalogReader {
     if (!chain || !set) return null;
     const year = chain.get("year");
     const manufacturer = chain.get("manufacturer");
+    const brandUnknown = manufacturer?.metadata?.isBrandUnknown === true;
     return {
       _id: set._id,
       name: set.value,
       season: set.features?.season ?? year?.value ?? "",
       sport: node(chain.get("sport")),
       year: node(year),
-      manufacturer: node(manufacturer),
-      ...(manufacturer?.metadata?.isBrandUnknown === true ? { manufacturerBrandUnknown: true as const } : {}),
+      // NEO-527: the brand-unknown row keeps its id (navigation needs it) but
+      // never sends its name, so no reply (the anonymous public one included)
+      // carries it, whatever a client does with the flag.
+      manufacturer: manufacturer && brandUnknown ? { _id: manufacturer._id, name: "" } : node(manufacturer),
+      ...(brandUnknown ? { manufacturerBrandUnknown: true as const } : {}),
     };
   }
 

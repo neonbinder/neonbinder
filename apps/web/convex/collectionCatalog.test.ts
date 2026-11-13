@@ -18,6 +18,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+import { MAX_DRILL_ITEMS, withUnknownBrandSets } from "./collectionCatalog";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -180,13 +181,14 @@ describe("NEO-527: the brand-unknown row is never listed", () => {
     return { ...base, ...ids };
   }
 
-  test("the year's brand column lists the real brands and, in the row's place, its sets by name", async () => {
+  test("the year's brand column lists the real brands first and, in the row's place, its sets by name", async () => {
     const { as, fx, unknownId, starlineId, bowmanId } = await withUnknownBrand();
     const brands = await as.query(api.collectionCatalog.drill, { level: "manufacturer", parentId: fx.yearId });
+    // Majors first: "Topps" sorts after both sets by name, yet leads.
     expect(brands.items.map((i) => [i.name, i.level, i.brandId ?? null])).toEqual([
+      ["Topps", "manufacturer", null],
       ["Bowman", "setName", unknownId],
       ["Starline Long John Silver", "setName", unknownId],
-      ["Topps", "manufacturer", null],
     ]);
     expect(brands.items.map((i) => i._id)).not.toContain(unknownId);
     expect(brands.items.find((i) => i._id === starlineId)?.childCount).toBe(1);
@@ -205,9 +207,116 @@ describe("NEO-527: the brand-unknown row is never listed", () => {
     const { as, fx, unknownId, starlineId } = await withUnknownBrand();
     const path = await as.query(api.collectionCatalog.setPath, { setId: starlineId });
     expect(path?.manufacturer?._id).toBe(unknownId);
+    // The row's name never leaves the server, flag or no flag.
+    expect(path?.manufacturer?.name).toBe("");
+    expect(JSON.stringify(path)).not.toContain("Zzz Unsorted");
     expect(path?.manufacturerBrandUnknown).toBe(true);
     const real = await as.query(api.collectionCatalog.setPath, { setId: fx.setId });
     expect(real && "manufacturerBrandUnknown" in real).toBe(false);
+  });
+
+  /**
+   * Nothing makes the flagged row unique per year. Two of them, each holding
+   * more sets than fit: the real brand is never cut, the loose sets of both
+   * rows together fill only what is left of the cap, and each expansion reads
+   * only that remainder (plus one), so the column never reads much past
+   * `MAX_DRILL_ITEMS`.
+   */
+  async function withTwoFlaggedRows(perRow: number) {
+    const base = await setup();
+    const ids = await base.t.run(async (ctx) => {
+      const flagged = async (value: string) =>
+        ctx.db.insert("selectorOptions", {
+          level: "manufacturer",
+          value,
+          platformData: {},
+          isCustom: false,
+          children: [],
+          parentId: base.fx.yearId,
+          lastUpdated: 1,
+          hasCards: true,
+          metadata: { isBrandUnknown: true },
+        } as never);
+      const first = await flagged("Unsorted A");
+      const second = await flagged("Unsorted B");
+      for (const [parentId, prefix] of [
+        [first, "Alpha"],
+        [second, "Beta"],
+      ] as const) {
+        for (let n = 0; n < perRow; n++) {
+          await ctx.db.insert("selectorOptions", {
+            level: "setName",
+            value: `${prefix} ${String(n).padStart(3, "0")}`,
+            platformData: {},
+            isCustom: false,
+            children: [],
+            parentId,
+            lastUpdated: 1,
+          } as never);
+        }
+      }
+      return { first, second };
+    });
+    return { ...base, ...ids };
+  }
+
+  test("two flagged rows share one cap; the real brand is never cut and leads", async () => {
+    const perRow = Math.ceil(MAX_DRILL_ITEMS * 0.6);
+    const { as, fx } = await withTwoFlaggedRows(perRow);
+    const column = await as.query(api.collectionCatalog.drill, { level: "manufacturer", parentId: fx.yearId });
+    expect(column.truncated).toBe(true);
+    expect(column.items).toHaveLength(MAX_DRILL_ITEMS);
+    expect(column.items[0]).toMatchObject({ name: "Topps", level: "manufacturer" });
+    expect(column.items[0].brandId).toBeUndefined();
+    expect(column.items.slice(1).every((i) => i.level === "setName" && i.brandId !== undefined)).toBe(true);
+    const names = column.items.slice(1).map((i) => i.name);
+    expect(names).toEqual([...names].sort());
+  });
+
+  test("each expansion reads only what is left of the cap, plus one", async () => {
+    const perRow = Math.ceil(MAX_DRILL_ITEMS * 0.6);
+    const { t, fx } = await withTwoFlaggedRows(perRow);
+    const takes: number[] = [];
+    const read: number[] = [];
+    const result = await t.run(async (ctx) => {
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) => q.eq("level", "manufacturer").eq("parentId", fx.yearId))
+        .collect();
+      // Count what each expansion asks the index for.
+      const db = new Proxy(ctx.db, {
+        get(target, key, receiver) {
+          if (key !== "query") return Reflect.get(target, key, receiver);
+          return (table: "selectorOptions") => {
+            const q = target.query(table);
+            return {
+              withIndex: (...args: Parameters<typeof q.withIndex>) => {
+                const indexed = q.withIndex(...args);
+                return {
+                  take: async (n: number) => {
+                    takes.push(n);
+                    const got = await indexed.take(n);
+                    read.push(got.length);
+                    return got;
+                  },
+                };
+              },
+            };
+          };
+        },
+      });
+      const out = await withUnknownBrandSets({ db } as never, rows);
+      return { truncated: out.truncated, values: out.rows.map((r) => r.value) };
+    });
+    const brands = 1;
+    // First row: everything left after the brand, plus one; second: what the
+    // first row left, plus one.
+    expect(takes).toEqual([MAX_DRILL_ITEMS - brands + 1, MAX_DRILL_ITEMS - brands - perRow + 1]);
+    // Documents read across both expansions: the cap's remainder plus the one look-ahead.
+    expect(brands + read.reduce((a, b) => a + b, 0)).toBe(MAX_DRILL_ITEMS + 1);
+    expect(result.truncated).toBe(true);
+    expect(result.values).toHaveLength(MAX_DRILL_ITEMS);
+    expect(result.values[0]).toBe("Topps");
   });
 
   test("a set is never found by the brand-unknown row's name", async () => {

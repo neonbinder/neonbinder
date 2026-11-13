@@ -114,10 +114,9 @@
  * supplied them: a year synced from SportLots got a brand row for each, and
  * this list existed only for the issuers that list lacked.
  *
- * SportLots has been paused since 2026-10-20. A year synced since then gets
- * no major brand rows at all, so 2026 Football filed 21 of its sets — every
- * Topps, Bowman, Panini, Donruss and Upper Deck set — under Unknown.
- * Product invariant 1 says NB's data must stand without any one
+ * While SportLots is paused, a year synced gets no major brand rows, so
+ * every Topps, Bowman, Panini, Donruss and Upper Deck set in it would be
+ * filed under Unknown. Product invariant 1 says NB's data must stand without any one
  * marketplace, so NB's OWN vocabulary now names the majors too: every brand
  * SportLots supplied that this list lacked, read once from the brand rows
  * NB already had (Jason, 2026-11-12). They are spelled exactly as those
@@ -139,9 +138,11 @@
  *   • `SP` is a whole word, so "SPx" (another Upper Deck line) is NOT
  *     claimed by it and stays where it was.
  *
- * `Classic`, `Score` and `SP` are PROBABLE, for the reason `Star`, `Best`
- * and `Choice` carry a risk note: `Classic` and `Score` are common words
- * (and "Score Board" is a different company), and `SP` is two letters.
+ * `Classic` and `SP` are CERTAIN, despite looking risky: every real
+ * Classic line belongs to Classic Inc., and every "SP …" set is Upper
+ * Deck's SP line (collector review). `Score` alone is PROBABLE, for the
+ * reason `Star`, `Best` and `Choice` carry a risk note: it is a common word,
+ * and "Score Board" is a different company.
  *
  * ## `Other` IS NOT AND MUST NEVER BE AN ENTRY
  *
@@ -220,7 +221,7 @@ import { matchesBrandPrefix, selectorValueKey } from "./selectorSyncMatch";
  * Grouped as Jason approved them, certain and probable taken as one block
  * each time: 27 + 11 + one of his own in the first pass, then 10 + 4 from
  * the collector pass over the 266 sets still in Unknown afterwards, then
- * the 17 majors SportLots used to supply (14 + 3 probable, NEO-527).
+ * the 17 majors SportLots used to supply (16 + 1 probable, NEO-527).
  */
 export const KNOWN_BRANDS: readonly string[] = [
   "Action Packed", // 7 — its own manufacturer; catalogues never say "Pinnacle Action Packed"
@@ -234,7 +235,7 @@ export const KNOWN_BRANDS: readonly string[] = [
   "Calbee", // 5
   "Champion's Deck", // 3 — NIL issuer, the ONIT Athlete class; ASCII apostrophe only
   "Choice", // 301 — a common word; the single biggest claim in the sample
-  "Classic", // NEO-527 major — probable: a common word
+  "Classic", // NEO-527 major — certain: every real Classic line is Classic Inc.'s
   "CMC", // 27
   "Collector's Edge", // 2 — the apostrophe spelling; see "two rows for one issuer"
   "Collectors Edge", // 9 — the same issuer, the other spelling, on purpose
@@ -277,7 +278,7 @@ export const KNOWN_BRANDS: readonly string[] = [
   "Score", // NEO-527 major — probable: a common word, and "Score Board" is another company
   "Sisson Printing", // 3 — probable
   "Skybox", // NEO-527 major
-  "SP", // NEO-527 major — probable: two letters; whole-word, so never "SPx"
+  "SP", // NEO-527 major — certain: every "SP …" set is Upper Deck's SP line; whole-word, so never "SPx"
   "Sport Pro", // 5
   "Sportflics", // 1
   "SportsPrint", // 4

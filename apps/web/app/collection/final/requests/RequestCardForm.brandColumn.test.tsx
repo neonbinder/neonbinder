@@ -76,13 +76,16 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Request a card under a brand-unknown row", () => {
-  it("offers the row's sets in the Brand select, and picking one picks the set", async () => {
+  it("offers the brands first, then the row's sets under More sets; picking one picks the set", async () => {
     const form = open();
-    const brand = within(form).getByLabelText("Brand");
-    expect(optionsOf(brand)).toEqual(["Pick one", "Starline Long John Silver", "Topps"]);
+    const brand = within(form).getByLabelText("Brand or set");
+    expect(optionsOf(brand)).toEqual(["Pick one", "Topps", "Starline Long John Silver"]);
+    const group = brand.querySelector("optgroup");
+    expect(group?.label).toBe("More sets");
+    expect(Array.from(group?.querySelectorAll("option") ?? []).map((o) => o.text)).toEqual(["Starline Long John Silver"]);
 
     fireEvent.change(brand, { target: { value: "s9" } });
-    expect((within(form).getByLabelText("Brand") as HTMLSelectElement).value).toBe("s9");
+    expect((within(form).getByLabelText("Brand or set") as HTMLSelectElement).value).toBe("s9");
     expect(within(form).queryByLabelText("Set")).toBeNull();
     fireEvent.change(within(form).getByLabelText("Checklist"), { target: { value: "vt9" } });
     fireEvent.change(within(form).getByLabelText("Card number"), { target: { value: "12" } });
@@ -94,13 +97,13 @@ describe("Request a card under a brand-unknown row", () => {
 
   it("a real brand still asks for its set", () => {
     const form = open();
-    fireEvent.change(within(form).getByLabelText("Brand"), { target: { value: "m-topps" } });
+    fireEvent.change(within(form).getByLabelText("Brand or set"), { target: { value: "m-topps" } });
     expect(optionsOf(within(form).getByLabelText("Set"))).toEqual(["Pick one", "Topps Traded"]);
   });
 
   it("starts on the set when the Checklists drill stands on it", () => {
     const form = open({ ...EMPTY_DRILL, sport: "sp", year: "y90", brand: "unk", set: "s9" });
-    expect((within(form).getByLabelText("Brand") as HTMLSelectElement).value).toBe("s9");
+    expect((within(form).getByLabelText("Brand or set") as HTMLSelectElement).value).toBe("s9");
     expect(within(form).queryByLabelText("Set")).toBeNull();
     expect(within(form).getByLabelText("Checklist")).toBeTruthy();
   });
@@ -110,5 +113,49 @@ describe("Request a card under a brand-unknown row", () => {
     const only = within(form).getByLabelText("Set");
     expect(optionsOf(only)).toEqual(["Pick one", "Pacific Legends"]);
     expect(within(form).queryByLabelText("Brand")).toBeNull();
+    expect(within(form).queryByLabelText("Brand or set")).toBeNull();
+    expect(only.querySelector("optgroup")).toBeNull();
+  });
+
+  it("a year of brands only says Brand", () => {
+    COLUMNS["brand|y88"] = [{ id: "m-fleer", name: "Fleer", hasChildren: true }];
+    COLUMNS["year|sp"].push({ id: "y88", name: "1988", hasChildren: true });
+    try {
+      const form = open({ ...EMPTY_DRILL, sport: "sp", year: "y88" });
+      expect(optionsOf(within(form).getByLabelText("Brand"))).toEqual(["Pick one", "Fleer"]);
+      expect(within(form).getByLabelText("Set")).toBeTruthy();
+    } finally {
+      delete COLUMNS["brand|y88"];
+      COLUMNS["year|sp"].pop();
+    }
+  });
+});
+
+describe("Request a card: an empty set pick takes the keyboard to the select that picks it", () => {
+  const sendEmpty = (form: HTMLElement) => fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
+
+  it("a drill left on the hidden row with no set: the brand select, never a Set select of its sets", () => {
+    const form = open({ ...EMPTY_DRILL, sport: "sp", year: "y90", brand: "unk" });
+    const brand = within(form).getByLabelText("Brand or set") as HTMLSelectElement;
+    expect(brand.value).toBe("");
+    // The hidden row's sets never open as a Set list of their own.
+    expect(optionsOf(within(form).getByLabelText("Set"))).toEqual(["Pick one"]);
+    sendEmpty(form);
+    expect(document.activeElement).toBe(brand);
+    expect(brand.getAttribute("aria-invalid")).toBe("true");
+    expect(calls).toEqual([]);
+  });
+
+  it("a year whose only brand is the row: the Set-labelled select", () => {
+    const form = open({ ...EMPTY_DRILL, sport: "sp", year: "y89" });
+    sendEmpty(form);
+    expect(document.activeElement).toBe(within(form).getByLabelText("Set"));
+  });
+
+  it("a real brand picked: its Set select", () => {
+    const form = open();
+    fireEvent.change(within(form).getByLabelText("Brand or set"), { target: { value: "m-topps" } });
+    sendEmpty(form);
+    expect(document.activeElement).toBe(within(form).getByLabelText("Set"));
   });
 });

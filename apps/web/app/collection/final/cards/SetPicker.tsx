@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Input } from "@/components/primitives/Input";
 import { FOCUS, LABEL, PRIMARY_BUTTON, SELECT } from "../../prototypes/p3/classes";
 import P3Dialog from "../../prototypes/p3/Dialog";
-import { brandColumnTitle } from "../catalog/drill";
+import { DrillOptions } from "../catalog/DrillOptions";
+import { brandFieldLabel } from "../catalog/drill";
 import { useSearchText } from "../catalog/search";
 import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
 import { setLabel, setWhereLabel } from "../data/labels";
@@ -99,7 +100,7 @@ export default function SetPicker({ onClose }: { onClose: () => void }) {
               setBrand("");
             }} />
           <Pick
-            label={brandColumnTitle(brands) === "Sets" ? "Set" : "Brand"}
+            label={brandFieldLabel(sport && year ? brands : [])}
             value={brand}
             items={sport && year ? brands : []}
             onChange={setBrand}
@@ -152,11 +153,7 @@ function Pick({
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">{items === undefined ? "Loading…" : `Any ${label.toLowerCase()}`}</option>
-        {items?.map((i) => (
-          <option key={i.id} value={i.id}>
-            {i.name}
-          </option>
-        ))}
+        <DrillOptions items={items ?? []} />
       </select>
     </label>
   );

@@ -23,9 +23,12 @@ import type { DrillItem, DrillLevel, DrillParents, SetPath } from "../data/types
 import Cascade from "./Cascade";
 import {
   brandColumnPick,
+  brandColumnPickTitle,
   brandColumnTitle,
+  brandFieldLabel,
   EMPTY_DRILL,
   pickInBrandColumn,
+  splitBrandColumn,
   type Drill,
 } from "./drill";
 import { useDrillState } from "./useDrillState";
@@ -44,9 +47,10 @@ const PACIFIC = item("set20", "set", "Pacific Legends", { brandId: "unk89" });
 
 const COLUMNS: Record<string, DrillItem[]> = {
   "sport|": [item("s1", "sport", "Baseball")],
-  "year|s1": [item("y1990", "year", "1990"), item("y1989", "year", "1989")],
+  "year|s1": [item("y1990", "year", "1990"), item("y1989", "year", "1989"), item("y1988", "year", "1988")],
   "brand|y1990": [CLASSIC, STARLINE, item("m-topps", "brand", "Topps")],
   "brand|y1989": [PACIFIC],
+  "brand|y1988": [item("m-fleer", "brand", "Fleer")],
   "set|m-topps": [item("set1", "set", "Topps Traded")],
   "set|unk": [item("set10", "set", "Classic"), item("set9", "set", "Starline Long John Silver")],
   "variantType|set9": [item("vt9", "variantType", "Base", { kind: "base", variantId: "vt9", hasChildren: false })],
@@ -149,39 +153,98 @@ describe("brand column helpers", () => {
     expect(brandColumnPick(column, null, "set9")).toBeUndefined();
   });
 
-  it("brandColumnTitle is Sets only when every row is such a set", () => {
-    expect(brandColumnTitle(COLUMNS["brand|y1990"])).toBe("Brands");
+  it("brandColumnTitle says what the column holds: Brands, Sets, or Brands and sets", () => {
+    expect(brandColumnTitle([item("m-topps", "brand", "Topps")])).toBe("Brands");
+    expect(brandColumnTitle(COLUMNS["brand|y1990"])).toBe("Brands and sets");
     expect(brandColumnTitle(COLUMNS["brand|y1989"])).toBe("Sets");
     expect(brandColumnTitle([])).toBe("Brands");
-    expect(brandColumnTitle(undefined)).toBe("Brands");
+    // Still loading, it could be either: never a promise of brands.
+    expect(brandColumnTitle(undefined)).toBe("Brands and sets");
+  });
+
+  it("brandFieldLabel is the singular of the same rule", () => {
+    expect(brandFieldLabel([item("m-topps", "brand", "Topps")])).toBe("Brand");
+    expect(brandFieldLabel(COLUMNS["brand|y1990"])).toBe("Brand or set");
+    expect(brandFieldLabel(COLUMNS["brand|y1989"])).toBe("Set");
+    expect(brandFieldLabel([])).toBe("Brand");
+  });
+
+  it("brandColumnPickTitle names a picked row by what it is", () => {
+    expect(brandColumnPickTitle(STARLINE)).toBe("Sets");
+    expect(brandColumnPickTitle(item("m-topps", "brand", "Topps"))).toBe("Brands");
+  });
+
+  it("splitBrandColumn puts the brands first and the loose sets after; a Sets-only column has no tail", () => {
+    const split = splitBrandColumn(COLUMNS["brand|y1990"]);
+    expect(split.main.map((i) => i.name)).toEqual(["Topps"]);
+    expect(split.more.map((i) => i.name)).toEqual(["Classic", "Starline Long John Silver"]);
+    expect(splitBrandColumn(COLUMNS["brand|y1989"])).toEqual({ main: [PACIFIC], more: [] });
   });
 });
 
 describe("the Checklists drill with a brand-unknown row", () => {
-  it("lists the row's sets beside the real brands, and picking one goes straight to its variant types", () => {
+  it("lists the real brands first, then the row's sets under More sets; picking one goes straight to its variant types", () => {
     renderDrill({ ...EMPTY_DRILL, sport: "s1", year: "y1990" });
-    expect(optionNames("Brands")).toEqual(["Classic", "Starline Long John Silver", "Topps"]);
+    expect(optionNames("Brands and sets")).toEqual(["Topps", "Classic", "Starline Long John Silver"]);
+    const more = screen.getByRole("group", { name: "More sets" });
+    expect(Array.from(more.querySelectorAll('[role="option"]')).map((o) => o.textContent)).toEqual([
+      "Classic",
+      "Starline Long John Silver",
+    ]);
+    expect(screen.getByRole("combobox", { name: "Search brands and sets" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("option", { name: /Starline Long John Silver/ }));
 
     expect(drillNow()).toEqual({ ...EMPTY_DRILL, sport: "s1", year: "y1990", brand: "unk", set: "set9" });
-    expect(screen.getByRole("button", { name: "Brands: Starline Long John Silver, change" })).toBeTruthy();
+    // The summary card names what was picked: a set, not a brand.
+    expect(screen.getByRole("button", { name: "Sets: Starline Long John Silver, change" })).toBeTruthy();
     expect(screen.queryByRole("listbox", { name: "Sets" })).toBeNull();
     expect(optionNames("Variant Types")).toEqual(["Base"]);
     expect(screen.getByLabelText("Title").textContent).toBe("1990 Starline Long John Silver");
   });
 
-  it("a real brand still opens its own Sets column", () => {
+  it("a real brand still opens its own Sets column, and its card says Brands", () => {
     renderDrill({ ...EMPTY_DRILL, sport: "s1", year: "y1990" });
     fireEvent.click(screen.getByRole("option", { name: /Topps/ }));
     expect(drillNow()).toEqual({ ...EMPTY_DRILL, sport: "s1", year: "y1990", brand: "m-topps" });
+    expect(screen.getByRole("button", { name: "Brands: Topps, change" })).toBeTruthy();
     expect(optionNames("Sets")).toEqual(["Topps Traded"]);
+  });
+
+  it("the keyboard walks the brands, then the loose sets, never stopping on the divider", () => {
+    renderDrill({ ...EMPTY_DRILL, sport: "s1", year: "y1990" });
+    const box = screen.getByRole("combobox", { name: "Search brands and sets" });
+    const highlighted = () => {
+      const id = box.getAttribute("aria-activedescendant");
+      return id ? document.getElementById(id)?.textContent : null;
+    };
+    expect(highlighted()).toBe("Topps");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(highlighted()).toBe("Classic");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(highlighted()).toBe("Starline Long John Silver");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(drillNow()).toMatchObject({ brand: "unk", set: "set9" });
+  });
+
+  it("while the brand column loads, the loading line promises neither brands nor sets alone", () => {
+    brandsLoading = true;
+    renderDrill({ ...EMPTY_DRILL, sport: "s1", year: "y1990" });
+    const said = screen.getAllByRole("status").map((n) => n.textContent);
+    expect(said).toContain("Loading brands and sets…");
+    expect(said).not.toContain("Loading brands…");
+  });
+
+  it("a year of brands only keeps its Brands column, with no divider", () => {
+    renderDrill({ ...EMPTY_DRILL, sport: "s1", year: "y1988" });
+    expect(optionNames("Brands")).toEqual(["Fleer"]);
+    expect(screen.queryByRole("group", { name: "More sets" })).toBeNull();
   });
 
   it("a link naming only the set reopens the same view", () => {
     renderDrill({ ...EMPTY_DRILL, set: "set9" });
     expect(drillNow()).toMatchObject({ sport: "s1", year: "y1990", brand: "unk", set: "set9" });
-    expect(screen.getByRole("button", { name: "Brands: Starline Long John Silver, change" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sets: Starline Long John Silver, change" })).toBeTruthy();
     expect(screen.queryByRole("listbox", { name: "Sets" })).toBeNull();
     expect(optionNames("Variant Types")).toEqual(["Base"]);
   });
@@ -206,6 +269,6 @@ describe("the Checklists drill with a brand-unknown row", () => {
   it("a drill left on the brand-unknown row without a set stops at the year, quietly", () => {
     renderDrill({ ...EMPTY_DRILL, sport: "s1", year: "y1990", brand: "unk" });
     expect(drillNow()).toEqual({ ...EMPTY_DRILL, sport: "s1", year: "y1990" });
-    expect(optionNames("Brands")).toHaveLength(3);
+    expect(optionNames("Brands and sets")).toHaveLength(3);
   });
 });

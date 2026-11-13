@@ -30,7 +30,7 @@
  * entry beside it claims its sets.
  *
  * NEO-527 added the majors SportLots used to supply (Topps, Panini, Upper
- * Deck and the rest; SportLots has been paused since 2026-10-20). Three
+ * Deck and the rest, which a year synced while SportLots is paused lacks). Three
  * earlier assertions said "a big-manufacturer set is left to its own brand"
  * and "Classic is not an entry"; they were flipped on purpose, and the
  * 2026 Football Unknown table below is the sample that decision was made on.
@@ -53,7 +53,7 @@ describe("KNOWN_BRANDS", () => {
     // 39 from the baseball pass, + 10 certain and 4 probable from the
     // collector pass over the 266 sets still in Unknown after Football
     // 2025/1994 and Basketball 2026/2025/1994 were loaded, + the 17 majors
-    // SportLots used to supply (NEO-527: 14 certain, 3 probable).
+    // SportLots used to supply (NEO-527: 16 certain, 1 probable).
     expect(KNOWN_BRANDS).toHaveLength(70);
   });
 

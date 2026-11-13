@@ -4,7 +4,15 @@ import { COLUMN_CARD, COLUMN_WIDTH, SELECTED } from "../../prototypes/p1/ui";
 import type { ColumnItem } from "../../prototypes/p1/drill";
 import { useCollectionStore } from "../data/store";
 import type { DrillItem } from "../data/types";
-import { pick, pickInBrandColumn, type Drill, type DrillStep } from "./drill";
+import {
+  brandColumnPickTitle,
+  LOOSE_SETS_LABEL,
+  pick,
+  pickInBrandColumn,
+  splitBrandColumn,
+  type Drill,
+  type DrillStep,
+} from "./drill";
 import { LoadingNote, SkeletonBars } from "./Skeleton";
 import type { DrillState } from "./useDrillState";
 
@@ -43,8 +51,15 @@ const SELECTED_FOR: Record<DrillStep, string> = {
  * line a row may carry is the store's own description that is not a count (a
  * parallel's print run, "/50").
  */
-function toColumnItems(items: DrillItem[]): ColumnItem[] {
-  return items.map((i) => ({ id: i.id, name: i.name, description: i.description }));
+function toColumnItems(items: DrillItem[], step: DrillStep): ColumnItem[] {
+  const rows = items.map((i) => ({ id: i.id, name: i.name, description: i.description }));
+  if (step !== "brand") return rows;
+  // NEO-527: majors first. The sets listed in place of the brand-unknown row
+  // follow the brands under a quiet "More sets" divider (never "Unknown").
+  const { more } = splitBrandColumn(items);
+  if (more.length === 0) return rows;
+  const loose = new Set(more.map((i) => i.id));
+  return rows.map((r) => (loose.has(r.id) ? { ...r, group: LOOSE_SETS_LABEL } : r));
 }
 
 export default function Cascade({
@@ -124,6 +139,8 @@ export default function Cascade({
     setFocusStep({ picked: step, next: item.variantId || !item.hasChildren || !after ? "checklist" : after });
   };
 
+  // The brand column's title while it loads is "Brands and sets": it may
+  // turn out to hold either, so the line never promises brands.
   const loading =
     state.pending && state.columns.length === 0 ? "Sports" : (state.columns.find((c) => c.items === undefined)?.title ?? null);
 
@@ -140,6 +157,7 @@ export default function Cascade({
       {state.columns.map((column) => {
         if (column.items === undefined) return <ColumnSkeleton key={column.step} title={column.title} />;
         const items = column.items;
+        const picked = column.step === "brand" ? items.find((i) => i.id === column.selectedId) : undefined;
         // The real catalog sends years newest first and variants in the
         // set's own order; the demo's lists sort as they always have.
         const keepOrder = column.step === "type" || column.step === "variant" || column.step === "sub" || (kind === "convex" && column.step === "year");
@@ -147,7 +165,8 @@ export default function Cascade({
           <div key={column.step} data-level={column.step} className={COLUMN_WIDTH}>
             <StaticColumn
               title={column.title}
-              items={toColumnItems(items)}
+              items={toColumnItems(items, column.step)}
+              summaryTitle={picked ? brandColumnPickTitle(picked) : undefined}
               selectedId={column.selectedId}
               onSelect={(id) => {
                 const item = items.find((i) => i.id === id);
