@@ -429,14 +429,14 @@ describe("CardIntake", () => {
 
       it("the re-send is an error alert when some of the re-sent photos failed", async () => {
         closeRunOnFirstRefusal(false);
-        const refuse = mocks.fns[REFS.uploadUrl];
+        const refuse = mocks.fns[REFS.uploadUrl] as unknown as (args: { jobId: string }) => Promise<unknown>;
         let fresh = 0;
         mocks.fns[REFS.uploadUrl] = vi.fn(async (args: { jobId: string }) => {
           if (args.jobId === "job-1234abcd") {
             fresh += 1;
             if (fresh === 2) throw new Error("storage hiccup");
           }
-          return refuse(args as never);
+          return refuse(args);
         });
         renderPage("/print/placeholders?jobId=job-run1");
         selectFiles(["front.jpg", "back.jpg"]);
