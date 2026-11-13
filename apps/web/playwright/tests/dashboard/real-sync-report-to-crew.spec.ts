@@ -5,7 +5,14 @@
 // collectors", follows it to Card Requests (`?kind=sync&open=<id>`), where
 // Not a bug is refused without a note and Mark fixed closes it with one; the
 // collector's dashboard no longer lists it, and My requests (`?ask=mine`)
-// shows it as Fixed with the crew's note.
+// shows it as Fixed with the crew's note. A second report on the same set,
+// closed as Not a bug with the crew's reason, shows there as Not a bug; and the
+// Card Requests chips (Waiting, Sync reports) live in the URL, Back steps one view.
+//
+// No @smoke tag, like its sibling real-sync-status-and-sale (the signed-in
+// dashboard writers that make a box are not in the fast subset). No isMobile
+// branch: the layout is one column that wraps, so the spec runs unchanged and
+// asserts the Send and Withdraw actions are on screen (toBeInViewport) on both.
 //
 // A held-back set is a state only a real sync produces, so the spec seeds NB's
 // own record of one with /testing/seed-dashboard?syncHeld=numberMismatch
@@ -120,6 +127,8 @@ test(
     const box = `Report${env.ATTEMPT_TOKEN}`;
     const note = `Numbering${env.ATTEMPT_TOKEN}`;
     const crewNote = `Relinked${env.ATTEMPT_TOKEN}`;
+    const secondNote = `Recheck${env.ATTEMPT_TOKEN}`;
+    const notABugNote = `Fine${env.ATTEMPT_TOKEN}`;
     const greeting = page.getByRole("heading", { level: 1, name: "Welcome back, slugger." });
 
     // --- A box with one card in it: what the held-back seed hangs on ----------
@@ -159,24 +168,30 @@ test(
     const set = bscSet(page);
     await expect(set).toBeVisible();
     await expect(set.getByRole("link", { name: /numbers this card differently/ })).toBeVisible();
-    await expect(set.getByText("That one's on our crew, not you. Report it and we'll fix it:")).toBeVisible();
+    await expect(set.getByText("On our crew, not you.")).toBeVisible();
     const reportButton = set.getByRole("button", { name: /^Report to our crew about .+ on BuySportsCards$/ });
     await expect(reportButton).toBeVisible();
-    // "<set label>", read off the button's own name so the later rows are found by what they say.
-    const setLabel = /^Report to our crew about (.+) on BuySportsCards$/.exec((await reportButton.textContent())?.trim() ?? "")?.[1];
+    // "<set label>", read off the button's accessible name (its aria snapshot line) so the later rows are found by what they say.
+    const setLabel = /button "Report to our crew about (.+) on BuySportsCards"/.exec(await reportButton.ariaSnapshot())?.[1];
     expect(setLabel, "the set's label, from the Report button's name").toBeTruthy();
 
     // --- Report it with a note ------------------------------------------------
-    const reportWithNote = async () => {
+    // `audit` runs the axe check on the open form (once is enough: the second report is the same form).
+    const reportWithNote = async (text: string, audit = false) => {
       await reportButton.click();
       const noteField = set.getByRole("textbox", { name: /^Note for our crew \(optional\)/ });
       await expect(noteField).toBeFocused();
-      await noteField.fill(note);
+      if (audit) await expectAccessible(page, { label: "Dashboard, report form open" });
+      await noteField.fill(text);
       written.reported = true;
-      await set.getByRole("button", { name: /^Send report on / }).click();
+      const send = set.getByRole("button", { name: /^Send report on / });
+      // Reachability on both projects (a phone folds the form under the tile): the action is on screen.
+      await send.scrollIntoViewIfNeeded();
+      await expect(send).toBeInViewport();
+      await send.click();
       await expect(set.getByText(REPORTED)).toBeVisible();
     };
-    await reportWithNote();
+    await reportWithNote(note, true);
     await expect(reportButton).toHaveCount(0);
 
     // "With our crew" lists it, one line, with a way to take it back.
@@ -187,27 +202,52 @@ test(
     await expectAccessible(page, { label: "Dashboard, a set reported to the crew" });
 
     // --- Withdraw: gone from the list, Report is back; report again ---------------
-    await mine.getByRole("button", { name: WITHDRAW_REPORT }).click();
-    await expect(mine).toHaveCount(0);
-    written.reported = false;
+    const withdraw = mine.getByRole("button", { name: WITHDRAW_REPORT });
+    await withdraw.scrollIntoViewIfNeeded();
+    await expect(withdraw).toBeInViewport();
+    await withdraw.click();
+    // The status line clears itself after a few seconds, so it is read first.
     await expect(
       page.getByRole("status").filter({ hasText: `Withdrew the report on ${setLabel}` }).filter({ hasText: "BuySportsCards" }),
     ).toBeVisible();
+    await expect(mine).toHaveCount(0);
+    written.reported = false;
     await expect(reportButton).toBeVisible();
     await expect(set.getByText(REPORTED)).toHaveCount(0);
-    await reportWithNote();
+    await reportWithNote(note);
     await expect(mine).toBeVisible();
 
-    // --- The crew's side: "From collectors" links to the review --------------------
-    const fromCollectors = page.getByRole("region", { name: "From collectors" });
-    const theirs = fromCollectors.getByRole("link").filter({ hasText: "Sync report" }).filter({ hasText: setLabel! });
-    await expect(theirs).toBeVisible();
-    await theirs.click();
-    await expect(page).toHaveURL(/\/admin\/card-requests\?/);
+    // --- The crew's side: the Card Requests chips live in the URL and Back steps one view ---
+    const show = page.getByRole("radiogroup", { name: "Show" });
+    const waiting = show.getByRole("radio", { name: "Waiting", exact: true });
+    await page.goto("/admin/card-requests");
+    await expect(waiting).toBeChecked();
+    await show.getByRole("radio", { name: "Sync reports", exact: true }).click();
     await expect(page).toHaveURL(/[?&]kind=sync(&|$)/);
-    await expect(page).toHaveURL(/[?&]open=[^&]+/);
+    await expect(show.getByRole("radio", { name: "Sync reports", exact: true })).toBeChecked();
+    await page.goBack();
+    await expect(page).not.toHaveURL(/[?&]kind=sync/);
+    await expect(waiting).toBeChecked();
+
+    // --- "From collectors" links to the review, from the dashboard ------------------
+    // Each closing cycle below enters through the dashboard's row and ends on Back, which returns there.
     const review = page.getByRole("region", { name: "Review" });
-    await expect(review.getByRole("heading", { level: 3, name: `Sync report: ${setLabel}`, exact: true })).toBeVisible();
+    const openReviewFromDashboard = async () => {
+      await page.goto("/dashboard");
+      await expect(greeting).toBeVisible();
+      const theirs = page
+        .getByRole("region", { name: "From collectors" })
+        .getByRole("link")
+        .filter({ hasText: "Sync report" })
+        .filter({ hasText: setLabel! });
+      await expect(theirs).toBeVisible();
+      await theirs.click();
+      await expect(page).toHaveURL(/\/admin\/card-requests\?/);
+      await expect(page).toHaveURL(/[?&]kind=sync(&|$)/);
+      await expect(page).toHaveURL(/[?&]open=[^&]+/);
+      await expect(review.getByRole("heading", { level: 3, name: `Sync report: ${setLabel}`, exact: true })).toBeVisible();
+    };
+    await openReviewFromDashboard();
     await expect(review.getByText(note)).toBeVisible();
     await expect(review.getByText(/numbers this card differently/)).toBeVisible();
     await expectAccessible(page, { label: "Card Requests, a sync report open for review" });
@@ -217,19 +257,23 @@ test(
     await expect(review.getByRole("alert").filter({ hasText: "Add a note saying why it isn't a bug." })).toBeVisible();
     await expect(page).toHaveURL(/[?&]open=[^&]+/);
     await expect(review.getByRole("button", { name: "Mark fixed", exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "Card Requests, Not a bug refused without a note" });
 
     // --- Mark fixed, with our note; Back returns to the list, without the report ------
+    const reports = page.getByRole("region", { name: "Reports" });
     await review.getByRole("textbox", { name: "Note to the collector" }).fill(crewNote);
     await review.getByRole("button", { name: "Mark fixed", exact: true }).click();
     await expect(review.getByRole("status").filter({ hasText: "Marked fixed." })).toBeVisible();
     written.reported = false;
+    await expectAccessible(page, { label: "Card Requests, a report marked fixed" });
     await review.getByRole("button", { name: "Back to the list", exact: true }).click();
     await expect(page).toHaveURL(/[?&]kind=sync(&|$)/);
     await expect(page).not.toHaveURL(/[?&]open=/);
     await expect(review.getByText("Pick a report to review it.")).toBeVisible();
-    const reports = page.getByRole("region", { name: "Reports" });
     await expect(reports.getByRole("button").filter({ hasText: setLabel! })).toHaveCount(0);
     await expect(reports.getByText(note)).toHaveCount(0);
+    // No report of ours stands open in the list, and nothing is open for review.
+    await expectAccessible(page, { label: "Sync reports list, nothing open" });
 
     // Back steps off Card Requests to the dashboard it was followed from.
     await page.goBack();
@@ -241,23 +285,44 @@ test(
     await expect(page.getByRole("button", { name: WITHDRAW_REPORT })).toHaveCount(0);
     await expect(page.getByRole("listitem").filter({ hasText: "Sync report" }).filter({ hasText: setLabel! })).toHaveCount(0);
 
-    // --- My requests: the report, Fixed, with the crew's note -----------------------
+    // --- A second report on the same set, closed as Not a bug with the crew's reason ---
+    await reportWithNote(secondNote);
+    await expect(mine).toBeVisible();
+    await openReviewFromDashboard();
+    await expect(review.getByText(secondNote)).toBeVisible();
+    await review.getByRole("textbox", { name: "Note to the collector" }).fill(notABugNote);
+    await review.getByRole("button", { name: "Not a bug", exact: true }).click();
+    await expect(review.getByRole("status").filter({ hasText: "Closed as not a bug." })).toBeVisible();
+    written.reported = false;
+    await review.getByRole("button", { name: "Back to the list", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]kind=sync(&|$)/);
+    await expect(page).not.toHaveURL(/[?&]open=/);
+    await expect(review.getByText("Pick a report to review it.")).toBeVisible();
+    await expect(reports.getByText(secondNote)).toHaveCount(0);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(greeting).toBeVisible();
+
+    // --- My requests: both reports, Fixed with our note and Not a bug with our reason ---
     await page.goto("/collection?tab=checklists&ask=mine");
     const dialog = page.getByRole("dialog", { name: "Can't find it?" });
     await expect(dialog.getByRole("tab", { name: "My requests", selected: true })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: "Sets you reported" })).toBeVisible();
-    const reported = dialog
-      .getByRole("list", { name: "My sync reports" })
-      .getByRole("listitem")
-      .filter({ hasText: setLabel! })
-      .filter({ hasText: crewNote });
+    const sets = dialog.getByRole("list", { name: "My sync reports" }).getByRole("listitem").filter({ hasText: setLabel! });
+    const reported = sets.filter({ hasText: crewNote });
     await expect(reported).toBeVisible();
     await expect(reported).toContainText("BuySportsCards");
     await expect(reported).toContainText("Fixed");
     await expect(reported).toContainText(`Your note: ${note}`);
     await expect(reported).toContainText(`From our crew: ${crewNote}`);
     await expect(reported.getByRole("button", { name: /^Withdraw/ })).toHaveCount(0);
-    await expectAccessible(page, { label: "My requests, a report the crew fixed" });
+    const refused = sets.filter({ hasText: notABugNote });
+    await expect(refused).toBeVisible();
+    await expect(refused).toContainText("Not a bug");
+    await expect(refused).toContainText(`Your note: ${secondNote}`);
+    await expect(refused).toContainText(`From our crew: ${notABugNote}`);
+    await expect(refused.getByRole("button", { name: /^Withdraw/ })).toHaveCount(0);
+    await expectAccessible(page, { label: "My requests, reports the crew closed" });
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
 
