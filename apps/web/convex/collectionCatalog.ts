@@ -180,6 +180,46 @@ const drillItemValidator = v.object({
 });
 
 /**
+ * NEO-527 — up to `limit` set rows under `parentId` a collector may be shown,
+ * read so an empty set never takes a place a set with cards needs: first the
+ * sets KNOWN to hold cards (`subtreeCardCount > 0`, biggest first), then, in
+ * what is left, the sets whose count is unknown (absent). A set at exactly 0
+ * is never read. A brand with hundreds of empty synced sets therefore can no
+ * longer push its sets with cards past the cap.
+ *
+ * Same answer as reading every set and dropping `hiddenAsEmpty`: a set row
+ * carries no own `cardCount` (cards sit on its variant rows) and no
+ * `hasCards` (sport, year and brand only), so `rowHasCards` on a set is its
+ * subtree count alone. `more` is true when a shown set was left out. At most
+ * `limit + 1` documents are read across both ranges.
+ */
+async function setsShown(
+  ctx: Ctx,
+  parentId: Id<"selectorOptions">,
+  limit: number,
+): Promise<{ rows: Row[]; more: boolean }> {
+  const counted = await ctx.db
+    .query("selectorOptions")
+    .withIndex("by_level_parent_and_subtree_count", (q) =>
+      q.eq("level", "setName").eq("parentId", parentId).gt("subtreeCardCount", 0),
+    )
+    .order("desc")
+    .take(limit + 1);
+  if (counted.length > limit) return { rows: counted.slice(0, limit), more: true };
+  const left = limit - counted.length;
+  const uncounted = await ctx.db
+    .query("selectorOptions")
+    .withIndex("by_level_parent_and_subtree_count", (q) =>
+      q.eq("level", "setName").eq("parentId", parentId).eq("subtreeCardCount", undefined),
+    )
+    .take(left + 1);
+  return {
+    rows: [...counted, ...uncounted.slice(0, left)],
+    more: uncounted.length > left,
+  };
+}
+
+/**
  * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of
  * the admin screen") — a year's brand column with the brand-unknown row
  * (read by its flag, never its name) swapped for the sets beneath it, each
@@ -189,9 +229,11 @@ const drillItemValidator = v.object({
  * the loose sets follow, by name. The reads are capped for the whole column:
  * nothing makes the flagged row unique, so every flagged row's sets share
  * what is left of `MAX_DRILL_ITEMS` once the brand rows are counted, each
- * expansion reading only that remainder (plus one, to tell whether there was
- * more). `truncated` says when a loose set was left out. A column without a
- * flagged row is returned untouched (`spliced: false`).
+ * expansion reading only the shown sets (`setsShown`: sets with cards first,
+ * then uncounted ones; empty sets never) up to that remainder, plus one to
+ * tell whether there was more. `truncated` says when a set a collector would
+ * see was left out. A column without a flagged row is returned untouched
+ * (`spliced: false`).
  */
 export async function withUnknownBrandSets(
   ctx: Ctx,
@@ -205,12 +247,9 @@ export async function withUnknownBrandSets(
   for (const row of rows) {
     if (!isBrandUnknownBrand(row) || hiddenAsEmpty(row)) continue;
     const left = Math.max(0, MAX_DRILL_ITEMS - brands.length - loose.length);
-    const sets = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) => q.eq("level", "setName").eq("parentId", row._id))
-      .take(left + 1);
-    if (sets.length > left) truncated = true;
-    for (const set of sets.slice(0, left)) {
+    const sets = await setsShown(ctx, row._id, left);
+    truncated ||= sets.more;
+    for (const set of sets.rows) {
       brandOf.set(set._id as string, row._id);
       loose.push(set);
     }
@@ -233,8 +272,13 @@ function isBrandUnknownBrand(row: Row): boolean {
  * brand is shown only when it carries `hasCards` (set once, by the first card
  * beneath it). From the set down, a row KNOWN to have no cards on it or
  * anywhere beneath it (stored `subtreeCardCount` exactly 0) is left out and a
- * row whose count is unknown is kept (`hiddenAsEmpty`). `truncated` is judged
- * before that filter, on the rows read.
+ * row whose count is unknown is kept (`hiddenAsEmpty`).
+ *
+ * NEO-527 — a brand's set column, and the sets spliced into a year's brand
+ * column, are read through `setsShown`, which never reads an empty set, so
+ * `truncated` there means a set the collector would see was left out. Every
+ * other column is read whole up to the cap and filtered after, so its
+ * `truncated` is judged on the rows read, before the filter.
  */
 export const drill = query({
   args: {
@@ -248,6 +292,7 @@ export const drill = query({
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
     let rows: Row[];
+    let readTruncated = false;
     if (args.parentId === undefined) {
       rows = await ctx.db
         .query("selectorOptions")
@@ -258,23 +303,30 @@ export const drill = query({
     } else {
       const parentId = selectorId(ctx, args.parentId);
       if (!parentId) return { items: [], truncated: false };
-      rows = args.level
-        ? await ctx.db
-            .query("selectorOptions")
-            .withIndex("by_level_and_parent", (q) =>
-              q.eq("level", args.level!).eq("parentId", parentId),
-            )
-            .take(MAX_DRILL_ITEMS + 1)
-        : await ctx.db
-            .query("selectorOptions")
-            .withIndex("by_parent", (q) => q.eq("parentId", parentId))
-            .take(MAX_DRILL_ITEMS + 1);
+      if (args.level === "setName") {
+        // NEO-527: sets with cards first, empty sets never read.
+        const shown = await setsShown(ctx, parentId, MAX_DRILL_ITEMS);
+        rows = shown.rows;
+        readTruncated = shown.more;
+      } else {
+        rows = args.level
+          ? await ctx.db
+              .query("selectorOptions")
+              .withIndex("by_level_and_parent", (q) =>
+                q.eq("level", args.level!).eq("parentId", parentId),
+              )
+              .take(MAX_DRILL_ITEMS + 1)
+          : await ctx.db
+              .query("selectorOptions")
+              .withIndex("by_parent", (q) => q.eq("parentId", parentId))
+              .take(MAX_DRILL_ITEMS + 1);
+      }
     }
     // NEO-527: a brand column with the brand-unknown row comes back in its
     // final order (brands, then the loose sets) and already within the cap.
     const spliced = await withUnknownBrandSets(ctx, rows.slice(0, MAX_DRILL_ITEMS));
     const listed = spliced.spliced ? spliced.rows : sortColumn(spliced.rows);
-    const truncated = rows.length > MAX_DRILL_ITEMS || spliced.truncated;
+    const truncated = readTruncated || rows.length > MAX_DRILL_ITEMS || spliced.truncated;
     const budget = { left: COUNT_FALLBACK_BUDGET };
     const items = [];
     for (const row of listed) {

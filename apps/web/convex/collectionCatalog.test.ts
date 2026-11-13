@@ -278,12 +278,22 @@ describe("NEO-527: the brand-unknown row is never listed", () => {
     const { t, fx } = await withTwoFlaggedRows(perRow);
     const takes: number[] = [];
     const read: number[] = [];
+    const orders: string[] = [];
     const result = await t.run(async (ctx) => {
       const rows = await ctx.db
         .query("selectorOptions")
         .withIndex("by_level_and_parent", (q) => q.eq("level", "manufacturer").eq("parentId", fx.yearId))
         .collect();
       // Count what each expansion asks the index for.
+      type Takeable = { take: (n: number) => Promise<unknown[]> };
+      const counting = (inner: Takeable) => ({
+        take: async (n: number) => {
+          takes.push(n);
+          const got = await inner.take(n);
+          read.push(got.length);
+          return got;
+        },
+      });
       const db = new Proxy(ctx.db, {
         get(target, key, receiver) {
           if (key !== "query") return Reflect.get(target, key, receiver);
@@ -293,11 +303,10 @@ describe("NEO-527: the brand-unknown row is never listed", () => {
               withIndex: (...args: Parameters<typeof q.withIndex>) => {
                 const indexed = q.withIndex(...args);
                 return {
-                  take: async (n: number) => {
-                    takes.push(n);
-                    const got = await indexed.take(n);
-                    read.push(got.length);
-                    return got;
+                  ...counting(indexed),
+                  order: (order: "asc" | "desc") => {
+                    orders.push(order);
+                    return counting(indexed.order(order));
                   },
                 };
               },
@@ -309,9 +318,14 @@ describe("NEO-527: the brand-unknown row is never listed", () => {
       return { truncated: out.truncated, values: out.rows.map((r) => r.value) };
     });
     const brands = 1;
-    // First row: everything left after the brand, plus one; second: what the
-    // first row left, plus one.
-    expect(takes).toEqual([MAX_DRILL_ITEMS - brands + 1, MAX_DRILL_ITEMS - brands - perRow + 1]);
+    const first = MAX_DRILL_ITEMS - brands;
+    const second = MAX_DRILL_ITEMS - brands - perRow;
+    // Each expansion reads the sets with cards (none here) and then the
+    // uncounted ones, each range asking for what is left plus one: the first
+    // row everything left after the brand, the second what the first left.
+    expect(takes).toEqual([first + 1, first + 1, second + 1, second + 1]);
+    // The sets-with-cards range is read biggest first.
+    expect(orders).toEqual(["desc", "desc"]);
     // Documents read across both expansions: the cap's remainder plus the one look-ahead.
     expect(brands + read.reduce((a, b) => a + b, 0)).toBe(MAX_DRILL_ITEMS + 1);
     expect(result.truncated).toBe(true);
@@ -325,6 +339,154 @@ describe("NEO-527: the brand-unknown row is never listed", () => {
     expect(byName.sets.map((x) => x._id)).toEqual([starlineId]);
     const byRowName = await as.query(api.collectionCatalog.suggest, { q: "Unsorted Starline" });
     expect(byRowName.sets).toEqual([]);
+  });
+});
+
+/**
+ * NEO-527 — a set column reads the sets with cards first (biggest first),
+ * then the uncounted ones, and never an empty one, so a brand holding more
+ * empty synced sets than the cap still lists every set that has cards.
+ */
+describe("NEO-527: empty sets never crowd out sets with cards", () => {
+  type SetSpec = { value: string; subtreeCardCount?: number };
+
+  /** A brand (a real one, or the year's brand-unknown row) under 2024 and its sets, in order. */
+  async function withBrand(sets: SetSpec[], opts: { brandUnknown?: boolean; extraBrands?: string[] } = {}) {
+    const base = await setup();
+    const brandId = await base.t.run(async (ctx) => {
+      const brand = (value: string, extra: Record<string, unknown> = {}) =>
+        ctx.db.insert("selectorOptions", {
+          level: "manufacturer",
+          value,
+          platformData: {},
+          isCustom: false,
+          children: [],
+          parentId: base.fx.yearId,
+          lastUpdated: 1,
+          hasCards: true,
+          ...extra,
+        } as never);
+      for (const name of opts.extraBrands ?? []) await brand(name);
+      const id = await brand(
+        opts.brandUnknown ? "Zzz Unsorted" : "Panini",
+        opts.brandUnknown ? { metadata: { isBrandUnknown: true } } : {},
+      );
+      for (const set of sets) {
+        await ctx.db.insert("selectorOptions", {
+          level: "setName",
+          value: set.value,
+          platformData: {},
+          isCustom: false,
+          children: [],
+          parentId: id,
+          lastUpdated: 1,
+          ...(set.subtreeCardCount === undefined
+            ? {}
+            : { subtreeCardCount: set.subtreeCardCount, subtreeNonVariationCardCount: set.subtreeCardCount }),
+        } as never);
+      }
+      return id;
+    });
+    return { ...base, brandId };
+  }
+
+  const empties = (n: number): SetSpec[] =>
+    Array.from({ length: n }, (_, i) => ({ value: `Empty ${String(i).padStart(3, "0")}`, subtreeCardCount: 0 }));
+
+  test("a brand with more empty sets than the cap, made first, still lists its set with cards", async () => {
+    const { as, brandId } = await withBrand([
+      ...empties(MAX_DRILL_ITEMS + 1),
+      { value: "Prizm", subtreeCardCount: 3 },
+    ]);
+    const column = await as.query(api.collectionCatalog.drill, { level: "setName", parentId: brandId });
+    expect(column.items.map((i) => i.name)).toEqual(["Prizm"]);
+    expect(column.truncated).toBe(false);
+  });
+
+  test("the same under the year's brand-unknown row, in the year's brand column", async () => {
+    const { as, fx, brandId } = await withBrand(
+      [...empties(MAX_DRILL_ITEMS + 1), { value: "Prizm", subtreeCardCount: 3 }],
+      { brandUnknown: true },
+    );
+    const column = await as.query(api.collectionCatalog.drill, { level: "manufacturer", parentId: fx.yearId });
+    expect(column.items.map((i) => [i.name, i.level, i.brandId ?? null])).toEqual([
+      ["Topps", "manufacturer", null],
+      ["Prizm", "setName", brandId],
+    ]);
+    expect(column.truncated).toBe(false);
+  });
+
+  test("an uncounted set is listed; a set known to be empty is not", async () => {
+    const { as, brandId } = await withBrand([
+      { value: "Known Empty", subtreeCardCount: 0 },
+      { value: "Never Counted" },
+      { value: "Has Cards", subtreeCardCount: 1 },
+    ]);
+    const column = await as.query(api.collectionCatalog.drill, { level: "setName", parentId: brandId });
+    expect(column.items.map((i) => i.name)).toEqual(["Has Cards", "Never Counted"]);
+    expect(column.truncated).toBe(false);
+  });
+
+  test("more sets with cards than the cap: truncated, and the biggest counts are the ones kept", async () => {
+    // Counts 1..MAX+1, plus an uncounted set: the count-1 set and the uncounted one are cut.
+    const sets: SetSpec[] = Array.from({ length: MAX_DRILL_ITEMS + 1 }, (_, i) => ({
+      value: `Set ${String(i + 1).padStart(3, "0")}`,
+      subtreeCardCount: i + 1,
+    }));
+    const { as, brandId } = await withBrand([{ value: "Never Counted" }, ...sets]);
+    const column = await as.query(api.collectionCatalog.drill, { level: "setName", parentId: brandId });
+    expect(column.truncated).toBe(true);
+    expect(column.items).toHaveLength(MAX_DRILL_ITEMS);
+    const names = column.items.map((i) => i.name);
+    expect(names).not.toContain("Set 001");
+    expect(names).not.toContain("Never Counted");
+    expect(names).toContain("Set 002");
+    expect(names).toContain(`Set ${String(MAX_DRILL_ITEMS + 1).padStart(3, "0")}`);
+  });
+
+  /**
+   * The year's brand column at the cap: the real brands (Topps from the
+   * fixture, and Bowman) are counted first and never cut; the loose sets,
+   * some with cards and the rest uncounted, fill exactly what is left.
+   */
+  function looseSets(n: number): SetSpec[] {
+    const withCards = 200;
+    return Array.from({ length: n }, (_, i) =>
+      i < withCards
+        ? { value: `Loose ${String(i).padStart(3, "0")}`, subtreeCardCount: i + 1 }
+        : { value: `Loose ${String(i).padStart(3, "0")}` },
+    );
+  }
+
+  test("brands plus loose sets exactly at the cap: nothing cut", async () => {
+    const realBrands = 2;
+    const { as, fx } = await withBrand(
+      [...empties(5), ...looseSets(MAX_DRILL_ITEMS - realBrands)],
+      { brandUnknown: true, extraBrands: ["Bowman"] },
+    );
+    const column = await as.query(api.collectionCatalog.drill, { level: "manufacturer", parentId: fx.yearId });
+    expect(column.truncated).toBe(false);
+    expect(column.items).toHaveLength(MAX_DRILL_ITEMS);
+    expect(column.items.slice(0, realBrands).map((i) => [i.name, i.level])).toEqual([
+      ["Bowman", "manufacturer"],
+      ["Topps", "manufacturer"],
+    ]);
+    expect(column.items.slice(realBrands).every((i) => i.level === "setName")).toBe(true);
+  });
+
+  test("one loose set over the cap: truncated, every real brand still listed", async () => {
+    const realBrands = 2;
+    const { as, fx } = await withBrand(
+      [...empties(5), ...looseSets(MAX_DRILL_ITEMS - realBrands + 1)],
+      { brandUnknown: true, extraBrands: ["Bowman"] },
+    );
+    const column = await as.query(api.collectionCatalog.drill, { level: "manufacturer", parentId: fx.yearId });
+    expect(column.truncated).toBe(true);
+    expect(column.items).toHaveLength(MAX_DRILL_ITEMS);
+    expect(column.items.slice(0, realBrands).map((i) => [i.name, i.level])).toEqual([
+      ["Bowman", "manufacturer"],
+      ["Topps", "manufacturer"],
+    ]);
   });
 });
 
