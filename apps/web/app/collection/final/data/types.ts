@@ -82,6 +82,12 @@ export interface SetRef {
   /** The year the set is filed under (a hockey season files under its start). */
   year: number;
   brand: NamedRef;
+  /**
+   * NEO-527 — true when `brand` is the year's brand-unknown row (read by the
+   * server from its flag, never its name). Its id still drives navigation,
+   * but no label shows its name: a collector never sees that row.
+   */
+  brandUnknown?: true;
   sport: NamedRef;
 }
 
@@ -284,6 +290,14 @@ export interface DrillItem {
   variantId?: VariantId;
   /** True when the row has a column beneath it (an insert with sub-parallels has both). */
   hasChildren: boolean;
+  /**
+   * NEO-527 — set on a SET listed straight in a year's brand column, because
+   * the brand row above it is the year's brand-unknown row, which a
+   * collector never sees: that row's id, which the drill still carries for
+   * its brand step. Picking the item picks that brand and this set at once
+   * (`pickInBrandColumn`).
+   */
+  brandId?: string;
 }
 
 // ---------------------------------------------------------------------------

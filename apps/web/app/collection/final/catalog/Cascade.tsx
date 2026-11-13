@@ -4,7 +4,7 @@ import { COLUMN_CARD, COLUMN_WIDTH, SELECTED } from "../../prototypes/p1/ui";
 import type { ColumnItem } from "../../prototypes/p1/drill";
 import { useCollectionStore } from "../data/store";
 import type { DrillItem } from "../data/types";
-import { pick, type Drill, type DrillStep } from "./drill";
+import { pick, pickInBrandColumn, type Drill, type DrillStep } from "./drill";
 import { LoadingNote, SkeletonBars } from "./Skeleton";
 import type { DrillState } from "./useDrillState";
 
@@ -102,7 +102,8 @@ export default function Cascade({
   });
 
   const choose = (step: DrillStep, item: DrillItem) => {
-    onDrill(pick(state.drill, step, item.id));
+    // NEO-527: a set listed in the brand column picks its (unseen) brand and itself.
+    onDrill(step === "brand" ? pickInBrandColumn(state.drill, item) : pick(state.drill, step, item.id));
     setExpanded((prev) => {
       const out = { ...prev };
       const steps: DrillStep[] = ["sport", "year", "brand", "set", "type", "variant", "sub"];
@@ -118,7 +119,9 @@ export default function Cascade({
       variant: "sub",
       sub: null,
     };
-    setFocusStep({ picked: step, next: item.variantId || !item.hasChildren || !next[step] ? "checklist" : next[step] });
+    // A set picked in the brand column goes straight on to its variant types.
+    const after = step === "brand" && item.brandId ? "type" : next[step];
+    setFocusStep({ picked: step, next: item.variantId || !item.hasChildren || !after ? "checklist" : after });
   };
 
   const loading =

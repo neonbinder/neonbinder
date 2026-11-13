@@ -54,6 +54,42 @@ export function pick(drill: Drill, step: DrillStep, id: string): Drill {
   return next;
 }
 
+/**
+ * NEO-527 — a pick in the brand column. A brand row picks the brand. A set
+ * listed there in place of the year's brand-unknown row (it carries that
+ * row's id as `brandId`; the row itself is never shown) picks that brand and
+ * the set at once, so the drill goes straight on to the set's variant types.
+ */
+export function pickInBrandColumn(drill: Drill, item: Pick<DrillItem, "id" | "brandId">): Drill {
+  if (!item.brandId) return pick(drill, "brand", item.id);
+  return { ...pick(drill, "brand", item.brandId), set: item.id };
+}
+
+/**
+ * NEO-527 — the brand column's item that reads as picked: the brand row
+ * itself, or, when the drill stands on the brand-unknown row, the set listed
+ * in its place. Undefined when the column holds neither.
+ */
+export function brandColumnPick(
+  items: readonly DrillItem[],
+  brand: string | null,
+  set: string | null,
+): DrillItem | undefined {
+  if (brand === null) return undefined;
+  const row = items.find((i) => !i.brandId && i.id === brand);
+  if (row) return row;
+  return set === null ? undefined : items.find((i) => i.brandId === brand && i.id === set);
+}
+
+/**
+ * NEO-527 — what the brand column is called: "Brands", or "Sets" when every
+ * row in it is a set listed in place of the brand-unknown row (a year whose
+ * only brand is that row).
+ */
+export function brandColumnTitle(items: readonly DrillItem[] | undefined): "Brands" | "Sets" {
+  return items && items.length > 0 && items.every((i) => i.brandId) ? "Sets" : "Brands";
+}
+
 /** The drill cut off just above `step` (that step and everything under it cleared). */
 export function cutAt(drill: Drill, step: DrillStep): Drill {
   const next: Drill = { ...drill };

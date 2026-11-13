@@ -6,7 +6,7 @@ import { Textarea } from "@/components/primitives/Textarea";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { LABEL, SELECT_PANEL } from "../../prototypes/p1/ui";
-import type { Drill } from "../catalog/drill";
+import { brandColumnPick, brandColumnTitle, type Drill } from "../catalog/drill";
 import { useCard, useDrill, writeErrorMessage } from "../data/store";
 import type { Card, DrillItem } from "../data/types";
 import { HeldPhotosField, type HeldPhotos } from "../CopyPhotosField";
@@ -67,7 +67,12 @@ export default function RequestCardForm({
   const sports = useDrill("sport", {});
   const years = useDrill(sport ? "year" : null, { sport });
   const brands = useDrill(sport && year ? "brand" : null, { sport, year });
-  const sets = useDrill(sport && year && brand ? "set" : null, { sport, year, brand });
+  // NEO-527: the year's brand-unknown row is never listed; its sets sit in
+  // the Brand select in its place, and picking one picks the set too.
+  const brandPick = brands ? brandColumnPick(brands, brand || null, set || null) : undefined;
+  const setInBrands = brandPick?.brandId !== undefined;
+  const onlySets = brandColumnTitle(brands) === "Sets";
+  const sets = useDrill(sport && year && brand && !setInBrands ? "set" : null, { sport, year, brand });
   const types = useDrill(set ? "variantType" : null, { sport, year, brand, set });
   const pickedType = types?.find((t) => t.id === type);
   const variants = useDrill(pickedType?.hasChildren ? "variant" : null, { sport, year, brand, set, variantType: type });
@@ -203,15 +208,18 @@ export default function RequestCardForm({
                 setSet("");
                 setType("");
               }} />
-            <Pick name="brand" flag={flag} label="Brand" value={brand} items={sport && year ? brands : []} onChange={(v) => {
-                setBrand(v);
-                setSet("");
+            <Pick name="brand" flag={flag} label={onlySets ? "Set" : "Brand"} value={brandPick?.id ?? brand} items={sport && year ? brands : []} onChange={(v) => {
+                const item = brands?.find((i) => i.id === v);
+                setBrand(item?.brandId ?? v);
+                setSet(item?.brandId ? item.id : "");
                 setType("");
               }} />
-            <Pick name="set" flag={flag} label="Set" value={set} items={sport && year && brand ? sets : []} onChange={(v) => {
-                setSet(v);
-                setType("");
-              }} />
+            {!onlySets && !setInBrands && (
+              <Pick name="set" flag={flag} label="Set" value={set} items={sport && year && brand ? sets : []} onChange={(v) => {
+                  setSet(v);
+                  setType("");
+                }} />
+            )}
           </div>
           {set && (
             <div className="grid gap-3 sm:grid-cols-2">

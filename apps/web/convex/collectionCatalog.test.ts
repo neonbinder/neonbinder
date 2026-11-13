@@ -141,6 +141,84 @@ describe("drill", () => {
   });
 });
 
+/**
+ * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of the
+ * admin screen") — the year's brand-unknown row, found by its flag and never
+ * by its name, is never listed to a collector: its sets sit in the year's
+ * brand column in its place, each carrying its id for the drill's brand step.
+ */
+describe("NEO-527: the brand-unknown row is never listed", () => {
+  async function withUnknownBrand() {
+    const base = await setup();
+    const ids = await base.t.run(async (ctx) => {
+      const row = async (level: string, value: string, parentId: Id<"selectorOptions">, extra: Record<string, unknown> = {}) => {
+        const id = await ctx.db.insert("selectorOptions", {
+          level,
+          value,
+          platformData: {},
+          isCustom: false,
+          children: [],
+          parentId,
+          lastUpdated: 1,
+          ...extra,
+        } as never);
+        const parent = await ctx.db.get(parentId);
+        await ctx.db.patch(parentId, { children: [...(parent?.children ?? []), id] });
+        return id;
+      };
+      // The operator's name for it; only the flag says what it is.
+      const unknownId = await row("manufacturer", "Zzz Unsorted", base.fx.yearId, {
+        hasCards: true,
+        metadata: { isBrandUnknown: true },
+      });
+      const starlineId = await row("setName", "Starline Long John Silver", unknownId);
+      const bowmanId = await row("setName", "Bowman", unknownId);
+      const emptyId = await row("setName", "Classic Empty", unknownId, { subtreeCardCount: 0 });
+      await row("variantType", "Base", starlineId, { cardCount: 5, nonVariationCardCount: 5 });
+      return { unknownId, starlineId, bowmanId, emptyId };
+    });
+    return { ...base, ...ids };
+  }
+
+  test("the year's brand column lists the real brands and, in the row's place, its sets by name", async () => {
+    const { as, fx, unknownId, starlineId, bowmanId } = await withUnknownBrand();
+    const brands = await as.query(api.collectionCatalog.drill, { level: "manufacturer", parentId: fx.yearId });
+    expect(brands.items.map((i) => [i.name, i.level, i.brandId ?? null])).toEqual([
+      ["Bowman", "setName", unknownId],
+      ["Starline Long John Silver", "setName", unknownId],
+      ["Topps", "manufacturer", null],
+    ]);
+    expect(brands.items.map((i) => i._id)).not.toContain(unknownId);
+    expect(brands.items.find((i) => i._id === starlineId)?.childCount).toBe(1);
+    expect(brands.items.find((i) => i._id === bowmanId)).toBeDefined();
+    expect(JSON.stringify(brands)).not.toContain("Zzz Unsorted");
+  });
+
+  test("the row's own column still lists its sets, for a drill that carries its id", async () => {
+    const { as, unknownId } = await withUnknownBrand();
+    const sets = await as.query(api.collectionCatalog.drill, { level: "setName", parentId: unknownId });
+    expect(sets.items.map((i) => i.name)).toEqual(["Bowman", "Starline Long John Silver"]);
+    expect(sets.items.every((i) => i.brandId === undefined)).toBe(true);
+  });
+
+  test("a set's path flags the brand-unknown row and keeps its id; a real brand carries no flag", async () => {
+    const { as, fx, unknownId, starlineId } = await withUnknownBrand();
+    const path = await as.query(api.collectionCatalog.setPath, { setId: starlineId });
+    expect(path?.manufacturer?._id).toBe(unknownId);
+    expect(path?.manufacturerBrandUnknown).toBe(true);
+    const real = await as.query(api.collectionCatalog.setPath, { setId: fx.setId });
+    expect(real && "manufacturerBrandUnknown" in real).toBe(false);
+  });
+
+  test("a set is never found by the brand-unknown row's name", async () => {
+    const { as, starlineId } = await withUnknownBrand();
+    const byName = await as.query(api.collectionCatalog.suggest, { q: "Starline" });
+    expect(byName.sets.map((x) => x._id)).toEqual([starlineId]);
+    const byRowName = await as.query(api.collectionCatalog.suggest, { q: "Unsorted Starline" });
+    expect(byRowName.sets).toEqual([]);
+  });
+});
+
 describe("a set", () => {
   test("setPath names the set's sport, year and brand", async () => {
     const { as, fx } = await setup();

@@ -170,7 +170,54 @@ const drillItemValidator = v.object({
    * to be empty is left out. Not shown to the collector.
    */
   hasCards: v.union(v.boolean(), v.null()),
+  /**
+   * NEO-527 — set on a set listed straight in a year's brand column because
+   * the brand row above it is the year's brand-unknown row
+   * (`metadata.isBrandUnknown`): that row's id, which the drill carries for
+   * its brand step. The row itself is never listed: a collector never sees it.
+   */
+  brandId: v.optional(v.id("selectorOptions")),
 });
+
+/**
+ * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of
+ * the admin screen") — a year's brand column with the brand-unknown row
+ * (read by its flag, never its name) swapped for the sets beneath it, each
+ * remembering that row's id (`brandOf`). Every other row passes through.
+ * The sets are read off the index, at most `MAX_DRILL_ITEMS`; `truncated`
+ * says when there were more.
+ */
+async function withUnknownBrandSets(
+  ctx: Ctx,
+  rows: Row[],
+): Promise<{ rows: Row[]; brandOf: Map<string, Id<"selectorOptions">>; truncated: boolean }> {
+  const brandOf = new Map<string, Id<"selectorOptions">>();
+  if (!rows.some(isBrandUnknownBrand)) return { rows, brandOf, truncated: false };
+  const out: Row[] = [];
+  let truncated = false;
+  for (const row of rows) {
+    if (!isBrandUnknownBrand(row)) {
+      out.push(row);
+      continue;
+    }
+    if (hiddenAsEmpty(row)) continue;
+    const sets = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) => q.eq("level", "setName").eq("parentId", row._id))
+      .take(MAX_DRILL_ITEMS + 1);
+    if (sets.length > MAX_DRILL_ITEMS) truncated = true;
+    for (const set of sets.slice(0, MAX_DRILL_ITEMS)) {
+      brandOf.set(set._id as string, row._id);
+      out.push(set);
+    }
+  }
+  return { rows: out, brandOf, truncated };
+}
+
+/** The year's brand-unknown row, by its flag (NEO-272); never by its name. */
+function isBrandUnknownBrand(row: Row): boolean {
+  return row.level === "manufacturer" && row.metadata?.isBrandUnknown === true;
+}
 
 /**
  * One column of the catalog cascade: the children of `parentId` (the sports
@@ -219,11 +266,14 @@ export const drill = query({
             .withIndex("by_parent", (q) => q.eq("parentId", parentId))
             .take(MAX_DRILL_ITEMS + 1);
     }
-    const truncated = rows.length > MAX_DRILL_ITEMS;
+    const spliced = await withUnknownBrandSets(ctx, rows.slice(0, MAX_DRILL_ITEMS));
+    const listed = sortColumn(spliced.rows);
+    const truncated = rows.length > MAX_DRILL_ITEMS || spliced.truncated || listed.length > MAX_DRILL_ITEMS;
     const budget = { left: COUNT_FALLBACK_BUDGET };
     const items = [];
-    for (const row of sortColumn(rows.slice(0, MAX_DRILL_ITEMS))) {
+    for (const row of listed.slice(0, MAX_DRILL_ITEMS)) {
       if (hiddenAsEmpty(row)) continue;
+      const brandId = spliced.brandOf.get(row._id as string);
       const totals = CARD_BEARING.has(row.level)
         ? await cardTotals(ctx, row, budget)
         : { all: null, base: null };
@@ -236,6 +286,7 @@ export const drill = query({
         cardCount: totals.all,
         baseCardCount: totals.base,
         hasCards: rowHasCards(row),
+        ...(brandId ? { brandId } : {}),
       });
     }
     return { items, truncated };
@@ -694,7 +745,9 @@ async function suggestSets(
     if (hiddenAsEmpty(row)) continue;
     const ref = await reader.setRef(row._id);
     if (!ref || (sportId && ref.sport?._id !== sportId)) continue;
-    const haystack = [ref.manufacturer?.name ?? "", ref.name, ref.sport?.name ?? ""]
+    // NEO-527: the brand-unknown row's name is never something a set is found by.
+    const brand = ref.manufacturerBrandUnknown ? "" : (ref.manufacturer?.name ?? "");
+    const haystack = [brand, ref.name, ref.sport?.name ?? ""]
       .join(" ")
       .toLowerCase();
     if (!words.every((w) => haystack.includes(w))) continue;

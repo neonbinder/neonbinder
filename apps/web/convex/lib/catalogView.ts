@@ -72,6 +72,14 @@ export const setRefValidator = v.object({
   sport: v.union(pathNodeValidator, v.null()),
   year: v.union(pathNodeValidator, v.null()),
   manufacturer: v.union(pathNodeValidator, v.null()),
+  /**
+   * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of
+   * the admin screen") — true when `manufacturer` is the year's brand-unknown
+   * row (`metadata.isBrandUnknown`, read by the flag and never by its name).
+   * The node stays, because navigation needs its id; every user-facing label
+   * leaves its name out, as the listing title does (NEO-272).
+   */
+  manufacturerBrandUnknown: v.optional(v.literal(true)),
 });
 
 /**
@@ -238,13 +246,15 @@ export class CatalogReader {
     const set = chain?.get("setName");
     if (!chain || !set) return null;
     const year = chain.get("year");
+    const manufacturer = chain.get("manufacturer");
     return {
       _id: set._id,
       name: set.value,
       season: set.features?.season ?? year?.value ?? "",
       sport: node(chain.get("sport")),
       year: node(year),
-      manufacturer: node(chain.get("manufacturer")),
+      manufacturer: node(manufacturer),
+      ...(manufacturer?.metadata?.isBrandUnknown === true ? { manufacturerBrandUnknown: true as const } : {}),
     };
   }
 
