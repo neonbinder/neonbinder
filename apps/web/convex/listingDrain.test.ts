@@ -1016,7 +1016,13 @@ describe("drainOwner: a push BSC did not take", () => {
     expect(rejected[0].detail).not.toContain("7");
     // And the public status carries the same NB-only words, without the BSC id.
     const status = await s.me.query(api.listingSync.syncSetProblems, { variantId: v.variantId, platform: "bsc" });
-    expect(status.problems).toContainEqual({ cardNo: "1", cardLabel: "Player 1", reason: "rejected", detail: rejected[0].detail });
+    expect(status.problems).toContainEqual({
+      cardId: v.cardIds[0],
+      cardNo: "1",
+      cardLabel: "Player 1",
+      reason: "rejected",
+      detail: rejected[0].detail,
+    });
     expect(JSON.stringify(status)).not.toContain("near_mint");
     expect(JSON.stringify(status)).not.toContain("bsc-1");
   });

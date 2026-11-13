@@ -2229,6 +2229,19 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["commonPrices.forVariants", (t) => t.query(api.commonPrices.forVariants, { variantIds: [] })],
     // NEO-370 — the listing gate's read: the caller's own state rows, home and common price only.
     ["listingGate.forHome", (t) => t.query(api.listingGate.forHome, {})],
+    // NEO-464 — the signed-in dashboard's own reads and its visit stamp.
+    ["dashboard.justCompleted", (t) => t.query(api.dashboard.justCompleted, { sinceMs: 0 })],
+    ["dashboard.setBoard", (t) => t.query(api.dashboard.setBoard, { setId: NOT_AN_ID })],
+    ["dashboard.smartChecklist", (t) => t.query(api.dashboard.smartChecklist, { containerId: NOT_AN_ID })],
+    ["dashboard.newSince", (t) => t.query(api.dashboard.newSince, { sinceMs: 0 })],
+    ["dashboard.freshPulls", (t) => t.query(api.dashboard.freshPulls, { sinceMs: 0 })],
+    ["dashboard.markVisit", (t) => t.mutation(api.dashboard.markVisit, {})],
+    ["dashboard.couldFit", (t) => t.query(api.dashboard.couldFit, { containerId: NOT_AN_ID })],
+    ["dashboard.intake", (t) => t.query(api.dashboard.intake, {})],
+    ["dashboard.sales", (t) => t.query(api.dashboard.sales, {})],
+    ["dashboard.newSets", (t) => t.query(api.dashboard.newSets, {})],
+    ["dashboard.newListings", (t) => t.query(api.dashboard.newListings, { sinceMs: 0 })],
+    ["dashboard.syncAlerts", (t) => t.query(api.dashboard.syncAlerts, {})],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
@@ -3153,6 +3166,62 @@ describe("NEO-475: the BSC call telemetry store is internal, never public", () =
     expect(serverImport).not.toBeNull();
     const names = serverImport![1].split(",").map((s) => s.trim()).filter(Boolean);
     expect(names.sort()).toEqual(["internalMutation", "internalQuery"]);
+  });
+});
+
+/**
+ * NEO-464 — `testing.backdateMyDashboardVisit`: public so the E2E test page can
+ * call it, and closed everywhere else. Pinned: refused off a testing deployment
+ * (`TESTING_RESET_SECRET` unset, i.e. production) even for a signed-in caller,
+ * and refused to an anonymous caller where it is enabled. Its caller scoping is
+ * testing.test.ts's.
+ */
+describe("NEO-464 testing.backdateMyDashboardVisit — testing deployments only, signed in", () => {
+  test("refused in production and to an anonymous caller", async () => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      delete process.env.TESTING_RESET_SECRET;
+      const prod = convexTest(schema, modules);
+      await expect(
+        prod.withIdentity(SIGNED_IN).mutation(api.testing.backdateMyDashboardVisit, {}),
+      ).rejects.toThrow(/not enabled/);
+      process.env.TESTING_RESET_SECRET = "x";
+      const dev = convexTest(schema, modules);
+      await expect(dev.mutation(api.testing.backdateMyDashboardVisit, {})).rejects.toThrow(/Not authenticated/);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
+  });
+});
+
+/**
+ * NEO-464 — the dashboard's test seeds (`testing.seedMyTestSale`,
+ * `seedMyTestSync`, `clearMyTestDashboardSeeds`): public so the E2E test page
+ * can call them, and closed everywhere else. Pinned like
+ * `backdateMyDashboardVisit`: refused in production even for a signed-in
+ * caller, and refused to an anonymous caller where they are enabled. Their
+ * caller scoping is testing.test.ts's.
+ */
+describe("NEO-464 testing dashboard seeds — testing deployments only, signed in", () => {
+  const CALLS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["testing.seedMyTestSale", (t) => t.mutation(api.testing.seedMyTestSale, {})],
+    ["testing.seedMyTestSync", (t) => t.mutation(api.testing.seedMyTestSync, { pending: true, error: true })],
+    ["testing.clearMyTestDashboardSeeds", (t) => t.mutation(api.testing.clearMyTestDashboardSeeds, {})],
+  ];
+  test.each(CALLS)("%s is refused in production and to an anonymous caller", async (_name, call) => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      delete process.env.TESTING_RESET_SECRET;
+      const prod = convexTest(schema, modules);
+      await expect(call(prod.withIdentity(SIGNED_IN) as unknown as ReturnType<typeof convexTest>)).rejects.toThrow(/not enabled/);
+      process.env.TESTING_RESET_SECRET = "x";
+      const dev = convexTest(schema, modules);
+      await expect(call(dev)).rejects.toThrow(/Not authenticated/);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
   });
 });
 

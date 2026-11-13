@@ -30,21 +30,21 @@ test(
 
     // System, no stored choice: follows the OS on each fresh load.
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto("/binder-tracking", { waitUntil: "domcontentloaded" });
+    await page.goto("/collection-tracking", { waitUntil: "domcontentloaded" });
     await expect(themeAttribute(page)).toHaveAttribute("data-theme", "light");
     await page.emulateMedia({ colorScheme: "dark" });
-    await page.goto("/binder-tracking", { waitUntil: "domcontentloaded" });
+    await page.goto("/collection-tracking", { waitUntil: "domcontentloaded" });
     await expect(themeAttribute(page)).toHaveAttribute("data-theme", "dark");
 
     // A stored Light beats the dark OS (the init script writes it before every load).
     await page.addInitScript(() => window.localStorage.setItem("nb-theme", "light"));
-    await page.goto("/binder-tracking", { waitUntil: "domcontentloaded" });
+    await page.goto("/collection-tracking", { waitUntil: "domcontentloaded" });
     await expect(themeAttribute(page)).toHaveAttribute("data-theme", "light");
 
     // Proof 1: let the app run, record from document start, reload with Light stored.
     await page.unroute(isAppBundle);
     await recordThemeFromDocumentStart(page);
-    await page.goto("/binder-tracking");
+    await page.goto("/collection-tracking");
     await expect(page.getByRole("region", { name: "Take it for a spin" })).toBeVisible();
     await expectNoFlash(page, "light");
     await expectPageLook(page, "light");

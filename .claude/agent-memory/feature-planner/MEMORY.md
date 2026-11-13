@@ -47,6 +47,7 @@
 - [Teamless-rows checklist red = BSC lookup stall](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — failed==requested on bsc_card_team_lookup_failures (timeout or awselb 429); also no pre-fill + extra namesake step; rerun
 - [Teamless-rows red = BSC lookup stall/429](checklist-team-spec-red-with-teamless-rows-is-a-bsc-lookup-stall.md) — lookup_failures failed==requested (timeout or awselb 429); no pre-fill + extra namesake step; seed hit = teamless Gold Wave copies, hunt-tray strict mode; rerun
 - [BSC cold sheet read is per job](bsc-cold-sheet-read-is-per-job-not-per-condition.md) — first read 503s at 30 s whatever the condition; fewer sheets needs a 503-only serial retry beside it
+- [Plan format for the coordinator](feedback_plan_format.md) — ~800 words, verified paths, smallest slice behind a seam
 - [Preprocess spend is heavy cold starts x CI runs](preprocess-spend-is-heavy-cold-starts-times-ci-runs.md) — spend scales with E2E runs, not idle; cold-start time x run count is the lever; read startup_latencies + per-instance logs first
 - [Chromium fires focusout on removal](chromium-fires-focusout-on-removal.md) — relatedTarget null on unmount; happy-dom silent; focusout-cleared focus refs pass Vitest, fail E2E (NEO-450)
 - [BSC profile stalls heal with time](bsc-profile-stalls-heal-with-time-not-new-sessions.md) — new session/token does not escape a stall, time does (~50% 30 s, ~70% 60 s); seller id always live; seed re-signs in

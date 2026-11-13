@@ -1,6 +1,6 @@
 ---
 name: reference-local-screenshot-script-gotchas
-description: Driving local Vite with a throwaway Playwright script for screenshots/contrast — sign-in redirect fools waitForURL, "An error occurred" is often a missing Convex function, faked dark misreads team livery, computed colours come back as oklch
+description: Driving local Vite with a throwaway Playwright script for screenshots/contrast — sign-in redirect fools waitForURL, "An error occurred" is often a missing Convex function, faked dark misreads team livery, computed colours come back as oklch, tall element screenshots get cut (use fullPage + clip)
 metadata:
   type: reference
 ---
@@ -33,6 +33,11 @@ against a spare-port Vite (not the E2E harness):
    against the body. Normalise through a 1x1 canvas (`fillStyle = c`,
    `fillRect`, `getImageData`) and composite translucent layers up the
    ancestor chain before computing the ratio.
+
+5. `locator.screenshot()` of a section taller than the viewport comes back
+   cut: the sticky app header paints over its top and the bottom stops near
+   the fold. Take `page.screenshot({ fullPage: true, clip })` with the
+   locator's `boundingBox()` shifted by `window.scrollY` instead.
 
 A script outside apps/web cannot bare-import `playwright` (ESM resolves from the
 script's directory); import `<apps/web>/node_modules/playwright/index.mjs` by

@@ -105,12 +105,18 @@
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
 - [Card photo viewer specs](patterns_card_photo_viewer_specs.md) — NEO-481: viewer/tile names, served-file orientation, crop-box drag geometry, More steps, restart a frozen Vite after resync
 - [aria-disabled refusal by keyboard](patterns_aria_disabled_refusal_by_keyboard.md) — focus()+Enter to prove a refusal; blur (Tab) a field before clicking the control its value enables
+- [Shell tabs live in the Menu on a phone](patterns_shell_tabs_phone_menu.md) — use goViaShell for /demo and signed-in shell tabs; match [?&]tab= in URLs
+- [Keep failure artifacts across runs](patterns_keep_failure_artifacts.md) — every run wipes results/; use --output=<scratch> when chasing an intermittent red
+- [Responsive duplicates and text locators](patterns_responsive_duplicates_and_text_locators.md) — getByText matches the CSS-hidden twin; filter({ visible: true }); branch on isMobile only for layout facts
+- [Failure hook that finishes every step](patterns_failure_hook_that_finishes_every_step.md) — afterEach with a fresh context page, attempt() collecting errors, idempotent steps, deleteBoxNamed
+- [Dashboard shelf boxes and demo limits](reference_dashboard_shelf_boxes_and_demo_limits.md) — demo has one box; 7 real boxes = 5 ends desktop / 3 phone; Sell vs Fresh Pulls; Hunt tray; stale panel run
 - [Route key is the object name, not the path](patterns_route_key_is_the_object_name_not_the_path.md) — retry PUT has another pathname; key by the 32-hex; prove red on a git-archive HEAD copy
 - [Column sync failed hides the empty line](patterns_column_sync_failed_hides_the_empty_line.md) — NEO-450: wake on columnSyncError, empty line hidden is no proof; marker-split regex from the builder
 - [Fake a Convex query value over the WebSocket](patterns_fake_a_convex_query_value_over_the_websocket.md) — NEO-450: routeWebSocket, key udfPath+args, no-op-version Transition inject, end on the retry's ActionResponse
 - [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic, measured-wait credit, blocked Next via Enter, radiogroup per card
 - [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
 - [Checklist upload team claim blocks career prefill](patterns_checklist_upload_team_claim_blocks_career_prefill.md) — NEO-478: an uploaded row's team is a permanent claim; Roanoke spec cannot take the upload; aria-disabled Use via Enter; burst 429s
+- [Full local run on one account](patterns_full_local_run_on_one_account.md) — reds that are the single-account run: 12/hour cap, CI-only env switches, dirty reruns, box clutter, newest-N lists, near-budget photo step
 - [Name-fallback Match Cards solo + cancel confirm](patterns_name_fallback_match_cards_solo_and_modal_cancel_confirm.md) — NEO-490: nameFallbackFacts, Cancel opens a discard confirm, virtualized list, two-phase fresh-only spec
 - [Dual-layout rows and CardFace text](patterns_dual_layout_rows_and_card_face_text.md) — row text drawn twice + thumbnails print names: filter({visible:true}) or a cell by name; empty:hidden status is absent
 - [Optimistic tick, then navigate](patterns_optimistic_tick_then_navigate_reads_from_a_second_tab.md) — NEO-500: a goto right after an optimistic tick loses it; check from a second tab first; disjoint minted suffixes; clean up on a new page
