@@ -17,7 +17,7 @@
 // photos for the hourly sweep; the bootstrap reset clears any left behind.
 // The R2 objects land in the dev bucket, which expires them after 14 days.
 import { escapeRe } from "../../support/cards";
-import { drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
@@ -136,6 +136,8 @@ test(
     // --- Remove it for good (self-cleaning) ----------------------------------
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    // The server's answer, not the optimistic list, before the drawer closes.
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await expect(checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false })).toBeVisible();

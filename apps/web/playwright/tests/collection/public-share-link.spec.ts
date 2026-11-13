@@ -53,7 +53,7 @@
 //
 // R3: the collector's cascade is drilled through `support/collection.ts`.
 import type { Locator, Page } from "@playwright/test";
-import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -733,6 +733,7 @@ test(
       const yourCopies = copyDrawer.getByRole("region", { name: `Your copies of ${c.short}`, exact: true });
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRegExp(c.short)}, `) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+      await confirmRemoved(copyDrawer);
       await copyDrawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(copyDrawer).toBeHidden();
     }

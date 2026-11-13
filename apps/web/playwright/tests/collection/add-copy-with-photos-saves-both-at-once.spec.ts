@@ -34,7 +34,7 @@
 // the hourly sweep; the bootstrap reset clears any left behind. The R2 objects land
 // in the dev bucket, which expires them after 14 days.
 import { escapeRe } from "../../support/cards";
-import { drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 /** The photo store's signed upload addresses (a different host from the app and Convex). */
@@ -126,16 +126,17 @@ test(
     // --- Remove every line (self-cleaning, R7) ----------------------------------------------
     await page.unroute(PHOTO_STORE);
     const removeAny = yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, Raw, Excellent`) });
+    // Both "Removed ..." notices read the same, so confirmRemoved dismisses the first once it has
+    // landed: the second wait can only be satisfied by the second Remove's own answer.
     await removeAny.first().click();
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
     // The list drops the line optimistically; "Removed ..." is the server's answer, and it
     // replaces the taller "Added ... photo(s)." notice above the list. Press the next Remove
     // only once it has landed, or that reflow moves the button out from under the press.
-    await expect(
-      drawer.getByRole("status").filter({ hasText: new RegExp(`^Removed ${escapeRe(short)}, Raw, Excellent`) }),
-    ).toBeVisible();
+    await confirmRemoved(drawer);
     await removeAny.first().click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await expect(checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false })).toBeVisible();
