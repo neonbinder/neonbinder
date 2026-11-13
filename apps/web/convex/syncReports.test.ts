@@ -12,7 +12,12 @@ import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { listedCleanlySince } from "./syncReports";
 import { CREW_DESK_SHOWN } from "./crewDesk";
-import { MAX_OPEN_SYNC_REPORTS, MAX_SYNC_REPORT_CARDS, MAX_SYNC_REPORT_DETAIL } from "../lib/collection/sync-report";
+import {
+  MAX_OPEN_SYNC_REPORTS,
+  MAX_SYNC_REPORT_CARDS,
+  MAX_SYNC_REPORT_DETAIL,
+  SYNC_REPORT_GROUP_COUNT_CAP,
+} from "../lib/collection/sync-report";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -432,6 +437,63 @@ describe("crewDesk", () => {
     expect(out.requests.every((r) => r.label.startsWith(`${ME.subject} waiting`))).toBe(true);
     expect(out.reportsTotal).toBe(1);
     expect(out.reports.map((r) => [r.platform, r.label, r.heldBack])).toEqual([["bsc", "2024 Topps Chrome", 1]]);
+    // Only the open one is a reported set; never theirs, never a closed one.
+    expect(out.reportedKeys).toEqual([{ variantId: s.fx.baseId, platform: "bsc" }]);
+  });
+
+  /** An open report of `ownerId`'s on one set and platform, written straight in. */
+  function openReport(s: S, ownerId: string, variantId: Id<"selectorOptions">, platform: "bsc" | "ebay") {
+    return s.t.run((ctx) =>
+      ctx.db.insert("syncReports", {
+        ownerId,
+        platform,
+        variantId,
+        label: `${variantId} ${platform}`,
+        cards: [],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      }),
+    );
+  }
+
+  test(`mine: reportedKeys names every open report, past the ${CREW_DESK_SHOWN} rows shown`, async () => {
+    const s = await setup();
+    const sets = [s.fx.baseId, s.fx.futureStarsId, s.fx.goldId, s.fx.setId];
+    for (const variantId of sets) {
+      for (const platform of ["bsc", "ebay"] as const) await openReport(s, ME.subject, variantId, platform);
+    }
+    await openReport(s, THEM.subject, s.fx.year1986Id, "bsc");
+    const out = await s.me.query(api.crewDesk.mine, {});
+    expect(sets.length * 2).toBeGreaterThan(CREW_DESK_SHOWN);
+    expect(out.reports).toHaveLength(CREW_DESK_SHOWN);
+    expect(out.reportsTotal).toBe(sets.length * 2);
+    const keys = new Set(out.reportedKeys.map((k) => `${k.platform}|${k.variantId}`));
+    expect(keys.size).toBe(sets.length * 2);
+    for (const variantId of sets) {
+      expect(keys.has(`bsc|${variantId}`)).toBe(true);
+      expect(keys.has(`ebay|${variantId}`)).toBe(true);
+    }
+    expect(keys.has(`bsc|${s.fx.year1986Id}`)).toBe(false);
+  });
+
+  test(`waiting: each report row counts the other collectors with that set open, to ${SYNC_REPORT_GROUP_COUNT_CAP}`, async () => {
+    const s = await setup();
+    // The oldest of the group stands for it; the others are counted.
+    const first = await openReport(s, ME.subject, s.fx.baseId, "bsc");
+    for (let i = 0; i < SYNC_REPORT_GROUP_COUNT_CAP + 3; i++) await openReport(s, `collector_${i}`, s.fx.baseId, "bsc");
+    // The same set on the other platform is its own group.
+    const ebay = await openReport(s, THEM.subject, s.fx.baseId, "ebay");
+    const alone = await openReport(s, THEM.subject, s.fx.goldId, "bsc");
+    const out = await s.admin.query(api.crewDesk.waiting, {});
+    const queue = await s.admin.query(api.syncReports.queue, {});
+    expect(out.reports.map((r) => [r._id, r.alsoReportedBy])).toEqual([
+      [first, SYNC_REPORT_GROUP_COUNT_CAP],
+      [ebay, 0],
+      [alone, 0],
+    ]);
+    // The same count the admin queue gives.
+    expect(out.reports.map((r) => r.alsoReportedBy)).toEqual(queue.reports.map((r) => r.alsoReportedBy));
   });
 
   test("waiting: admin-only; everyone's open asks oldest first, one report per set and platform, no collector ids", async () => {
@@ -452,7 +514,7 @@ describe("crewDesk", () => {
       `${THEM.subject} waiting 0`,
       `${ME.subject} waiting 1`,
     ]);
-    expect(out.reports.map((r) => r._id)).toEqual([first.id]);
+    expect(out.reports.map((r) => [r._id, r.alsoReportedBy])).toEqual([[first.id, 1]]);
     expect(out.requestsMore).toBe(false);
     expect(out.reportsMore).toBe(false);
     for (const item of [...out.requests, ...out.reports]) expect(item).not.toHaveProperty("ownerId");

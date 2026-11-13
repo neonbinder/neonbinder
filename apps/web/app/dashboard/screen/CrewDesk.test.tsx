@@ -114,7 +114,7 @@ describe("Report to our crew on Sync status", () => {
 
   it("opens a note, Enter sends it, and the set reads Reported from the open reports", async () => {
     const { data, set } = crewSet();
-    const report = vi.fn(async () => null);
+    const report = vi.fn(async (_input: Parameters<Crew["report"]>[0]) => null);
     function Harness({ children }: { children: ReactNode }) {
       const [reported, setReported] = useState(false);
       const crew = crewOf({

@@ -5,8 +5,10 @@
  *
  * Both reads are subscribed and small: `crewDesk.mine` reads the caller's
  * newest requests (at most `MAX_REQUEST_LIST`) and open reports (at most
- * `MAX_OPEN_SYNC_REPORTS`); `crewDesk.waiting`, asked only for an admin,
- * reads at most `CREW_DESK_WAITING` + 1 of each. Neither re-runs on the
+ * `MAX_OPEN_SYNC_REPORTS`; every one is in `reportedKeys`, which says
+ * "Reported" on Sync status); `crewDesk.waiting`, asked only for an admin,
+ * reads at most `CREW_DESK_WAITING` + 1 of each, and for each report set the
+ * others who reported it, counted to `SYNC_REPORT_GROUP_COUNT_CAP`. Neither re-runs on the
  * dashboard's own writes, only on a request or report changing, which is
  * exactly when the screen should move ("Reported" after a send, a row gone
  * after a withdraw).
@@ -30,16 +32,15 @@ function requestAsk(r: CrewMineRaw["requests"][number]): CrewAsk {
   return { id: r._id, kind: r.kind, label: r.label, at: r.requestedAt };
 }
 
-function reportAsk(r: CrewMineRaw["reports"][number]): CrewAsk {
-  // `alsoReportedBy` rides on an admin's report rows when the read sends it.
-  const also = "alsoReportedBy" in r && typeof r.alsoReportedBy === "number" ? r.alsoReportedBy : undefined;
+/** A report row; an admin's (`waiting`) also says how many other collectors have it open. */
+function reportAsk(r: CrewMineRaw["reports"][number] | CrewWaitingRaw["reports"][number]): CrewAsk {
   return {
     id: r._id,
     kind: "report",
     label: r.label,
     platform: r.platform as Marketplace,
     at: r.reportedAt,
-    ...(also !== undefined ? { alsoReportedBy: also } : {}),
+    ...("alsoReportedBy" in r ? { alsoReportedBy: r.alsoReportedBy } : {}),
   };
 }
 
@@ -67,9 +68,12 @@ export function reportKey(variantId: string, platform: string): string {
   return `${platform}|${variantId}`;
 }
 
-/** The sets the collector has an open report on, by `reportKey`. */
+/**
+ * The sets the collector has an open report on, by `reportKey`: every open
+ * report (`reportedKeys`), not only the few the section names.
+ */
 export function reportedKeysOf(mine: CrewMineRaw | undefined): ReadonlySet<string> {
-  return new Set((mine?.reports ?? []).map((r) => reportKey(r.variantId, r.platform)));
+  return new Set((mine?.reportedKeys ?? []).map((r) => reportKey(r.variantId, r.platform)));
 }
 
 /** The sentence a failed call shows: the backend's own (a ConvexError's `message`), else the fallback. */

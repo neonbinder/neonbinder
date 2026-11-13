@@ -125,8 +125,12 @@ async function openInGroup(ctx: Ctx, variantId: Id<"selectorOptions">, platform:
     .take(cap);
 }
 
-/** Other open reports on the report's set and platform, counted to `SYNC_REPORT_GROUP_COUNT_CAP`. */
-async function alsoReportedBy(ctx: Ctx, row: ReportRow): Promise<number> {
+/**
+ * Other open reports on the report's set and platform, counted to
+ * `SYNC_REPORT_GROUP_COUNT_CAP`. Shared with the dashboard's admin list
+ * (`crewDesk.waiting`), so both count the same way.
+ */
+export async function alsoReportedBy(ctx: Ctx, row: ReportRow): Promise<number> {
   const group = await openInGroup(ctx, row.variantId, row.platform, SYNC_REPORT_GROUP_COUNT_CAP + 1);
   return Math.min(group.filter((r) => r._id !== row._id).length, SYNC_REPORT_GROUP_COUNT_CAP);
 }

@@ -17,6 +17,7 @@ import { v } from "convex/values";
 import { query } from "./_generated/server";
 import { requireAdmin, requireSignedIn } from "./auth";
 import { MAX_REQUEST_LIST } from "./collectionRequests";
+import { alsoReportedBy } from "./syncReports";
 import { cardRequestKindValidator, listingPlatformValidator } from "./schema";
 import { MAX_OPEN_SYNC_REPORTS } from "../lib/collection/sync-report";
 
@@ -41,10 +42,29 @@ const reportItemValidator = v.object({
   reportedAt: v.number(),
 });
 
+/** An admin's report row: with how many other collectors have that set open too (`syncReports.queue`'s count). */
+const waitingReportItemValidator = v.object({
+  _id: v.id("syncReports"),
+  label: v.string(),
+  platform: listingPlatformValidator,
+  variantId: v.id("selectorOptions"),
+  heldBack: v.number(),
+  reportedAt: v.number(),
+  /** Other collectors with this set open too, counted to `SYNC_REPORT_GROUP_COUNT_CAP` (equal reads "20+"). */
+  alsoReportedBy: v.number(),
+});
+
+/** One set and platform the caller has an open report on. */
+const reportedKeyValidator = v.object({
+  variantId: v.id("selectorOptions"),
+  platform: listingPlatformValidator,
+});
+
 /**
  * The caller's open asks, newest first, at most `CREW_DESK_SHOWN` of each,
  * with how many there are of each (`requestsTotal`, `reportsTotal`) for
- * "+N more". Waiting requests are found among the caller's newest
+ * "+N more". `reportedKeys` names the set and platform of EVERY open report
+ * (not only the shown ones), so Sync status can say "Reported" on any set. Waiting requests are found among the caller's newest
  * `MAX_REQUEST_LIST` requests (the per-collector cap on open ones); open
  * reports are capped at `MAX_OPEN_SYNC_REPORTS` per collector, so both
  * counts are whole.
@@ -56,6 +76,7 @@ export const mine = query({
     requestsTotal: v.number(),
     reports: v.array(reportItemValidator),
     reportsTotal: v.number(),
+    reportedKeys: v.array(reportedKeyValidator),
   }),
   handler: async (ctx) => {
     const ownerId = await requireSignedIn(ctx);
@@ -87,6 +108,7 @@ export const mine = query({
         reportedAt: r._creationTime,
       })),
       reportsTotal: reportRows.length,
+      reportedKeys: reportRows.map((r) => ({ variantId: r.variantId, platform: r.platform })),
     };
   },
 });
@@ -96,15 +118,16 @@ export const mine = query({
  * (opened on /admin/card-requests by `_id` and `kind`) and open sync reports
  * (by `_id`), oldest first, at most `CREW_DESK_WAITING` of each; `…More`:
  * another is past them. One report row per set and platform, the oldest
- * open one standing for the rest (an admin's close settles them together).
- * No collector ids.
+ * open one standing for the rest (an admin's close settles them together),
+ * with how many other collectors have it open too (`alsoReportedBy`, the
+ * admin queue's count). No collector ids.
  */
 export const waiting = query({
   args: {},
   returns: v.object({
     requests: v.array(requestItemValidator),
     requestsMore: v.boolean(),
-    reports: v.array(reportItemValidator),
+    reports: v.array(waitingReportItemValidator),
     reportsMore: v.boolean(),
   }),
   handler: async (ctx) => {
@@ -130,6 +153,7 @@ export const waiting = query({
         variantId: r.variantId,
         heldBack: r.heldBack,
         reportedAt: r._creationTime,
+        alsoReportedBy: await alsoReportedBy(ctx, r),
       });
     }
     return {

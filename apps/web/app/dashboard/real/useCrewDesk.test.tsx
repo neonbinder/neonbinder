@@ -8,10 +8,12 @@
 import { ConvexError } from "convex/values";
 import { describe, expect, it } from "vitest";
 import { crewDeskOf, crewErrorMessage, reportedKeysOf, reportKey, type CrewMineRaw, type CrewWaitingRaw } from "./useCrewDesk";
-import { crewFixOf, syncStatusOf, type SyncAlertsRaw } from "./useRealDashboard";
+import type { SyncAlertsRaw } from "./useDashboardServer";
+import { crewFixOf, syncStatusOf } from "./useRealDashboard";
 
 type Raw = Record<string, unknown>;
-const mineOf = (raw: Raw): CrewMineRaw => ({ requests: [], requestsTotal: 0, reports: [], reportsTotal: 0, ...raw }) as CrewMineRaw;
+const mineOf = (raw: Raw): CrewMineRaw =>
+  ({ requests: [], requestsTotal: 0, reports: [], reportsTotal: 0, reportedKeys: [], ...raw }) as CrewMineRaw;
 const waitingOf = (raw: Raw): CrewWaitingRaw =>
   ({ requests: [], requestsMore: false, reports: [], reportsMore: false, ...raw }) as CrewWaitingRaw;
 
@@ -54,14 +56,26 @@ describe("crewDeskOf", () => {
     expect(desk.waiting!.map((a) => a.id)).toEqual(["r", "a"]);
     expect(desk.waiting![0].alsoReportedBy).toBe(4);
     expect(desk.waiting![1].alsoReportedBy).toBeUndefined();
+    // The collector's own report rows carry no count.
+    expect(crewDeskOf(mineOf({ reports: [report("m", 1)] }), undefined)!.mine[0]).not.toHaveProperty("alsoReportedBy");
     expect(desk.waitingMore).toBe(true);
   });
 });
 
 describe("reportedKeysOf", () => {
-  it("names each open report's set on its marketplace", () => {
-    const keys = reportedKeysOf(mineOf({ reports: [report("r", 1, "v1", "ebay")] }));
+  it("names each open report's set on its marketplace, from every open report, not only the rows shown", () => {
+    const keys = reportedKeysOf(
+      mineOf({
+        reports: [report("r", 1, "v1", "ebay")],
+        reportedKeys: [
+          { variantId: "v1", platform: "ebay" },
+          { variantId: "v-old", platform: "bsc" },
+        ],
+      }),
+    );
     expect(keys.has(reportKey("v1", "ebay"))).toBe(true);
+    // An older report past the shown rows still reads Reported.
+    expect(keys.has(reportKey("v-old", "bsc"))).toBe(true);
     expect(keys.has(reportKey("v1", "bsc"))).toBe(false);
     expect(reportedKeysOf(undefined).size).toBe(0);
   });
