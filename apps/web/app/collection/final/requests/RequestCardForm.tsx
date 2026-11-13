@@ -6,7 +6,8 @@ import { Textarea } from "@/components/primitives/Textarea";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { LABEL, SELECT_PANEL } from "../../prototypes/p1/ui";
-import type { Drill } from "../catalog/drill";
+import { DrillOptions } from "../catalog/DrillOptions";
+import { brandColumnPick, brandColumnTitle, brandFieldLabel, type Drill } from "../catalog/drill";
 import { useCard, useDrill, writeErrorMessage } from "../data/store";
 import type { Card, DrillItem } from "../data/types";
 import { HeldPhotosField, type HeldPhotos } from "../CopyPhotosField";
@@ -67,7 +68,17 @@ export default function RequestCardForm({
   const sports = useDrill("sport", {});
   const years = useDrill(sport ? "year" : null, { sport });
   const brands = useDrill(sport && year ? "brand" : null, { sport, year });
-  const sets = useDrill(sport && year && brand ? "set" : null, { sport, year, brand });
+  // NEO-527: the year's brand-unknown row is never listed; its sets sit in
+  // the Brand select in its place, and picking one picks the set too.
+  const brandPick = brands ? brandColumnPick(brands, brand || null, set || null) : undefined;
+  const setInBrands = brandPick?.brandId !== undefined;
+  const onlySets = brandColumnTitle(brands) === "Sets";
+  // With no Set select beside it, the brand select is the row's last field
+  // and takes the full width, so no half row sits empty.
+  const brandAlone = onlySets || setInBrands;
+  // Only a brand the Brand select shows picked opens its sets; a `brand`
+  // still holding the hidden row's id (no set with it) opens nothing.
+  const sets = useDrill(brandPick && !setInBrands ? "set" : null, { sport, year, brand });
   const types = useDrill(set ? "variantType" : null, { sport, year, brand, set });
   const pickedType = types?.find((t) => t.id === type);
   const variants = useDrill(pickedType?.hasChildren ? "variant" : null, { sport, year, brand, set, variantType: type });
@@ -96,7 +107,14 @@ export default function RequestCardForm({
   /** The first required field left empty: its `name`, and what to say. */
   const missing = (): [string, string] | null => {
     if (where === "catalog") {
-      if (!set) return [!sport ? "sport" : !year ? "year" : !brand ? "brand" : "set", "Pick the set it's from."];
+      if (!set) {
+        // NEO-527: the Brand select is read by what it shows picked
+        // (`brandPick`), never by a `brand` still holding the hidden row's id;
+        // and with the Set select hidden, the Brand select is where the set is
+        // picked.
+        const at = !sport ? "sport" : !year ? "year" : !brandPick || onlySets || setInBrands ? "brand" : "set";
+        return [at, "Pick the set it's from."];
+      }
       if (typing && !typedVariant.trim()) return ["typedVariant", "Add the checklist it's in."];
       if (!typing && !checklist) {
         const at = pickedVariant?.hasChildren ? "sub" : pickedType?.hasChildren ? "variant" : "type";
@@ -203,16 +221,23 @@ export default function RequestCardForm({
                 setSet("");
                 setType("");
               }} />
-            <Pick name="brand" flag={flag} label="Brand" value={brand} items={sport && year ? brands : []} onChange={(v) => {
-                setBrand(v);
-                setSet("");
+            <Pick name="brand" flag={flag} wide={brandAlone} label={brandFieldLabel(sport && year ? brands : [])} value={brandPick?.id ?? brand} items={sport && year ? brands : []} onChange={(v) => {
+                const item = brands?.find((i) => i.id === v);
+                setBrand(item?.brandId ?? v);
+                setSet(item?.brandId ? item.id : "");
                 setType("");
               }} />
-            <Pick name="set" flag={flag} label="Set" value={set} items={sport && year && brand ? sets : []} onChange={(v) => {
-                setSet(v);
-                setType("");
-              }} />
+            {!brandAlone && (
+              <Pick name="set" flag={flag} label="Set" value={set} items={brandPick ? sets : []} onChange={(v) => {
+                  setSet(v);
+                  setType("");
+                }} />
+            )}
           </div>
+          {/* Mounted empty, so a pick that takes the Set select away is announced. */}
+          <p role="status" className="sr-only">
+            {setInBrands && !onlySets && brandPick ? `Set picked: ${brandPick.name}. On to the checklist.` : ""}
+          </p>
           {set && (
             <div className="grid gap-3 sm:grid-cols-2">
               <Pick
@@ -363,6 +388,7 @@ function Pick({
   value,
   items,
   typed,
+  wide = false,
   onChange,
 }: {
   name: string;
@@ -372,10 +398,12 @@ function Pick({
   items: DrillItem[] | undefined;
   /** Adds the "it isn't listed" choice under this wording. */
   typed?: string;
+  /** Spans both columns of the form's two-column grid. */
+  wide?: boolean;
   onChange: (id: string) => void;
 }) {
   return (
-    <label className="block">
+    <label className={wide ? "block sm:col-span-2" : "block"}>
       <span className={LABEL}>{label}</span>
       <select
         name={name}
@@ -387,11 +415,7 @@ function Pick({
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">{items === undefined ? "Loading…" : "Pick one"}</option>
-        {items?.map((i) => (
-          <option key={i.id} value={i.id}>
-            {i.name}
-          </option>
-        ))}
+        <DrillOptions items={items ?? []} />
         {typed && <option value={TYPED}>{typed}</option>}
       </select>
     </label>

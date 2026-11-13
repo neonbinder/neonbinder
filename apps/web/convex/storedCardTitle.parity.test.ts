@@ -14,13 +14,15 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { titleForStoredCard } from "./storedCardTitle";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { insertTestCard } from "../lib/testing/card-row";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -194,5 +196,123 @@ describe("previewListingTitle and titleForStoredCard", () => {
       .withIdentity(ADMIN)
       .query(api.selectorOptions.previewListingTitle, { cardId });
     expect(stored.listingTitle).toBe(preview.title);
+  });
+});
+
+/**
+ * NEO-527 — a set committed while it sat in the year's Unknown row, then
+ * re-homed under its brand by `backfillKnownBrands`. The title the card
+ * stored at commit is the title Regenerate offers after the move: the brand
+ * is dropped while unidentified (NEO-272) and collapsed into a set name that
+ * already leads with it once identified, so the move never yields "Unknown
+ * Topps Chrome" or "Topps Topps Chrome".
+ */
+describe("a stored title survives the set's move out of Unknown (NEO-527)", () => {
+  beforeEach(() => {
+    vi.stubEnv(PAUSED_PLATFORMS_ENV, "sportlots");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  test("titleForStoredCard after the re-home equals the listingTitle stored under Unknown", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, yearId } = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        sportConfig: { skuCode: "FB", league: "NFL" },
+        platformData: {},
+        children: [],
+        lastUpdated: NOW,
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "2026",
+        features: { season: "2026" },
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: NOW,
+      });
+      return { sportId, yearId };
+    });
+    // The real flagged row, minted the way the paused set sync mints it.
+    const { id: unknownId } = await t.mutation(
+      internal.selectorOptions.ensureBrandUnknownRow,
+      { yearId },
+    );
+    // "Topps Chrome" and its Base, each copying its parent's features down
+    // as creation does, so whatever the Unknown row carries reaches the card.
+    const { setId, baseId } = await t.run(async (ctx) => {
+      const child = async (
+        level: "setName" | "variantType",
+        value: string,
+        parentId: Id<"selectorOptions">,
+      ) => {
+        const parent = (await ctx.db.get(parentId))!;
+        const id = await ctx.db.insert("selectorOptions", {
+          level,
+          value,
+          ...(parent.features ? { features: { ...parent.features } } : {}),
+          platformData: {},
+          parentId,
+          children: [],
+          lastUpdated: NOW,
+        });
+        await ctx.db.patch(parentId, { children: [...parent.children, id] });
+        return id;
+      };
+      const setId = await child("setName", "Topps Chrome", unknownId);
+      const baseId = await child("variantType", "Base", setId);
+      return { setId, baseId };
+    });
+
+    // Committed while the set still sat under Unknown. SportLots-only, so no
+    // BSC team lookup is queued.
+    await t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: baseId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "1",
+          cardName: "Card 1",
+          teams: [],
+          players: [],
+          platformData: { sportlots: { ref: "SL-1" } },
+        },
+      ],
+    });
+    await drainScheduled(t);
+    await cancelScheduled(t);
+    const stored = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", baseId))
+        .first(),
+    );
+    const storedTitle = stored!.listingTitle!;
+    expect(storedTitle).toContain("Topps Chrome");
+
+    // The NEO-527 prod fix: mint Topps from the known list and re-home.
+    vi.stubEnv("ALLOW_SELECTOR_BACKFILL", "1");
+    const report = await t.mutation(internal.backfillKnownBrands.run, {
+      confirm: "BACKFILL",
+    });
+    expect(report.counts.moved).toBe(1);
+    const set = await t.run(async (ctx) => ctx.db.get(setId));
+    const brand = await t.run(async (ctx) => ctx.db.get(set!.parentId!));
+    expect(brand?.value).toBe("Topps");
+    expect(brand?.metadata?.isBrandUnknown).toBeUndefined();
+
+    const regenerated = await t.run(async (ctx) =>
+      titleForStoredCard(ctx, (await ctx.db.get(stored!._id))!),
+    );
+    expect(regenerated.title).toBe(storedTitle);
+    expect(regenerated.title).not.toMatch(/Unknown/i);
+    expect(regenerated.title).not.toMatch(/Topps Topps/i);
   });
 });

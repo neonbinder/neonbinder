@@ -5,6 +5,7 @@ import {
   LIVERY_FALLBACK,
   playerInitials,
   setAndVariant,
+  setWhereLabel,
   shortCardName,
   teamTextColor,
   variantLabel,
@@ -106,5 +107,26 @@ describe("livery and initials", () => {
   it("drops suffixes and survives an empty name", () => {
     expect(playerInitials("Ken Griffey Jr.")).toBe("KG");
     expect(playerInitials("")).toBe("?");
+  });
+});
+
+/**
+ * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of the
+ * admin screen") — the "Sport, Brand" line under a set (the wall, a board,
+ * Start building a set) leaves out the year's brand-unknown row, by its flag.
+ */
+describe("setWhereLabel", () => {
+  it("names the sport and the brand", () => {
+    expect(setWhereLabel(SET)).toBe("Baseball, Topps");
+  });
+
+  it("leaves the brand-unknown row out, whatever it is called", () => {
+    expect(setWhereLabel({ ...SET, brand: { id: "u", name: "Unknown" }, brandUnknown: true })).toBe("Baseball");
+    expect(setWhereLabel({ ...SET, brand: { id: "u", name: "" }, brandUnknown: true })).toBe("Baseball");
+  });
+
+  it("leaves out a blank part rather than a dangling comma", () => {
+    expect(setWhereLabel({ ...SET, brand: { id: "", name: "" } })).toBe("Baseball");
+    expect(setWhereLabel({ ...SET, sport: { id: "", name: "" } })).toBe("Topps");
   });
 });

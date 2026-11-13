@@ -56,7 +56,8 @@
  * filing it under any one of those three is wrong for half its life. NB
  * already does exactly this for Ultra (Fleer), Stadium Club and Finest
  * (Topps), SP and Bowman: each is its own brand row, not a line under its
- * owner of the moment.
+ * owner of the moment (and, since NEO-527, its own entry here — see "The
+ * majors" below).
  *
  * `Flair` clears only the first half — the heading is "Flair", but the line
  * is Fleer-only — which is why it is filed here as PROBABLE rather than
@@ -102,6 +103,46 @@
  *     second row.
  *   • `NFL Properties`, the Chris Martin Enterprises cluster (spelled four
  *     different ways in the source), and every 1–2-set long-tail issuer.
+ *   • `Valiant` (NEO-527, Jason 2026-11-12) — the 2026 Football Unknown
+ *     sample carries two Valiant Michigan sets; considered with the majors
+ *     and rejected. They stay in Unknown.
+ *
+ * ## The majors (NEO-527)
+ *
+ * Until NEO-527 this list deliberately left out every big manufacturer —
+ * Topps, Panini, Upper Deck and the rest — because SportLots' brand list
+ * supplied them: a year synced from SportLots got a brand row for each, and
+ * this list existed only for the issuers that list lacked.
+ *
+ * While SportLots is paused, a year synced gets no major brand rows, so
+ * every Topps, Bowman, Panini, Donruss and Upper Deck set in it would be
+ * filed under Unknown. Product invariant 1 says NB's data must stand without any one
+ * marketplace, so NB's OWN vocabulary now names the majors too: every brand
+ * SportLots supplied that this list lacked, read once from the brand rows
+ * NB already had (Jason, 2026-11-12). They are spelled exactly as those
+ * pre-pause rows are, so `ensureBrandRowForName` ADOPTS an existing row by
+ * folded name rather than minting a second one beside it.
+ *
+ * Nothing else about the list changes. These entries are compared only
+ * against NB set names, through the same matcher; no marketplace is asked
+ * about them and none decides whether they are on the list. An existing NB
+ * brand (by id or by its own `setNamePrefix`) still wins before the list is
+ * consulted, so a year that already has a Topps row files its sets exactly
+ * as it did.
+ *
+ * Two shapes worth knowing, both the existing prefix rule and not new:
+ *
+ *   • A set is claimed by the brand its NAME STARTS WITH. "Upper Deck SP
+ *     Authentic" is Upper Deck's and "SP Authentic" is SP's; "Fleer Ultra"
+ *     is Fleer's and "Ultra" is Ultra's; "Topps Stadium Club" is Topps'.
+ *   • `SP` is a whole word, so "SPx" (another Upper Deck line) is NOT
+ *     claimed by it and stays where it was.
+ *
+ * `Classic` and `SP` are CERTAIN, despite looking risky: every real
+ * Classic line belongs to Classic Inc., and every "SP …" set is Upper
+ * Deck's SP line (collector review). `Score` alone is PROBABLE, for the
+ * reason `Star`, `Best` and `Choice` carry a risk note: it is a common word,
+ * and "Score Board" is a different company.
  *
  * ## `Other` IS NOT AND MUST NEVER BE AN ENTRY
  *
@@ -169,15 +210,18 @@
 import { matchesBrandPrefix, selectorValueKey } from "./selectorSyncMatch";
 
 /**
- * The 53 brands NB recognises, sorted by folded name. Counts in the comments
+ * The 70 brands NB recognises, sorted by folded name. Counts in the comments
  * are sets claimed in the dev samples — Baseball 1990/2025/2026 on
  * 2026-09-22, then Football 2025/1994 and Basketball 2026/2025/1994 in the
  * same week — so they are FLOORS, not totals: the list is sport- and
- * year-independent.
+ * year-independent. The 17 majors (NEO-527) carry no count: they were never
+ * sampled, because SportLots supplied them; where 2026 Football's Unknown
+ * row had sets for one, that number is given instead.
  *
  * Grouped as Jason approved them, certain and probable taken as one block
  * each time: 27 + 11 + one of his own in the first pass, then 10 + 4 from
- * the collector pass over the 266 sets still in Unknown afterwards.
+ * the collector pass over the 266 sets still in Unknown afterwards, then
+ * the 17 majors SportLots used to supply (16 + 1 probable, NEO-527).
  */
 export const KNOWN_BRANDS: readonly string[] = [
   "Action Packed", // 7 — its own manufacturer; catalogues never say "Pinnacle Action Packed"
@@ -186,21 +230,27 @@ export const KNOWN_BRANDS: readonly string[] = [
   "BBM", // 40
   "Best", // 48 — a common word; see the risks above
   "Bleachers", // 4
+  "Bowman", // 4 in 2026 Football — NEO-527 major; also claims "Bowman's Best"
   "Boxscores", // 1 — probable
   "Calbee", // 5
   "Champion's Deck", // 3 — NIL issuer, the ONIT Athlete class; ASCII apostrophe only
   "Choice", // 301 — a common word; the single biggest claim in the sample
+  "Classic", // NEO-527 major — certain: every real Classic line is Classic Inc.'s
   "CMC", // 27
   "Collector's Edge", // 2 — the apostrophe spelling; see "two rows for one issuer"
   "Collectors Edge", // 9 — the same issuer, the other spelling, on purpose
   "Diamond Cards", // 4
+  "Donruss", // 1 in 2026 Football — NEO-527 major
   "Eclipse", // 1 — probable
   "Epoch", // 16
+  "Finest", // NEO-527 major — its own row; a "Topps Finest" name is still Topps'
   "Flair", // 2 — probable: the heading is "Flair", but the line is Fleer-only
+  "Fleer", // NEO-527 major
   "Futera", // 8
   "Grand Slam", // 14 — never "Grand": Grandstand is a different issuer
   "Historic Autographs", // 1 — never "Historic": that merges two issuers
   "Hoops", // 5 — a line that earned its own row: Hoops Inc./SkyBox → Fleer → Panini
+  "ITG", // NEO-527 major — In The Game
   "JOGO", // 11 — JOGO Inc., CFL
   "Juco World Series", // 8 — Jason's call: "a brand along with Star"
   "Kahn's", // 4 — probable; ASCII apostrophe only, see the fold note above
@@ -210,9 +260,13 @@ export const KNOWN_BRANDS: readonly string[] = [
   "Mother's Cookies", // 11 — ASCII apostrophe only
   "MSA", // 2 — probable
   "NBA Hoops", // 13 — probable; the marketplace-artifact spelling of Hoops
+  "O-Pee-Chee", // NEO-527 major
   "ONIT Athlete", // 43 — never "ONIT": one entry must not prefix another
   "Onyx", // 3
+  "Pacific", // NEO-527 major
+  "Panini", // 3 in 2026 Football — NEO-527 major
   "Perez-Steele", // 1
+  "Pinnacle", // NEO-527 major
   "Playoff", // 2 — probable
   "Post", // 1 — probable
   "Pro Set", // 1
@@ -221,16 +275,23 @@ export const KNOWN_BRANDS: readonly string[] = [
   "Pulse", // 10
   "SAGE", // 28 — SAGE Collectibles, the live draft-pick maker
   "SCC", // 3 — probable
+  "Score", // NEO-527 major — probable: a common word, and "Score Board" is another company
   "Sisson Printing", // 3 — probable
+  "Skybox", // NEO-527 major
+  "SP", // NEO-527 major — certain: every "SP …" set is Upper Deck's SP line; whole-word, so never "SPx"
   "Sport Pro", // 5
   "Sportflics", // 1
   "SportsPrint", // 4
+  "Stadium Club", // NEO-527 major — its own row, like Finest
   "Star", // 88 — a common word; see the risks above
   "Swell", // 1
   "Takara", // 12
   "Ted Williams", // 10 — the Ted Williams Card Co.; NEVER a bare "Ted"
+  "Topps", // 12 in 2026 Football — NEO-527 major
+  "Ultra", // NEO-527 major — its own row; "Fleer Ultra" is still Fleer's
   "UNO Elite", // 3 — Mattel's crossover; NEVER a bare "UNO" (Nebraska Omaha)
   "UNO Fandom", // 1 — probable; the other UNO line
+  "Upper Deck", // 1 in 2026 Football — NEO-527 major
   "Wild Card", // 2
   "WTHBALLS", // 2 — probable
 ];

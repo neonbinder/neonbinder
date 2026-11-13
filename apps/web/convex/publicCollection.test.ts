@@ -181,6 +181,29 @@ describe("NEO-367 catalog card notes", () => {
   });
 });
 
+describe("NEO-527 the brand-unknown row", () => {
+  test("a public binder's card names the set but never that row: its brand comes back blank", async () => {
+    const s = await setup();
+    const b = await binder(s);
+    // The operator's name for the row; only the flag says what it is.
+    await s.t.run(async (ctx) =>
+      ctx.db.patch(s.fx.toppsId, { value: "Zzz Unknown Brand", metadata: { isBrandUnknown: true } } as never),
+    );
+    await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details: { quantity: 1, homeId: b.id, slot: 1 },
+    });
+    await s.me.mutation(api.collectionContainers.setVisibility, { containerId: b.id, visibility: "public" });
+    const { page } = await s.anon.query(api.publicCollection.binderCopies, { username: "ace", path: b.path, paginationOpts: PAGE });
+    expect(page).toHaveLength(1);
+    const set = page[0].card?.set;
+    expect(set?.name).toBe("Topps Chrome");
+    expect(set?.manufacturer).toEqual({ _id: s.fx.toppsId, name: "" });
+    expect(set?.manufacturerBrandUnknown).toBe(true);
+    expect(JSON.stringify(page)).not.toContain("Zzz Unknown Brand");
+  });
+});
+
 describe("defaults", () => {
   test("a new binder and the Want List read as not found until switched public", async () => {
     const s = await setup();

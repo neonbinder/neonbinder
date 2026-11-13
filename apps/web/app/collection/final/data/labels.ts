@@ -14,6 +14,15 @@ export function setLabel(set: Pick<SetRef, "season" | "name">): string {
   return `${set.season} ${set.name}`;
 }
 
+/**
+ * NEO-527 — where a set sits, under its name: "Baseball, Topps". The year's
+ * brand-unknown row is left out (a collector never sees it), and so is any
+ * part that is blank: "Baseball".
+ */
+export function setWhereLabel(set: Pick<SetRef, "sport" | "brand" | "brandUnknown">): string {
+  return [set.sport.name, set.brandUnknown ? "" : set.brand.name].filter(Boolean).join(", ");
+}
+
 /** "Base", "Pennant Flyers", "Gold Refractor", "Pennant Flyers Gold". */
 export function variantLabel(variant: Pick<VariantRef, "kind" | "name" | "insertName">): string {
   if (variant.kind === "base" || !variant.name) return "Base";
