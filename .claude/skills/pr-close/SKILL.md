@@ -18,7 +18,7 @@ gate run if an earlier one failed.
 - **Repo dir** (default, override with `--repo`): the monorepo checkout — from inside
   any checkout or worktree, `git rev-parse --show-toplevel`; in the standard layout
   that is `<workspace>/main`. The workspace wrapper dir above it holds no app code. Deploy-relevant code
-  is under `apps/web`. GitHub repo: `neonbinder/neonbinder`.
+  is under `apps/web`. GitHub repo: `neonbinder/neonbinder-app`.
 - **Vercel — the correct project** (production deploys build here): team **NeonBinder**
   (slug `neon-binder`), project `neonbinder` (framework vite), prod aliases
   `neonbinder.io` and `www.neonbinder.io`. Resolve ids at run time with the Vercel MCP

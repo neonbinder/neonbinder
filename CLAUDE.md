@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NeonBinder is a platform for trading card collectors to manage collections and sell across marketplaces (eBay, SportLots, BuySportsCards, MySlabs, MyCardPost).
 
-**This is the consolidated monorepo `neonbinder/neonbinder` (NEO-18, NEO-123).** One git repo, one CI pipeline (`.github/workflows/`), path-filtered lanes. Three deployable projects live side by side plus shared Claude config:
+**This is the consolidated monorepo `neonbinder/neonbinder-app` (NEO-18, NEO-123).** One git repo, one CI pipeline (`.github/workflows/`), path-filtered lanes. Three deployable projects live side by side plus shared Claude config:
 
 | Path | Purpose | Tech Stack | Deploy target |
 |------|---------|-----------|---------------|

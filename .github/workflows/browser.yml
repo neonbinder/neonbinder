@@ -5,7 +5,7 @@ name: Browser CI
 # (build-push / deploy-dev / dev-promote / deploy-prod / prod-promote) lives in
 # browser-deploy.yml and is invoked by release.yml — see the NEO-143 note below.
 #
-# WIF: the dev provider now trusts neonbinder/neonbinder (NEO-18 terraform
+# WIF: the dev provider now trusts neonbinder/neonbinder-app (NEO-18 terraform
 # change, neonbinder_ioc#25). GCP_WIF_PROVIDER_DEV / GCP_SERVICE_ACCOUNT_DEPLOYER_DEV
 # are set on this repo.
 

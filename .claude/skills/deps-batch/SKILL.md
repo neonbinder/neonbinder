@@ -33,7 +33,7 @@ exactly the point: the thing that ships gets the full suite.
 ## Environment (resolved 2026-08-02 — re-verify if anything 404s)
 - **Repo dir** (default, override with `--repo`): the monorepo checkout (`git rev-parse
   --show-toplevel`; `<workspace>/main` in the standard layout)
-  (the active monorepo; GitHub `neonbinder/neonbinder`). Packages: `apps/web`,
+  (the active monorepo; GitHub `neonbinder/neonbinder-app`). Packages: `apps/web`,
   `services/browser`. There is no root `package.json` — these are **not** npm workspaces.
 - **Worktree parent**: `<workspace>/worktrees`, i.e. `$(git rev-parse --show-toplevel)/../worktrees`
 - **Dependabot config**: `.github/dependabot.yml` — weekly; three ecosystems
