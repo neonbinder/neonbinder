@@ -131,6 +131,53 @@ describe("Request a card under a brand-unknown row", () => {
   });
 });
 
+describe("Request a card: the brand select alone on its row", () => {
+  const cell = (select: HTMLElement) => select.closest("label");
+
+  it("spans both columns when it is the Set select (a year whose only brand is the row)", () => {
+    const form = open({ ...EMPTY_DRILL, sport: "sp", year: "y89" });
+    expect(cell(within(form).getByLabelText("Set"))?.className).toContain("sm:col-span-2");
+  });
+
+  it("spans both columns once a loose set is picked in it", () => {
+    const form = open();
+    const brand = within(form).getByLabelText("Brand or set");
+    expect(cell(brand)?.className).not.toContain("sm:col-span-2");
+    fireEvent.change(brand, { target: { value: "s9" } });
+    expect(cell(within(form).getByLabelText("Brand or set"))?.className).toContain("sm:col-span-2");
+  });
+
+  it("keeps its half when a Set select sits beside it", () => {
+    const form = open();
+    fireEvent.change(within(form).getByLabelText("Brand or set"), { target: { value: "m-topps" } });
+    expect(cell(within(form).getByLabelText("Brand or set"))?.className).not.toContain("sm:col-span-2");
+    expect(cell(within(form).getByLabelText("Set"))?.className).not.toContain("sm:col-span-2");
+  });
+});
+
+describe("Request a card: picking a loose set says the Set select is done with", () => {
+  const said = () => screen.getAllByRole("status").map((n) => n.textContent ?? "");
+
+  it("announces the set once the pick takes the Set select away", () => {
+    const form = open();
+    expect(said()).not.toContainEqual(expect.stringContaining("Set picked"));
+    fireEvent.change(within(form).getByLabelText("Brand or set"), { target: { value: "s9" } });
+    expect(said()).toContain("Set picked: Starline Long John Silver. On to the checklist.");
+  });
+
+  it("says nothing for a real brand, whose Set select stays", () => {
+    const form = open();
+    fireEvent.change(within(form).getByLabelText("Brand or set"), { target: { value: "m-topps" } });
+    expect(said().some((t) => t.includes("Set picked"))).toBe(false);
+  });
+
+  it("says nothing when the select is the Set select itself", () => {
+    const form = open({ ...EMPTY_DRILL, sport: "sp", year: "y89" });
+    fireEvent.change(within(form).getByLabelText("Set"), { target: { value: "s20" } });
+    expect(said().some((t) => t.includes("Set picked"))).toBe(false);
+  });
+});
+
 describe("Request a card: an empty set pick takes the keyboard to the select that picks it", () => {
   const sendEmpty = (form: HTMLElement) => fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
 

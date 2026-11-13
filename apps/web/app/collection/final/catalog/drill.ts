@@ -88,10 +88,13 @@ export type BrandColumnTitle = "Brands" | "Sets" | "Brands and sets";
  * NEO-527 — what the brand column is called, truthfully: "Brands" when it
  * holds only brand rows (or nothing), "Sets" when every row is a set listed
  * in place of the brand-unknown row, "Brands and sets" when it holds both.
- * Still loading, it could be any of them: "Brands and sets".
+ * Still loading it says "Brands", the answer in most years, so the heading
+ * seldom changes once the rows arrive. What a screen reader hears while it
+ * loads stays neutral ("Loading…", in `Cascade`): the skeleton's heading is
+ * a guess, the announcement never is.
  */
 export function brandColumnTitle(items: readonly DrillItem[] | undefined): BrandColumnTitle {
-  if (items === undefined) return "Brands and sets";
+  if (items === undefined) return "Brands";
   const loose = items.filter((i) => i.brandId).length;
   if (loose === 0) return "Brands";
   return loose === items.length ? "Sets" : "Brands and sets";

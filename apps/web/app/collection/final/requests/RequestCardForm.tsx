@@ -73,6 +73,9 @@ export default function RequestCardForm({
   const brandPick = brands ? brandColumnPick(brands, brand || null, set || null) : undefined;
   const setInBrands = brandPick?.brandId !== undefined;
   const onlySets = brandColumnTitle(brands) === "Sets";
+  // With no Set select beside it, the brand select is the row's last field
+  // and takes the full width, so no half row sits empty.
+  const brandAlone = onlySets || setInBrands;
   // Only a brand the Brand select shows picked opens its sets; a `brand`
   // still holding the hidden row's id (no set with it) opens nothing.
   const sets = useDrill(brandPick && !setInBrands ? "set" : null, { sport, year, brand });
@@ -218,19 +221,23 @@ export default function RequestCardForm({
                 setSet("");
                 setType("");
               }} />
-            <Pick name="brand" flag={flag} label={brandFieldLabel(sport && year ? brands : [])} value={brandPick?.id ?? brand} items={sport && year ? brands : []} onChange={(v) => {
+            <Pick name="brand" flag={flag} wide={brandAlone} label={brandFieldLabel(sport && year ? brands : [])} value={brandPick?.id ?? brand} items={sport && year ? brands : []} onChange={(v) => {
                 const item = brands?.find((i) => i.id === v);
                 setBrand(item?.brandId ?? v);
                 setSet(item?.brandId ? item.id : "");
                 setType("");
               }} />
-            {!onlySets && !setInBrands && (
+            {!brandAlone && (
               <Pick name="set" flag={flag} label="Set" value={set} items={brandPick ? sets : []} onChange={(v) => {
                   setSet(v);
                   setType("");
                 }} />
             )}
           </div>
+          {/* Mounted empty, so a pick that takes the Set select away is announced. */}
+          <p role="status" className="sr-only">
+            {setInBrands && !onlySets && brandPick ? `Set picked: ${brandPick.name}. On to the checklist.` : ""}
+          </p>
           {set && (
             <div className="grid gap-3 sm:grid-cols-2">
               <Pick
@@ -381,6 +388,7 @@ function Pick({
   value,
   items,
   typed,
+  wide = false,
   onChange,
 }: {
   name: string;
@@ -390,10 +398,12 @@ function Pick({
   items: DrillItem[] | undefined;
   /** Adds the "it isn't listed" choice under this wording. */
   typed?: string;
+  /** Spans both columns of the form's two-column grid. */
+  wide?: boolean;
   onChange: (id: string) => void;
 }) {
   return (
-    <label className="block">
+    <label className={wide ? "block sm:col-span-2" : "block"}>
       <span className={LABEL}>{label}</span>
       <select
         name={name}

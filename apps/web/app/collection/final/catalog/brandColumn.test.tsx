@@ -158,8 +158,9 @@ describe("brand column helpers", () => {
     expect(brandColumnTitle(COLUMNS["brand|y1990"])).toBe("Brands and sets");
     expect(brandColumnTitle(COLUMNS["brand|y1989"])).toBe("Sets");
     expect(brandColumnTitle([])).toBe("Brands");
-    // Still loading, it could be either: never a promise of brands.
-    expect(brandColumnTitle(undefined)).toBe("Brands and sets");
+    // Still loading, the common answer, so the heading seldom changes on
+    // load. What is announced stays neutral (the Cascade test below).
+    expect(brandColumnTitle(undefined)).toBe("Brands");
   });
 
   it("brandFieldLabel is the singular of the same rule", () => {
@@ -167,6 +168,7 @@ describe("brand column helpers", () => {
     expect(brandFieldLabel(COLUMNS["brand|y1990"])).toBe("Brand or set");
     expect(brandFieldLabel(COLUMNS["brand|y1989"])).toBe("Set");
     expect(brandFieldLabel([])).toBe("Brand");
+    expect(brandFieldLabel(undefined)).toBe("Brand");
   });
 
   it("brandColumnPickTitle names a picked row by what it is", () => {
@@ -227,12 +229,22 @@ describe("the Checklists drill with a brand-unknown row", () => {
     expect(drillNow()).toMatchObject({ brand: "unk", set: "set9" });
   });
 
-  it("while the brand column loads, the loading line promises neither brands nor sets alone", () => {
+  it("while the brand column loads, its skeleton says Brands and the loading line names nothing", () => {
     brandsLoading = true;
     renderDrill({ ...EMPTY_DRILL, sport: "s1", year: "y1990" });
+    const skeleton = document.querySelector('[aria-busy="true"]');
+    expect(skeleton?.querySelector("p")?.textContent).toBe("Brands");
     const said = screen.getAllByRole("status").map((n) => n.textContent);
-    expect(said).toContain("Loading brands and sets…");
-    expect(said).not.toContain("Loading brands…");
+    expect(said).toContain("Loading…");
+    expect(said.some((t) => /^Loading .*(brand|set)/i.test(t ?? ""))).toBe(false);
+  });
+
+  it("an empty column says the same line whatever its title", () => {
+    renderDrill({ ...EMPTY_DRILL, sport: "s1", year: "y1988" });
+    fireEvent.click(screen.getByRole("option", { name: /Fleer/ }));
+    // Fleer has no sets in the stub catalog: its Sets column is empty.
+    expect(screen.getByText("Nothing here yet.")).toBeTruthy();
+    expect(screen.queryByText(/^No sets here yet/)).toBeNull();
   });
 
   it("a year of brands only keeps its Brands column, with no divider", () => {

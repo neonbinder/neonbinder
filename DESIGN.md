@@ -372,3 +372,4 @@ Spinners keep turning under reduced motion, at 2.4s a turn, because they are the
 - **Don't** put a glow on a resting element.
 - **Don't** use neon pink for anything but negative actions (cancel and destructive).
 - **Don't** reach for a hued palette step (`bg-red-600`). Every hue has a role; the lint rule refuses the step.
+- **Don't** draw a divider with `border-rule` inside a `bg-raised` card. In dark mode `rule` (#1D293D) matches the card's fill (#1E2939) and the line vanishes; use `border-rule-strong`.

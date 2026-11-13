@@ -139,10 +139,18 @@ export default function Cascade({
     setFocusStep({ picked: step, next: item.variantId || !item.hasChildren || !after ? "checklist" : after });
   };
 
-  // The brand column's title while it loads is "Brands and sets": it may
-  // turn out to hold either, so the line never promises brands.
+  // The brand column's skeleton is titled "Brands" (the common answer), but
+  // the column may turn out to hold sets, so what is said while it loads
+  // names nothing: "Loading…".
+  const loadingColumn = state.columns.find((c) => c.items === undefined);
   const loading =
-    state.pending && state.columns.length === 0 ? "Sports" : (state.columns.find((c) => c.items === undefined)?.title ?? null);
+    state.pending && state.columns.length === 0
+      ? "Loading sports…"
+      : loadingColumn
+        ? loadingColumn.step === "brand"
+          ? "Loading…"
+          : `Loading ${loadingColumn.title.toLowerCase()}…`
+        : null;
 
   return (
     <div
@@ -152,7 +160,7 @@ export default function Cascade({
       {...{ [DRILL_ROW_ATTR]: "" }}
       className="relative flex flex-row items-start gap-4 overflow-x-auto pr-2 pb-4"
     >
-      <LoadingNote>{loading ? `Loading ${loading.toLowerCase()}…` : ""}</LoadingNote>
+      <LoadingNote>{loading ?? ""}</LoadingNote>
       {state.pending && state.columns.length === 0 && <ColumnSkeleton title="Sports" />}
       {state.columns.map((column) => {
         if (column.items === undefined) return <ColumnSkeleton key={column.step} title={column.title} />;

@@ -291,7 +291,8 @@ export default function StaticColumn({
       </p>
       {rows.length === 0 ? (
         <p className="text-sm text-ink-3 py-2">
-          {searchFilter ? "No matches found" : `No ${title.toLowerCase()} here yet.`}
+          {/* One line for every title: a column's title can change under it (NEO-527). */}
+          {searchFilter ? "No matches found" : "Nothing here yet."}
         </p>
       ) : (
         <div
@@ -310,7 +311,7 @@ export default function StaticColumn({
               key={`group:${label}`}
               role="group"
               aria-label={label}
-              className="space-y-2 border-t border-rule pt-3 first:border-t-0 first:pt-0"
+              className="space-y-2 border-t border-rule-strong pt-3 first:border-t-0 first:pt-0"
             >
               <p aria-hidden="true" className="px-1 text-xs text-ink-3">
                 {label}
