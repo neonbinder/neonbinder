@@ -1303,7 +1303,8 @@ describe("the status line while a shelf write saves (NEO-460)", () => {
     await waitFor(() => expect(statusSays(/^Dime box is on the shelf/)).toBe(true));
     expect(screen.getAllByRole("button", { name: "Undo" }).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Rename or delete Dime box" }));
+    // The create navigates into the new box after it says so: wait for its desk.
+    fireEvent.click(await screen.findByRole("button", { name: "Rename or delete Dime box" }));
     const edit = screen.getByRole("dialog");
     fireEvent.change(within(edit).getByLabelText("Box name"), { target: { value: "Nickel box" } });
     fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
