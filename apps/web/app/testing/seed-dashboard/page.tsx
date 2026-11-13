@@ -9,6 +9,10 @@ import { api } from "@/convex/_generated/api";
 //   /testing/seed-dashboard?syncPending=1   one card waiting for the next sync, per marketplace
 //   /testing/seed-dashboard?syncError=1     one set whose last sync failed (a card held back), per marketplace
 //   /testing/seed-dashboard?syncRecovered=1 that set after a later sync went through (it replaces a failed one: gone from the dashboard)
+//   /testing/seed-dashboard?syncHeld=noLink  one set whose last sync went through but held a card back for
+//                                            that reason (NEO-536: noLink, sharedLink, numberMismatch, notOnSheet,
+//                                            rejected or missingAspect can be reported; any other reason is a
+//                                            fix the collector makes), per marketplace
 //   /testing/seed-dashboard?clear=1         take every seed above back off
 // (combine them: ?sale=1&syncError=1&syncPending=1), then it forwards to
 // `redirect` (default /dashboard; only a path on this site, see
@@ -27,26 +31,55 @@ import { api } from "@/convex/_generated/api";
 // Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutations
 // themselves also fail closed on production Convex (no TESTING_RESET_SECRET there).
 
-/** What the URL asks for. No ask at all is a sale. A set cannot be both failed and recovered: the failed one wins. */
+/** The held-back reasons a sync can record (`convex/schema.ts` `listingProblemReasonValidator`). */
+export const SYNC_HELD_REASONS = [
+  "noLink",
+  "sharedLink",
+  "numberMismatch",
+  "noPrice",
+  "priceTooHigh",
+  "noCondition",
+  "graded",
+  "notOnSheet",
+  "rejected",
+  "missingAspect",
+  "noPhoto",
+  "setupIncomplete",
+] as const;
+export type SyncHeldReason = (typeof SYNC_HELD_REASONS)[number];
+
+function heldReasonOf(raw: string | null): SyncHeldReason | undefined {
+  return (SYNC_HELD_REASONS as readonly string[]).includes(raw ?? "") ? (raw as SyncHeldReason) : undefined;
+}
+
+/**
+ * What the URL asks for. No ask at all is a sale. A set cannot be both failed
+ * and recovered: the failed one wins. A held set (`syncHeld=<reason>`, NEO-536)
+ * is one set's last sync too, so a failed or recovered ask beats it; an
+ * unknown reason is no ask.
+ */
 export function seedsAsked(params: URLSearchParams): {
   clear: boolean;
   sale: boolean;
   syncPending: boolean;
   syncError: boolean;
   syncRecovered: boolean;
+  syncHeld?: SyncHeldReason;
 } {
   const on = (key: string) => params.get(key) === "1";
   const clear = on("clear");
   const syncPending = on("syncPending");
   const syncError = on("syncError");
   const syncRecovered = on("syncRecovered") && !syncError;
-  const sale = on("sale") || (!clear && !syncPending && !syncError && !syncRecovered);
+  const syncHeld = syncError || syncRecovered ? undefined : heldReasonOf(params.get("syncHeld"));
+  const sale = on("sale") || (!clear && !syncPending && !syncError && !syncRecovered && syncHeld === undefined);
   return {
     clear,
     sale: !clear && sale,
     syncPending: !clear && syncPending,
     syncError: !clear && syncError,
     syncRecovered: !clear && syncRecovered,
+    ...(!clear && syncHeld !== undefined ? { syncHeld } : {}),
   };
 }
 
@@ -63,12 +96,22 @@ export function seedRedirect(params: URLSearchParams): string {
 
 /** One line per marketplace: what the sync seed wrote there, and why not when it skipped one. */
 export function syncReadout(
-  platforms: ReadonlyArray<{ platform: string; pending: boolean; error: boolean; recovered?: boolean; note?: string }>,
+  platforms: ReadonlyArray<{
+    platform: string;
+    pending: boolean;
+    error: boolean;
+    recovered?: boolean;
+    held?: boolean;
+    note?: string;
+  }>,
 ): string[] {
   return platforms.map((p) => {
-    const wrote = [p.pending ? "waiting card" : null, p.error ? "failed set" : null, p.recovered ? "recovered set" : null].filter(
-      (w) => w !== null,
-    );
+    const wrote = [
+      p.pending ? "waiting card" : null,
+      p.error ? "failed set" : null,
+      p.recovered ? "recovered set" : null,
+      p.held ? "held set" : null,
+    ].filter((w) => w !== null);
     return `sync on ${p.platform}: ${wrote.length > 0 ? wrote.join(" + ") : "nothing"}${p.note ? ` (${p.note})` : ""}`;
   });
 }
@@ -111,8 +154,13 @@ function TestingSeedDashboardContent() {
           const r = await seedSale({});
           done.push(`sale ${r.orderNo} on ${r.platform}${r.matched ? "" : " (no card to name)"}`);
         }
-        if (asked.syncPending || asked.syncError || asked.syncRecovered) {
-          const r = await seedSync({ pending: asked.syncPending, error: asked.syncError, recovered: asked.syncRecovered });
+        if (asked.syncPending || asked.syncError || asked.syncRecovered || asked.syncHeld !== undefined) {
+          const r = await seedSync({
+            pending: asked.syncPending,
+            error: asked.syncError,
+            recovered: asked.syncRecovered,
+            ...(asked.syncHeld !== undefined ? { held: asked.syncHeld } : {}),
+          });
           done.push(...syncReadout(r.platforms));
         }
         setStatus(`Done: ${done.join("; ")} — redirecting...`);

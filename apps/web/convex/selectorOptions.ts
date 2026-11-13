@@ -10342,8 +10342,9 @@ export const resetVariantCommonPricesBatch = internalMutation({
  * Internal: drain the NEO-370 listing tables, looped by `runSetBuilderReset`
  * BEFORE the selector rows and cards they name: `listingOutbox`, then
  * `marketplaceListingSyncs`, `marketplaceListingStates`, the NEO-415 eBay
- * link rows (`marketplaceListingLinks`) and `marketplaceSales`, filling one
- * batch across them (the
+ * link rows (`marketplaceListingLinks`), the NEO-536 sync reports
+ * (`syncReports`, which name a variant and cards) and `marketplaceSales`,
+ * filling one batch across them (the
  * `resetIntakeRunsBatch` shape). Sales take a smaller share because a sale
  * carries its items array. Every collector's, across every account; armed
  * like every batch here.
@@ -10365,6 +10366,8 @@ export const resetMarketplaceListingBatch = internalMutation({
       "marketplaceListingStates",
       // NEO-415 — NB's eBay link rows name a card.
       "marketplaceListingLinks",
+      // NEO-536 — a collector's sync report names a variant and its cards.
+      "syncReports",
     ] as const) {
       if (room <= 0) break;
       const rows = await ctx.db.query(table).take(room);

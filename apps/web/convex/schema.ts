@@ -960,6 +960,9 @@ export const cardRequestKindValidator = v.union(v.literal("card"), v.literal("se
  * deployed union lacks is refused on write, and on read by a rolled-back
  * deployment; see `platformFacets`). SportLots is not a listing destination,
  * so it is not here.
+ *
+ * NEO-536: `syncReports.platform` pins this union too (a collector's report
+ * of a held-back set), so removing a literal needs those rows cleared first.
  */
 export const listingPlatformValidator = v.union(v.literal("bsc"), v.literal("ebay"));
 
@@ -994,6 +997,9 @@ export const ebayConditionCodeValidator = v.union(v.literal("NM"), v.literal("EX
  *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
  *                  returns, location) are not complete, so nothing was sent
  * A new reason widens this union (additive, deploy before writing it).
+ * Removing one needs every row carrying it cleared first: the listing tables
+ * here and, since NEO-536, `syncReports.cards[].reason` (a collector's report
+ * keeps the reason it was sent with until an admin closes it, and after).
  */
 export const listingProblemReasonValidator = v.union(
   v.literal("noLink"),
@@ -1009,6 +1015,9 @@ export const listingProblemReasonValidator = v.union(
   v.literal("noPhoto"),
   v.literal("setupIncomplete"),
 );
+
+/** NEO-536 — where a collector's sync report stands. `open` until an admin closes it. */
+export const syncReportStatusValidator = v.union(v.literal("open"), v.literal("fixed"), v.literal("notABug"));
 
 /**
  * NEO-415 — one step of a variant's listing run, as the Sync status tab shows
@@ -5629,4 +5638,54 @@ export default defineSchema({
     // A sale line's exactly-one guard: the link whose SKU the order names
     // (all three, `.unique()`), then its `listingId` must equal the line's.
     .index("by_owner_platform_sku", ["ownerId", "platform", "sku"]),
+
+  /**
+   * ── NEO-536: a collector's report of one held-back set ───────────────────
+   *
+   * One row per report: one variant on one listing platform whose last sync
+   * held cards back for a reason only the admin team can fix
+   * (`lib/collection/sync-report.REPORTABLE_SYNC_REASONS`). Made by
+   * `syncReports.report` from the collector's own `marketplaceListingSyncs`
+   * record (the client sends no card ids); a second report of the same set
+   * and platform while one is open refreshes it.
+   *
+   * `label` is a snapshot of the set's name at report time (the dashboard's
+   * `ListingLabels` words), for the lists after the variant is gone. `cards`
+   * are the reportable problems that named an NB card, at most 30;
+   * `heldBack` is how many there were in all. `detail` snapshots the sync
+   * record's problem detail for `rejected` and `missingAspect` only, cut to
+   * 200 characters: display-only for the admin, never written anywhere as NB
+   * data. `note` is the collector's, trimmed, at most 500.
+   *
+   * No auto-close: an admin closes a report as `fixed` or `notABug`
+   * (`closeNote` required for `notABug`), and the close settles every open
+   * report on that (variant, platform) across collectors, because the fix is
+   * to NB's shared catalog. A withdrawn report is deleted, so it has no
+   * status. `closedBy` is the admin's id and never returned to a collector.
+   * NB data only: no marketplace value.
+   */
+  syncReports: defineTable({
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    variantId: v.id("selectorOptions"),
+    label: v.string(),
+    cards: v.array(v.object({ cardId: v.id("cardChecklist"), reason: listingProblemReasonValidator, detail: v.optional(v.string()) })),
+    heldBack: v.number(),
+    note: v.optional(v.string()),
+    status: syncReportStatusValidator,
+    closedBy: v.optional(v.string()),
+    closedAt: v.optional(v.number()),
+    closeNote: v.optional(v.string()),
+    lastUpdated: v.number(),
+  })
+    // The collector's open reports and their cap (eq owner + "open"), the
+    // closed ones newest first (eq owner + status, order desc), and the
+    // per-user test reset (prefix owner).
+    .index("by_owner_status_closed", ["ownerId", "status", "closedAt"])
+    // One collector's open report on a set (all four, `.first()`), and an
+    // admin close's group: every open report on it (eq variant + platform +
+    // "open").
+    .index("by_variant_platform_status_owner", ["variantId", "platform", "status", "ownerId"])
+    // The admin queue: open reports oldest first (eq "open").
+    .index("by_status_closed", ["status", "closedAt"]),
 });

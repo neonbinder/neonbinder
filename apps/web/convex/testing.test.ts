@@ -157,6 +157,17 @@ async function seedUser(
       platform: "bsc",
       lastUpdated: 0,
     });
+    // NEO-536 — a report of that set, folded into the listing count.
+    await ctx.db.insert("syncReports", {
+      ownerId: userId,
+      platform: "bsc",
+      variantId,
+      label: "Set",
+      cards: [{ cardId, reason: "noLink" }],
+      heldBack: 1,
+      status: "open",
+      lastUpdated: 0,
+    });
     await ctx.db.insert("marketplaceSales", {
       ownerId: userId,
       platform: "bsc",
@@ -226,6 +237,7 @@ async function countRows(
       "marketplaceListingSyncs",
       "marketplaceListingStates",
       "marketplaceSales",
+      "syncReports",
     ] as const) {
       listing += (await ctx.db.query(table).collect()).filter((r) => r.ownerId === userId).length;
     }
@@ -262,7 +274,7 @@ describe("resetMyTestState", () => {
       collectionContainers: 1,
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
-      marketplaceListing: 4,
+      marketplaceListing: 5,
     });
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
@@ -306,7 +318,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
-      listing: 4,
+      listing: 5,
     });
   });
 
@@ -349,7 +361,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
-      listing: 4,
+      listing: 5,
     });
   });
 
@@ -373,7 +385,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
-      listing: 4,
+      listing: 5,
     });
   });
 });
@@ -2435,6 +2447,60 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
     );
     expect(real).toMatchObject({ status: "idle", problems: [] });
     expect(real?.lastError).toBeUndefined();
+  });
+
+  describe("NEO-536: a held set: the last sync went through but held the card back", () => {
+    test("writes a marked idle record holding the card back for that reason; the dashboard lists it and it can be reported; the clear takes it away", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "rejected" })).toEqual({
+        platforms: [
+          { platform: "bsc", pending: false, error: false, held: true },
+          { platform: "ebay", pending: false, error: false, held: true },
+        ],
+      });
+      const record = await t.run((ctx) =>
+        ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", USER_A).eq("variantId", fx.baseId).eq("platform", "bsc"))
+          .unique(),
+      );
+      expect(record).toMatchObject({
+        status: "idle",
+        problems: [{ cardId: fx.gooden1, reason: "rejected", detail: "(Test) The marketplace turned this card down." }],
+        problemsTotal: 1,
+        conditionsPushed: [],
+      });
+      expect(record?.lastError?.startsWith("(Test) ")).toBe(true);
+      expect(record?.lastSuccessAt).toBeUndefined();
+      const alerts = await me.query(api.dashboard.syncAlerts, {});
+      expect(alerts.sets.map((x) => [x.platform, x.failed, x.heldBack])).toEqual([
+        ["bsc", false, 1],
+        ["ebay", false, 1],
+      ]);
+      await expect(me.mutation(api.syncReports.report, { variantId: fx.baseId, platform: "bsc" })).resolves.toMatchObject({
+        already: false,
+      });
+      expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 2 });
+    });
+
+    test("a reason the collector fixes is seeded too (it just can't be reported)", async () => {
+      const { fx, me } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "noPrice" });
+      await expect(me.mutation(api.syncReports.report, { variantId: fx.baseId, platform: "ebay" })).rejects.toThrow(
+        /needs the crew/,
+      );
+    });
+
+    test("asking for a held set with a failed or recovered one is refused, and nothing is written", async () => {
+      const { t, me } = await withBoxedCard();
+      await expect(me.mutation(api.testing.seedMyTestSync, { pending: false, error: true, held: "noLink" })).rejects.toThrow(
+        /held set on its own/,
+      );
+      await expect(
+        me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true, held: "noLink" }),
+      ).rejects.toThrow(/held set on its own/);
+      expect(await t.run((ctx) => ctx.db.query("marketplaceListingSyncs").collect())).toEqual([]);
+    });
   });
 
   describe("a recovered set: a failure a later sync put right", () => {

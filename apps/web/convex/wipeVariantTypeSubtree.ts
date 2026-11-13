@@ -242,6 +242,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-415 NB's link to a card-level listing it made (eBay). Never refuses the wipe and is untouched: a card a collector still owns a copy of already refuses it (collectionCopies), so a wiped card's listing was withdrawn when its last copy went (and the drainer withdraws a gone card's live listing when it settles the card's queued row); a sale naming the gone card is left unmatched",
   },
+  syncReports: {
+    fields: ["variantId", "cards[].cardId"],
+    handling:
+      "NEO-536 a collector's report of a held-back set. Never refuses the wipe and is untouched: label is a snapshot; readers skip a card or variant that is gone.",
+  },
   privateSets: {
     fields: ["sportId"],
     handling: "NEO-361 sport-level only. Untouched",
