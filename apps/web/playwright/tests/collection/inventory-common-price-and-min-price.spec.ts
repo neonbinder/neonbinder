@@ -24,7 +24,7 @@
 // cleared through the UI, so the account ends as it began.
 //
 // R3: the collector's cascade and tabs come from `support/collection.ts`.
-import { drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -182,6 +182,7 @@ test(
     // --- Cleanup (R7): remove the copy (it is back in Main), then clear the common price
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     // The common price is still what the collector set: no Sell panel wrote it.

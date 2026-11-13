@@ -795,3 +795,19 @@ export async function expectPhotoServed(page: Page, shown: Locator, attribute: "
   expect(response.headers()["content-type"] ?? "", "it answers with a picture").toMatch(/^image\//);
   expect((await response.body()).length, "and the picture is not empty").toBeGreaterThan(100);
 }
+
+/**
+ * The server has answered a Remove: wait for the drawer's "Removed ..." notice,
+ * dismiss it, and see the status empty. A Remove flips the list optimistically,
+ * so the list proves nothing about the write, and every "Removed ..." notice of
+ * one card reads the same: left up, an earlier one would satisfy the next wait
+ * (a press lost to the notice reflow would then pass unseen). Call it after
+ * EVERY Remove, the last one included, before pressing the next Remove or
+ * leaving the drawer.
+ */
+export async function confirmRemoved(drawer: Locator): Promise<void> {
+  const removed = drawer.getByRole("status").filter({ hasText: /^Removed / });
+  await expect(removed).toBeVisible();
+  await drawer.getByRole("button", { name: "Dismiss message", exact: true }).click();
+  await expect(removed).toHaveCount(0);
+}

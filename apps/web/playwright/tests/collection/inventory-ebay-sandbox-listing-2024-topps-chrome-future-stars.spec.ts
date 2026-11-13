@@ -198,28 +198,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
-import {
-  TOPPS_CHROME_2024_FUTURE_STARS,
-  backToBoxes,
-  cardsWord,
-  checklistTitle,
-  clearChecklistCommonPrice,
-  createBox,
-  deleteOpenBox,
-  drillToCollectorChecklist,
-  emptyBoxCards,
-  expectNothingSent,
-  followRunToEnd,
-  followRunToRest,
-  inventoryTabs,
-  nameOf,
-  pickIntakeSet,
-  putOtherBoxesInPerson,
-  quantityField,
-  queueSettled,
-  syncRun,
-  walkForCleanup,
-} from "../../support/collection";
+import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, followRunToEnd, followRunToRest, inventoryTabs, nameOf, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
 import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { EDIT_LANDED, EDIT_LANDS, photoViewer } from "../../support/photo-viewer";
@@ -820,6 +799,7 @@ test(
       await expect(editForm).toBeHidden();
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRegExp(short)}, Raw, `) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+      await confirmRemoved(drawer);
       if (axe) await expectAccessible(page, { within: drawer, label: "Card drawer, its only copy removed" });
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();

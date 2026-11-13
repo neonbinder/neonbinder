@@ -154,31 +154,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
-import {
-  TOPPS_CHROME_2024_FUTURE_STARS,
-  backToBoxes,
-  cardsWord,
-  checklistTitle,
-  createBox,
-  deleteOpenBox,
-  clearChecklistCommonPrice,
-  drillToCollectorChecklist,
-  emptyBoxCards,
-  expectNothingSent,
-  followRunToRest,
-  goViaShell,
-  intakeDropzone,
-  inventoryTabs,
-  nameOf,
-  ordinaryBaseRows,
-  pickIntakeSet,
-  putOtherBoxesInPerson,
-  quantityField,
-  queueSettled,
-  shortNameOf,
-  syncRun,
-  walkForCleanup,
-} from "../../support/collection";
+import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, followRunToRest, goViaShell, intakeDropzone, inventoryTabs, nameOf, ordinaryBaseRows, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, shortNameOf, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { bscReadCeiling } from "../../support/marketplace-wait";
@@ -265,6 +241,7 @@ async function removeBinderLine(checklist: Locator, short: string, line: Awaited
   await expect(form).toBeHidden();
   await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
   await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+  await confirmRemoved(drawer);
   await drawer.getByRole("button", { name: "Close card detail" }).click();
   await expect(drawer).toBeHidden();
 }
