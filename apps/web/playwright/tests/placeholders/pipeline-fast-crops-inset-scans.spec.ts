@@ -1,24 +1,33 @@
 // Origin: .maestro/flows/placeholders/pipeline-fast-crops-inset-scans.yaml (Maestro suite retired in NEO-341; see git history)
-// Cards centred on a scanner bed are cropped by the fast quad stage: no
-// escalation, three pairs.
-import { test, expect, expectAccessible } from "../../support/fixtures";
+// R1: cards centred on a scanner bed, dropped on the real /print/placeholders
+// drop zone, are cropped by the fast quad stage: no escalation, three pairs.
+// The 7 s after the last upload to "All 6 photos read." is what proves the fast
+// path (six heavy escalations cannot settle inside it); NEO-529.
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import {
+  discardIfStillOpen,
+  finishPlaceholderBatch,
+  placeholderScans,
+  startPlaceholderBatch,
+} from "../../support/placeholder-intake";
+
+test.afterEach(async ({ page }, testInfo) => {
+  await discardIfStillOpen(page, testInfo);
+});
 
 test(
   "Placeholder pipeline (fast quad crop) — six cards on a scanner bed are cropped fast, no escalation, three pairs",
   { tag: ["@placeholders"] },
   async ({ page, signIn }) => {
-    await signIn("/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures");
-    await expect(page.getByText("Upload your cards")).toBeVisible({ timeout: 90_000 });
-    await expect(page.getByText("Your cards", { exact: true })).toBeVisible();
+    await signIn("/print/placeholders");
+    await expect(page.getByRole("heading", { name: "Upload your cards" })).toBeVisible({ timeout: LAUNCH_GATE });
 
-    await expect(page.getByText("All 6 photos read.")).toBeVisible({ timeout: 60_000 });
+    await startPlaceholderBatch(page, placeholderScans("placeholder-fixtures"));
+
+    await expect(page.getByText("All 6 photos read.")).toBeVisible();
     await expectAccessible(page, { label: "Placeholder upload, all read" });
 
-    await page.getByRole("button", { name: "Finish the batch" }).click();
-    await expect(page.getByText("Finish this batch?")).toBeVisible();
-    await expectAccessible(page, { label: "Finish this batch dialog" });
-    await page.getByRole("button", { name: "Finish it" }).click();
-    await expect(page.getByText("3 pairs ready to print.")).toBeVisible();
+    await finishPlaceholderBatch(page);
     await expectAccessible(page, { label: "Placeholder batch, pairs ready" });
   },
 );

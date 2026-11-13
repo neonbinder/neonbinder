@@ -768,7 +768,7 @@ export const cancelPlaceholderBatch = mutation({
  * ACTIVE_STATUSES, and `closePlaceholderStream` moves a stream job
  * collecting → pairing, which is STILL active — so only reaching a terminal
  * status frees a slot, and only `cancelJobImpl` does that. Back-to-back E2E runs
- * therefore accumulate active jobs until the seed page can no longer start one.
+ * therefore accumulate active jobs until a spec can no longer start one.
  * This gives an entry page a way to clear the caller's own slots before seeding
  * a fresh run.
  *

@@ -12,15 +12,13 @@ import { classifyIntake } from "@/lib/placeholders/intake-kind";
  * Open a scan session and push files into it — the whole intake path, in one
  * hook (NEO-170).
  *
- * Two pages need this: /placeholders, where a person picks files, and
- * /testing/seed-placeholder-upload, where the release E2E enters because
- * maestro-web cannot drive a file input at all. The second one exists ONLY to
- * skip the file picker, so it has to run the identical network sequence —
- * `startPlaceholderStream`, then per file `createPlaceholderImageUploadUrl` →
- * form-POST → `confirmPlaceholderImageUpload`. A test path with its own copy of
- * that sequence would be a test of the copy: the flow could stay green while the
- * page a user actually touches was broken, which is the failure mode that makes
- * an E2E suite worse than none.
+ * Two screens use it: the placeholder upload screen (/print/placeholders) and
+ * the Add cards picker. Both run the one network sequence —
+ * `startPlaceholderStream` (or an open session's `jobId`), then per file
+ * `createPlaceholderImageUploadUrl` → form-POST → `confirmPlaceholderImageUpload`.
+ * The E2E suite drives those screens' own file inputs, so no test path keeps a
+ * copy of that sequence: a copy would be a test of the copy, green while the
+ * page a user actually touches was broken.
  *
  * The hook owns the Convex wiring and the per-file progress state. It owns no
  * copy and no layout — each page words its own outcome, because "Uploaded 6 of 6
@@ -41,6 +39,14 @@ export type UploadOutcome =
       uploaded: number;
       failed: number;
       total: number;
+      /**
+       * NEO-529 — present only when the session named by `jobId` stopped
+       * collecting during the send (finished elsewhere, discarded, swept). The
+       * first `uploaded` files landed in it; the rest, counted in `failed`, did
+       * not, and no later file was tried. A page says so by name rather than
+       * reporting "N failed".
+       */
+      batchClosed?: true;
     }
   | {
       ok: false;
@@ -215,6 +221,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
           uploaded: result.uploaded,
           failed: result.failed,
           total: files.length,
+          ...(result.batchClosed ? { batchClosed: true as const } : {}),
         };
       } finally {
         setUploading(false);

@@ -423,7 +423,7 @@ def main() -> None:
                     + " Both lists are in UPLOAD ORDER — front/back alternation. "
                     "Each front and back print the SAME full player name so the "
                     "identity pool pairs them. `files` is the "
-                    "contract the seed page reads; `images` is the same order with "
+                    "contract the Playwright placeholder helper reads; `images` is the same order with "
                     "the metadata a human (or a flow author picking assertions) needs."
                 ),
                 "pairCount": len(PLAYERS),

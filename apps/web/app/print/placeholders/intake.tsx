@@ -129,9 +129,9 @@ export default function CardIntake() {
 
   // The session id lives in the URL, not in state. That is what makes this page
   // addressable: /placeholders?jobId=… reopens a run that is still going (or
-  // already finished), which is where the upload flow lands itself and where the
-  // /testing entry point redirects the E2E suite. State would have made the run
-  // view reachable only by having just created it.
+  // already finished), which is where the upload flow lands itself and what a
+  // bookmark, a reload or a pasted link comes back to. State would have made the
+  // run view reachable only by having just created it.
   const [searchParams, setSearchParams] = useSearchParams();
   const jobId = searchParams.get("jobId");
 
@@ -180,17 +180,51 @@ export default function CardIntake() {
    * straight out of the drop/change handler, where a `setFiles` in the same
    * tick has not flushed yet, so reading state here would upload the PREVIOUS
    * selection (nothing, the first time).
+   *
+   * ## Photos dropped on an open run join it
+   * A run that is still collecting is a scanner session, and adding to it is
+   * the whole point of keeping the drop zone on screen. Starting a second
+   * session instead left the first one collecting, holding one of the user's
+   * two active-batch slots until the idle sweep reclaimed it. A zip always
+   * starts its own run (the hook refuses one into an existing session), and a
+   * run that has stopped collecting cannot take more, so both start a new one.
+   *
+   * ## The run can close between the render and the drop
+   * Another tab can finish it, or the idle sweep can. The server then refuses
+   * the next photo with a coded error (BATCH_NOT_COLLECTING, which survives
+   * production's message redaction), the send stops there, and the outcome
+   * carries `batchClosed`. When none of the photos got in, they are sent again
+   * as a new run and the notice says so. When some did, they stay where they
+   * landed and the rest are named for the user to drop again; re-sending only
+   * the rest into a new run would split the deck's front/back order across two
+   * runs.
    */
   const handleUpload = useCallback(
     async (chosen: File[]) => {
     if (chosen.length === 0 || uploading) return;
     setNotice(null);
 
+    const addingTo =
+      jobId !== null &&
+      job?.status === "collecting" &&
+      classifyIntake(chosen).kind === "images"
+        ? jobId
+        : undefined;
+
     try {
       // Label the run web-originated (NEO-170); the cardlister CLI passes
       // "scanner" on its own start path.
-      const outcome = await upload(chosen, { source: "web" });
+      let outcome = await upload(chosen, { source: "web", jobId: addingTo });
+      let startedFresh = false;
+      if (addingTo && outcome.ok && outcome.batchClosed && outcome.uploaded === 0) {
+        outcome = await upload(chosen, { source: "web" });
+        startedFresh = true;
+      }
+
       if (!outcome.ok) {
+        // Clear the tray: nothing was sent, and the tray's line under a
+        // refusal would otherwise read "6 photos sent." beside it.
+        setFiles([]);
         setNotice({
           tone: "error",
           text: `Couldn't start a scan session — ${outcome.reason}.`,
@@ -198,33 +232,43 @@ export default function CardIntake() {
         return;
       }
 
-      // Put the new session in the URL so the run view is shareable and
+      // Put a new session in the URL so the run view is shareable and
       // survives a reload, and so the back button leaves the run rather than
-      // silently keeping it.
-      setSearchParams({ jobId: outcome.jobId });
+      // silently keeping it. Photos added to the run already on screen are not
+      // a move, so they push no history entry.
+      if (outcome.jobId !== jobId) setSearchParams({ jobId: outcome.jobId });
       // Clear the tray: these are on the server now, and leaving them listed
-      // as "ready to upload" invites a second, duplicate send.
+      // as "ready to upload" invites a second, duplicate send. That holds when
+      // the batch closed part-way too: dropping the whole pile again would send
+      // the ones that already landed a second time.
       setFiles([]);
-      setNotice(
+      if (outcome.batchClosed) {
+        setNotice({
+          tone: "error",
+          text: `This batch was finished while your photos were going up. ${outcome.uploaded} of ${outcome.total} got in; drop the other ${outcome.failed} again to start a new batch.`,
+        });
+        return;
+      }
+      const tally =
         outcome.failed === 0
-          ? {
-              tone: "success",
-              text: `Uploaded ${outcome.uploaded} of ${outcome.total} images.`,
-            }
-          : {
-              tone: "error",
-              text: `Uploaded ${outcome.uploaded} of ${outcome.total} images — ${outcome.failed} failed.`,
-            },
-      );
+          ? `Uploaded ${outcome.uploaded} of ${outcome.total} images.`
+          : `Uploaded ${outcome.uploaded} of ${outcome.total} images — ${outcome.failed} failed.`;
+      setNotice({
+        tone: outcome.failed === 0 ? "success" : "error",
+        text: startedFresh
+          ? `That batch was already finished, so these started a new one. ${tally}`
+          : tally,
+      });
     } catch (error) {
       console.error("Placeholder upload failed", error);
+      setFiles([]);
       setNotice({
         tone: "error",
         text: "Couldn't upload these scans. Please try again.",
       });
     }
     },
-    [setSearchParams, upload, uploading],
+    [job?.status, jobId, setSearchParams, upload, uploading],
   );
 
   const handleConfirmAction = useCallback(async () => {

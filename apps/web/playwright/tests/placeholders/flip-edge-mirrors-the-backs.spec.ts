@@ -4,7 +4,17 @@
 // from a row reversal (short edge) from no mirror at all. The pocket numbers
 // shown by "Show cutting guides" are the instrument that reads the mirroring.
 import type { Locator } from "@playwright/test";
-import { test, expect, expectAccessible } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import {
+  discardIfStillOpen,
+  finishPlaceholderBatch,
+  placeholderScans,
+  startPlaceholderBatch,
+} from "../../support/placeholder-intake";
+
+test.afterEach(async ({ page }, testInfo) => {
+  await discardIfStillOpen(page, testInfo);
+});
 
 async function box(locator: Locator) {
   const b = await locator.boundingBox();
@@ -16,16 +26,15 @@ test(
   "Print settings — the flip edge re-mirrors the backs, and backs can be turned off",
   { tag: ["@placeholders"] },
   async ({ page, signIn }) => {
-    await signIn("/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-fullbleed");
-    await expect(page.getByText("Upload your cards")).toBeVisible({ timeout: 90_000 });
+    await signIn("/print/placeholders");
+    await expect(page.getByRole("heading", { name: "Upload your cards" })).toBeVisible({ timeout: LAUNCH_GATE });
+
+    // NEO-529: the six scans go through the real drop zone.
+    await startPlaceholderBatch(page, placeholderScans("placeholder-fixtures-fullbleed"));
 
     // Every image has been read: the state that offers finishing.
-    await expect(page.getByText("All 6 photos read.")).toBeVisible({ timeout: 180_000 });
-    await page.getByRole("button", { name: "Finish the batch" }).click();
-    await expect(page.getByText("Finish this batch?")).toBeVisible();
-    await expectAccessible(page, { label: "Finish this batch dialog" });
-    await page.getByRole("button", { name: "Finish it" }).click();
-    await expect(page.getByText("3 pairs ready to print.")).toBeVisible();
+    await expect(page.getByText("All 6 photos read.")).toBeVisible();
+    await finishPlaceholderBatch(page);
     await expectAccessible(page, { label: "Placeholder batch, pairs ready" });
 
     // The live summary, recomputed from the form: backs are on by default.

@@ -120,6 +120,10 @@ Things that look like failures during the apps/web fast gates but are not.
    `const playwright = { configs: { "flat/recommended": { plugins: {}, rules: {} } } }`,
    drop the three playwright blocks from the export, `npx eslint -c <copy> <files>`,
    delete the copy. Report that the full `npm run lint` was not run (NEO-345).
+   Same stale link breaks `npm run typecheck` on `Cannot find module 'aws4fetch'`
+   (convex/lib/r2.ts) while the lockfile matches main: report it as the one
+   baseline error, check it is the ONLY one, and grep a root `tsc -p .` run for
+   your files (NEO-529).
    A sibling `.tsx` also renders to static HTML for a visual check with
    `node_modules/.bin/tsx --tsconfig apps/web/tsconfig.json` (set
    `globalThis.React`; wrap a `useMutation` component in `ConvexProvider`

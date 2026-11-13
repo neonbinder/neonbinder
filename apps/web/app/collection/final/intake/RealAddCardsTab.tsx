@@ -654,12 +654,25 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     });
     // Scan order is upload order, and a zip is unpacked in natural filename
     // order, so loose photos go up the same way. Here and not in the hook: the
-    // seed page uploads in the exact order it is handed, backs first on purpose.
+    // hook sends in the exact order it is handed, so each screen decides its own.
     const ordered = isZip ? pile : inNaturalOrder(pile);
+    // NEO-529 — the run's session stopped collecting during the send (finished
+    // from another tab or the scanner, or swept), so the server refused the rest.
+    // Said by name, never as "N failed". When some landed the pile goes, or a
+    // retry would send those twice; when none did it stays, for after a new run.
+    const sentOrClosed = (out: { kind: "zip" | "images"; uploaded: number; failed: number; total: number; batchClosed?: true }) =>
+      !out.batchClosed
+        ? { sent: true, note: sentWords(out) }
+        : out.uploaded > 0
+          ? {
+              sent: true,
+              note: `This run was finished while your photos were going up. ${out.uploaded} of ${out.total} got in. Start a new run for the other ${out.failed}.`,
+            }
+          : { sent: false, note: "This run was finished before your photos got in. Start a new run, then send them again." };
     const open = latest.current.run;
     if (open) {
       const out = await upload(ordered, { source: "web", jobId: open.jobId });
-      return out.ok ? { sent: true, note: sentWords(out) } : refused(out);
+      return out.ok ? sentOrClosed(out) : refused(out);
     }
     if (isZip) {
       // A zip starts its own job, so it can't go after the run.
@@ -685,7 +698,7 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
       throw error;
     }
     const out = await upload(ordered, { source: "web", jobId: session.jobId });
-    return out.ok ? { sent: true, note: sentWords(out) } : refused(out);
+    return out.ok ? sentOrClosed(out) : refused(out);
   };
 
   const sendHeld = useEffectEvent(async () => {

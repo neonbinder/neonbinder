@@ -2,9 +2,8 @@
  * NEO-170 — the abort flow's fixture entry point.
  *
  * This page's whole job is to leave the worker account with exactly one
- * abortable run. That output IS a held active-job slot, so — like its sibling
- * /testing/seed-placeholder-upload — it has to clear the caller's active jobs
- * first, or a second run (or an abort flow that failed before aborting) leaves
+ * abortable run. That output IS a held active-job slot, so it has to clear the
+ * caller's active jobs first, or a second run (or an abort flow that failed before aborting) leaves
  * the account over the cap and the next flow can't seed. The case that matters
  * is the ORDER: reset must precede the seed, every run.
  */

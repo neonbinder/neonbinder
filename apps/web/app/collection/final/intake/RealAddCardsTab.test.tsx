@@ -1608,6 +1608,79 @@ describe("RealAddCardsTab holds dropped photos until the run is ready (NEO-452)"
     expect(screen.getByRole("button", { name: "Try again: send the waiting photos" })).toBeTruthy();
   });
 
+  describe("NEO-529: the run is finished while the photos go up", () => {
+    const SOME = "This run was finished while your photos were going up. 1 of 2 got in. Start a new run for the other 1.";
+    const NONE = "This run was finished before your photos got in. Start a new run, then send them again.";
+    const closedOutcome = (jobId: string, uploaded: number) => ({
+      ok: true,
+      jobId,
+      kind: "images",
+      uploaded,
+      failed: 2 - uploaded,
+      total: 2,
+      batchClosed: true,
+    });
+
+    describe("fresh session", () => {
+      it("some got in: the pile is dropped and the note counts them", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome("j1", 1));
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await pickSet();
+        await act(async () => {});
+        expect(statusTexts().join(" ")).toContain(SOME);
+        expect(readHeld(heldKey).files).toEqual([]);
+      });
+
+      it("none got in: the pile stays held and the note says to start a new run", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome("j1", 0));
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await pickSet();
+        await act(async () => {});
+        expect(statusTexts().join(" ")).toContain(NONE);
+        expect(readHeld(heldKey).files).toHaveLength(2);
+      });
+
+      it("a plain failure count with no closed flag is still reported as a send, not a closed run", async () => {
+        mocks.upload.mockResolvedValueOnce({ ok: true, jobId: "j1", kind: "images", uploaded: 1, failed: 1, total: 2 });
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await pickSet();
+        await act(async () => {});
+        expect(statusTexts().join(" ")).not.toContain("This run was finished");
+      });
+    });
+
+    describe("open run", () => {
+      const openRun = () => {
+        setRun(RUN_ID, { homeKind: "box", variantId: "v1" });
+        mocks.data.side = "inventory";
+        mocks.data.gate = PRICED;
+        return render(<Tab runId={RUN_ID} />);
+      };
+
+      it("some got in: the pile is dropped and the note counts them", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome(`job-${RUN_ID}`, 1));
+        openRun();
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await act(async () => {});
+        expect(sent()[0][1]).toEqual({ source: "web", jobId: `job-${RUN_ID}` });
+        expect(statusTexts().join(" ")).toContain(SOME);
+        expect(readHeld(heldKey).files).toEqual([]);
+      });
+
+      it("none got in: the pile stays held and the note says to start a new run", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome(`job-${RUN_ID}`, 0));
+        openRun();
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await act(async () => {});
+        expect(statusTexts().join(" ")).toContain(NONE);
+        expect(readHeld(heldKey).files).toHaveLength(2);
+      });
+    });
+  });
+
   it("a second drop adds to the pile", async () => {
     newRunIntoBox(HELD);
     await dropOnZone([photoOf("a.jpg")]);

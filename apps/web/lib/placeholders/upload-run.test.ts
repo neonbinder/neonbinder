@@ -7,14 +7,15 @@
  * shows up much later, as a printed placeholder with the wrong back. So the
  * order of the CALLS is the contract, and these cases read it directly.
  *
- * Lives under `lib/` because two routes share the loop now — /placeholders and
- * the /testing entry the release E2E drives — and because there is nothing React
+ * Lives under `lib/` because two screens share the loop — the placeholder
+ * upload screen and the Add cards picker — and because there is nothing React
  * about it. That also puts it in the node-environment Vitest project, which is
  * fine: `File` and `FormData` are globals in Node 20+, and `fetch` is injected
  * rather than called.
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { batchNotCollecting } from "@/convex/lib/placeholderRefusals";
 import {
   runPlaceholderUpload,
   type FileProgress,
@@ -153,6 +154,64 @@ describe("runPlaceholderUpload", () => {
     // wrong" rather than "this file is too big".
     expect(calls.some((c) => c.startsWith("post:"))).toBe(false);
     expect(deps.confirmUpload).not.toHaveBeenCalled();
+  });
+
+  describe("NEO-529: the session stops collecting part-way", () => {
+    it("stops at the refused file, fails it and every one after it, and says the batch closed", async () => {
+      let allocations = 0;
+      const { deps, calls, progress } = harness({
+        createUploadUrl: vi.fn(async ({ originalName }) => {
+          allocations += 1;
+          if (allocations === 2) throw batchNotCollecting("processing");
+          calls.push(`allocate:${originalName}:${allocations - 1}`);
+          return ticketFor(allocations - 1);
+        }),
+      });
+
+      const result = await runPlaceholderUpload(
+        "job-1",
+        [fakeFile("a.jpg"), fakeFile("b.jpg"), fakeFile("c.jpg")],
+        deps,
+      );
+
+      expect(result).toEqual({ uploaded: 1, failed: 2, batchClosed: true });
+      // No allocation is attempted after the refusal: it would be refused too.
+      expect(deps.createUploadUrl).toHaveBeenCalledTimes(2);
+      expect(
+        progress.filter((p) => p.state === "failed").map((p) => [p.name, p.error]),
+      ).toEqual([
+        ["b.jpg", "batch closed"],
+        ["c.jpg", "batch closed"],
+      ]);
+    });
+
+    it("reads the refusal from a confirm too, after the bytes landed", async () => {
+      const { deps } = harness({
+        confirmUpload: vi.fn(async () => {
+          throw batchNotCollecting("pairing");
+        }),
+      });
+
+      const result = await runPlaceholderUpload("job-1", [fakeFile("a.jpg"), fakeFile("b.jpg")], deps);
+
+      expect(result).toEqual({ uploaded: 0, failed: 2, batchClosed: true });
+      expect(deps.createUploadUrl).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats any other error as one file's failure and keeps going", async () => {
+      const { deps } = harness({
+        createUploadUrl: vi.fn(async () => {
+          // The text alone is not the signal: prod redacts it.
+          throw new Error("job is processing, not collecting");
+        }),
+      });
+
+      const result = await runPlaceholderUpload("job-1", [fakeFile("a.jpg"), fakeFile("b.jpg")], deps);
+
+      expect(result).toEqual({ uploaded: 0, failed: 2 });
+      expect(result.batchClosed).toBeUndefined();
+      expect(deps.createUploadUrl).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("reports each file as uploading before it reports the outcome", async () => {

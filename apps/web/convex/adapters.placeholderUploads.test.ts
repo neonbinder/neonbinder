@@ -43,6 +43,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { isBatchNotCollecting } from "./lib/placeholderRefusals";
 
 const policyCalls: Array<{ bucket: string; file: string; config: Record<string, unknown> }> = [];
 
@@ -409,6 +410,28 @@ describe("createPlaceholderImageUploadUrl", () => {
       { jobId, contentType: "image/webp" },
     );
     expect(ok.entryIndex).toBe(0);
+  });
+
+  test("NEO-529: a session closed elsewhere is refused with its code, through the action, before any policy is signed", async () => {
+    // The code is the client's only way to tell "the batch closed" from one
+    // file's failure: a plain Error's text is redacted in production. This is
+    // the path the page actually calls, so it proves the ConvexError survives
+    // `ctx.runMutation` and leaves the action intact.
+    const t = convexTest(schema, modules);
+    const jobId = await openStream(t);
+    const asUser = t.withIdentity(USER_IDENTITY);
+    await asUser.mutation(api.placeholderStream.closePlaceholderStream, { jobId });
+    await drainScheduled(t);
+
+    const error = await asUser
+      .action(api.adapters.placeholderUploads.createPlaceholderImageUploadUrl, {
+        jobId,
+        contentType: "image/jpeg",
+      })
+      .then(() => null, (e: unknown) => e);
+
+    expect(isBatchNotCollecting(error)).toBe(true);
+    expect(policyCalls).toHaveLength(0);
   });
 
   test("another user cannot mint into someone else's session, or into a job that doesn't exist", async () => {

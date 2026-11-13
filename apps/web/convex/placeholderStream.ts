@@ -46,6 +46,7 @@ import type { Doc } from "./_generated/dataModel";
 import { fastPreprocessPool } from "./placeholderPool";
 import { finalizePairingInline } from "./placeholderPairing";
 import { ENTRY_TOO_MANY_PIXELS, ENTRY_UNDECODABLE } from "./lib/extractRejections";
+import { batchNotCollecting } from "./lib/placeholderRefusals";
 import {
   ACTIVE_STATUSES,
   ENQUEUE_CHUNK_SIZE,
@@ -78,6 +79,11 @@ import {
  * job the caller has already proved they own, so there is nothing to leak, and
  * "job is processing, not collecting" is the difference between a user
  * understanding what happened and filing a bug.
+ *
+ * The not-collecting refusal is a `ConvexError` with a stable code (NEO-529).
+ * A plain Error's text is redacted in production, and the web client has to
+ * tell "the session closed under you" from an ordinary per-file failure: it
+ * re-sends the photos as a new batch, or names the ones that missed out.
  */
 async function requireCollectingStreamJob(
   ctx: MutationCtx,
@@ -87,9 +93,7 @@ async function requireCollectingStreamJob(
   const job = await findOwnedJob(ctx, jobId, userId);
   if (!job) throw new Error("Job not found");
   if (job.mode !== "stream") throw new Error("job is not a scanner batch");
-  if (job.status !== "collecting") {
-    throw new Error(`job is ${job.status}, not collecting`);
-  }
+  if (job.status !== "collecting") throw batchNotCollecting(job.status);
   return job;
 }
 
@@ -190,7 +194,8 @@ export const startPlaceholderStream = mutation({
     // scanner collects images, not when the first one is confirmed. Fire-and-
     // forget: scheduled, never awaited, and `warmupPreprocess` cannot fail — a
     // cold start simply happens the old way if it does nothing. This is also
-    // what warms the service for the E2E gate, whose seed page opens a stream.
+    // what warms the service for the E2E gate, whose placeholder specs open a
+    // stream through the upload screen.
     await ctx.scheduler.runAfter(0, internal.placeholderBatch.warmupPreprocess, {});
 
     return { started: true, jobId };

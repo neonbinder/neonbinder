@@ -12,6 +12,7 @@
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { batchNotCollecting } from "@/convex/lib/placeholderRefusals";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // `?raw` gives the route table as text — importing src/main.tsx for real mounts
@@ -266,6 +267,179 @@ describe("CardIntake", () => {
     );
     expect(notice.getAttribute("role")).toBe("alert");
     expect(mocks.fns[REFS.uploadUrl]).not.toHaveBeenCalled();
+  });
+
+  it("NEO-529: a refused start does not leave the drop zone saying the photos were sent", async () => {
+    mocks.fns[REFS.start] = vi.fn().mockResolvedValue({
+      started: false,
+      reason: "you already have 2 active batches (limit 2) — wait for one to finish",
+    });
+    renderPage();
+    selectFiles(["front.jpg", "back.jpg"]);
+
+    await screen.findByText(/Couldn't start a scan session/);
+    // Nothing went anywhere, so the drop zone must not claim it did.
+    expect(screen.queryByText(/photos? sent\./)).toBeNull();
+    expect(screen.queryByText("2 photos sent.")).toBeNull();
+    expect(screen.getByText("Nothing selected yet.")).not.toBeNull();
+  });
+
+  describe("NEO-529: dropping more photos on an open run", () => {
+    const runJob = (status: string) => ({
+      jobId: "job-run1",
+      status,
+      mode: "stream",
+      createdAt: Date.now(),
+      totalImages: 2,
+      processedImages: 2,
+      failedImages: 0,
+      rejectedEntries: 0,
+      pairCount: 0,
+    });
+
+    it("adds to a run that is still collecting instead of starting a new batch", async () => {
+      mocks.queries = {
+        [REFS.job]: runJob("collecting"),
+        [REFS.images]: [],
+        [REFS.pairs]: [],
+      };
+      renderPage("/print/placeholders?jobId=job-run1");
+      selectFiles(["front.jpg", "back.jpg"]);
+
+      await waitFor(() =>
+        expect(screen.getByText("Uploaded 2 of 2 images.")).not.toBeNull(),
+      );
+      expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+      expect(mocks.fns[REFS.confirm]).toHaveBeenCalledWith({
+        jobId: "job-run1",
+        entryIndex: 0,
+      });
+      expect(mocks.fns[REFS.uploadUrl]).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId: "job-run1" }),
+      );
+    });
+
+    // Only pending/uploaded/collecting leave the drop zone on screen (the
+    // later statuses hide it), so those two are the reachable non-collecting
+    // cases; the rest are pinned below as "no drop zone, nothing to reuse".
+    it.each(["pending", "uploaded"])(
+      "starts a fresh batch when the open run is only %s, not collecting",
+      async (status) => {
+        mocks.queries = {
+          [REFS.job]: runJob(status),
+          [REFS.images]: [],
+          [REFS.pairs]: [],
+        };
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg"]);
+
+        await waitFor(() =>
+          expect(mocks.fns[REFS.start]).toHaveBeenCalledWith({ source: "web" }),
+        );
+        // The new batch's confirms go to the NEW job, never the finished one.
+        await waitFor(() =>
+          expect(mocks.fns[REFS.confirm]).toHaveBeenCalledWith({
+            jobId: "job-1234abcd",
+            entryIndex: 0,
+          }),
+        );
+        expect(mocks.fns[REFS.confirm]).not.toHaveBeenCalledWith(
+          expect.objectContaining({ jobId: "job-run1" }),
+        );
+      },
+    );
+
+    it.each(["extracting", "processing", "pairing", "succeeded", "failed"])(
+      "offers no drop zone at all once the run is %s",
+      (status) => {
+        mocks.queries = {
+          [REFS.job]: runJob(status),
+          [REFS.images]: [],
+          [REFS.pairs]: [],
+        };
+        renderPage("/print/placeholders?jobId=job-run1");
+        expect(screen.queryByLabelText(/Drag your card photos here/)).toBeNull();
+      },
+    );
+
+    describe("the run closes between the render and the drop", () => {
+      /** Every allocation into the run is refused with `refusal` (after the first, if `landFirst`). */
+      function closeRunOnFirstRefusal(landFirst: boolean, refusal: () => Error = () => batchNotCollecting("processing")) {
+        let calls = 0;
+        mocks.fns[REFS.uploadUrl] = vi.fn(
+          async (args: { jobId: string; entryIndex?: number }) => {
+            if (args.jobId === "job-run1") {
+              calls += 1;
+              if (!(landFirst && calls === 1)) throw refusal();
+            }
+            return {
+              uploadUrl: "https://storage.example/bucket",
+              fields: { key: "k" },
+              entryIndex: calls,
+              expiresAt: Date.now() + 900_000,
+              maxUploadBytes: 25 * 1024 * 1024,
+            };
+          },
+        );
+      }
+
+      beforeEach(() => {
+        mocks.queries = {
+          [REFS.job]: runJob("collecting"),
+          [REFS.images]: [],
+          [REFS.pairs]: [],
+        };
+      });
+
+      it("re-sends everything as a new run when none of the photos got in, and says so", async () => {
+        closeRunOnFirstRefusal(false);
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+
+        expect(
+          await screen.findByText(/That batch was already finished, so these started a new one/),
+        ).not.toBeNull();
+        expect(mocks.fns[REFS.start]).toHaveBeenCalledWith({ source: "web" });
+        expect(mocks.fns[REFS.confirm]).toHaveBeenCalledWith(
+          expect.objectContaining({ jobId: "job-1234abcd" }),
+        );
+      });
+
+      it("a plain Error with the same words is an ordinary per-file failure: no re-send, no closed-run notice", async () => {
+        closeRunOnFirstRefusal(false, () => new Error("job is processing, not collecting"));
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+
+        expect(await screen.findByText("Uploaded 0 of 2 images — 2 failed.")).not.toBeNull();
+        expect(screen.queryByText(/already finished|finished while/)).toBeNull();
+        expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+        // Both files were tried: a plain failure does not stop the loop.
+        expect(mocks.fns[REFS.uploadUrl]).toHaveBeenCalledTimes(2);
+      });
+
+      it("keeps the photos that landed where they are and names the rest, with no new run", async () => {
+        closeRunOnFirstRefusal(true);
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+
+        expect(
+          await screen.findByText(
+            /This batch was finished while your photos were going up\. 1 of 2 got in; drop the other 1 again/,
+          ),
+        ).not.toBeNull();
+        expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+        // The tray is cleared so a re-drop of the pile cannot double-send.
+        expect(screen.queryByText(/photos? sent\./)).toBeNull();
+      });
+    });
+
+    it("starts a new batch when there is no open run at all", async () => {
+      renderPage();
+      selectFiles(["front.jpg"]);
+      await waitFor(() =>
+        expect(mocks.fns[REFS.start]).toHaveBeenCalledWith({ source: "web" }),
+      );
+    });
   });
 
   it("NEO-440: says how many photos were read when some failed, never 'All'", async () => {
@@ -652,7 +826,7 @@ describe("CardIntake", () => {
 
   it("keeps the old /placeholders URL working, query string and all", () => {
     // The stopgap was never in the nav, but it IS in browser histories and it
-    // is where /testing/seed-placeholder-upload sends the E2E suite. Deleting
+    // is what old bookmarks and shared links still point at. Deleting
     // the route would 404 those; forwarding with a bare `to` would be worse —
     // it drops `?jobId=`, so the run silently vanishes and the page looks empty
     // rather than broken. The redirect must carry the search across.

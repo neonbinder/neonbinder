@@ -35,6 +35,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { PLACEHOLDER_STREAM_IDLE_MS } from "./placeholderPipeline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
+import { BATCH_NOT_COLLECTING, isBatchNotCollecting } from "./lib/placeholderRefusals";
 
 /**
  * `vi.hoisted` because `vi.mock`'s factory is hoisted above every `const` in the
@@ -386,6 +387,31 @@ describe("allocateStreamEntry", () => {
       expect(await getImages(t, "job-closed")).toHaveLength(0);
     },
   );
+
+  test.each(["processing", "pairing", "succeeded", "failed"] as const)(
+    "NEO-529: names a %s job's refusal with the BATCH_NOT_COLLECTING code, which survives prod redaction",
+    async (status) => {
+      const t = convexTest(schema, modules);
+      await seedJob(t, "job-closed", { mode: "stream", status });
+      const error = await allocate(t, "job-closed").then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(isBatchNotCollecting(error)).toBe(true);
+      expect((error as { data: unknown }).data).toMatchObject({ code: BATCH_NOT_COLLECTING, status });
+    },
+  );
+
+  test("NEO-529: the other refusals carry no BATCH_NOT_COLLECTING code", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-zip", { mode: "zip", status: "processing" });
+    const notStream = await allocate(t, "job-zip").then(() => null, (e: unknown) => e);
+    const missing = await allocate(t, "no-such-job").then(() => null, (e: unknown) => e);
+    expect(notStream).not.toBeNull();
+    expect(missing).not.toBeNull();
+    expect(isBatchNotCollecting(notStream)).toBe(false);
+    expect(isBatchNotCollecting(missing)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -537,6 +563,14 @@ describe("confirmPlaceholderImageUpload", () => {
     await seedImage(t, "job-closed", 0, "awaiting_upload");
     await expect(confirm(t, "job-closed", 0)).rejects.toThrow(/not collecting/i);
     expect(enqueueCalls).toHaveLength(0);
+  });
+
+  test("NEO-529: a confirm into a closed job carries the BATCH_NOT_COLLECTING code", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-closed", { mode: "stream", status: "pairing" });
+    await seedImage(t, "job-closed", 0, "awaiting_upload");
+    const error = await confirm(t, "job-closed", 0).then(() => null, (e: unknown) => e);
+    expect(isBatchNotCollecting(error)).toBe(true);
   });
 });
 

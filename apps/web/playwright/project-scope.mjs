@@ -14,10 +14,13 @@ export const PROJECT_IGNORE = {
   e2e: ["collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts"],
   "e2e-mobile": [
     "collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts",
-    // NEO-389: waits 1.6-4.7 min on the heavy preprocess model's cold start,
-    // the longest spec in the suite. The notice and pairing it then checks
-    // render the same on a phone, and preprocess-crop-matrix covers the
-    // geometry. Desktop keeps it.
+    // NEO-389: waited 1.6-4.7 min on the heavy preprocess model's cold start
+    // when it was written. Since NEO-529 (real /print/placeholders drop, the
+    // cold-start notice left to unit tests) the heavy leg is 6.4-73.2 s over 7
+    // green runs, so its length no longer sets this entry; it stays desktop-only
+    // because the escalation badge and pairing it checks render the same on a
+    // phone and preprocess-crop-matrix covers the geometry. The other three
+    // placeholder specs run on both projects.
     "placeholders/pipeline-escalation-cold-start.spec.ts",
   ],
 };

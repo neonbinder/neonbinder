@@ -23,7 +23,16 @@
  * object that is not there yet; the entry would fail against GCS instead of
  * against the upload, and the user would be told the wrong thing. Any entry
  * whose POST fails is simply never confirmed — the idle sweep reclaims it.
+ *
+ * ## The one failure that does stop the run
+ * A session that stops collecting part-way (finished in another tab, discarded,
+ * swept) refuses every later allocation with the same code. Sending the rest
+ * would only collect N identical refusals, so the loop stops there, marks the
+ * rest failed, and reports `batchClosed` so the page can say what happened
+ * instead of "N failed" (NEO-529).
  */
+
+import { isBatchNotCollecting } from "@/convex/lib/placeholderRefusals";
 
 /** What `createPlaceholderImageUploadUrl` hands back for one file. */
 export interface UploadTicket {
@@ -67,6 +76,11 @@ export interface UploadRunDeps {
 export interface UploadRunResult {
   uploaded: number;
   failed: number;
+  /**
+   * Present only when the session stopped collecting during the run. Every file
+   * from the refused one on is counted in `failed`; the ones before it landed.
+   */
+  batchClosed?: true;
 }
 
 /**
@@ -151,6 +165,19 @@ export async function runPlaceholderUpload(
         entryIndex: ticket.entryIndex,
       });
     } catch (error) {
+      if (isBatchNotCollecting(error)) {
+        // This file and every one after it: the session will refuse them all.
+        for (let rest = position; rest < files.length; rest += 1) {
+          failed += 1;
+          deps.onProgress({
+            position: rest,
+            name: files[rest].name,
+            state: "failed",
+            error: "batch closed",
+          });
+        }
+        return { uploaded, failed, batchClosed: true };
+      }
       failed += 1;
       deps.onProgress({
         position,

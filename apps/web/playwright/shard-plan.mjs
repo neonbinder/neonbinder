@@ -112,10 +112,11 @@ function loadTimings(project) {
 
 // Specs whose run time swings far more than a median shows plan at no less
 // than this many seconds (NEO-389). pipeline-escalation-cold-start waits on
-// the heavy preprocess model's cold start: 1.6 to 5.4 min across runs, median
-// about 1.6, so planned at the median it lands beside a full shard's worth of
-// other specs and sets that shard's length whenever the start is slow.
-// Planned near its worst case it gets a shard close to its own.
+// the heavy preprocess model: 1.6 to 5.4 min across runs when this was written,
+// median about 1.6. Since NEO-529 (real drop zone, no cold-start notice wait)
+// its heavy leg is 6.4-73.2 s over 7 green runs (cold 25.6-27.6 s a call), so
+// the floor below is a stale worst case until CI's own timings show it; the
+// number is deliberately left alone here.
 const MIN_SECONDS = {
   "placeholders/pipeline-escalation-cold-start.spec.ts": 300,
 };
