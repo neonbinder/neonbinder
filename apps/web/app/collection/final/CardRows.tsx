@@ -28,6 +28,7 @@ import type { Card, Copy, CopyId } from "./data/types";
 import { FeatureBadges } from "./inventory/badges";
 import { InventorySearchHitRow } from "./inventory/QuantityRow";
 import { lineNames, lineSummary } from "./lineItems";
+import { useLineKeys } from "./lineKeys";
 
 /** What a row's controls do; built once by the page. */
 export interface RowActions {
@@ -236,6 +237,8 @@ export default function CardRowGroup({
   const trades = capabilities.trade;
   const wanted = wants && isWantedIn(allWants, card.id, scope);
   const names = lineNames(lines, binders);
+  // Keyed through the optimistic→real id swap, so a press on a row just after Have lands on the row it was aimed at.
+  const keyOf = useLineKeys(lines);
   const team = card.teams[0];
   const panel = useLiverySurface("raised");
   const run = printRunLabel(card);
@@ -347,7 +350,7 @@ export default function CardRowGroup({
             const top = i === 0;
             const line = names[i];
             return (
-              <div key={copy.id} className={rowCls} onClick={() => rowClick(copy.id)}>
+              <div key={keyOf(copy)} className={rowCls} onClick={() => rowClick(copy.id)}>
                 {body(lineSummary(copy, binders), top)}
                 <HaveToggle pressed label={`Have ${name}, ${line}`} onToggle={() => actions.removeLine(card, copy)} />
                 {top && !readOnly ? <AddButton label={`Add another ${name}`} onAdd={() => actions.addAnother(card)} /> : slot(SLOT_ADD)}

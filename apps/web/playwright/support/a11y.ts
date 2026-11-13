@@ -110,7 +110,16 @@ function sanitize(results: AxeResults) {
   };
 }
 
-/** axe checks whatever is painted right now: let every finite animation and transition finish first. */
+/** Window key the motion watch below sets once something starts to move. */
+const MOVED_KEY = "__nbAxeMoved";
+
+/**
+ * axe checks whatever is painted right now: let every finite animation and
+ * transition finish first. The poll that finds the screen still also clears
+ * the moved flag in the same page task, so the flag then means "moved since
+ * the screen was last seen still": motion this wait sat out does not count,
+ * and motion that starts after it (before or during axe) always does.
+ */
 async function settle(page: Page): Promise<void> {
   // A dialog still fading in (Clerk's modals, Radix overlays), or a colour
   // transition still running after a mode flip, measures its text against a
@@ -118,32 +127,35 @@ async function settle(page: Page): Promise<void> {
   // have. Infinite animations (spinners, the neon glow) never settle and are
   // ignored.
   await page.waitForFunction(
-    () =>
-      document
+    (key) => {
+      const still = document
         .getAnimations()
-        .every((a) => a.playState !== "running" || a.effect?.getComputedTiming().iterations === Infinity),
-    undefined,
+        .every((a) => a.playState !== "running" || a.effect?.getComputedTiming().iterations === Infinity);
+      if (still) (window as unknown as Record<string, unknown>)[key] = false;
+      return still;
+    },
+    MOVED_KEY,
     { timeout: 7_000 },
   );
 }
 
-/** Window key the motion watch below sets once something starts to move. */
-const MOVED_KEY = "__nbAxeMoved";
-
 /**
- * Clears the moved flag and makes sure a capture-phase listener sets it when
- * a finite animation or a transition starts. `settle` only proves the screen
- * was still when axe began; a live screen (Convex pushing a row into a list
- * that animates in) can start moving while axe runs, and axe then measures a
- * half-faded row: NEO-529's add-cards board read a tile at ~43% opacity as
- * four contrast failures its settled colours (7:1 and up) never have.
- * Infinite animations (spinners, the neon glow) never settle and are ignored,
- * as in `settle`.
+ * Makes sure a capture-phase listener sets the moved flag when a finite
+ * animation or a transition starts (`settle` clears it). `settle` only proves
+ * the screen was still at one poll; a live screen (Convex pushing a row into a
+ * list that animates in) can start moving after that poll or while axe runs,
+ * and axe then measures a half-faded row: NEO-529's add-cards board read a tile at
+ * ~43% opacity as four contrast failures its settled colours (7:1 and up)
+ * never have. Armed BEFORE `settle`, so there is no gap between the still
+ * poll and the listener for motion to start in unseen, and again after it in
+ * case the page navigated meanwhile (a new document has no listener). Arming
+ * never touches the flag, so the second call cannot hide motion. Infinite
+ * animations (spinners, the neon glow) never settle and are ignored, as in
+ * `settle`.
  */
 async function watchForMotion(page: Page): Promise<void> {
   await page.evaluate((key) => {
     const w = window as unknown as Record<string, unknown>;
-    w[key] = false;
     if (w[`${key}Armed`]) return;
     w[`${key}Armed`] = true;
     const moved = (e: Event) => {
@@ -162,7 +174,7 @@ async function watchForMotion(page: Page): Promise<void> {
   }, MOVED_KEY);
 }
 
-/** True when the screen started to move after the last `watchForMotion`. A navigation reads as not moved. */
+/** True when the screen started to move after `settle` last saw it still. A navigation reads as not moved. */
 async function movedSinceWatch(page: Page): Promise<boolean> {
   return page
     .evaluate((key) => (window as unknown as Record<string, unknown>)[key] === true, MOVED_KEY)
@@ -188,6 +200,7 @@ async function runAxe(page: Page, opts: AccessibleOptions): Promise<AxeResults> 
   }
   try {
     for (let pass = 1; ; pass++) {
+      await watchForMotion(page);
       await settle(page);
       await watchForMotion(page);
       let builder = new AxeBuilder({ page }).withTags([...WCAG_TAGS]);
