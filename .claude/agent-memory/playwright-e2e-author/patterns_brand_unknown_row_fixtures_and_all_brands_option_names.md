@@ -41,7 +41,8 @@ holds the wizard fixtures' committed sets), Baseball 1996 for a mixed one (a han
 under the sync-minted Topps beside one under Unknown). Never Baseball 2024 or 2026.
 The request form and the set pickers label the same field with `brandFieldLabel`: "Set"
 (no separate Set select follows), "Brand or set" when mixed. Request a card PREFILLS from
-the Checklists drill; `selectOption` of the value already shown fires no React change.
+the Checklists drill, but `selectOption` on a `<select>` always fires React's onChange (React
+does not skip an unchanged select), so re-picking Sport resets every field below it.
 Card search needs every typed word in the card's listing title, which never holds
 "Unknown", so "Unknown <set>" finds no card (set SUGGESTIONS may still match; do not
 assert on them).
