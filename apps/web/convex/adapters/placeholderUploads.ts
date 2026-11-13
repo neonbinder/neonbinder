@@ -19,6 +19,7 @@ import {
   placeholderImageExtension,
   placeholderInputObject,
   placeholderOutputImageObject,
+  placeholderEditOutputObject,
 } from "../lib/placeholderObjects";
 
 // 15 minutes: long enough to cover a slow upload of a 200-500MB zip on a
@@ -416,7 +417,7 @@ async function mintOneDownloadUrl(
   // entry has no output yet" — see `getImageForDownload`. Annotated because the
   // shape mirrors that query's `returns` validator, so the two cannot drift
   // apart unnoticed.
-  const image: { imageId: Id<"placeholderImages">; outputExtension?: string } | null =
+  const image: { imageId: Id<"placeholderImages">; outputExtension?: string; editVersion?: number } | null =
     await ctx.runQuery(internal.placeholderPipeline.getImageForDownload, {
       jobId,
       userId,
@@ -435,7 +436,11 @@ async function mintOneDownloadUrl(
     : undefined;
 
   let objectPath: string | undefined;
-  if (cached) {
+  if (image.editVersion !== undefined) {
+    // NEO-481: a hand edit's render is the photo now. Its key is fixed (always
+    // JPEG, write-once per version), so there is nothing to probe or memoise.
+    objectPath = placeholderEditOutputObject(userId, jobId, entryIndex, image.editVersion);
+  } else if (cached) {
     objectPath = placeholderOutputImageObject(userId, jobId, entryIndex, cached);
   } else {
     let resolvedExtension: string | undefined;

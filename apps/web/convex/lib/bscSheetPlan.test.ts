@@ -730,6 +730,48 @@ describe("planBscSheet (NEO-370)", () => {
     expect(plan.puts[0]).toMatchObject({ needsPhotoFront: true, needsPhotoBack: false });
   });
 
+  test("NEO-481: a card flagged for a photo refresh takes its keys over a seller photo BSC already shows", () => {
+    const t = target({ quantity: 1, priceCents: 50 });
+    const rowValues = {
+      availableQuantity: 1,
+      price: "0.50",
+      sellerSku: t.sku,
+      sellerImgFront: "/prod/old-front.jpg",
+      sellerImgBack: "/prod/old-back.jpg",
+    };
+    const input = {
+      sheetRows: [sheetRow("bsc-1", "1", "near_mint", rowValues)],
+      conditionsRead: MODERN,
+      targets: [t],
+      cards: [nbCard(1, "1", "bsc-1")],
+      photoKeys: new Map([[photoKeyFor("bsc-1", "near_mint"), { front: "k-front", back: "k-back" }]]),
+    };
+    // Not flagged: the seller photos stand, the keys are ignored and the row is unchanged.
+    expect(planBscSheet(input).puts).toEqual([]);
+    // Flagged: the row is sent with NB's new photos on both sides, the rest of it as it was.
+    const plan = planBscSheet({ ...input, refreshPhotoCardIds: new Set([t.cardId]) });
+    expect(plan.puts).toHaveLength(1);
+    expect(plan.puts[0].row).toMatchObject({
+      sellerImgFront: "k-front",
+      sellerImgBack: "k-back",
+      availableQuantity: 1,
+      sellerSku: t.sku,
+    });
+    expect(plan.counts).toMatchObject({ toSet: 1, unchanged: 0 });
+    // The flag names the row as over a seller photo, not a stock one.
+    expect(plan.puts[0]).toMatchObject({ needsPhotoFront: false, needsPhotoBack: false });
+    // Flagged with no key for a side (no upload for it): that side is left alone.
+    const frontOnly = planBscSheet({
+      ...input,
+      photoKeys: new Map([[photoKeyFor("bsc-1", "near_mint"), { front: "k-front" }]]),
+      refreshPhotoCardIds: new Set([t.cardId]),
+    });
+    expect(frontOnly.puts[0].row.sellerImgFront).toBe("k-front");
+    expect(frontOnly.puts[0].row.sellerImgBack).toBe("/prod/old-back.jpg");
+    // Another card's flag changes nothing for this one.
+    expect(planBscSheet({ ...input, refreshPhotoCardIds: new Set([card(2) as string]) }).puts).toEqual([]);
+  });
+
   test("chunks at 100 rows, in order, sharing the put row objects", () => {
     const rows = Array.from({ length: 250 }, (_, i) => sheetRow(`bsc-${i}`, `${i}`, "near_mint", { availableQuantity: 1 }));
     const plan = planBscSheet({ sheetRows: rows, conditionsRead: MODERN, targets: [], cards: [] });

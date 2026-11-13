@@ -12,6 +12,10 @@ The numbers mirror `COPY_PHOTO_LONG_EDGE`, `COPY_PHOTO_THUMB_EDGE`,
 `apps/web/convex/copyPhotos.ts`. Convex refuses anything over its own limits,
 so a drift here fails the attach rather than storing the wrong thing.
 
+A hand edit (NEO-481, `/render-edit`) makes the same two sizes from the image it
+rendered, through `derive_copy_photos_from_image`, which also carries the source's
+pixel density, scaled to each size.
+
 Both files are JPEG with no EXIF, XMP or comment: a photo here ends up on public
 share pages and marketplace listings, and only the pixels and a colour profile
 of ordinary size belong there.
@@ -65,13 +69,96 @@ def _to_rgb(img: Image.Image) -> Image.Image:
     return img.convert("RGB")
 
 
-def _encode_within(img: Image.Image, max_bytes: int, icc_profile: bytes | None) -> bytes:
+def _encode_within(
+    img: Image.Image,
+    max_bytes: int,
+    icc_profile: bytes | None,
+    dpi: tuple[float, float] | None = None,
+) -> bytes:
+    # Density is written only when there is one to carry (an edit, NEO-481), so
+    # the sizes /process-entry stores stay byte-for-byte what they were.
+    extra = {} if dpi is None else {"dpi": dpi}
     for quality in _JPEG_QUALITIES:
         out = BytesIO()
-        img.save(out, format="JPEG", quality=quality, optimize=True, icc_profile=icc_profile)
+        img.save(
+            out, format="JPEG", quality=quality, optimize=True, icc_profile=icc_profile, **extra
+        )
         if out.tell() <= max_bytes:
             return out.getvalue()
     raise CopyPhotoTooLargeError(f"no JPEG quality fits {max_bytes} bytes")
+
+
+def read_dpi(img: Image.Image) -> tuple[float, float] | None:
+    """The image's pixel density, when it records a usable one."""
+    dpi = img.info.get("dpi")
+    if not isinstance(dpi, tuple) or len(dpi) != 2:
+        return None
+    try:
+        x, y = float(dpi[0]), float(dpi[1])
+    except (TypeError, ValueError):
+        return None
+    if not (x > 0 and y > 0 and x < 1e6 and y < 1e6):
+        return None
+    return (x, y)
+
+
+def usable_icc_profile(img: Image.Image) -> bytes | None:
+    """The profile to carry, under the same rule `derive_copy_photos` applies.
+
+    A profile describes the source's own colour space, so it only still applies
+    when the pixels stay in that space (RGB), and one far bigger than ordinary
+    is dropped.
+    """
+    icc_profile = img.info.get("icc_profile") if img.mode == "RGB" else None
+    if icc_profile is not None and len(icc_profile) > MAX_ICC_PROFILE_BYTES:
+        return None
+    return icc_profile
+
+
+def to_plain_rgb(img: Image.Image) -> Image.Image:
+    """RGB pixels with transparency flattened and every metadata entry dropped."""
+    image = _to_rgb(img)
+    # `convert` carries the source's metadata along and JPEG save writes what it
+    # finds here (a comment, XMP), whatever is passed to `save`.
+    image.info.clear()
+    return image
+
+
+def _scaled_dpi(
+    dpi: tuple[float, float] | None, from_size: tuple[int, int], to_size: tuple[int, int]
+) -> tuple[float, float] | None:
+    """The density that keeps the physical size when the pixels are resized."""
+    if dpi is None or from_size[0] < 1:
+        return None
+    factor = to_size[0] / from_size[0]
+    return (dpi[0] * factor, dpi[1] * factor)
+
+
+def derive_copy_photos_from_image(
+    image: Image.Image,
+    *,
+    icc_profile: bytes | None,
+    dpi: tuple[float, float] | None,
+) -> DerivedCopyPhotos:
+    """Both sizes from an already decoded RGB image with no metadata (NEO-481).
+
+    The same sizes, byte limits and quality steps as `derive_copy_photos`, plus
+    the density: `dpi` is the source's, and each size records it scaled by how
+    much that size shrank, so a scan's physical size survives the resize. Works
+    on a copy; `image` is left as it was.
+    """
+    original_size = image.size
+    work = image.copy()
+    work.thumbnail((COPY_PHOTO_LONG_EDGE, COPY_PHOTO_LONG_EDGE), Image.Resampling.LANCZOS)
+    encoded_image = _encode_within(
+        work, MAX_COPY_PHOTO_BYTES, icc_profile, _scaled_dpi(dpi, original_size, work.size)
+    )
+
+    work.thumbnail((COPY_PHOTO_THUMB_EDGE, COPY_PHOTO_THUMB_EDGE), Image.Resampling.LANCZOS)
+    encoded_thumb = _encode_within(
+        work, MAX_COPY_THUMB_BYTES, icc_profile, _scaled_dpi(dpi, original_size, work.size)
+    )
+    return DerivedCopyPhotos(image=encoded_image, thumb=encoded_thumb)
 
 
 def derive_copy_photos(image_bytes: bytes) -> DerivedCopyPhotos:

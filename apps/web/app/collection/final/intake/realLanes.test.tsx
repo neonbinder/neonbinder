@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
+  isNeedsPriceRefusal,
+  waitingForPriceLine,
+  waitsForPrice,
   canRetryPhoto,
   cardLabel,
   columnsClear,
@@ -28,7 +31,23 @@ import {
   type IntakeImage,
   type IntakeMatchRow,
   type IntakePair,
+  EDIT_FAILED_LINE,
+  EDIT_ORIGINAL_GONE_LINE,
+  editStateOf,
+  lineRetryLine,
+  linePhotosOf,
+  loneTarget,
+  pairTarget,
+  parseMinPrice,
+  pricePrefill,
+  PRICE_INVALID_LINE,
+  PRICE_TOO_HIGH_LINE,
+  SAVED_SCANS_LINE,
+  savedPhotoTarget,
+  type RawLinePhotos,
+  tilePrice,
 } from "./realLanes";
+import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
 
 /** NEO-382 — every photo of a run sits in exactly one lane. */
 
@@ -702,6 +721,159 @@ describe("NEO-446: runNotice", () => {
     test("a stream run is judged the same way once it has images", () => {
       expect(runNotice(job({ mode: "stream", rejectedEntries: 1 }))?.problem).toBe(true);
     });
+  });
+});
+
+describe("NEO-481: a scan's hand edit on the tiles", () => {
+  const pending = (status: "rendering" | "failed", error?: string) => ({
+    status,
+    error,
+    turns: 1 as const,
+    crop: null,
+    version: 2,
+    requestedAt: 1,
+  });
+
+  test("nothing to say without a pending edit; rendering while it renders", () => {
+    expect(editStateOf(undefined)).toBeNull();
+    expect(editStateOf({})).toBeNull();
+    expect(editStateOf({ pendingEdit: pending("rendering") })).toEqual({ kind: "rendering" });
+  });
+
+  test("a failed render says the server's words, never a bare code", () => {
+    expect(editStateOf({ pendingEdit: pending("failed", "That crop is too small to read.") })).toEqual({
+      kind: "failed",
+      line: "That crop is too small to read.",
+    });
+    expect(editStateOf({ pendingEdit: pending("failed", "ENTRY_NOT_FOUND") })).toEqual({
+      kind: "failed",
+      line: EDIT_ORIGINAL_GONE_LINE,
+    });
+    expect(editStateOf({ pendingEdit: pending("failed", "RENDER_FAILED") })).toEqual({ kind: "failed", line: EDIT_FAILED_LINE });
+    expect(editStateOf({ pendingEdit: pending("failed") })).toEqual({ kind: "failed", line: EDIT_FAILED_LINE });
+  });
+
+  test("a line photo's edit says the same words as a scan's", () => {
+    expect(editStateOf({ pendingEdit: { status: "failed", error: "RENDER_FAILED" } })).toEqual({ kind: "failed", line: EDIT_FAILED_LINE });
+    expect(lineRetryLine("back")).toBe("Open the back photo to try again.");
+  });
+
+  test("a pair opens with both its scans, on the side pressed; a loose photo alone", () => {
+    expect(pairTarget({ frontIndex: 4, backIndex: 5 }, "#47 Le'Veon Bell", "back")).toEqual({
+      kind: "scan",
+      label: "#47 Le'Veon Bell",
+      front: 4,
+      back: 5,
+      side: "back",
+    });
+    expect(loneTarget(7, "scan-7.jpg")).toEqual({ kind: "scan", label: "scan-7.jpg", front: 7, side: "front" });
+  });
+
+  test("a Saved tile opens the line's photos once they show or while they load, view-only while on their way, else the scans", () => {
+    const card = { _id: "c1", cardNumber: "47", cardName: "Le'Veon Bell" } as IntakeMatchRow["card"];
+    const row = (photos: IntakeMatchRow["photos"]) =>
+      ({ photos, savedCopyId: "copy1", frontIndex: 4, backIndex: 5, card }) as Pick<
+        IntakeMatchRow,
+        "photos" | "savedCopyId" | "frontIndex" | "backIndex" | "card"
+      >;
+    const WAY = "On their way.";
+    expect(savedPhotoTarget(row("attached"), true, WAY)).toEqual({
+      kind: "copy",
+      copyId: "copy1",
+      label: "#47 Le'Veon Bell",
+      side: "front",
+    });
+    // Attached and the line's photos not answered yet: still the line's photos (the viewer follows them in).
+    expect(savedPhotoTarget(row("attached"), "loading", WAY)).toEqual({
+      kind: "copy",
+      copyId: "copy1",
+      label: "#47 Le'Veon Bell",
+      side: "front",
+    });
+    // Attached, but the answer says the line has no photo of its own: the scans, to look at only.
+    expect(savedPhotoTarget(row("attached"), false, WAY)).toEqual({
+      kind: "scan",
+      label: "#47 Le'Veon Bell",
+      front: 4,
+      back: 5,
+      side: "front",
+      viewOnly: SAVED_SCANS_LINE,
+    });
+    expect(SAVED_SCANS_LINE).not.toMatch(/Saved tile/);
+    // A line with no copy to open: the scans, even while photos load.
+    expect(savedPhotoTarget({ ...row("attached"), savedCopyId: undefined }, "loading", WAY)).toMatchObject({ kind: "scan" });
+    expect(savedPhotoTarget(row("pending"), false, WAY)).toMatchObject({ kind: "scan", front: 4, back: 5, viewOnly: WAY });
+    expect(savedPhotoTarget(row("pending"), "loading", WAY)).toMatchObject({ kind: "scan", viewOnly: WAY });
+    expect(savedPhotoTarget(row("failed"), false, WAY)).not.toHaveProperty("viewOnly");
+    expect(savedPhotoTarget(row("failed"), "loading", WAY)).toMatchObject({ kind: "scan" });
+  });
+
+  test("a line's photos carry each side's newest edit in flight", () => {
+    const urls = { imageUrl: "https://p/i", thumbUrl: "https://p/t" };
+    const crop = { cx: 5, cy: 7, w: 4, h: 6, angle: 0, srcW: 10, srcH: 14 };
+    const raw = {
+      copyId: "copy1",
+      front: urls,
+      back: urls,
+      edits: [{ side: "back", status: "failed", error: "RENDER_FAILED", turns: 1, crop, requestedAt: 1 }],
+    } as unknown as RawLinePhotos;
+    expect(linePhotosOf(raw)).toEqual({
+      front: urls,
+      back: { ...urls, pending: { status: "failed", edit: { turns: 1, crop }, error: "RENDER_FAILED" } },
+    });
+    expect(linePhotosOf({ copyId: "copy1", front: urls } as unknown as RawLinePhotos)).toEqual({ front: urls });
+  });
+});
+
+describe("NEO-481: a box-run tile's own price", () => {
+  test("starts at the run's Min price, else the common price (dollars), else blank", () => {
+    expect(pricePrefill(150, 0.4)).toBe(150);
+    expect(pricePrefill(undefined, 0.4)).toBe(40);
+    expect(pricePrefill(undefined, null)).toBeNull();
+    expect(pricePrefill(undefined, undefined)).toBeNull();
+  });
+
+  test("blank, or the price it started at, is the default: nothing to keep", () => {
+    expect(tilePrice("", 150)).toEqual({ ok: true, own: undefined });
+    expect(tilePrice("1.50", 150)).toEqual({ ok: true, own: undefined });
+    expect(tilePrice("$1.5", 150)).toEqual({ ok: true, own: undefined });
+    expect(tilePrice("2.50", 150)).toEqual({ ok: true, own: 250 });
+    expect(tilePrice("0.40", null)).toEqual({ ok: true, own: 40 });
+  });
+
+  test("refuses what isn't a price, and anything past the cap", () => {
+    expect(tilePrice("1.2.3", 150)).toEqual({ ok: false, line: PRICE_INVALID_LINE });
+    expect(tilePrice("1.234", 150)).toEqual({ ok: false, line: PRICE_INVALID_LINE });
+    expect(tilePrice(String(MAX_PRICE_CENTS / 100), 150)).toEqual({ ok: true, own: MAX_PRICE_CENTS });
+    expect(tilePrice(String(MAX_PRICE_CENTS / 100 + 1), 150)).toEqual({ ok: false, line: PRICE_TOO_HIGH_LINE });
+  });
+
+  test("parseMinPrice still reads the Min price field the same way", () => {
+    expect(parseMinPrice("$1,250.5")).toBe(125050);
+    expect(parseMinPrice(" ")).toBeUndefined();
+    expect(parseMinPrice("abc")).toBe("invalid");
+  });
+});
+
+describe("NEO-481 — a box card waits for a price", () => {
+  test("its own price, else the run's Min price, else the common price; zero is a price", () => {
+    expect(waitsForPrice(undefined, undefined, undefined)).toBe(true);
+    expect(waitsForPrice(undefined, undefined, null)).toBe(true);
+    expect(waitsForPrice(0, undefined, undefined)).toBe(false);
+    expect(waitsForPrice(undefined, 0, undefined)).toBe(false);
+    expect(waitsForPrice(undefined, undefined, 0.4)).toBe(false);
+  });
+
+  test("only the server's no-price refusal reads as one", () => {
+    expect(isNeedsPriceRefusal({ data: { code: "INTAKE_NEEDS_PRICE", message: "x" } })).toBe(true);
+    expect(isNeedsPriceRefusal({ data: { code: "LISTING_NEEDS_DETAILS", message: "x" } })).toBe(false);
+    expect(isNeedsPriceRefusal(new Error("Price it first"))).toBe(false);
+    expect(isNeedsPriceRefusal(null)).toBe(false);
+  });
+
+  test("Save all says how many wait, one or many", () => {
+    expect(waitingForPriceLine(1)).toBe("1 card waits for a price. Type one on the card, or set a common price.");
+    expect(waitingForPriceLine(3)).toBe("3 cards wait for a price. Type one on the card, or set a common price.");
   });
 });
 

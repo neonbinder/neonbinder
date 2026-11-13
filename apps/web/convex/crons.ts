@@ -205,4 +205,15 @@ crons.interval(
   {},
 );
 
+/**
+ * NEO-481 — drop hand photo edit render tickets older than the hour their
+ * rate limit counts (`photoEditRows.sweepPhotoEditTickets`).
+ */
+crons.interval(
+  "sweep photo edit render tickets",
+  { hours: 1 },
+  internal.photoEditRows.sweepPhotoEditTickets,
+  {},
+);
+
 export default crons;

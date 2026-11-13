@@ -5,7 +5,7 @@ metadata:
   type: reference
 ---
 
-The photo box (`CopyPhotosField.tsx`) is one widget in three places: a line's Edit form (saves on pick), the drawer's Add form (held until Add) and Request a card (held until Send). Handles shared by all: region `Photos`, file inputs by label `Front photo file` / `Back photo file`, link `Front of <line>, full size (opens a new tab)`, buttons `Remove front`, `Replace front`, `Swap front and back`. The `<line>` is `your new copy` (Add form), `this card` (Request) or the line name (`Raw, Excellent`, with `×2`, `, in <home>, line N` when twins).
+The photo box (`CopyPhotosField.tsx`) is one widget in three places: a line's Edit form (saves on pick), the drawer's Add form (held until Add) and Request a card (held until Send). Handles shared by all: region `Photos`, file inputs by label `Front photo file` / `Back photo file`, buttons `Open front of <line>` (NEO-481; the full-size link is gone), `Remove front`, `Replace front`, `Swap front and back`. The `<line>` is `your new copy` (Add form), `this card` (Request) or the line name (`Raw, Excellent`, with `×2`, `, in <home>, line N` when twins).
 
 - A HELD photo's link href is a `blob:` address; a saved one is `/copy-photo/<32 hex>/image` (thumb `/thumb`). That difference is the perceivable-ish proof that "nothing saved yet".
 - No role/name handle says an image decoded. `support/collection.ts` `expectPhotoServed(page, locator, "src"|"href")` fetches the address a new tab would open and checks an image comes back. Use it instead of `evaluate` + `naturalWidth` (the older copy-photos spec still has the evaluate form).

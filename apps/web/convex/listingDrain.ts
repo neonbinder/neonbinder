@@ -86,6 +86,7 @@ import {
   type ListingCopy,
   type ListingProblem,
   type NbVariantCard,
+  type PlannedBscPut,
 } from "./lib/bscSheetPlan";
 import {
   closeBscSellerSession,
@@ -139,6 +140,14 @@ export const COPY_PAGE_SIZE = 500;
 export const MAX_PHOTO_UPLOADS_PER_VARIANT = 40;
 /** The sync record keeps at most this many problems (`problemsTotal` is exact). */
 export const MAX_STORED_PROBLEMS = 200;
+/**
+ * NEO-481 — BSC runs that may try one card's photo refresh before the drain
+ * gives up on it: the flag is dropped and a listing problem says so.
+ */
+export const MAX_PHOTO_REFRESH_ATTEMPTS = 5;
+/** The problem a refresh that gave up leaves on the Sync status tab. */
+export const PHOTO_REFRESH_GAVE_UP_DETAIL =
+  "NeonBinder couldn't send this card's new photo after several tries. Edit or replace the photo to try again.";
 const MAX_DETAIL = 160;
 const MAX_ERROR = 300;
 
@@ -500,6 +509,10 @@ const snapshotRowValidator = v.object({
   seq: v.number(),
   /** The card's variant now; null when the card is gone. */
   currentVariantId: v.union(v.id("selectorOptions"), v.null()),
+  /** NEO-481: a photo of the card changed; BSC uploads it even over a seller photo. */
+  refreshPhotos: v.optional(v.literal(true)),
+  /** NEO-481: runs that could not finish that refresh so far. */
+  refreshAttempts: v.optional(v.number()),
 });
 export type SnapshotRow = typeof snapshotRowValidator.type;
 
@@ -549,6 +562,8 @@ export const outboxSnapshot = internalQuery({
         cardId: row.cardId,
         seq: row.seq,
         currentVariantId: card ? card.selectorOptionId : null,
+        ...(row.refreshPhotos === true ? { refreshPhotos: true as const } : {}),
+        ...(row.refreshAttempts !== undefined ? { refreshAttempts: row.refreshAttempts } : {}),
       });
     }
     return out;
@@ -745,12 +760,21 @@ export const finishVariant = internalMutation({
     ),
     /** NEO-415: the run's ledger as the drainer holds it (settled here; absent keeps the stored one, settled). */
     progress: v.optional(v.array(listingSyncStepValidator)),
+    /** NEO-481: kept rows whose photo refresh this run could not finish; each counts one more try. */
+    refreshTried: v.optional(v.array(v.object({ rowId: v.id("listingOutbox"), seq: v.number() }))),
   },
   returns: v.object({ cleared: v.number(), repointed: v.number(), recorded: v.boolean() }),
   handler: async (ctx, args) => {
     const now = Date.now();
     let cleared = 0;
     let repointed = 0;
+    for (const { rowId, seq } of args.refreshTried ?? []) {
+      const row = await ctx.db.get(rowId);
+      // At the seq the run read: a change since (a new photo) starts the count again.
+      if (row && row.seq === seq && row.ownerId === args.ownerId && row.refreshPhotos === true) {
+        await ctx.db.patch(rowId, { refreshAttempts: (row.refreshAttempts ?? 0) + 1 });
+      }
+    }
     for (const { rowId, seq } of args.clear) {
       const row = await ctx.db.get(rowId);
       if (row && row.seq === seq && row.ownerId === args.ownerId) {
@@ -1644,6 +1668,19 @@ export function settleRows(snapshot: readonly SnapshotRow[], variantId: Id<"sele
   }
   return {
     mine: mine.map(({ rowId, seq }) => ({ rowId, seq })),
+    /**
+     * NEO-481: the cards of `mine` whose row asks for a photo refresh. A moved
+     * card's flag rides its re-pointed row to its new variant's run.
+     */
+    refreshCardIds: new Set(mine.filter((r) => r.refreshPhotos === true).map((r) => r.cardId as string)),
+    /** Row ids of `mine` by card, so a refresh this run could not finish keeps its row. */
+    mineRowOfCard: new Map(mine.map((r) => [r.cardId as string, r.rowId as string])),
+    /** NEO-481: each refreshed card's row, its seq, and the tries it has had. */
+    refreshRowOfCard: new Map(
+      mine
+        .filter((r) => r.refreshPhotos === true)
+        .map((r) => [r.cardId as string, { rowId: r.rowId, seq: r.seq, attempts: r.refreshAttempts ?? 0 }]),
+    ),
     gone: gone.map(({ rowId, seq }) => ({ rowId, seq })),
     repoint: moved.map(({ rowId, seq, currentVariantId }) => ({
       rowId,
@@ -1696,6 +1733,13 @@ async function syncVariant(
 
   // NEO-415: the run's steps, ticked off on the sync record as they land.
   const ledger = new ProgressLedger(ctx, { ownerId, platform, variantId, leaseToken }, opts.now);
+  // NEO-481: rows of `mine` an ok finish still keeps: a photo refresh this run
+  // could not finish (the upload cap, a fetch or an upload that failed) stays
+  // queued, flag and all, for the next run, as eBay keeps a card queued.
+  const keepRowIds = new Set<string>();
+  // ...and each such row's try is counted, on an ok finish only (a run that
+  // failed as a whole tried nothing for one card in particular).
+  const refreshTried: Array<{ rowId: Id<"listingOutbox">; seq: number }> = [];
   // PR 451: this variant's ledger hears the session's BSC wait edges until it finishes.
   waitTarget.ledger = ledger;
   const finish = async (outcome: FinishOutcome, clearMine: boolean): Promise<unknown> => {
@@ -1706,9 +1750,10 @@ async function syncVariant(
       variantId,
       leaseToken,
       outcome,
-      clear: clearMine ? [...rows.mine, ...rows.gone] : rows.gone,
+      clear: clearMine ? [...rows.mine.filter((r) => !keepRowIds.has(r.rowId)), ...rows.gone] : rows.gone,
       repoint: rows.repoint,
       progress: ledger.steps(),
+      ...(clearMine && refreshTried.length > 0 ? { refreshTried } : {}),
     });
   };
 
@@ -1868,16 +1913,19 @@ async function syncVariant(
     targets: fold.targets,
     cards,
     cardNumberPrefixes: input.cardNumberPrefixes,
+    refreshPhotoCardIds: rows.refreshCardIds,
   };
   const plan1 = planBscSheet(planInput);
 
-  // Seller photos for rows that still show BSC's image and whose group has a copy with one.
+  // Seller photos for rows that still show BSC's image, or whose card's photo
+  // changed (NEO-481), and whose group has a copy with one.
   const photoKeys = await uploadPhotos(ctx, session, {
     ownerId,
     plan: plan1,
     targets: fold.targets,
     cards,
     sheetRows: sheet.sheet.rows,
+    refreshCardIds: rows.refreshCardIds,
     fetchPhoto: opts.fetchPhoto ?? defaultFetchPhoto,
     onStart: async () => {
       ledger.add([{ key: "photos", kind: "photos" }], "send");
@@ -1885,12 +1933,32 @@ async function syncVariant(
     },
   });
   if (!photoKeys.ok) return await fail(photoKeys.failure);
+  // A refresh this run could not finish stays queued for the next, until its
+  // last try: then the flag goes with the row and the Sync status tab says so.
+  const refreshGaveUp: string[] = [];
+  for (const cardId of photoKeys.refreshPending) {
+    const refreshRow = rows.refreshRowOfCard.get(cardId);
+    if (refreshRow && refreshRow.attempts + 1 >= MAX_PHOTO_REFRESH_ATTEMPTS) {
+      refreshGaveUp.push(cardId);
+      continue;
+    }
+    const rowId = rows.mineRowOfCard.get(cardId);
+    if (rowId !== undefined) keepRowIds.add(rowId);
+    if (refreshRow) refreshTried.push({ rowId: refreshRow.rowId, seq: refreshRow.seq });
+  }
 
   const plan = photoKeys.value.size > 0 ? planBscSheet({ ...planInput, photoKeys: photoKeys.value }) : plan1;
 
   const problems: StoredProblem[] = [...foldProblems, ...plan.problems]
     .map((p) => toStoredProblem(p, cardIds))
     .filter((p): p is StoredProblem => p !== null);
+  for (const cardId of refreshGaveUp) {
+    problems.push({
+      ...(cardIds.has(cardId) ? { cardId: cardId as Id<"cardChecklist"> } : {}),
+      reason: "rejected",
+      detail: PHOTO_REFRESH_GAVE_UP_DETAIL,
+    });
+  }
 
   // Conditions NB holds a listed row under (pushed now or already matching).
   const blockedCards = new Set(plan.problems.map((p) => p.cardId).filter((id): id is string => id !== undefined));
@@ -1999,6 +2067,7 @@ async function syncVariant(
     if (!back.ok) return await fail(back.failure, problems);
     const after = new Map<string, number>();
     for (const row of back.sheet.rows) after.set(photoKeyFor(row.bscCardId, row.condition), row.quantity);
+    logPhotoConfirm(plan.puts, back.sheet.rows);
     for (const put of plan.puts) {
       const shown = after.get(photoKeyFor(put.bscCardId, put.condition));
       if (shown === put.row.availableQuantity) {
@@ -2043,6 +2112,38 @@ async function syncVariant(
     true,
   );
   return { kind: "ok" };
+}
+
+/**
+ * NEO-481 (risk R2) — whether BSC now shows the seller photos this push sent,
+ * as one log line: sides sent, sides shown, and the same two for sides sent
+ * over a seller photo BSC already had (a refresh). Nothing in BSC's API says a
+ * new image key on a PUT replaces an existing seller photo; this line is the
+ * evidence on every run. Log only: counts, no ids or keys.
+ */
+export function logPhotoConfirm(puts: readonly PlannedBscPut[], rowsAfter: readonly BscSheetRow[]): void {
+  const shownRows = new Map(rowsAfter.map((r) => [photoKeyFor(r.bscCardId, r.condition), r]));
+  const tally = { sent: 0, shown: 0, replaced: 0, replacedShown: 0 };
+  for (const put of puts) {
+    if (put.kind !== "set") continue;
+    for (const side of ["front", "back"] as const) {
+      const sent = put.row[side === "front" ? "sellerImgFront" : "sellerImgBack"];
+      if (typeof sent !== "string") continue;
+      const row = shownRows.get(photoKeyFor(put.bscCardId, put.condition));
+      const now = row ? (side === "front" ? row.sellerImgFront : row.sellerImgBack) : null;
+      // BSC may answer the key with its own path in front: compare the file name.
+      const shown = now !== null && now.endsWith(sent.slice(sent.lastIndexOf("/") + 1));
+      const overSeller = !(side === "front" ? put.needsPhotoFront : put.needsPhotoBack);
+      tally.sent += 1;
+      if (shown) tally.shown += 1;
+      if (overSeller) {
+        tally.replaced += 1;
+        if (shown) tally.replacedShown += 1;
+      }
+    }
+  }
+  if (tally.sent === 0) return;
+  console.log(JSON.stringify({ msg: "bsc_photo_confirm", platform: "bsc", operation: "photoConfirm", ...tally }));
 }
 
 export function distinctCards(problems: readonly StoredProblem[]): number {
@@ -2141,10 +2242,18 @@ function logSheetRetry(
 
 /**
  * Uploads the photo copy's photos (the oldest copy in the row's group with
- * any, NEO-427) for rows that still show BSC's own image.
+ * any, NEO-427) for rows that still show BSC's own image, and (NEO-481) for
+ * rows whose card's photo changed (`refreshCardIds`), over a seller photo too.
  * Only for targets the planner did not refuse. Capped per variant; the rest
  * go on a later run. A photo NB cannot fetch is skipped silently (the row
  * lists without it).
+ *
+ * `refreshPending`: the refreshed cards with a side this run meant to send
+ * but did not (the cap, a fetch that came back empty, an upload BSC failed).
+ * Their outbox rows stay queued, flag and all: unlike a stock image, a seller
+ * photo already on BSC never tells a later run that NB's is missing. A side
+ * the photo copy has no photo for (or one too big) is not pending: nothing
+ * later would change that.
  */
 async function uploadPhotos(
   ctx: DrainCtx,
@@ -2155,17 +2264,30 @@ async function uploadPhotos(
     targets: readonly BscTarget[];
     cards: readonly NbVariantCard[];
     sheetRows: readonly BscSheetRow[];
+    /** NEO-481: cards whose outbox row carries `refreshPhotos`. */
+    refreshCardIds?: ReadonlySet<string>;
     fetchPhoto: (key: string, maxBytes: number) => Promise<ArrayBuffer | null>;
     /** NEO-415: awaited once, before the first upload, when any row wants a photo. */
     onStart?: () => Promise<void>;
   },
-): Promise<{ ok: true; value: Map<string, BscPhotoKeys> } | { ok: false; failure: BscSellerFailure }> {
+): Promise<
+  | { ok: true; value: Map<string, BscPhotoKeys>; refreshPending: Set<string> }
+  | { ok: false; failure: BscSellerFailure }
+> {
   const keys = new Map<string, BscPhotoKeys>();
+  const refreshPending = new Set<string>();
   const refused = new Set(args.plan.problems.map((p) => p.cardId).filter((id): id is string => id !== undefined));
   const refOf = new Map(args.cards.map((c) => [c.cardId as string, c.bscRef]));
   const rowsByKey = new Map<string, BscSheetRow>();
   for (const row of args.sheetRows) rowsByKey.set(photoKeyFor(row.bscCardId, row.condition), row);
-  const wanted: Array<{ key: string; copyId: Id<"collectionCopies">; front: boolean; back: boolean }> = [];
+  const wanted: Array<{
+    key: string;
+    cardId: string;
+    copyId: Id<"collectionCopies">;
+    front: boolean;
+    back: boolean;
+    refresh: boolean;
+  }> = [];
   for (const t of args.targets) {
     if (refused.has(t.cardId) || t.photoCopyId === null) continue;
     const ref = refOf.get(t.cardId);
@@ -2173,22 +2295,34 @@ async function uploadPhotos(
     const key = photoKeyFor(ref, t.bscCondition);
     const row = rowsByKey.get(key);
     if (!row) continue;
-    const front = rowNeedsSellerPhoto(row, "front");
-    const back = rowNeedsSellerPhoto(row, "back");
-    if (front || back) wanted.push({ key, copyId: t.photoCopyId, front, back });
+    const refresh = args.refreshCardIds?.has(t.cardId) === true;
+    const front = refresh || rowNeedsSellerPhoto(row, "front");
+    const back = refresh || rowNeedsSellerPhoto(row, "back");
+    if (front || back) wanted.push({ key, cardId: t.cardId, copyId: t.photoCopyId, front, back, refresh });
   }
-  if (wanted.length === 0) return { ok: true, value: keys };
+  if (wanted.length === 0) return { ok: true, value: keys, refreshPending };
   await args.onStart?.();
 
+  // `copyPhotosForListing` reads at most MAX_PHOTO_UPLOADS_PER_VARIANT copies;
+  // a copy past them is one this run has no room for (the cap), not one
+  // without a photo.
+  const copyIds = [...new Set(wanted.map((w) => w.copyId))].slice(0, MAX_PHOTO_UPLOADS_PER_VARIANT);
+  const read = new Set<string>(copyIds);
   const photos = await ctx.runQuery(internal.listingDrain.copyPhotosForListing, {
     ownerId: args.ownerId,
-    copyIds: wanted.map((w) => w.copyId),
+    copyIds,
   });
   let uploads = 0;
   for (const w of wanted) {
     for (const side of ["front", "back"] as const) {
       if (!(side === "front" ? w.front : w.back)) continue;
-      if (uploads >= MAX_PHOTO_UPLOADS_PER_VARIANT) return { ok: true, value: keys };
+      const later = () => {
+        if (w.refresh) refreshPending.add(w.cardId);
+      };
+      if (!read.has(w.copyId) || uploads >= MAX_PHOTO_UPLOADS_PER_VARIANT) {
+        later();
+        continue;
+      }
       const photo = photos.find((p) => p.copyId === w.copyId && p.side === side);
       if (!photo || photo.imageBytes > MAX_COPY_PHOTO_BYTES) continue;
       let bytes: ArrayBuffer | null = null;
@@ -2197,7 +2331,10 @@ async function uploadPhotos(
       } catch {
         bytes = null;
       }
-      if (!bytes) continue;
+      if (!bytes) {
+        later();
+        continue;
+      }
       uploads += 1;
       const up = await uploadBscSellerPhoto(ctx, session, {
         bytes,
@@ -2206,6 +2343,7 @@ async function uploadPhotos(
       });
       if (!up.ok) {
         if (up.failure.kind === "signed_out") return { ok: false, failure: up.failure };
+        later();
         continue; // the row lists without this photo
       }
       const entry = keys.get(w.key) ?? {};
@@ -2213,7 +2351,7 @@ async function uploadPhotos(
       keys.set(w.key, entry);
     }
   }
-  return { ok: true, value: keys };
+  return { ok: true, value: keys, refreshPending };
 }
 
 /**

@@ -5,7 +5,9 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
 import { initialCollectionState } from "./store";
-import { HeldPhotosField, sidesForDrop, type HeldPhotos } from "./CopyPhotosField";
+import CopyPhotosField, { HeldPhotosField, LineThumb, sidesForDrop, type HeldPhotos } from "./CopyPhotosField";
+import type { CopyPhotosExtension } from "./data/store";
+import type { Copy } from "./data/types";
 
 /**
  * NEO-377 — a copy line's photos live in the line's Edit form, on the public
@@ -78,14 +80,16 @@ describe("a copy line's photos, in its Edit form", () => {
 
     await act(async () => pickFile(drawer, "front", jpeg()));
     await waitFor(() => expect(within(box).getByRole("status").textContent).toBe("Front photo saved."));
-    expect(within(box).getByRole("link", { name: /^Front of .+, full size/ }).getAttribute("href")).toBe("blob:demo-1");
+    // NEO-481: the tile is a button that opens the photo viewer; it shows the thumbnail.
+    expect(within(box).getByRole("button", { name: /^Open front of Raw/ })).toBeTruthy();
+    expect(within(box).getByRole("img", { name: /^Front of / }).getAttribute("src")).toBe("blob:demo-2");
     // The card itself is drawn from the photo now (its thumbnail).
     const face = drawer.querySelector(".nb-card img");
     expect(face?.getAttribute("src")).toBe("blob:demo-2");
 
     await act(async () => pickFile(drawer, "front", jpeg()));
     await waitFor(() =>
-      expect(within(box).getByRole("link", { name: /^Front of / }).getAttribute("href")).toBe("blob:demo-3"),
+      expect(within(box).getByRole("img", { name: /^Front of / }).getAttribute("src")).toBe("blob:demo-4"),
     );
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:demo-1");
 
@@ -102,13 +106,13 @@ describe("a copy line's photos, in its Edit form", () => {
     await act(async () => pickFile(drawer, "back", new File(["x"], "notes.txt", { type: "text/plain" })));
     await waitFor(() => expect(within(box).getByRole("alert").textContent).toMatch(/isn't a photo/));
     await act(async () => pickFile(drawer, "back", jpeg()));
-    await waitFor(() => expect(within(box).getByRole("link", { name: /^Back of / })).toBeTruthy());
+    await waitFor(() => expect(within(box).getByRole("button", { name: /^Open back of / })).toBeTruthy());
     expect(within(box).getByRole("alert").textContent).toBe("");
 
     fireEvent.click(within(box).getByRole("button", { name: "Swap front and back" }));
     await waitFor(() => expect(within(box).getByRole("status").textContent).toBe("Front and back swapped."));
-    expect(within(box).getByRole("link", { name: /^Front of / })).toBeTruthy();
-    expect(within(box).queryByRole("link", { name: /^Back of / })).toBeNull();
+    expect(within(box).getByRole("button", { name: /^Open front of / })).toBeTruthy();
+    expect(within(box).queryByRole("button", { name: /^Open back of / })).toBeNull();
   });
 
   it("two files dropped on the box become the front and the back", async () => {
@@ -118,8 +122,8 @@ describe("a copy line's photos, in its Edit form", () => {
       fireEvent.drop(box, { dataTransfer: { files: [jpeg("a.jpg"), jpeg("b.jpg")], types: ["Files"], getData: () => "" } });
     });
     await waitFor(() => expect(within(box).getByRole("status").textContent).toBe("Front and back photos saved."));
-    expect(within(box).getByRole("link", { name: /^Front of / })).toBeTruthy();
-    expect(within(box).getByRole("link", { name: /^Back of / })).toBeTruthy();
+    expect(within(box).getByRole("button", { name: /^Open front of / })).toBeTruthy();
+    expect(within(box).getByRole("button", { name: /^Open back of / })).toBeTruthy();
   });
 });
 
@@ -141,7 +145,7 @@ describe("files that can't be added", () => {
         dataTransfer: { files: [jpeg("a.jpg"), jpeg("b.jpg"), jpeg("c.jpg")], types: ["Files"], getData: () => "" },
       });
     });
-    await waitFor(() => expect(within(box).getByRole("link", { name: /^Back of / })).toBeTruthy());
+    await waitFor(() => expect(within(box).getByRole("button", { name: /^Open back of / })).toBeTruthy());
     expect(within(box).getByRole("alert").textContent).toMatch(/Two photos at most/);
   });
 });
@@ -187,8 +191,8 @@ describe("held photos (NEO-431): nothing to save against yet", () => {
     expect(held().front).toBe(first);
     expect(within(box).getByRole("status").textContent).toBe("Front photo picked.");
     expect(within(box).getByRole("img", { name: "Front of your new copy" }).getAttribute("src")).toBe("blob:demo-1");
-    // Nothing is saved yet, so there is no full size to open.
-    expect(within(box).queryByRole("link")).toBeNull();
+    // NEO-481: a held photo opens the viewer too, view-only.
+    expect(within(box).getByRole("button", { name: "Open front of your new copy" })).toBeTruthy();
 
     const second = jpeg("second.jpg");
     await act(async () => pick("front", second));
@@ -546,7 +550,7 @@ describe("the drawer's Add form holds photos (NEO-431)", () => {
     expect(within(drawer).queryByRole("form", { name: "Add another copy" })).toBeNull();
     const field = within(edit).getByRole("region", { name: /^Photos of / });
     expect(within(field).getByRole("alert").textContent).toMatch(/^Your copy is in, but the back photo didn't save\. .*Add it again here\.$/);
-    expect(within(field).getByRole("link", { name: /^Front of / })).toBeTruthy();
+    expect(within(field).getByRole("button", { name: /^Open front of / })).toBeTruthy();
     expect(within(field).getByText("No back photo yet")).toBeTruthy();
     expect(screen.getAllByRole("status").some((s) => /Its back photo didn't save\. Try again under Edit\.$/.test(s.textContent ?? ""))).toBe(true);
     await waitFor(() => expect(document.activeElement).toBe(within(field).getByRole("button", { name: "Add back" })));
@@ -584,5 +588,42 @@ describe("sidesForDrop", () => {
     expect(sidesForDrop(1, null, { front: { imageUrl: "a", thumbUrl: "b" } })).toEqual(["back"]);
     expect(sidesForDrop(2, "back", undefined)).toEqual(["front", "back"]);
     expect(sidesForDrop(0, null, undefined)).toEqual([]);
+  });
+});
+
+describe("a photo whose edit failed (NEO-481)", () => {
+  // The opener's aria-label replaces what is inside it, so the chip's words are its description.
+  const failed = { status: "failed" as const, edit: { turns: 1 as const, crop: null } };
+  const photos = { front: { imageUrl: "blob:img", thumbUrl: "blob:thumb", pending: failed } };
+  const describedBy = (el: HTMLElement) => document.getElementById(el.getAttribute("aria-describedby") ?? "")?.textContent;
+  const copy = { ...STACK, homeKind: "box" } as Copy;
+
+  it("the Edit form's tile keeps its name and is described by the chip", () => {
+    render(
+      <Theme>
+        <CopyPhotosField copy={copy} line="Raw, Excellent" photos={photos} ext={{} as CopyPhotosExtension} />
+      </Theme>,
+    );
+    const tile = screen.getByRole("button", { name: "Open front of Raw, Excellent" });
+    expect(describedBy(tile)).toBe("Edit didn\u2019t save");
+  });
+
+  it("the line's thumbnail (too small for the chip) is described by the same words", () => {
+    render(
+      <Theme>
+        <LineThumb photos={photos} line="Raw, Excellent" copy={copy} />
+      </Theme>,
+    );
+    const thumb = screen.getByRole("button", { name: "Open photos of Raw, Excellent" });
+    expect(describedBy(thumb)).toBe("Edit didn\u2019t save");
+  });
+
+  it("a photo with nothing pending has no description", () => {
+    render(
+      <Theme>
+        <LineThumb photos={{ front: { imageUrl: "blob:img", thumbUrl: "blob:thumb" } }} line="Raw, Excellent" copy={copy} />
+      </Theme>,
+    );
+    expect(screen.getByRole("button", { name: "Open photos of Raw, Excellent" }).getAttribute("aria-describedby")).toBeNull();
   });
 });
