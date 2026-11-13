@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
-import SyncStatusView, { countsLine, foldedLines, platformState, runLines, setKind, setLine, stepKind } from "./SyncStatusView";
+import SyncStatusView, { countsLine, foldedLines, heldBackHref, platformState, runLines, setKind, setLine, stepKind } from "./SyncStatusView";
 import SyncStatusTab from "./SyncStatusTab";
 import { stubListing } from "./stubListing";
 import {
@@ -202,6 +202,32 @@ describe("the Sync status screen", () => {
     fireEvent.click(more);
     fireEvent.click(more);
     expect(loadProblems).toHaveBeenCalledTimes(1);
+  });
+
+  it("each held-back card NB can name opens its card panel on Inventory, its reason beside it; the admin's stay text", async () => {
+    const withIds = set({
+      ...SEVEN_HELD,
+      problems: [
+        { reason: "noPrice", cardNo: "1", cardLabel: "Nolan Ryan", cardId: "card-1" },
+        { reason: "noLink" },
+      ],
+    });
+    const { view, rerender } = draw({ platforms: [bsc({ sets: [withIds] }), bsc({ platform: "ebay", sets: [withIds] })] });
+    const bscRegion = within(screen.getByRole("region", { name: "BuySportsCards" }));
+    const link = bscRegion.getByRole("link", { name: `#1 Nolan Ryan ${PROBLEM_COPY.noPrice}` });
+    expect(link.getAttribute("href")).toBe("/inventory?tab=cards&detail=card-1");
+    // A row NB can't tie to a card is no link.
+    expect(bscRegion.getByText(/^A BuySportsCards card we can.t match/).closest("a")).toBeNull();
+    await expectAccessibleInBothModes(view.container, { label: "Sync status, held-back cards as links", rerender });
+    cleanup();
+
+    draw({ platforms: [bsc({ sets: [withIds] })] }, { readOnly: true });
+    expect(within(screen.getByRole("region", { name: "BuySportsCards" })).queryAllByRole("link", { name: /Nolan Ryan/ })).toEqual([]);
+  });
+
+  it("a held-back card's panel: Inventory's Cards tab, the demo under its own prefix", () => {
+    expect(heldBackHref("/inventory", "c 1")).toBe("/inventory?tab=cards&detail=c+1");
+    expect(heldBackHref("/demo/inventory", "c1")).toBe("/demo/inventory?tab=cards&detail=c1");
   });
 
   it("a held-back list that fails to load says so", async () => {

@@ -166,7 +166,8 @@ describe("syncStatus", () => {
         counts: { listed: 3, pushed: 2, zeroed: 1, skipped: 1 },
         problemsTotal: 2,
         problems: [
-          { cardNo: "1", cardLabel: "Dwight Gooden", reason: "rejected", detail: "Price too low" },
+          // NB's card id rides along (the tab links the row to the card's panel); never the marketplace's.
+          { cardId: s.fx.gooden1, cardNo: "1", cardLabel: "Dwight Gooden", reason: "rejected", detail: "Price too low" },
           { reason: "notOnSheet" },
         ],
         steps: [],
@@ -377,7 +378,7 @@ describe("syncSetProblems", () => {
     const got = await s.me.query(api.listingSync.syncSetProblems, { variantId: s.fx.baseId, platform: "bsc" });
     expect(got.problemsTotal).toBe(9);
     expect(got.problems).toHaveLength(8);
-    expect(got.problems[0]).toEqual({ cardNo: "2", cardLabel: "Darryl Strawberry", reason: "noPrice" });
+    expect(got.problems[0]).toEqual({ cardId: s.fx.strawberry2, cardNo: "2", cardLabel: "Darryl Strawberry", reason: "noPrice" });
     expect(got.problems[7]).toEqual({ reason: "sharedLink", detail: "Two cards" });
     expect(JSON.stringify(got)).not.toContain("bsc-secret");
   });
@@ -451,7 +452,7 @@ describe("admin Sync status", () => {
     });
     const p = got.owners[0].status.platforms[0];
     expect(p.queued.cards.map((c) => c.cardLabel)).toEqual(["Dwight Gooden"]);
-    expect(p.sets[0].problems).toEqual([{ cardNo: "1", cardLabel: "Dwight Gooden", reason: "rejected" }]);
+    expect(p.sets[0].problems).toEqual([{ cardId: s.fx.gooden1, cardNo: "1", cardLabel: "Dwight Gooden", reason: "rejected" }]);
     expect(JSON.stringify(got)).not.toContain("seller-secret-acct");
     expect(JSON.stringify(got)).not.toContain("bsc-secret");
     expect(
@@ -460,7 +461,10 @@ describe("admin Sync status", () => {
         variantId: s.fx.baseId,
         platform: "bsc",
       }),
-    ).toEqual({ problems: [{ cardNo: "1", cardLabel: "Dwight Gooden", reason: "rejected" }], problemsTotal: 1 });
+    ).toEqual({
+      problems: [{ cardId: s.fx.gooden1, cardNo: "1", cardLabel: "Dwight Gooden", reason: "rejected" }],
+      problemsTotal: 1,
+    });
     // Read-only: nothing written.
     expect((await s.t.run((ctx) => ctx.db.query("listingOutbox").collect())).map((r) => r.seq)).toEqual([1]);
   });

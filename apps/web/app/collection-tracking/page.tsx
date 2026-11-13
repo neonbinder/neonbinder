@@ -1,78 +1,21 @@
-import { lazy, Suspense, useEffect, useRef, type CSSProperties, type RefObject } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
+import type { CSSProperties } from "react";
+import { Link, useNavigate } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
-import type { DemoHistoryState } from "@/app/collection/final/mode";
 import { BrandMark } from "@/components/primitives/BrandMark";
 import NeonButton from "@/components/modules/NeonButton";
-import { useStickyHeaderHeight } from "@/src/hooks/useStickyHeaderHeight";
+import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 
 /**
- * NEO-350 — the collection demo, playable right here with no account.
- *
- * `?demo=on` swaps the tour for the demo (the same page signed-in collectors
- * see at `/collection`, in public mode). The flag is in the URL so a link can
- * open it straight away. The demo's views ride beside it, as they do at
- * `/collection` (`?demo=on&tab=binders&b=…`): Back steps back through them,
- * and Back from the demo's first view closes it. Its inventory side (NEO-364)
- * is the same page with `side=inventory` (`?demo=on&side=inventory&tab=…`),
- * kept on every view there by the demo itself; the collection side never
- * writes it, so the entry stays exactly `?demo=on`. "Back to the tour" returns
- * to the tour entry in one step, however deep the visitor went. The demo's
- * code, fake catalog and CSS load only when it opens.
+ * The Collection Tracking feature page, one of the landing's marketing pages
+ * (with AI Card Identification, Managing Inventory, Shipping Labels and Print
+ * Shop). Its demo is the one demo app at /demo/collection (NEO-464).
  */
-const DEMO_PARAM = "demo";
-const DEMO_KEEP = { [DEMO_PARAM]: "on" };
-const loadDemo = () => import("@/app/collection/final/PublicCollectionDemo");
-const PublicCollectionDemo = lazy(loadDemo);
 
-/** Fetch the demo early when a visitor is about to open it. */
-function warmDemo() {
-  void loadDemo().catch(() => {
-    // A failed warm-up is harmless here: if the demo then fails to open, the app boundary reloads the page (NEO-434).
-  });
-}
-
-export default function BinderTrackingPage() {
+export default function CollectionTrackingPage() {
+  useDocumentTitle("Collection Tracking · Neon Binder");
   const navigate = useNavigate();
-  const location = useLocation();
-  const [params] = useSearchParams();
-  const demoOpen = params.get(DEMO_PARAM) === "on";
-  const demoState = (location.state ?? {}) as DemoHistoryState;
-  // The demo's sticky bars (the inventory's "Adding to") read this header's height.
-  const headerRef = useRef<HTMLElement>(null);
-  useStickyHeaderHeight(headerRef);
-
-  // Opening starts the demo at the top; closing comes back to the spin
-  // section and its link, so the keyboard lands where it left.
-  const spinLinkRef = useRef<HTMLAnchorElement>(null);
-  const wasOpen = useRef(demoOpen);
-  useEffect(() => {
-    if (demoOpen === wasOpen.current) return;
-    wasOpen.current = demoOpen;
-    if (demoOpen) {
-      window.scrollTo({ top: 0 });
-      return;
-    }
-    const link = spinLinkRef.current;
-    link?.closest("section")?.scrollIntoView({ block: "center" });
-    link?.focus({ preventScroll: true });
-  }, [demoOpen]);
-
-  // Opened from the tour: go back to that very entry, past every view the
-  // demo pushed. Opened from a link: there is no tour entry behind it, so
-  // the tour replaces the demo.
-  const closeDemo = () => {
-    if (demoState.demoFrom === "tour") void navigate(-((demoState.demoDepth ?? 0) + 1));
-    else void navigate({ search: "" }, { replace: true });
-  };
-
-  // In the demo the header only sticks from `sm` up, like the signed-in
-  // shell's: on a phone the pack tray already holds the bottom of the screen.
   const header = (
-    <header
-      ref={headerRef}
-      className={`${demoOpen ? "sm:sticky" : "sticky"} top-0 z-10 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center`}
-    >
+    <header className="sticky top-0 z-10 bg-surface p-4 border-b-2 border-rule flex flex-row justify-between items-center">
       <button
         onClick={() => navigate(-1)}
         className="flex items-center gap-2 px-4 py-2 rounded-md hover:bg-hover focus-outline transition-colors"
@@ -87,25 +30,6 @@ export default function BinderTrackingPage() {
       <div className="w-20" />
     </header>
   );
-
-  if (demoOpen) {
-    return (
-      <>
-        {header}
-        <Suspense
-          fallback={
-            <main className="min-h-screen bg-surface p-6">
-              <p role="status" className="text-ink-3">
-                Sleeving the cards…
-              </p>
-            </main>
-          }
-        >
-          <PublicCollectionDemo onExit={closeDemo} keepParams={DEMO_KEEP} />
-        </Suspense>
-      </>
-    );
-  }
 
   return (
     <>
@@ -126,10 +50,7 @@ export default function BinderTrackingPage() {
             </p>
             <p className="mt-4">
               <Link
-                to={{ search: `?${DEMO_PARAM}=on` }}
-                state={{ demoFrom: "tour" }}
-                onPointerEnter={warmDemo}
-                onFocus={warmDemo}
+                to="/demo/collection"
                 className="rounded-sm text-neon-blue-text underline underline-offset-4 hover:text-ink focus-outline"
               >
                 Try the demo binder, no sign-up needed
@@ -140,7 +61,7 @@ export default function BinderTrackingPage() {
           {/* Section 1: Upload Cards */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-6 sm:p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -212,7 +133,7 @@ export default function BinderTrackingPage() {
           {/* Section 2: Locate in Database */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-pink/10 rounded-2xl p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-pink/10 rounded-2xl p-6 sm:p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -276,7 +197,7 @@ export default function BinderTrackingPage() {
           {/* Section 3: Build Your Binder */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-yellow/10 to-neon-green/10 rounded-2xl p-12 border border-neon-yellow/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-yellow/10 to-neon-green/10 rounded-2xl p-6 sm:p-12 border border-neon-yellow/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -335,7 +256,7 @@ export default function BinderTrackingPage() {
           {/* Section 4: Track Everything */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-pink/10 to-neon-purple/10 rounded-2xl p-12 border border-neon-pink/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-pink/10 to-neon-purple/10 rounded-2xl p-6 sm:p-12 border border-neon-pink/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 220 180"
                   width="200"
@@ -412,7 +333,7 @@ export default function BinderTrackingPage() {
             </div>
           </div>
 
-          <TakeItForASpin linkRef={spinLinkRef} />
+          <TakeItForASpin />
 
           {/* CTA Section */}
           <div className="text-center py-16 border-t border-rule">
@@ -452,7 +373,7 @@ const SHELF: { name: string; bg: string; ink: string; tall: number }[] = [
   { name: "Want List", bg: "#3a0a24", ink: "#FF2E9A", tall: 88 },
 ];
 
-function TakeItForASpin({ linkRef }: { linkRef: RefObject<HTMLAnchorElement | null> }) {
+function TakeItForASpin() {
   // A shop window at night: the shelf and its neon sign are a lit scene, dark
   // in both modes like a card face (NEO-356). `data-theme="dark"` scopes the
   // dark roles (app/theme.css) to the section, so its ink and the focus
@@ -468,7 +389,7 @@ function TakeItForASpin({ linkRef }: { linkRef: RefObject<HTMLAnchorElement | nu
           <span
             key={spine.name}
             style={{ height: `${spine.tall}%`, backgroundColor: spine.bg, color: spine.ink } as CSSProperties}
-            className="flex w-10 items-center justify-center rounded-t-md border border-ink/10 py-3 shadow-[inset_-6px_0_10px_rgba(0,0,0,0.35)] sm:w-12"
+            className="flex w-9 items-center justify-center rounded-t-md border border-ink/10 py-3 shadow-[inset_-6px_0_10px_rgba(0,0,0,0.35)] min-[360px]:w-10 sm:w-12"
           >
             <span className="rotate-180 truncate text-lg font-extrabold leading-none tracking-tight [writing-mode:vertical-rl] sm:text-xl">
               {spine.name}
@@ -494,11 +415,7 @@ function TakeItForASpin({ linkRef }: { linkRef: RefObject<HTMLAnchorElement | nu
             so its colour comes from the one place a button's colour is set. */}
         <NeonButton asChild variant="secondary" size="3" className="min-h-12">
           <Link
-            ref={linkRef}
-            to={{ search: `?${DEMO_PARAM}=on` }}
-            state={{ demoFrom: "tour" }}
-            onPointerEnter={warmDemo}
-            onFocus={warmDemo}
+            to="/demo/collection"
           >
             Open the demo binder
           </Link>

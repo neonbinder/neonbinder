@@ -1,0 +1,35 @@
+import DemoThemeToggle from "@/app/collection/final/DemoThemeToggle";
+import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
+import DashboardScreen from "../screen/DashboardScreen";
+import { useDemoDashboard } from "./fixture";
+
+/**
+ * NEO-464 — the dashboard, logged out, on fake data: the Dashboard tab of the
+ * demo shell (`DashboardDemoLayout`). The screen is the same one the signed-in
+ * dashboard renders; this page only supplies the fake data (one collector with
+ * every section) and the demo's Light / Dark control, which is not part of the app.
+ */
+export default function DashboardDemoPage() {
+  useDocumentTitle("Dashboard | Neon Binder");
+  const data = useDemoDashboard();
+  return (
+    <div className="flex flex-col gap-6">
+      <DemoControls />
+      <DashboardScreen data={data} />
+    </div>
+  );
+}
+
+/** Light / Dark: a switch for judging the demo, not part of the app. */
+function DemoControls() {
+  return (
+    <section aria-label="Demo controls" className="flex flex-col gap-3 rounded-xl border border-dashed border-rule-strong bg-raised px-4 py-3">
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-2">
+        <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-neon-blue" />
+        <span className="font-semibold text-ink">Demo controls</span>
+        <span>UI prototype · fake data</span>
+      </p>
+      <DemoThemeToggle className="sm:max-w-md" />
+    </section>
+  );
+}

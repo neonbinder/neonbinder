@@ -8,6 +8,9 @@ test("Collection Tracking Feature Page", { tag: ["@marketing", "@home"] }, async
 
   // The Collection Tracking card in the landing grid leads to its feature page.
   await page.getByRole("button", { name: /Collection Tracking/ }).click();
+  await expect(page).toHaveURL(/\/collection-tracking$/);
+  // The tab is named for the page, not the app's shared default.
+  await expect(page).toHaveTitle("Collection Tracking · Neon Binder");
 
   // Four feature sections.
   await expect(page.getByText("Snap & Upload")).toBeVisible();
@@ -21,6 +24,14 @@ test("Collection Tracking Feature Page", { tag: ["@marketing", "@home"] }, async
   await expect(page.getByRole("heading", { level: 3, name: "Search & Filter" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 4 })).toHaveCount(0);
   await expectAccessible(page, { label: "collection-tracking feature page" });
+
+  // The page's demo link opens the demo binder, and Back returns to the page.
+  await page.getByRole("link", { name: "Try the demo binder, no sign-up needed" }).click();
+  await expect(page).toHaveURL(/\/demo\/collection$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/collection-tracking$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Track Your Collection Like It's 1995" })).toBeVisible();
 
   // The CTA opens the sign-up dialog; clicking beside it dismisses it.
   await page.getByRole("button", { name: "Get Started" }).click();

@@ -1489,6 +1489,13 @@ async function moveCounts(
  * photos follow it is one of a kind (NEO-431), as is a scanned save (NEO-427),
  * but those photos arrive after the add, so the fold rule's photo check
  * (`isOneOfAKind`) can't see them yet.
+ *
+ * NEO-464: every add files cards into a home (Main included: it is a binder),
+ * so the line it lands on takes `filedAt`, whether the add folds or starts a
+ * line (Jason, 2026-11-10: "adding cards to a binder in any way is filed").
+ * An add into a binder also brings new cards into the collection, so that
+ * line takes `addedAt` too (Fresh Pulls); an add into a box takes `listedAt`
+ * instead (New Listings).
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -1518,6 +1525,10 @@ export async function addOne(
   }
   const next: StoredDetails = { ...cleaned, homeId: home._id };
   const now = Date.now();
+  // NEO-464: new cards into a binder are Fresh Pulls; into a box they are New Listings.
+  const added = sideOfContainer(home) === "collection" ? { addedAt: now } : { listedAt: now };
+  // A box line folded into drops any `addedAt` an older rule left on it (never a pull).
+  const foldAdded = sideOfContainer(home) === "collection" ? added : { ...added, addedAt: undefined };
   const into = keepsOwnLine ? undefined : await foldTargetOf(ctx, lines, (row) => foldsInto(foldShape(row), next));
   if (into) {
     const quantity = into.quantity + next.quantity;
@@ -1525,7 +1536,7 @@ export async function addOne(
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Start a new line for the rest.`);
     }
     const previous = detailsOf(into);
-    await ctx.db.patch(into._id, { quantity, lastUpdated: now });
+    await ctx.db.patch(into._id, { quantity, lastUpdated: now, filedAt: now, ...foldAdded });
     return {
       result: { copyId: into._id, merged: true, previous },
       change: changeOf(into, counted(into), counted({ ...into, quantity })),
@@ -1541,11 +1552,79 @@ export async function addOne(
     ...placeFields(place),
     ...next,
     lastUpdated: now,
+    filedAt: now,
+    ...added,
   });
   return {
     result: { copyId, merged: false },
     change: changeOf({ cardId, setId: place.setId }, null, counted(next)),
   };
+}
+
+/**
+ * NEO-464 — when cards fold from `from` into `into`, the line keeps the newer
+ * `addedAt` of the two (it now holds the newer cards): as a patch, empty when
+ * `into`'s already stands. A merge never stamps one of its own.
+ */
+export function newerAdded(
+  into: Pick<CopyRow, "addedAt">,
+  from: Pick<CopyRow, "addedAt">,
+): { addedAt?: number } {
+  if (from.addedAt === undefined) return {};
+  if (into.addedAt !== undefined && into.addedAt >= from.addedAt) return {};
+  return { addedAt: from.addedAt };
+}
+
+/** NEO-464 — `newerAdded` for `listedAt`: cards folding into a box line keep the newer listing time. */
+export function newerListed(
+  into: Pick<CopyRow, "listedAt">,
+  from: Pick<CopyRow, "listedAt">,
+): { listedAt?: number } {
+  if (from.listedAt === undefined) return {};
+  if (into.listedAt !== undefined && into.listedAt >= from.listedAt) return {};
+  return { listedAt: from.listedAt };
+}
+
+/**
+ * NEO-464 — the dashboard stamps a line's cards take when they move from
+ * `from` (the line's home, by side) to `to`, as a patch (`undefined` drops a
+ * field). Into a binder from a binder: `addedAt` travels, never `listedAt`.
+ * Into a box from a box: `listedAt` travels. Into a box from a binder (Sell):
+ * newly listed, `now`, and `addedAt` drops (cards for sale are not pulls).
+ * Into a binder from a box (Take off sale): `listedAt` drops, and no
+ * `addedAt` (a move, never a pull). `row` is the moving line. A move never
+ * makes cards new to the collection.
+ */
+export function movedStamps(
+  row: Pick<CopyRow, "addedAt" | "listedAt">,
+  from: Side,
+  to: Side,
+  now: number,
+): { addedAt?: number; listedAt?: number } {
+  if (to === "collection") return { addedAt: from === "collection" ? row.addedAt : undefined, listedAt: undefined };
+  return { addedAt: undefined, listedAt: from === "inventory" ? row.listedAt : now };
+}
+
+/** The fields of `stamps` that hold a value: an insert writes no field as `undefined`. */
+export function definedOnly(stamps: { addedAt?: number; listedAt?: number }): { addedAt?: number; listedAt?: number } {
+  return {
+    ...(stamps.addedAt !== undefined ? { addedAt: stamps.addedAt } : {}),
+    ...(stamps.listedAt !== undefined ? { listedAt: stamps.listedAt } : {}),
+  };
+}
+
+/**
+ * The stamps a line takes when moved cards fold into it (`into`, already in
+ * the destination): the newer of the two for the side's stamp, the other
+ * dropped. `moving` is `movedStamps` of the arriving cards.
+ */
+export function foldedStamps(
+  into: Pick<CopyRow, "addedAt" | "listedAt">,
+  moving: { addedAt?: number; listedAt?: number },
+  to: Side,
+): { addedAt?: number; listedAt?: number } {
+  if (to === "collection") return { ...newerAdded(into, moving), listedAt: undefined };
+  return { ...newerListed(into, moving), addedAt: undefined };
 }
 
 /**
@@ -1695,6 +1774,18 @@ export async function moveCopyCore(
     : await foldTargetOf(ctx, lines, (other) => other._id !== row._id && foldsInto(foldShape(other), { ...moving, ...next }));
   await assertPocketFree(ctx, ownerId, home, slot, [row._id, ...(into ? [into._id] : [])]);
   const now = Date.now();
+  // NEO-464: cards arriving in another home were filed or moved (the
+  // dashboard's "since your last visit"); a pocket shuffle in the same home was not.
+  const filed = home._id !== row.homeId ? { filedAt: now } : {};
+  // A part split off in the same home keeps when its cards were filed there.
+  const splitFiled = home._id !== row.homeId ? filed : row.filedAt !== undefined ? { filedAt: row.filedAt } : {};
+  // NEO-464: a move never makes a card new to the collection. A part split
+  // off keeps when its cards were added; cards folding into a line keep the
+  // newer of the two (the line now holds them). Into a box from a binder the
+  // cards are newly listed and drop `addedAt`; out of a box into a binder
+  // they drop `listedAt` (`movedStamps`).
+  const stamps = movedStamps(row, sideOfContainer(source ?? home), sideOfContainer(home), now);
+  const splitAdded = definedOnly(stamps);
   const changes: CountChange[] = [];
   let copyId: Id<"collectionCopies">;
   if (into) {
@@ -1702,7 +1793,7 @@ export async function moveCopyCore(
     if (total > MAX_COPY_QUANTITY) {
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Move fewer, or start a new line.`);
     }
-    await ctx.db.patch(into._id, { quantity: total, lastUpdated: now });
+    await ctx.db.patch(into._id, { quantity: total, lastUpdated: now, ...filed, ...foldedStamps(into, stamps, sideOfContainer(home)) });
     changes.push(changeOf(into, counted(into), counted({ ...into, quantity: total })));
     if (whole) {
       await ctx.db.delete(row._id);
@@ -1713,7 +1804,7 @@ export async function moveCopyCore(
     }
     copyId = into._id;
   } else if (whole) {
-    await ctx.db.patch(row._id, { homeId: home._id, slot, minPriceCents: ownPrice, lastUpdated: now });
+    await ctx.db.patch(row._id, { homeId: home._id, slot, minPriceCents: ownPrice, lastUpdated: now, ...filed, ...stamps });
     changes.push(changeOf(row, counted(row), counted({ ...row, homeId: home._id })));
     copyId = row._id;
   } else {
@@ -1728,6 +1819,8 @@ export async function moveCopyCore(
       ...placeFields(row),
       ...next,
       lastUpdated: now,
+      ...splitFiled,
+      ...splitAdded,
     });
     changes.push(changeOf(row, null, counted(next)));
   }
@@ -2542,6 +2635,11 @@ export const updateCopy = mutation({
       homeId: row.homeId,
       // NEO-377 — an edit never touches the line's photos.
       ...(row.hasPhotos ? { hasPhotos: true as const } : {}),
+      // NEO-464 — nor when it was last filed: an edit is not a move.
+      ...(row.filedAt !== undefined ? { filedAt: row.filedAt } : {}),
+      // Nor when its cards were added (Fresh Pulls) or listed (New Listings).
+      ...(row.addedAt !== undefined ? { addedAt: row.addedAt } : {}),
+      ...(row.listedAt !== undefined ? { listedAt: row.listedAt } : {}),
       lastUpdated: Date.now(),
     });
     await applyCopyChanges(ctx, ownerId, [

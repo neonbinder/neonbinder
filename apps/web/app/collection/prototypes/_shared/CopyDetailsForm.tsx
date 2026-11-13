@@ -330,6 +330,8 @@ export default function CopyDetailsForm({
           <div>
             <Input
               label="Price"
+              // NEO-464: a card held back for no price opens here (CardDetail's `held`).
+              data-copy-price=""
               type="number"
               inputMode="decimal"
               min={0}

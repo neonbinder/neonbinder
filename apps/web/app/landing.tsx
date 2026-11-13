@@ -15,7 +15,7 @@ export default function LandingPage() {
   const navigate = useNavigate();
 
   const handleBindersClick = () => {
-    navigate("/binder-tracking");
+    navigate("/collection-tracking");
   };
 
   const handleAiIdentificationClick = () => {
@@ -91,7 +91,7 @@ export default function LandingPage() {
             </p>
             <NeonButton asChild variant="secondary" size="3">
               <Link
-                to="/binder-tracking?demo=on"
+                to="/demo/collection"
                 onPointerEnter={warmDemo}
                 onFocus={warmDemo}
                 className="after:absolute after:inset-0 after:rounded-lg after:content-['']"

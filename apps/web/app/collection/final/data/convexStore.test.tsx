@@ -379,6 +379,11 @@ describe("copies between the view and the server", () => {
     expect(toWant({ cardId: "k", binderId: "b" } as never)).toEqual({ cardId: "k", binderId: "b" });
   });
 
+  it("keeps a want's server stamp, and leaves it off an optimistic want that has none", () => {
+    expect(toWant({ cardId: "k", lastUpdated: 42 } as never)).toEqual({ cardId: "k", binderId: null, lastUpdated: 42 });
+    expect(toWant({ cardId: "k" } as never)).not.toHaveProperty("lastUpdated");
+  });
+
   it("folds like the server: identical details only, never a cert or a serial", () => {
     const row = { quantity: 1, acquiredOn: "2026-10-23", homeId: "h" } as never;
     expect(foldsInto(row, { quantity: 1, acquiredOn: "2026-10-23" } as never)).toBe(true);

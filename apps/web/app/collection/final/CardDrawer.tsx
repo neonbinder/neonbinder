@@ -2,7 +2,7 @@ import { useId } from "react";
 import NoticeLine, { type Notice } from "../prototypes/p1/notice";
 import Overlay from "../prototypes/p1/Overlay";
 import { FOCUS } from "../prototypes/p1/ui";
-import CardDetail, { CopyList } from "./CardDetail";
+import CardDetail, { CopyList, type HeldBack } from "./CardDetail";
 import { LoadingNote, SkeletonBars } from "./catalog/Skeleton";
 import { cardLabel, setAndVariant, shortCardName } from "./data/labels";
 import { useCapabilities, useCard, useCollectionActions, useContainers, useCopiesOf } from "./data/store";
@@ -39,6 +39,7 @@ export default function CardDrawer({
   onPrev,
   onNext,
   position = null,
+  held,
 }: {
   cardId: CardId;
   /** The card as the opener had it. */
@@ -59,6 +60,8 @@ export default function CardDrawer({
   onNext: (() => void) | null;
   /** Where the card sits in the list ↑ ↓ step through; null for a list of one. */
   position?: { index: number; total: number } | null;
+  /** NEO-464: why this card was held back from a sync, when the dashboard's Sync status opened it. */
+  held?: HeldBack;
 }) {
   const headingId = useId();
   const live = useCard(cardId);
@@ -129,6 +132,7 @@ export default function CardDrawer({
             editCopyId={editCopyId}
             addBinderId={addBinderId}
             onCancelAdd={onClose}
+            held={held}
           />
         ) : card === null ? (
           <GoneCard cardId={cardId} focusCopyId={focusCopyId} />
