@@ -43,7 +43,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { addCardViaForm, escapeRe } from "../../support/cards";
-import { collectorCascade, createBox, deleteOpenBox, intakeDropzone, inventoryTabs, pickIntakeSet } from "../../support/collection";
+import { collectorCascade, confirmRemoved, createBox, deleteOpenBox, intakeDropzone, inventoryTabs, pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { VARIANT_TYPES_SYNC, columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
 
@@ -91,6 +91,7 @@ test(
       const { drawer, yourCopies } = await openDrawer(number);
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove #${number}\\b`) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+      await confirmRemoved(drawer);
       copiesLeft.delete(number);
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();
