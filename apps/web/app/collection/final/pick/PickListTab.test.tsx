@@ -7,6 +7,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "../PublicCollectionDemo";
+import { PICK_DENSITY_KEY, resetPickDensityForTests } from "@/src/hooks/usePickDensity";
 
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: false }) }));
 vi.mock("convex/react", () => ({}));
@@ -52,6 +53,9 @@ const toggle = (name: RegExp) => screen.getByRole("button", { name });
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  // NEO-522: the row size is this device's; each test starts Spacious.
+  window.localStorage.clear();
+  resetPickDensityForTests();
 });
 
 describe("the Pick List demo", () => {
@@ -83,9 +87,9 @@ describe("the Pick List demo", () => {
     expect(chip.textContent).toBe("Not in NB. NB doesn't have this copy. Go by the listing.");
     expect(within(row).queryByText("Unmatched")).toBeNull();
     expect(within(row).getAllByText("#302").length).toBeGreaterThan(0);
-    // The listing said Base, so the Base chip; and its next step stays under the variant.
+    // The listing said Base, so the Base tag. NEO-522: no note under it; the chip already says where to look.
     expect(within(row).getAllByText("Base", { exact: true }).length).toBeGreaterThan(0);
-    expect(within(row).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
+    expect(within(row).queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
     // Under the 2024 Score divider, before that set's insert, not in Can't find it.
     const group = row.closest("tbody")!;
     expect(within(group).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
@@ -111,7 +115,11 @@ describe("the Pick List demo", () => {
     renderPick();
     const trout = await screen.findByRole("button", { name: /^Pulled #27 Mike Trout/ });
     expect(trout.getAttribute("aria-pressed")).toBe("false");
-    fireEvent.click(trout.closest("tr")!.querySelectorAll("td")[4]);
+    // A click on the name's cell (the wide screen's Player column) pulls the row.
+    const name = within(trout.closest("tr")!)
+      .getAllByText("Mike Trout")
+      .find((el) => !el.closest("button"))!;
+    fireEvent.click(name);
     expect(trout.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Pulled #27 Mike Trout.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
@@ -279,6 +287,331 @@ describe("the Pick List demo", () => {
     expect(more.getAttribute("aria-expanded")).toBe("true");
     fireEvent.change(screen.getByRole("combobox", { name: "Sport" }), { target: { value: screen.getByRole("option", { name: "Hockey" }).getAttribute("value") } });
     expect(screen.getByRole("button", { name: "More filters (1 on)" })).toBeTruthy();
+  });
+});
+
+describe("NEO-522: a row read from across the room", () => {
+  /** The row's own words, outside the card picture (whose face prints the team). */
+  const rowWords = (row: HTMLElement) =>
+    [...row.querySelectorAll("td")]
+      .filter((td) => !td.querySelector(".nb-pick-thumb"))
+      .map((td) => td.textContent)
+      .join(" ");
+  const rowOf = async (name: RegExp) => (await screen.findByRole("button", { name })).closest("tr")!;
+
+  it("drops the team line: the card's picture carries it", async () => {
+    renderPick();
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    expect(within(trout).getAllByText("Mike Trout").length).toBeGreaterThan(0);
+    expect(rowWords(trout)).not.toContain("Angels");
+  });
+
+  it("tags each row with its variant's own name in its divider's colour, the kind read out first", async () => {
+    renderPick();
+    const tagOf = (row: HTMLElement, text: string) => within(row).getAllByText(text, { exact: true })[0].parentElement!;
+
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    const base = tagOf(trout, "Base");
+    expect(base.textContent).toBe("Base");
+    expect(base.getAttribute("title")).toBe("Base");
+    expect(base.className).toContain("bg-variant-base");
+
+    const ohtani = await rowOf(/^Pulled #8B-7 Shohei Ohtani/);
+    const insert = tagOf(ohtani, "8 Bit Ballers");
+    expect(insert.textContent).toBe("Insert: 8 Bit Ballers");
+    expect(insert.getAttribute("title")).toBe("Insert: 8 Bit Ballers");
+    expect(insert.className).toContain("bg-variant-insert");
+    // The generic word is gone from the row: the name replaces it.
+    expect(within(ohtani).queryByText("Insert", { exact: true })).toBeNull();
+
+    const schlittler = await rowOf(/^Pulled #111 Cam Schlittler/);
+    expect(tagOf(schlittler, "Gold Foil").textContent).toBe("Parallel: Gold Foil");
+    const judge = await rowOf(/^Pulled #8B-12 Aaron Judge/);
+    expect(tagOf(judge, "8 Bit Ballers Red").textContent).toBe("Insert parallel: 8 Bit Ballers Red");
+    // A long name wraps onto more lines, never pushing the row wider and never cut short.
+    const red = tagOf(judge, "8 Bit Ballers Red");
+    expect(red.className).toMatch(/\bmax-w-/);
+    expect(red.innerHTML).not.toMatch(/line-clamp|truncate|text-ellipsis/);
+    // The serial stays with the copy's details, not the tag.
+    expect(within(schlittler).getAllByText("1187/2026").length).toBeGreaterThan(0);
+  });
+
+  it("puts the tags on the name's line, never a line of their own", async () => {
+    renderPick();
+    const judge = await rowOf(/^Pulled #8B-12 Aaron Judge/);
+    const lastOnes = within(judge).getAllByText("Last ones", { exact: true })[0];
+    const name = within(judge)
+      .getAllByText("Aaron Judge", { exact: true })
+      .find((el) => !el.closest("button"))!;
+    // One line: the name and the tags share a parent.
+    expect(lastOnes.closest("span.flex-wrap")!.parentElement).toBe(name.parentElement);
+  });
+
+  it("rules a heavier line in the next variant's colour where the variant changes inside a set, a thin one elsewhere", async () => {
+    renderPick();
+    const cellsOf = async (name: RegExp) => [...(await rowOf(name)).querySelectorAll("td")];
+    // The phone's one cell carries the rule as the columns do (it is the row's last cell).
+    const ruleOf = async (name: RegExp) => (await cellsOf(name)).at(-1)!.className;
+    // 2026 Topps Series 1 walks Base (#27, #150), Gold Foil, 8 Bit Ballers, 8 Bit Ballers Red.
+    expect(await ruleOf(/^Pulled #27 Mike Trout/)).toContain("border-rule");
+    expect(await ruleOf(/^Pulled #27 Mike Trout/)).not.toContain("border-b-[3px]");
+    const skenes = await ruleOf(/^Pulled #150 Paul Skenes/);
+    expect(skenes).toContain("border-b-[3px]");
+    expect(skenes).toContain("border-b-variant-parallel-rule");
+    expect(await ruleOf(/^Pulled #111 Cam Schlittler/)).toContain("border-b-variant-insert-rule");
+    expect(await ruleOf(/^Pulled #8B-7 Shohei Ohtani/)).toContain("border-b-variant-insert-parallel-rule");
+    // The set's last row: the next divider's own rule takes over.
+    expect(await ruleOf(/^Pulled #8B-12 Aaron Judge/)).not.toContain("border-b-[3px]");
+    // A sub-divider: it starts at the Variant column; the tick and the picture keep the thin line.
+    const cells = await cellsOf(/^Pulled #150 Paul Skenes/);
+    const from = cells.findIndex((td) => td.querySelector("[title]"));
+    expect(from).toBeGreaterThan(1);
+    for (const td of cells.slice(0, from)) {
+      expect(td.className).toContain("border-rule");
+      expect(td.className).not.toContain("border-b-[3px]");
+    }
+    expect(cells.slice(from).every((td) => td.className.includes("border-b-variant-parallel-rule"))).toBe(true);
+  });
+
+  it("rules a set's break heavier than a variant's", async () => {
+    renderPick();
+    const head = (await screen.findByRole("rowheader", { name: /^Baseball 2026 Topps Series 1/ })) as HTMLElement;
+    expect(head.className).toContain("border-b-[5px]");
+  });
+
+  it("reads a numbered copy's serial and the markers at the row's scale", async () => {
+    renderPick();
+    const schlittler = await rowOf(/^Pulled #111 Cam Schlittler/);
+    // The row's own serial, not the one the card picture prints.
+    const serial = within(schlittler)
+      .getAllByText("1187/2026")
+      .find((el) => !el.closest(".nb-pick-thumb"))!;
+    expect(serial.className).toContain("text-base");
+    expect(serial.className).toContain("font-bold");
+    expect(serial.className).toContain("@min-[62rem]:text-xl");
+    const judge = await rowOf(/^Pulled #8B-12 Aaron Judge/);
+    const lastOnes = within(judge).getAllByText("Last ones", { exact: true })[0];
+    expect(lastOnes.className).toContain("text-base");
+    expect(lastOnes.className).toContain("font-bold");
+  });
+
+  it("files Can't find it's reason under the listing's words, leaving the Set column to the sport", async () => {
+    renderPick();
+    const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
+    const why = "NB has no 2026 Topps Heritage checklist yet.";
+    const wide = [...witt.querySelectorAll("td")].find((td) => td.getAttribute("colspan") === "3")!;
+    expect(within(wide).getByText(why)).toBeTruthy();
+    expect(wide.textContent).toContain("Bobby Witt Jr.");
+    expect(wide.nextElementSibling!.textContent).not.toContain(why);
+  });
+
+  it("hides the Set and Serial sorts' dot until they sit side by side", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    const dot = within(table).getByRole("button", { name: "Serial" }).previousElementSibling!;
+    expect(dot.textContent?.trim()).toBe("·");
+    expect(dot.className).toContain("hidden");
+    expect(dot.className).toContain("@min-[62rem]:inline");
+  });
+
+  it("draws no variant rule under Can't find it, nor at a box's stop", async () => {
+    renderPick();
+    const thick = (scope: HTMLElement) => [...scope.querySelectorAll("td")].filter((td) => td.className.includes("border-b-[3px]"));
+    const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
+    const cantFind = witt.closest("tbody")!;
+    expect(within(cantFind).getAllByRole("button", { name: /^Pulled / }).length).toBeGreaterThan(1);
+    expect(thick(cantFind)).toHaveLength(0);
+    cleanup();
+    // By the Box: each box is one run in slot order, whatever variants sit in it.
+    renderPick(`${PICK_URL}&pv=box`);
+    const box = await screen.findByRole("table", { name: /^Cards to pull from / });
+    const roles = new Set(
+      [...box.querySelectorAll(".nb-pick-band")].map((el) => [...el.classList].find((c) => c.startsWith("bg-variant-"))).filter(Boolean),
+    );
+    // The stop mixes variants, so a rule would show if a box drew one.
+    expect(roles.size).toBeGreaterThan(1);
+    expect(thick(box)).toHaveLength(0);
+    cleanup();
+    renderPick(`${PICK_URL}&pv=box&pbox=cant-find`);
+    expect(thick(await screen.findByRole("table", { name: "Sales NB couldn't tie to a card" }))).toHaveLength(0);
+  });
+
+  it("names the card's team on its picture, where the row no longer prints it", async () => {
+    renderPick();
+    expect(await screen.findByRole("button", { name: /^Bigger picture of #27 Mike Trout, Angels, / })).toBeTruthy();
+  });
+
+  it("draws no variant rule in a flat run sorted by a column", async () => {
+    renderPick(`${PICK_URL}&psort=player`);
+    const cells = [...(await rowOf(/^Pulled #150 Paul Skenes/)).querySelectorAll("td")];
+    expect(cells.some((td) => td.className.includes("border-b-[3px]"))).toBe(false);
+  });
+
+  it("keeps the box the size of the text, the button around it the target", async () => {
+    renderPick();
+    const toggle = await screen.findByRole("button", { name: /^Pulled #27 Mike Trout/ });
+    // A finger's 44px target at any width, 32px only for a mouse; the box inside stays 20px.
+    expect(toggle.className).toContain("size-11");
+    expect(toggle.className).toContain("md:pointer-fine:size-8");
+    expect(toggle.className).not.toMatch(/(^|\s)md:size-8/);
+    const box = toggle.querySelector("span[aria-hidden='true']")!;
+    expect(box.className).toContain("size-5");
+  });
+
+  it("names the Variant column and keeps Set and Serial sorting", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    expect(within(table).getByRole("columnheader", { name: "Variant" })).toBeTruthy();
+    fireEvent.click(within(table).getByRole("button", { name: "Serial" }));
+    expect(pageUrl().get("psort")).toBe("detail");
+    fireEvent.click(within(table).getByRole("button", { name: "Set" }));
+    expect(pageUrl().get("psort")).toBe("set");
+  });
+
+  it("drops the couldn't-match note from a sale filed with its set, and keeps Can't find it's reason", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    expect(screen.queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
+    const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
+    expect(within(witt).getAllByText("NB has no 2026 Topps Heritage checklist yet.").length).toBeGreaterThan(0);
+  });
+});
+
+describe("NEO-522: Spacious or Condensed rows", () => {
+  const rowOf = async (name: RegExp) => (await screen.findByRole("button", { name })).closest("tr")!;
+  const rows = () => screen.getByRole("radiogroup", { name: "Row size" });
+  const option = (name: "Spacious" | "Condensed") => within(rows()).getByRole("radio", { name });
+  /** The row's own words, outside the card picture (whose face prints the team). */
+  const rowWords = (row: HTMLElement) =>
+    [...row.querySelectorAll("td")]
+      .filter((td) => !td.querySelector(".nb-pick-thumb"))
+      .map((td) => td.textContent)
+      .join(" ");
+
+  it("opens Spacious; Condensed brings back the old rows: the team line, the kind chip and variant name in the Set column, the couldn't-match note", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("false");
+    expect(table.className).toContain("nb-pick-spacious");
+
+    fireEvent.click(option("Condensed"));
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("false");
+    expect(window.localStorage.getItem(PICK_DENSITY_KEY)).toBe("condensed");
+    expect(table.className).not.toContain("nb-pick-spacious");
+    // No Variant column: the variant rides in the Set column, as before NEO-522.
+    expect(within(table).queryByRole("columnheader", { name: "Variant" })).toBeNull();
+    expect(within(table).getByRole("button", { name: "Serial" })).toBeTruthy();
+
+    // The team line under the name.
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    expect(rowWords(trout)).toContain("Angels");
+    expect(within(trout).getAllByText("Angels").some((el) => el.className.includes("text-xs"))).toBe(true);
+    // The kind chip, then the variant's name beside it.
+    const ohtani = await rowOf(/^Pulled #8B-7 Shohei Ohtani/);
+    const kind = within(ohtani).getAllByText("Insert", { exact: true })[0];
+    expect(kind.className).toContain("bg-variant-insert");
+    expect(kind.className).toContain("text-xs");
+    expect(within(ohtani).getAllByText("8 Bit Ballers", { exact: true }).length).toBeGreaterThan(0);
+    const schlittler = await rowOf(/^Pulled #111 Cam Schlittler/);
+    expect(within(schlittler).getAllByText("Parallel", { exact: true }).length).toBeGreaterThan(0);
+    // A sale filed with its set keeps the old note under its variant.
+    const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
+    expect(within(nabers).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
+    // The old 40px checkbox: the bordered button is the box.
+    const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
+    expect(tick.className).toContain("size-11");
+    expect(tick.className).toContain("border-2");
+    // The old thin dividers: no heavier variant rule inside a set.
+    expect(table.querySelector("td[class*='border-b-[3px]']")).toBeNull();
+  });
+
+  it("is remembered on this device and read back on the next visit", async () => {
+    renderPick();
+    fireEvent.click(within(await screen.findByRole("radiogroup", { name: "Row size" })).getByRole("radio", { name: "Condensed" }));
+    cleanup();
+    resetPickDensityForTests();
+    renderPick();
+    expect((await screen.findByRole("radiogroup", { name: "Row size" })).querySelector("[aria-checked='true']")?.textContent).toBe("Condensed");
+    expect(rowWords(await rowOf(/^Pulled #27 Mike Trout/))).toContain("Angels");
+  });
+
+  it("opens Spacious when this browser's storage throws", async () => {
+    const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    try {
+      renderPick();
+      await screen.findByRole("table", { name: "Cards to pull" });
+      expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+      expect(rowWords(await rowOf(/^Pulled #27 Mike Trout/))).not.toContain("Angels");
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it("Back to default resets the list, never the row size", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
+    fireEvent.click(screen.getByRole("button", { name: "Only slabs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to default" }));
+    expect(pageUrl().get("pslabs")).toBeNull();
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    // Nor does the row size ride on the URL.
+    expect([...pageUrl().keys()].some((k) => /dens|rows/i.test(k))).toBe(false);
+  });
+
+  it("keeps the demo's page at the 6xl column when Condensed, and widens it on Spacious", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    const frame = () => table.closest<HTMLElement>("[class*='max-w-[1600px]'], [class*='max-w-6xl']")!;
+    expect(frame().className).toContain("max-w-[1600px]");
+    fireEvent.click(option("Condensed"));
+    expect(frame().className).toContain("max-w-6xl");
+    fireEvent.click(option("Spacious"));
+    expect(frame().className).toContain("max-w-[1600px]");
+  });
+
+  it("is one Tab stop: the checked option; the arrow keys, Home and End move and pick", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    expect(option("Spacious").tabIndex).toBe(0);
+    expect(option("Condensed").tabIndex).toBe(-1);
+    act(() => option("Spacious").focus());
+    fireEvent.keyDown(option("Spacious"), { key: "ArrowRight" });
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(option("Condensed"));
+    expect(option("Condensed").tabIndex).toBe(0);
+    expect(option("Spacious").tabIndex).toBe(-1);
+    // Wraps round, both ways.
+    fireEvent.keyDown(option("Condensed"), { key: "ArrowDown" });
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(option("Spacious"), { key: "ArrowUp" });
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(option("Condensed"), { key: "Home" });
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(option("Spacious"));
+    fireEvent.keyDown(option("Spacious"), { key: "End" });
+    expect(option("Condensed").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(option("Condensed"), { key: "ArrowLeft" });
+    expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
+    expect(window.localStorage.getItem(PICK_DENSITY_KEY)).toBe("spacious");
+  });
+
+  it("keeps the check's slot on both options, so the switch never changes width", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    for (const name of ["Spacious", "Condensed"] as const) {
+      const icon = option(name).querySelector("svg")!;
+      expect(icon).toBeTruthy();
+      expect(icon.getAttribute("aria-hidden")).toBe("true");
+      expect(icon.getAttribute("class")).toContain(name === "Spacious" ? "size-4" : "invisible");
+    }
+    fireEvent.click(option("Condensed"));
+    expect(option("Spacious").querySelector("svg")!.getAttribute("class")).toContain("invisible");
+    expect(option("Condensed").querySelector("svg")!.getAttribute("class")).not.toContain("invisible");
   });
 });
 
