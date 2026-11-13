@@ -2,6 +2,8 @@ import { ConvexCollectionProvider } from "@/app/collection/final/data/convexStor
 import { useState } from "react";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import DashboardScreen from "./screen/DashboardScreen";
+import { CrewProvider } from "./screen/crew";
+import { useRealCrew } from "./real/useCrewDesk";
 import { useRealDashboard } from "./real/useRealDashboard";
 
 /**
@@ -20,6 +22,8 @@ export default function DashboardPage() {
 
 function RealDashboardPage() {
   const data = useRealDashboard();
+  // What is open with the crew, and the Report and Withdraw actions (NEO-536). The demo has none.
+  const crew = useRealCrew();
   // Loading shows once, on the way in. After that a read that starts over (a
   // want starred in the card panel re-reads the chase's cards) keeps the last
   // screen up until it answers: the screen, and the card panel open over it,
@@ -28,7 +32,11 @@ function RealDashboardPage() {
   if (data && data !== shown) setShown(data);
   const screen = data ?? shown;
   if (!screen) return <DashboardLoading />;
-  return <DashboardScreen data={screen} />;
+  return (
+    <CrewProvider value={crew}>
+      <DashboardScreen data={screen} />
+    </CrewProvider>
+  );
 }
 
 /** While the shelf loads: the greeting's place and a row of blank spines, quiet and still. */
