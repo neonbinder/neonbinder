@@ -93,6 +93,21 @@
  * write, and every concurrent set build serialised on the sport row).
  * Writers inside ONE set still serialise on the set row.
  *
+ * ## `lastCardAt` (NEO-532)
+ *
+ * The same flush stamps `lastCardAt = Date.now()` on every row a card LANDED
+ * on in this ledger (`addCard`, an insert or a move in; any positive raw
+ * `add`). Gross, not net: a mutation that adds one card and removes another
+ * from the row leaves the count alone and still stamps it. Only the card's
+ * own row is stamped, never an ancestor, so the set and the rows above it
+ * take no extra write. A flush that leaves the row's `cardCount` at 0 clears
+ * the stamp instead; a card going off alone never moves it, so a stamp may be
+ * newer than the row's newest card (New on NeonBinder reads the real newest
+ * card; the stamp only says where to look). A row whose recount was skipped
+ * (past `RECOUNT_MAX`) is still stamped.
+ *
+ * Rows from before the field are stamped by `backfillLastCardAt` (below).
+ *
  * ## What it counts
  *
  * Home rows only (`by_selector_option`); a cross-listed guest is not a card OF
@@ -137,6 +152,19 @@
  *   # are none, and clears their old subtree counts (`flagsSet`,
  *   # `flagsCleared`, `staleCountsCleared`). Until it has run, a sport, year
  *   # or brand whose cards were written before NEO-364 is hidden.
+ *
+ *   # NEO-532: `lastCardAt` on every card-bearing row from before the field,
+ *   # from its newest card. Independent of the two above; its own arm.
+ *   npx convex run cardCounts:backfillLastCardAt '{}'
+ *   npx convex env set ALLOW_LAST_CARD_AT_BACKFILL 1
+ *   npx convex run cardCounts:backfillLastCardAt '{"confirm":"BACKFILL"}'
+ *   npx convex env remove ALLOW_LAST_CARD_AT_BACKFILL
+ *
+ *   # Re-run until "complete": true; pass the returned `cursor` back to
+ *   # resume. Only an ABSENT stamp is written (`filled`); a row already
+ *   # stamped (`alreadyStamped`) or holding no card (`empty`) is left alone.
+ *   # Until it has run, New on NeonBinder lists only checklists a card has
+ *   # landed on since the field shipped.
  *
  * See docs/operations/neo358-backfill-card-search-fields.md.
  */
@@ -260,6 +288,11 @@ export class CardCountLedger {
    * `parentId` always wins.
    */
   private readonly parentHints = new Map<RowId, RowId | null>();
+  /**
+   * NEO-532 — rows a card LANDED on in this ledger (gross: kept even when a
+   * later `removeCard` nets the delta to zero). Stamped `lastCardAt` at flush.
+   */
+  private readonly landed = new Set<RowId>();
 
   /**
    * Raw deltas: `all` cards added to (negative: removed from) `rowId`, of
@@ -267,6 +300,7 @@ export class CardCountLedger {
    */
   add(rowId: RowId, all: number, nonVariation: number): void {
     if (all === 0 && nonVariation === 0) return;
+    if (all > 0) this.landed.add(rowId);
     const held = this.deltas.get(rowId) ?? { all: 0, nonVariation: 0 };
     this.deltas.set(rowId, {
       all: held.all + all,
@@ -386,10 +420,16 @@ export class CardCountLedger {
    * subtree counts together. A sport, year or manufacturer row is only READ,
    * unless this flush is the first to bring it a card: then it is patched
    * `hasCards: true`, once, ever (NEO-364).
+   *
+   * NEO-532 — a row a card landed on is stamped `lastCardAt` in the same
+   * patch, even when its deltas net to zero; a row left at `cardCount` 0 has
+   * its stamp cleared. Ancestors are never stamped.
    */
   async flush(ctx: CountCtx): Promise<void> {
     const own = [...this.deltas.entries()].filter(([, d]) => !isZero(d));
     this.deltas.clear();
+    const landed = new Set(this.landed);
+    this.landed.clear();
     const chainDeltas = this.chainDeltas;
     this.chainDeltas = [];
     const unknownMoves = this.unknownMoves;
@@ -400,7 +440,8 @@ export class CardCountLedger {
       own.length === 0 &&
       chainDeltas.length === 0 &&
       unknownMoves.length === 0 &&
-      flagChains.length === 0
+      flagChains.length === 0 &&
+      landed.size === 0
     ) {
       return;
     }
@@ -478,6 +519,7 @@ export class CardCountLedger {
       ...subtree.keys(),
       ...unknown,
       ...gained,
+      ...landed,
     ]);
     for (const id of ids) {
       const row = await read(id);
@@ -496,14 +538,25 @@ export class CardCountLedger {
       }
       const patch: Partial<Row> = {};
       const ownDelta = ownById.get(id);
+      let cardCountAfter = row.cardCount;
       if (ownDelta) {
         const next = await nextOwnCounts(ctx, row, ownDelta);
+        if (next) cardCountAfter = next.cardCount;
         if (
           next &&
           (next.cardCount !== row.cardCount ||
             next.nonVariationCardCount !== row.nonVariationCardCount)
         ) {
           Object.assign(patch, next);
+        }
+      }
+      // NEO-532 — only the rows a card landed on or left (`ownDelta`); an
+      // ancestor reached for its subtree count is never stamped or cleared.
+      if (ownDelta || landed.has(id)) {
+        if (cardCountAfter === 0) {
+          if (row.lastCardAt !== undefined) patch.lastCardAt = undefined;
+        } else if (landed.has(id)) {
+          patch.lastCardAt = Date.now();
         }
       }
       Object.assign(patch, nextSubtreeCounts(row, subtree.get(id), unknown.has(id)));
@@ -893,6 +946,204 @@ export const backfillVariantCardCounts = internalAction({
     return {
       armed,
       message: refusedForFlag ? NOT_ARMED_MESSAGE : armed ? APPLIED_MESSAGE : DRY_RUN_MESSAGE,
+      complete,
+      ...(resumeAt !== undefined ? { cursor: resumeAt } : {}),
+      ...totals,
+    };
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// The lastCardAt backfill (NEO-532)
+// ───────────────────────────────────────────────────────────────────────────
+
+const LAST_CARD_AT_ENV_FLAG = "ALLOW_LAST_CARD_AT_BACKFILL";
+
+function lastCardAtDeploymentIsArmed(): boolean {
+  const value = process.env[LAST_CARD_AT_ENV_FLAG];
+  return value === "1" || value === "true";
+}
+
+const LAST_CARD_AT_NOT_ARMED_MESSAGE =
+  `Refused: this deployment is not armed for the backfill. ` +
+  `Set ${LAST_CARD_AT_ENV_FLAG}=1 on it (npx convex env set ${LAST_CARD_AT_ENV_FLAG} 1), ` +
+  `re-run, and remove the flag afterwards. Nothing was written; the counts ` +
+  `below are what an armed run would have done.`;
+const LAST_CARD_AT_DRY_RUN_MESSAGE =
+  `Dry run — nothing written. Arm with ${LAST_CARD_AT_ENV_FLAG}=1 on the ` +
+  `deployment and re-run with {"confirm":"${CONFIRM_TOKEN}"} to apply.`;
+
+const lastCardAtPageResultValidator = v.object({
+  scanned: v.number(),
+  /** Rows without a stamp that hold a card: stamped (or, dry, would be). */
+  filled: v.number(),
+  /** Rows that already carry a stamp: left exactly as they are. */
+  alreadyStamped: v.number(),
+  /** Rows without a stamp and without a card: nothing to stamp. */
+  empty: v.number(),
+  isDone: v.boolean(),
+  continueCursor: v.string(),
+});
+
+/**
+ * One page of one card-bearing level. A row with no `lastCardAt` is stamped
+ * with its newest card's `_creationTime` (one `.first()` on
+ * `by_selector_option`, descending); a row that already carries one, or holds
+ * no card, is left alone. `apply: false` computes the same answer and writes
+ * nothing. Cost per page: the page's rows plus at most one card read and one
+ * patch each.
+ */
+export const backfillLastCardAtPage = internalMutation({
+  args: {
+    level: v.union(
+      v.literal("variantType"),
+      v.literal("insert"),
+      v.literal("parallel"),
+    ),
+    cursor: v.union(v.string(), v.null()),
+    apply: v.boolean(),
+    numItems: v.optional(v.number()),
+  },
+  returns: lastCardAtPageResultValidator,
+  handler: async (ctx, args) => {
+    if (args.apply && !lastCardAtDeploymentIsArmed()) {
+      throw new ConvexError(LAST_CARD_AT_NOT_ARMED_MESSAGE);
+    }
+    const numItems = Math.max(1, Math.min(args.numItems ?? ROWS_PER_PAGE, ROWS_PER_PAGE));
+    const page = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level", (q) => q.eq("level", args.level))
+      .paginate({ cursor: args.cursor, numItems });
+
+    let filled = 0;
+    let alreadyStamped = 0;
+    let empty = 0;
+    for (const row of page.page) {
+      if (row.lastCardAt !== undefined) {
+        alreadyStamped++;
+        continue;
+      }
+      const newest = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
+        .order("desc")
+        .first();
+      if (!newest) {
+        empty++;
+        continue;
+      }
+      filled++;
+      if (args.apply) await ctx.db.patch(row._id, { lastCardAt: newest._creationTime });
+    }
+    return {
+      scanned: page.page.length,
+      filled,
+      alreadyStamped,
+      empty,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+    };
+  },
+});
+
+/**
+ * NEO-532 — stamp `selectorOptions.lastCardAt` on every card-bearing row
+ * that holds cards and has no stamp yet, from its newest card. Dry run by
+ * default; see the header for the operator commands.
+ *
+ * Walks `variantType`, then `insert`, then `parallel`, paging each. The
+ * returned `cursor` has the same `<level>:<skip>:<page cursor>` shape as
+ * `backfillVariantCardCounts` (skip is always 0 here) and resumes exactly
+ * there. Idempotent: a stamped row costs its read only, and is never
+ * rewritten (a stamp the ledger wrote is newer than any this would write).
+ */
+export const backfillLastCardAt = internalAction({
+  args: {
+    confirm: v.optional(v.string()),
+    cursor: v.optional(v.string()),
+    /** Lowers the rows per page; for tests. */
+    numItems: v.optional(v.number()),
+  },
+  returns: v.object({
+    armed: v.boolean(),
+    message: v.string(),
+    complete: v.boolean(),
+    cursor: v.optional(v.string()),
+    scanned: v.number(),
+    filled: v.number(),
+    alreadyStamped: v.number(),
+    empty: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const intendsToWrite = args.confirm === CONFIRM_TOKEN;
+    const refusedForFlag = intendsToWrite && !lastCardAtDeploymentIsArmed();
+    const armed = intendsToWrite && !refusedForFlag;
+    const startedAt = Date.now();
+
+    let levelIndex = 0;
+    let cursor: string | null = null;
+    if (args.cursor) {
+      const parsed = parseResumeCursor(args.cursor);
+      levelIndex = parsed.levelIndex;
+      cursor = parsed.cursor;
+    }
+
+    const totals = { scanned: 0, filled: 0, alreadyStamped: 0, empty: 0 };
+    let complete = false;
+    for (;;) {
+      if (levelIndex >= CARD_BEARING_LEVELS.length) {
+        complete = true;
+        break;
+      }
+      const level = CARD_BEARING_LEVELS[levelIndex];
+      const page: {
+        scanned: number;
+        filled: number;
+        alreadyStamped: number;
+        empty: number;
+        isDone: boolean;
+        continueCursor: string;
+      } = await ctx.runMutation(internal.cardCounts.backfillLastCardAtPage, {
+        level,
+        cursor,
+        apply: armed,
+        ...(args.numItems !== undefined ? { numItems: args.numItems } : {}),
+      });
+      totals.scanned += page.scanned;
+      totals.filled += page.filled;
+      totals.alreadyStamped += page.alreadyStamped;
+      totals.empty += page.empty;
+      if (page.isDone) {
+        levelIndex += 1;
+        cursor = null;
+      } else {
+        cursor = page.continueCursor;
+      }
+      if (Date.now() - startedAt >= TIME_BUDGET_MS) break;
+    }
+
+    // One audit line: counts and flags only.
+    console.log(
+      JSON.stringify({
+        msg: "backfill_last_card_at",
+        armed,
+        refusedForFlag,
+        complete,
+        ...totals,
+      }),
+    );
+
+    const resumeAt =
+      complete || levelIndex >= CARD_BEARING_LEVELS.length
+        ? undefined
+        : `${CARD_BEARING_LEVELS[levelIndex]}:0:${cursor ?? ""}`;
+    return {
+      armed,
+      message: refusedForFlag
+        ? LAST_CARD_AT_NOT_ARMED_MESSAGE
+        : armed
+          ? APPLIED_MESSAGE
+          : LAST_CARD_AT_DRY_RUN_MESSAGE,
       complete,
       ...(resumeAt !== undefined ? { cursor: resumeAt } : {}),
       ...totals,

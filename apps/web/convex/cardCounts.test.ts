@@ -822,3 +822,245 @@ describe("a refusal says how many collectors are in the way", () => {
     );
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-532 — `lastCardAt`, stamped by the same flush that keeps the counts
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("lastCardAt (NEO-532)", () => {
+  const STAMP = 1_800_000_000_000;
+  afterEach(() => vi.useRealTimers());
+
+  /** Date-only fake clock, so `Date.now()` at flush is exactly `at`. */
+  function clock(at: number) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at);
+  }
+
+  const stampOf = (t: T, id: Id<"selectorOptions">) =>
+    t.run(async (ctx) => (await ctx.db.get(id))!.lastCardAt ?? null);
+
+  /** A flush that lands `cardNumber` on `rowId`, as insertCardRow's ledger does. */
+  async function land(t: T, rowId: Id<"selectorOptions">, cardNumber: string) {
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      const id = await insertTestCard(ctx, {
+        selectorOptionId: rowId,
+        cardNumber,
+        cardName: `Card ${cardNumber}`,
+        platformData: {},
+        sortOrder: Number.parseInt(cardNumber, 10) || 0,
+        lastUpdated: NOW,
+      });
+      ledger.addCard((await ctx.db.get(id))!);
+      await ledger.flush(ctx);
+    });
+  }
+
+  test("a card inserted stamps its own row, and no ancestor", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    await land(t, s.parallel, "1");
+    expect(await stampOf(t, s.parallel)).toBe(STAMP);
+    for (const ancestor of [s.insert, s.insertType, s.set, s.brand, s.year, s.sport]) {
+      expect(await stampOf(t, ancestor)).toBeNull();
+    }
+  });
+
+  test("insertCardRow through its ledger stamps the destination", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      await insertCardRow(
+        ctx,
+        {
+          selectorOptionId: s.base,
+          cardNumber: "1",
+          cardName: "One",
+          platformData: {},
+          pendingPlayerNames: [],
+          pendingTeamNames: [],
+          sortOrder: 0,
+          playerNames: [],
+        },
+        { sportValue: "Baseball", setNameValue: "Chrome" },
+        { sport: async () => s.sport },
+        ledger,
+      );
+      await ledger.flush(ctx);
+    });
+    expect(await stampOf(t, s.base)).toBe(STAMP);
+    expect(await stampOf(t, s.set)).toBeNull();
+  });
+
+  test("a second landing moves the stamp forward", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    await land(t, s.base, "1");
+    vi.setSystemTime(STAMP + 60_000);
+    await land(t, s.base, "2");
+    expect(await stampOf(t, s.base)).toBe(STAMP + 60_000);
+  });
+
+  test("moveCards stamps the destination and leaves the source's stamp alone", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    const a = await addCard(t, s.base, "1");
+    await addCard(t, s.base, "2");
+    await land(t, s.otherBase, "9");
+    await primeCounts(t, s.base, s.otherBase);
+    await t.run((ctx) => ctx.db.patch(s.base, { lastCardAt: STAMP - 1000 }));
+    vi.setSystemTime(STAMP + 5000);
+    await t.run(async (ctx) => {
+      await moveCards(ctx, s.otherBase, [{ card: (await ctx.db.get(a))!, slotMap: {} }], NOW);
+    });
+    expect(await stampOf(t, s.otherBase)).toBe(STAMP + 5000);
+    expect(await stampOf(t, s.base)).toBe(STAMP - 1000);
+  });
+
+  test("a removal alone does not stamp, and leaves an existing stamp where it was", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    const a = await addCard(t, s.base, "1");
+    await addCard(t, s.base, "2");
+    await primeCounts(t, s.base);
+    await t.run((ctx) => ctx.db.patch(s.base, { lastCardAt: STAMP - 1000 }));
+    vi.setSystemTime(STAMP + 5000);
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      await removeCardRow(ctx, (await ctx.db.get(a))!, ledger);
+      await ledger.flush(ctx);
+    });
+    expect(await stored(t, s.base)).toMatchObject({ cardCount: 1 });
+    expect(await stampOf(t, s.base)).toBe(STAMP - 1000);
+  });
+
+  test("a removal on an unstamped row leaves it unstamped", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const a = await addCard(t, s.base, "1");
+    await addCard(t, s.base, "2");
+    await primeCounts(t, s.base);
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      await removeCardRow(ctx, (await ctx.db.get(a))!, ledger);
+      await ledger.flush(ctx);
+    });
+    expect(await stampOf(t, s.base)).toBeNull();
+  });
+
+  test("a card added and another removed in one mutation still stamps, though the count is unchanged", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    const a = await addCard(t, s.base, "1");
+    await primeCounts(t, s.base);
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      const fresh = await insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "2",
+        cardName: "Two",
+        platformData: {},
+        sortOrder: 2,
+        lastUpdated: NOW,
+      });
+      ledger.addCard((await ctx.db.get(fresh))!);
+      await removeCardRow(ctx, (await ctx.db.get(a))!, ledger);
+      expect(ledger.deltaFor(s.base)).toEqual({ all: 0, nonVariation: 0 });
+      await ledger.flush(ctx);
+    });
+    expect(await stored(t, s.base)).toMatchObject({ cardCount: 1 });
+    expect(await stampOf(t, s.base)).toBe(STAMP);
+  });
+
+  test("a flush that takes the row to zero cards clears the stamp", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    clock(STAMP);
+    const a = await addCard(t, s.base, "1");
+    await primeCounts(t, s.base);
+    await t.run((ctx) => ctx.db.patch(s.base, { lastCardAt: STAMP }));
+    await t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
+      await removeCardRow(ctx, (await ctx.db.get(a))!, ledger);
+      await ledger.flush(ctx);
+    });
+    expect(await stored(t, s.base)).toMatchObject({ cardCount: 0 });
+    expect(await stampOf(t, s.base)).toBeNull();
+  });
+});
+
+describe("backfillLastCardAt (NEO-532)", () => {
+  test("a dry run writes nothing and reports what it would stamp", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await addCard(t, s.base, "1");
+    await addCard(t, s.parallel, "1");
+    const result = await t.action(internal.cardCounts.backfillLastCardAt, {});
+    expect(result).toMatchObject({ armed: false, complete: true, filled: 2, alreadyStamped: 0, empty: 3 });
+    expect(await t.run(async (ctx) => (await ctx.db.get(s.base))!.lastCardAt ?? null)).toBeNull();
+  });
+
+  test("an armed run on an unarmed deployment is refused, not thrown, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await addCard(t, s.base, "1");
+    const result = await t.action(internal.cardCounts.backfillLastCardAt, { confirm: "BACKFILL" });
+    expect(result.armed).toBe(false);
+    expect(result.message).toMatch(/not armed/);
+    expect(await t.run(async (ctx) => (await ctx.db.get(s.base))!.lastCardAt ?? null)).toBeNull();
+  });
+
+  test("armed: stamps each row from its newest card's creation time, and a rerun writes nothing", async () => {
+    vi.stubEnv("ALLOW_LAST_CARD_AT_BACKFILL", "1");
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await addCard(t, s.base, "1");
+    const newest = await addCard(t, s.base, "2");
+    await addCard(t, s.parallel, "1");
+    const newestAt = await t.run(async (ctx) => (await ctx.db.get(newest))!._creationTime);
+
+    const first = await t.action(internal.cardCounts.backfillLastCardAt, { confirm: "BACKFILL" });
+    expect(first).toMatchObject({ armed: true, complete: true, filled: 2, alreadyStamped: 0 });
+    expect(await t.run(async (ctx) => (await ctx.db.get(s.base))!.lastCardAt)).toBe(newestAt);
+    // The empty rows, and every ancestor, stay unstamped.
+    for (const id of [s.otherBase, s.insertType, s.insert, s.set, s.sport]) {
+      expect(await t.run(async (ctx) => (await ctx.db.get(id))!.lastCardAt ?? null)).toBeNull();
+    }
+
+    const again = await t.action(internal.cardCounts.backfillLastCardAt, { confirm: "BACKFILL" });
+    expect(again).toMatchObject({ filled: 0, alreadyStamped: 2 });
+  });
+
+  test("a row that already carries a stamp keeps it, even a newer one than its cards", async () => {
+    vi.stubEnv("ALLOW_LAST_CARD_AT_BACKFILL", "1");
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await addCard(t, s.base, "1");
+    await t.run((ctx) => ctx.db.patch(s.base, { lastCardAt: 42 }));
+    const result = await t.action(internal.cardCounts.backfillLastCardAt, { confirm: "BACKFILL" });
+    expect(result).toMatchObject({ filled: 0, alreadyStamped: 1 });
+    expect(await t.run(async (ctx) => (await ctx.db.get(s.base))!.lastCardAt)).toBe(42);
+  });
+
+  test("pages across levels with numItems 1 and still stamps every row", async () => {
+    vi.stubEnv("ALLOW_LAST_CARD_AT_BACKFILL", "1");
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await addCard(t, s.base, "1");
+    await addCard(t, s.insert, "1");
+    await addCard(t, s.parallel, "1");
+    const result = await t.action(internal.cardCounts.backfillLastCardAt, {
+      confirm: "BACKFILL",
+      numItems: 1,
+    });
+    expect(result).toMatchObject({ complete: true, scanned: 5, filled: 3 });
+  });
+});

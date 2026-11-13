@@ -10,9 +10,10 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { createCardCountLedger } from "./cardCounts";
 import {
   COULD_FIT_CARDS,
   FILED_ONLY_ERA_END,
@@ -22,6 +23,7 @@ import {
   SYNC_CARDS_NAMED,
   INTAKE_RECENT_MS,
   NEW_SETS_SHOWN,
+  NEW_SETS_VARIANTS,
   SALE_LINES,
   SET_LOAD_MS,
   SALES_SHOWN,
@@ -828,12 +830,24 @@ describe("newSets", () => {
   // Driven on Date only (convex-test stamps `_creationTime` from it), from a
   // moment after the real clock, so a later upload is truly later.
   const BASE = Date.now() + 365 * DAY;
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  /** The armed lastCardAt backfill, as the operator runs it on rows from before the field. */
+  async function stampFromCards(t: S["t"]) {
+    vi.stubEnv("ALLOW_LAST_CARD_AT_BACKFILL", "1");
+    return t.action(internal.cardCounts.backfillLastCardAt, { confirm: "BACKFILL" });
+  }
 
   async function fakeSetup() {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(BASE);
-    return setup();
+    const s = await setup();
+    // The fixture's cards were written without a ledger; stamp them the way the backfill does.
+    await stampFromCards(s.t);
+    return s;
   }
 
   /** A row under `parentId`. */
@@ -843,9 +857,10 @@ describe("newSets", () => {
     );
   }
 
-  /** `n` cards uploaded now onto `variantId`. */
+  /** `n` cards uploaded now onto `variantId`, through a ledger like every real writer (so the row is stamped). */
   function upload(s: S, variantId: Id<"selectorOptions">, n: number, title = "Card") {
     return s.t.run(async (ctx) => {
+      const ledger = createCardCountLedger();
       const cards: Id<"cardChecklist">[] = [];
       for (let i = 0; i < n; i++) {
         cards.push(
@@ -860,9 +875,33 @@ describe("newSets", () => {
             lastUpdated: 0,
           } as never),
         );
+        ledger.addCard((await ctx.db.get(cards[cards.length - 1]))!);
       }
+      await ledger.flush(ctx);
       return cards;
     });
+  }
+
+  /** One card written straight to the table, with no ledger: a row from before the stamp. */
+  function unstampedCard(s: S, variantId: Id<"selectorOptions">) {
+    return s.t.run((ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Player 1",
+        listingTitle: "Old #1",
+        sportId: s.fx.sportId,
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 0,
+      } as never),
+    );
+  }
+
+  /** A set under 1986 Topps with a bare Base type (no cards yet). */
+  async function emptyBase(s: S, name: string) {
+    const setId = await option(s, "setName", name, s.fx.topps86Id);
+    return { setId, baseId: await option(s, "variantType", "Base", setId) };
   }
 
   /** A set under 1986 Topps with a Base of `n` cards, uploaded now. */
@@ -957,6 +996,88 @@ describe("newSets", () => {
     expect(mine[0].set.name).toBe(`Set ${NEW_SETS_SHOWN + 1}`);
     expect(mine.every((e) => e.wholeSet)).toBe(true);
     expect(await s.them.query(api.dashboard.newSets, {})).toEqual(mine);
+  });
+
+  test("two variants uploaded side by side (interleaved) are both listed", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    const a = await emptyBase(s, "Set A");
+    const b = await emptyBase(s, "Set B");
+    // A at T, T+2, T+4 min; B at T+1, T+3 min.
+    for (const [who, min] of [["a", 0], ["b", 1], ["a", 2], ["b", 3], ["a", 4]] as const) {
+      vi.setSystemTime(T + min * 60_000);
+      await upload(s, who === "a" ? a.baseId : b.baseId, 1);
+    }
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Set A", "Set B", "Topps Chrome"]);
+  });
+
+  test("a late card on an earlier upload does not hide a set uploaded between", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    const a = await emptyBase(s, "Set A");
+    const b = await emptyBase(s, "Set B");
+    vi.setSystemTime(T);
+    await upload(s, a.baseId, 1);
+    vi.setSystemTime(T + 60_000);
+    await upload(s, b.baseId, 1);
+    vi.setSystemTime(T + 2 * 60_000);
+    await upload(s, a.baseId, 1);
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Set A", "Set B", "Topps Chrome"]);
+  });
+
+  test("a stamp left newer by a deleted card lists the checklist at its real newest card's time", async () => {
+    const s = await fakeSetup();
+    const T = BASE + 30 * DAY;
+    const x = await emptyBase(s, "Set X");
+    const y = await emptyBase(s, "Set Y");
+    vi.setSystemTime(T);
+    const [kept] = await upload(s, x.baseId, 1);
+    vi.setSystemTime(T + 10 * 60_000);
+    const [gone] = await upload(s, x.baseId, 1);
+    vi.setSystemTime(T + 5 * 60_000);
+    await upload(s, y.baseId, 1);
+    // The newest card is deleted straight off the table; X's stamp (T+10m) now outruns its cards.
+    await s.t.run((ctx) => ctx.db.delete(gone));
+    const keptAt = await s.t.run(async (ctx) => (await ctx.db.get(kept))!._creationTime);
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Set Y", "Set X", "Topps Chrome"]);
+    expect(out[1].addedAt).toBe(keptAt);
+  });
+
+  test("a stamped row whose cards are all gone lists nothing", async () => {
+    const s = await fakeSetup();
+    vi.setSystemTime(BASE + 30 * DAY);
+    const z = await emptyBase(s, "Set Z");
+    const [only] = await upload(s, z.baseId, 1);
+    await s.t.run((ctx) => ctx.db.delete(only));
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out.map((e) => e.set.name)).toEqual(["Topps Chrome"]);
+  });
+
+  test("a variant with cards but no stamp is not listed until the backfill stamps it", async () => {
+    const s = await fakeSetup();
+    vi.setSystemTime(BASE + 30 * DAY);
+    const old = await emptyBase(s, "Old Set");
+    await unstampedCard(s, old.baseId);
+    expect((await s.me.query(api.dashboard.newSets, {})).map((e) => e.set.name)).toEqual(["Topps Chrome"]);
+    await stampFromCards(s.t);
+    expect((await s.me.query(api.dashboard.newSets, {})).map((e) => e.set.name)).toEqual(["Old Set", "Topps Chrome"]);
+  });
+
+  test("more than NEW_SETS_VARIANTS stamped variants: still NEW_SETS_SHOWN entries, the newest ones", async () => {
+    const s = await fakeSetup();
+    const total = NEW_SETS_VARIANTS + 50;
+    for (let i = 0; i < total; i++) {
+      vi.setSystemTime(BASE + (i + 1) * DAY);
+      await setWithBase(s, `Bulk ${i}`, 1);
+    }
+    const out = await s.me.query(api.dashboard.newSets, {});
+    expect(out).toHaveLength(NEW_SETS_SHOWN);
+    expect(out.map((e) => e.set.name)).toEqual(
+      Array.from({ length: NEW_SETS_SHOWN }, (_, k) => `Bulk ${total - 1 - k}`),
+    );
   });
 
   test("an empty catalog: nothing", async () => {
