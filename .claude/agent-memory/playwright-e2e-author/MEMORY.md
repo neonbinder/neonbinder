@@ -68,16 +68,16 @@
 - [Pick a fixture-owned name by name](patterns_pick_a_fixture_owned_name_by_name.md) — a committing spec chooses its row by a name only its fixture raises, never "the first row"; an…
 - [NEO-335 Tidy up this set](reference_neo335_teams_on_cards_section.md) — wizard chrome, post-name steps, teams-line handles, the `N need you` pill and walker
 - [Quick-add PlayerPicker](reference_quick_add_player_picker.md) — create/pick handles; drawer chip is the only persistence proof
-- [Probe fixture attribute tokens from BSC public catalogue](reference_probe_fixture_attribute_tokens_from_bsc_public_catalogue.md) — productName can say AU, SN99 while…
-- [Pairing conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — NEO-344: choices are `<value> — use this name|these players for <scope>`; read each…
-- [Prove a theme by painted colour](patterns_prove_a_theme_by_painted_colour.md) — banner bg + heading colour via toHaveCSS; pre-mount false positive after reload; second-context…
-- [Read a row name with ariaSnapshot](patterns_read_a_row_name_with_aria_snapshot.md) — pick an unknown seed row by role+regex, read its accessible name via ariaSnapshot, then exact…
-- [Collection checklist total and drawer](patterns_collection_checklist_total_and_drawer.md) — NEO-358: T = listed minus variation rows; missing stored count invisible; drawer URL…
-- [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the server-confirmed notice before leaving /collection; hand-made card…
-- [Wizard save wait is a commit headroom ruler](patterns_wizard_save_wait_is_a_commit_headroom_ruler.md) — red 'Saved N cards' on a 300-card commit: not thrown; Step 1 of N in the…
-- [Hidden empty levels need app-created rows](patterns_hidden_empty_levels_need_app_created_rows.md) — NEO-358: prove the zero-hide on a spec-made set, sibling visible first, then…
-- [Collection binders flake mechanisms](patterns_collection_binders_flake_mechanisms.md) — NEO-359: Undo-before-write id swap, tray focus-scroll eats clicks, parallel hits break…
-- [Find live lookups from convex logs](patterns_find_live_lookups_from_convex_logs.md) — list every Wikidata miss of a CI run from the convex-logs artifacts, which ones were genuine…
+- [Probe fixture attribute tokens from BSC public catalogue](reference_probe_fixture_attribute_tokens_from_bsc_public_catalogue.md) — productName can say AU, SN99 while playerAttribute is empty; probe before asserting on a token
+- [Pairing conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — NEO-344: choices are `<value> — use this name|these players for <scope>`; read each side's value off the unmatched columns before linking; toBeChecked, exact scopes, no-source negatives
+- [Prove a theme by painted colour](patterns_prove_a_theme_by_painted_colour.md) — banner bg + heading colour via toHaveCSS; pre-mount false positive after reload; second-context profile proof; no-flash is a gap
+- [Read a row name with ariaSnapshot](patterns_read_a_row_name_with_aria_snapshot.md) — pick an unknown seed row by role+regex, read its accessible name via ariaSnapshot, then exact names
+- [Collection checklist total and drawer](patterns_collection_checklist_total_and_drawer.md) — NEO-358: T = listed minus variation rows; missing stored count invisible; drawer URL, add-mode route, width
+- [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the server-confirmed notice before leaving /collection or pressing the next Remove (a notice reflow loses the press); hand-made card names, Insert column
+- [Wizard save wait is a commit headroom ruler](patterns_wizard_save_wait_is_a_commit_headroom_ruler.md) — red 'Saved N cards' on a 300-card commit: not thrown; Step 1 of N in the PNG is the review drain; ~3.5s healthy vs 7s budget
+- [Hidden empty levels need app-created rows](patterns_hidden_empty_levels_need_app_created_rows.md) — NEO-358: prove the zero-hide on a spec-made set, sibling visible first, then absent/present/absent
+- [Collection binders flake mechanisms](patterns_collection_binders_flake_mechanisms.md) — NEO-359: Undo-before-write id swap, tray focus-scroll eats clicks, parallel hits break prefix regexes
+- [Find live lookups from convex logs](patterns_find_live_lookups_from_convex_logs.md) — list every Wikidata miss of a CI run from the convex-logs artifacts, which ones were genuine no-matches, and how a spec avoids a lookup (support/recorded-names.ts)
 - [Marketplace listing spec shape](patterns_marketplace_listing_spec_shape.md) — NEO-370: what "N listed" proves, leave+Back flush, distinct counts, afterEach on a second page
 - [Listing spec Rev 4 shape](patterns_marketplace_listing_rev4_shape.md) — NEO-370 Rev 4: Start on Profile, Sync status row, stop = remove sign-in, first-Sync throttle toast
 - [eBay listing spec shape](patterns_ebay_listing_spec_shape.md) — NEO-415: seed-hop connect, loud fail when unwired, Set me up branch, two Sync status regions, Switch is a checkbox
@@ -103,6 +103,8 @@
 - [Custom-sport player fixture makes no lookup](patterns_custom_sport_player_fixture_makes_no_lookup.md) — NEO-462: minted players in the custom sport, no_match log is a refusal, birth-year forks, Back is an exit
 - [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
+- [Card photo viewer specs](patterns_card_photo_viewer_specs.md) — NEO-481: viewer/tile names, served-file orientation, crop-box drag geometry, More steps, restart a frozen Vite after resync
+- [aria-disabled refusal by keyboard](patterns_aria_disabled_refusal_by_keyboard.md) — focus()+Enter to prove a refusal; blur (Tab) a field before clicking the control its value enables
 - [Shell tabs live in the Menu on a phone](patterns_shell_tabs_phone_menu.md) — use goViaShell for /demo and signed-in shell tabs; match [?&]tab= in URLs
 - [Keep failure artifacts across runs](patterns_keep_failure_artifacts.md) — every run wipes results/; use --output=<scratch> when chasing an intermittent red
 - [Responsive duplicates and text locators](patterns_responsive_duplicates_and_text_locators.md) — getByText matches the CSS-hidden twin; filter({ visible: true }); branch on isMobile only for layout facts
@@ -123,3 +125,4 @@
 - [Compare a publisher checklist with BSC facets](reference_compare_a_publisher_checklist_with_bsc_facets.md) — one aggregation call lists every BSC section; insert parallels are…
 - [Checklist is a Match Cards source](patterns_checklist_is_a_match_cards_source.md) — NEO-496: BSC + checklist opens Match Cards paused; paste heading has no digit; no-checklist branches are dead
 - [Blocked parallel via a collector copy](patterns_blocked_parallel_via_a_collector_copy.md) — NEO-496: Have one built-parallel card; list/ledger strings; finally cleanup
+- [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)

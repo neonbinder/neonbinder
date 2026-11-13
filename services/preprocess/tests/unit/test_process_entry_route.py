@@ -226,9 +226,41 @@ class TestHappyPath:
             # NEO-315: the whole-image baseline is only ever set on a FAST
             # decline; a completed result carries null.
             "baseline": None,
+            # NEO-481: the passthrough's box is the whole uprighted frame.
+            "crop_box": {
+                "cx": 4.0,
+                "cy": 4.0,
+                "w": 8.0,
+                "h": 8.0,
+                "angle": 0.0,
+                "srcW": 8,
+                "srcH": 8,
+            },
         }
         # Rotation 0 → the stored output is the winning bytes unchanged.
         assert fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg") == entry
+
+    def test_crop_box_is_in_the_uprighted_frame_before_the_turn(self, fake_gcs, monkeypatch):
+        """NEO-481: the box is measured on the frame the cascade cut, which is
+        the EXIF-uprighted original, and does not include the orientation
+        turn: the editor opens on it with turns from rotation_degrees."""
+        _stub_orient(monkeypatch, rotation=90)
+        _stub_classify(monkeypatch)
+        entry = _jpeg(size=(30, 20))
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", entry, "image/jpeg")
+
+        body = _post_entry(entry_index=0).json()
+
+        assert body["rotation_degrees"] == 90
+        assert body["crop_box"] == {
+            "cx": 15.0,
+            "cy": 10.0,
+            "w": 30.0,
+            "h": 20.0,
+            "angle": 0.0,
+            "srcW": 30,
+            "srcH": 20,
+        }
 
     def test_unknown_side_serialises_as_null(self, fake_gcs, monkeypatch):
         # NEO-327: the pairing pool reads this null as "no label" and decides
@@ -841,6 +873,8 @@ class TestFastRole:
         # the decline so Convex can hand them to HEAVY.
         assert body["dhash"] == f"{compute_dhash(entry):016x}"
         assert body["baseline"] == {"rotation_degrees": 90, "confidence": 0.75, "text_count": 33}
+        # NEO-481: no crop, so no box.
+        assert body["crop_box"] is None
         # Nothing was written to the output key — the HEAVY service will.
         assert not any(name.startswith(OUTPUT_PREFIX) for name in fake_gcs.names(BUCKET))
         # The model was never touched, and classify never ran (no accepted crop).

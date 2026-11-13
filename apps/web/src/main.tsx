@@ -15,6 +15,7 @@ import { ThemeProvider, useTheme } from "@/src/theme/ThemeProvider";
 import ConvexClientProvider from "@/components/modules/ConvexClientProvider";
 import { ProfileThemeSync } from "@/src/theme/ProfileThemeSync";
 import { HeldIntakeOwner } from "@/app/collection/final/intake/HeldIntakeOwner";
+import { PreviewOwner } from "@/components/modules/CardPhotoViewer/PreviewOwner";
 import * as Sentry from "@sentry/react";
 
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
@@ -71,6 +72,7 @@ const TestBackdateDashboardVisit = lazy(() => import("@/app/testing/backdate-das
 const TestSeedDashboard = lazy(() => import("@/app/testing/seed-dashboard/page"));
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
 const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
+const TestFailPlaceholderEntry = lazy(() => import("@/app/testing/fail-placeholder-entry/page"));
 const TestSeedPickOrder = lazy(() => import("@/app/testing/seed-pick-order/page"));
 const Dashboard = lazy(loadDashboard);
 const ProfilePublic = lazy(loadProfilePublic);
@@ -232,6 +234,11 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             path="/testing/seed-placeholder-upload"
             element={<Deferred><TestSeedPlaceholderUpload /></Deferred>}
           />
+          {/* NEO-481: fails one of the caller's real uploaded scans, for the hand-crop rescue spec. */}
+          <Route
+            path="/testing/fail-placeholder-entry"
+            element={<Deferred><TestFailPlaceholderEntry /></Deferred>}
+          />
           <Route path="/testing/seed-pick-order" element={<Deferred><TestSeedPickOrder /></Deferred>} />
 
           {/* Protected routes — wrapped in binder shell */}
@@ -390,6 +397,7 @@ function ThemedApp() {
         <PostHogProvider>
           <ConvexClientProvider>
             <HeldIntakeOwner />
+            <PreviewOwner />
             <ProfileThemeSync />
             <SentryErrorBoundary />
           </ConvexClientProvider>

@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { PendingPhotoEdit } from "@/lib/photo-edit/geometry";
+import { CardPhoto } from "@/components/modules/CardPhotoViewer/EditedPhoto";
+import { scanPreviewKey } from "@/components/modules/CardPhotoViewer/convexEdits";
 
 /**
  * One cropped scan, behind a signed GET that expires in ~15 minutes.
@@ -10,6 +13,12 @@ import { api } from "@/convex/_generated/api";
  * already started expiring — a user who leaves the tab open and comes back to
  * broken images is the exact failure this avoids. `onError` re-mints once, which
  * covers the same expiry from the other direction.
+ *
+ * NEO-481: a hand edit writes a new version of the scan's output, so
+ * `version` (the row's `editVersion`) is part of the fetch's key and a new
+ * version mints a new URL. While an edit renders (`pending`), the picture is
+ * the edit's preview with "Touching it up…" over it. With `onOpen` the picture
+ * is a button named `openLabel` that opens the card photo viewer.
  */
 export function ScanImage({
   jobId,
@@ -20,10 +29,22 @@ export function ScanImage({
   // default keeps every existing caller rendering as before.
   className = "h-40 w-auto rounded border border-rule object-contain",
   forcePortrait = false,
+  version,
+  pending,
+  onOpen,
+  openLabel,
 }: {
   jobId: string;
   entryIndex: number;
   alt: string;
+  /** NEO-481 — the row's `editVersion`: a new version mints a new URL. */
+  version?: number;
+  /** NEO-481 — an edit still rendering (or failed): drawn as its preview with a chip. */
+  pending?: PendingPhotoEdit;
+  /** NEO-481 — makes the picture a button that opens the viewer; it gets the button, for focus to come back to. */
+  onOpen?: (from: HTMLElement) => void;
+  /** NEO-481 — the button's name ("Open front of …"). Required with `onOpen`. */
+  openLabel?: string;
   className?: string;
   /**
    * Turn a landscape crop upright so it fills a portrait pocket.
@@ -48,13 +69,18 @@ export function ScanImage({
   const [landscape, setLandscape] = useState(false);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // The opener's aria-label replaces what is inside it, so a state shown in the
+  // picture (a pending edit, an unavailable image) is its description instead.
+  const stateId = useId();
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const result = await createDownloadUrl({ jobId, entryIndex });
-        if (!cancelled) setUrl(result.url);
+        if (cancelled) return;
+        setUrl(result.url);
+        setFailed(false);
       } catch {
         if (!cancelled) setFailed(true);
       }
@@ -68,29 +94,60 @@ export function ScanImage({
     // effects. The fetch is keyed on the arguments that actually identify the
     // object, plus `attempt` for the re-mint.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, entryIndex, attempt]);
+  }, [jobId, entryIndex, attempt, version]);
+
+  const opener = (picture: ReactNode, described = false) =>
+    onOpen ? (
+      <button
+        type="button"
+        aria-label={openLabel ?? alt}
+        aria-describedby={described ? stateId : undefined}
+        className="shrink-0 rounded focus-outline"
+        onClick={(e) => onOpen(e.currentTarget)}
+      >
+        {picture}
+      </button>
+    ) : (
+      picture
+    );
 
   if (failed) {
-    return (
+    return opener(
       <div
+        id={stateId}
         className={`flex items-center justify-center bg-field/60 p-2 text-center text-xs text-ink-3 ${className}`}
       >
         Image unavailable
-      </div>
+      </div>,
+      true,
     );
   }
 
   if (!url) {
-    return (
+    return opener(
       <div
         className={`flex items-center justify-center bg-field/60 p-2 text-center text-xs text-ink-3 ${className}`}
       >
         Loading image…
-      </div>
+      </div>,
     );
   }
 
-  return (
+  if (pending) {
+    return opener(
+      <CardPhoto
+        src={url}
+        alt={alt}
+        className={className}
+        pending={pending}
+        previewKey={scanPreviewKey(jobId, entryIndex)}
+        chipId={stateId}
+      />,
+      true,
+    );
+  }
+
+  return opener(
     <img
       src={url}
       alt={alt}
@@ -125,6 +182,6 @@ export function ScanImage({
           setFailed(true);
         }
       }}
-    />
+    />,
   );
 }

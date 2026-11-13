@@ -728,6 +728,47 @@ export const intakeDefaultsValidator = v.object({
   notes: v.optional(v.string()),
   minPriceCents: v.optional(v.number()),
 });
+/** NEO-481 — a hand crop, in source pixels of the frame srcW x srcH. */
+export const photoEditCropValidator = v.object({
+  cx: v.number(),
+  cy: v.number(),
+  w: v.number(),
+  h: v.number(),
+  // Degrees clockwise, (-180, 180]; the box's own top edge becomes the output's top.
+  angle: v.number(),
+  srcW: v.number(),
+  srcH: v.number(),
+});
+/**
+ * NEO-481 — `PhotoEdit`: quarter turns clockwise, applied last; crop null =
+ * the whole source. Shared by function `args` AND stored rows, so never
+ * tighten it in place.
+ */
+export const photoEditValidator = v.object({
+  turns: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
+  crop: v.union(v.null(), photoEditCropValidator),
+});
+/** NEO-481 — a scan's current edit: the parameters plus the write-once output version they rendered to. */
+export const storedPhotoEditValidator = v.object({
+  ...photoEditValidator.fields,
+  version: v.number(),
+  editedAt: v.number(),
+});
+/** NEO-481 — the scan a copy photo was made from. Server-only; never projected to a client. */
+export const copyPhotoScanValidator = v.object({ jobId: v.string(), entryIndex: v.number() });
+/**
+ * NEO-481 — an edit accepted but not yet rendered (the save is asynchronous:
+ * the reserve returns at once, a scheduled action renders, a commit lands the
+ * new file). `failed` keeps the edit and its error so the UI can offer Try
+ * again; the old photo stays live throughout.
+ */
+export const pendingPhotoEditValidator = v.object({
+  ...photoEditValidator.fields,
+  version: v.number(),
+  requestedAt: v.number(),
+  status: v.union(v.literal("rendering"), v.literal("failed")),
+  error: v.optional(v.string()),
+});
 /** NEO-427 — a saved pair's scans on their way onto its line (`intakeMatches.photos`). */
 export const intakePhotosValidator = v.union(v.literal("pending"), v.literal("attached"), v.literal("failed"));
 /** NEO-427 — why a "failed" attach failed (`intakeMatches.photoFailure`). */
@@ -4078,6 +4119,22 @@ export default defineSchema({
     // ever on a done or failed row: a restart that re-reads the photo clears it
     // and one that keeps a done row keeps it, like the row's other user decisions.
     setAside: v.optional(v.boolean()),
+    // NEO-481: the collector's current hand edit (turns + crop) and the
+    // write-once output version it rendered to. Absent = the pipeline's own
+    // output is current. Cleared (with `autoCrop`) when a restart or Try
+    // again re-reads the photo; `edits` is never reset.
+    edit: v.optional(storedPhotoEditValidator),
+    // NEO-481: the box the winning crop stage cut, in the EXIF-uprighted
+    // original's pixels (`crop_box` from /process-entry). Built field by
+    // field in adapters/preprocess.ts so a malformed box is dropped, never
+    // refused at settle.
+    autoCrop: v.optional(photoEditCropValidator),
+    // NEO-481: scan-form renders reserved on this scan — the version
+    // allocator and the paid-call cap (PLACEHOLDER_MAX_IMAGE_EDITS). Absent = 0.
+    edits: v.optional(v.number()),
+    // NEO-481: an edit accepted and rendering in the background, or one whose
+    // render failed (with the reason, for Try again). Cleared at commit.
+    pendingEdit: v.optional(pendingPhotoEditValidator),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in filename order", so a
@@ -4240,6 +4297,11 @@ export default defineSchema({
     photoFailure: v.optional(intakePhotoFailureValidator),
     photoAttempt: v.optional(v.number()),
     photoSidesAttached: v.optional(v.array(v.union(v.literal("front"), v.literal("back")))),
+    // NEO-481 — this tile's own price (box runs), overriding the run's
+    // default at save. Absent = the run's default. Set by
+    // `setIntakeMatchPrice`; cleared when the row's card changes. Only ever
+    // this card's `minPriceCents`, never a common price.
+    minPriceCents: v.optional(v.number()),
   })
     .index("by_run", ["runId"])
     .index("by_pair", ["pairId"])
@@ -4993,6 +5055,24 @@ export default defineSchema({
    *     back (`restoreCopy`, `undoBoxQuantity`), then swept with its objects.
    * All reads and writes go through `convex/copyPhotos.ts`.
    */
+  /**
+   * ── NEO-481: one row per hand photo edit sent to the renderer ───────────
+   *
+   * Renders run on the shared preprocess service outside the capacity-pinned
+   * pipeline pool, so each owner is held to a rate (renders an hour) and a
+   * number in flight (`settledAt` unset, newer than the stale window). The
+   * reserve inserts one; the commit or the failure settles it. Rows older
+   * than an hour are swept hourly (`photoEditRows.sweepPhotoEditTickets`).
+   */
+  photoEditTickets: defineTable({
+    ownerId: v.string(),
+    createdAt: v.number(),
+    settledAt: v.optional(v.number()),
+  })
+    .index("by_owner_and_created", ["ownerId", "createdAt"])
+    // The hourly sweep.
+    .index("by_created", ["createdAt"]),
+
   collectionCopyPhotos: defineTable({
     ownerId: v.string(),
     copyId: v.id("collectionCopies"),
@@ -5007,7 +5087,20 @@ export default defineSchema({
     since: v.number(),
     // NEO-427 — "intake": made from a scanned pair when it was saved, not
     // added by hand. Exempt from the hourly upload cap, either way.
-    source: v.optional(v.literal("intake")),
+    // NEO-481 — "edit": a hand turn/crop of the side's live photo. Counted
+    // against its own hourly cap (MAX_COPY_PHOTO_EDITS_PER_HOUR), never the
+    // hand-upload cap.
+    source: v.optional(v.union(v.literal("intake"), v.literal("edit"))),
+    // NEO-481 — the scan this photo was made from, so an edit inside the
+    // scan's two days can re-render from its original. Server-only: never
+    // projected to a client. Carried onto every edit row.
+    scan: v.optional(copyPhotoScanValidator),
+    // NEO-481 — on a `pending` edit row only: the edit being rendered in the
+    // background, or the reason its render failed (Try again re-saves).
+    pendingEdit: v.optional(pendingPhotoEditValidator),
+    // NEO-481 — on a landed edit row: the photo it replaced, while Undo can
+    // still put that one back. Undo clears it, so an edit is undone once.
+    replacesPhotoId: v.optional(v.id("collectionCopyPhotos")),
   })
     .index("by_copy_and_status", ["copyId", "status"])
     // The per-account test reset.
@@ -5073,6 +5166,20 @@ export default defineSchema({
     seq: v.number(),
     /** When the latest change was recorded (ms). */
     changedAt: v.number(),
+    /**
+     * NEO-481 — a photo of this card changed: the BSC drain uploads the card's
+     * photo even over an existing seller photo. Only `true` is stored; the
+     * upsert sets it and never clears it, and the row's delete at its `seq`
+     * takes it away.
+     */
+    refreshPhotos: v.optional(v.literal(true)),
+    /**
+     * NEO-481 — BSC runs that tried this card's photo refresh and could not
+     * finish it. At `MAX_PHOTO_REFRESH_ATTEMPTS` the drain drops the refresh
+     * and records a listing problem, so a refresh that keeps failing never
+     * retries forever. A new photo change starts the count again.
+     */
+    refreshAttempts: v.optional(v.number()),
   })
     // The hook's upsert (all three, `.unique()`), and nothing else.
     .index("by_owner_platform_card", ["ownerId", "platform", "cardId"])

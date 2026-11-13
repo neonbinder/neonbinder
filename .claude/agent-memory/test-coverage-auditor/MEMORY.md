@@ -12,6 +12,7 @@
 - [Read-only reuse of an owner component](read-only-reuse-of-owner-component.md) — extracted hook owner wiring, privacy switch order in the spec, layout branches, "fixture too hard" claims
 - [Keyboard alternative to pointer, unit only](keyboard-alternative-to-pointer-unit-only.md) — Tab/Enter onto a drop box proven only in happy-dom; ask for a live press + per-viewport layout geometry
 - [Spec move mojibake](spec-rename-mojibake-vacuous-negatives.md) — renamed specs can corrupt … and arrows; negative asserts go vacuous; byte-grep every moved file
+- [Re-read proof needs a changed read](reread-proof-needs-a-changed-read.md) — identical-read fixtures make a re-read spec vacuous; use a failed auto crop rescued by hand; diff plan "covers X" claims vs spec diff
 - [Websocket-faked query masks transitions](websocket-faked-query-masks-transitions.md) — faked Convex value proves the stored state only; hides "syncing" and own-action branches (alert, focus return)
 - [Measured-wait helper](measured-wait-helper-untested-and-narrower-than-flat-timeout.md) — flat live timeout swapped for announced-wait credit: helper untested, narrower than the flat ceiling, 429 UI never forced live
 - [Optimistic write, spec waits out the race](optimistic-write-spec-waits-out-the-race.md) — second-tab wait before reload hides lost-on-refresh; ask for pending/beforeunload unit test + no-wait reload

@@ -35,7 +35,7 @@ import pytest
 
 from app import cropper
 from app.classify import ClassifyResult
-from app.cropper import CropDeclined, CropResult, crop, frame_content, quad, tiered
+from app.cropper import CropDeclined, CropResult, boxes, crop, frame_content, quad, tiered
 from app.orient import OrientationResult
 from app.timing import Timings
 
@@ -248,6 +248,18 @@ class TestIntakeScansSettleOnFast:
         assert result.returned_bytes_differ is False
         assert vision == [data], "only the baseline Vision call"
         assert timings.vision_calls == 1
+
+    @pytest.mark.parametrize("name", FRAME_CONTENT_SCANS)
+    def test_a_frame_content_win_reports_the_whole_frame_as_its_box(self, name, vision, caplog):
+        """NEO-481: `/process-entry` returns `crop_box` so the photo editor
+        opens on the cut. An identity cut nothing, so the box is the frame."""
+        data = _intake_bytes(name)
+        h, w = _decode(data).shape[:2]
+
+        result, reason = _run(data, caplog)
+
+        assert _accepted(result), f"declined reason={reason}"
+        assert result.crop_box == boxes.full_frame(w, h)
 
     @pytest.mark.parametrize("name", FRAME_CONTENT_SCANS)
     def test_weak_scans_reach_the_stage_on_the_contracted_verdicts(self, name):

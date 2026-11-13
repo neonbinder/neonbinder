@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from PIL import Image
 
 from app.classify import EFFORT, _prepare_for_anthropic, get_anthropic_client, response_text
+from app.cropper import boxes
 
 if TYPE_CHECKING:
     # Annotations only: the SDK is imported on first use (NEO-484 C6), through
@@ -208,6 +209,8 @@ def haiku_bbox_crop(
             cropped = img.convert("RGB").crop((x, y, x + w, y + h))
             out = BytesIO()
             cropped.save(out, format="JPEG", quality=90)
+            # NEO-481: the box this crop cut, for `crop_box`.
+            boxes.record(boxes.from_axis_rect(x, y, x + w, y + h, *original_size))
             return out.getvalue()
     except Exception:
         logger.exception("haiku_bbox: PIL crop failed")

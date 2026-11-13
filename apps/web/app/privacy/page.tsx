@@ -190,7 +190,8 @@ export default function PrivacyPage() {
                 Card scans you upload to identify cards or make placeholders go to a private Google Cloud
                 Storage bucket, along with the cropped and resized images we make from them, and all of it
                 is deleted automatically after two days. To figure out which card is which, our image
-                service reads them with Google Cloud Vision and Anthropic&apos;s Claude.
+                service reads them with Google Cloud Vision and Anthropic&apos;s Claude. If you turn or crop
+                a scan by hand before you save its card, the new crop is read again the same way.
               </P>
               <P>
                 When you save a scanned card, a full-size image and a thumbnail made from the scans of its
