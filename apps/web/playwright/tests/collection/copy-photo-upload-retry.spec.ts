@@ -32,7 +32,7 @@
 // through the UI, which detaches its photos for the hourly sweep; the
 // bootstrap reset clears any left behind. Same drawer on both projects (phone
 // and desktop): no branch.
-import { drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 /** The photo store's signed upload addresses (a different host from the app and Convex). */
@@ -240,6 +240,7 @@ test(
     await expect(form).toBeHidden();
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await expect(checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false })).toBeVisible();
