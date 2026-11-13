@@ -75,6 +75,11 @@ test(
       const tilePicture = frontTile.getByRole("img", { name: "Front of Raw, Excellent", exact: true });
       // The photo as added: portrait, the precondition the turn changes (R2).
       expect(await servedPhotoSize(page, tilePicture, "src")).toEqual({ w: 50, h: 70 });
+      // Every save and Undo sweeps the file it replaces. Read a new file only once the
+      // picture has left the old one's address, or the read can land on it mid-sweep.
+      const fileOf = async (picture: typeof tilePicture) =>
+        new RegExp(/\/copy-photo\/([0-9a-f]{32})\//.exec((await picture.getAttribute("src")) ?? "")![1]);
+      const asAdded = await fileOf(tilePicture);
 
       // --- Open it: the viewer, on a photo it can only trim ----------------------------------
       await frontTile.click();
@@ -105,7 +110,9 @@ test(
       await expect(said(EDIT_LANDED)).toBeVisible({ timeout: EDIT_LANDS });
       await expect(viewer.getByText("Touching it up…", { exact: true })).toHaveCount(0);
       // A new file, landscape: the old one turned a quarter.
+      await expect(viewerPicture).not.toHaveAttribute("src", asAdded);
       expect(await servedPhotoSize(page, viewerPicture, "src")).toEqual({ w: 70, h: 50 });
+      const turned = await fileOf(viewerPicture);
       await expectAccessible(page, { within: viewer, label: "Card photo viewer, an edited photo landed" });
 
       // --- Escape closes only the viewer; focus goes back to the photo -------------------------
@@ -179,13 +186,16 @@ test(
       await expect(said("Saved.")).toBeVisible();
       await expect(said(EDIT_LANDED)).toBeVisible({ timeout: EDIT_LANDS });
       // The saved file is the crop the readout named.
+      await expect(viewerPicture).not.toHaveAttribute("src", turned);
       expect(await servedPhotoSize(page, viewerPicture, "src")).toEqual(cropped);
+      const croppedFile = await fileOf(viewerPicture);
 
       // --- Undo puts the turned photo back -------------------------------------------------------
       await tools.getByRole("button", { name: "Undo", exact: true }).click();
       await expect(said("Put back the photo from before.")).toBeVisible();
       await expect(tools.getByRole("button", { name: "Undo", exact: true })).toHaveCount(0);
-      await expect.poll(() => servedPhotoSize(page, viewerPicture, "src")).toEqual({ w: 70, h: 50 });
+      await expect(viewerPicture).not.toHaveAttribute("src", croppedFile);
+      expect(await servedPhotoSize(page, viewerPicture, "src")).toEqual({ w: 70, h: 50 });
       await viewer.getByRole("button", { name: "Close", exact: true }).click();
       await expect(viewer).toBeHidden();
       await expect(frontTile).toBeFocused();
