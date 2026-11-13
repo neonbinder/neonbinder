@@ -561,7 +561,12 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   axe checks whatever is in the DOM at that moment, and a half-faded element
   measures as a contrast failure that no user sees. A dialog opening, a
   wizard step, an error state and an empty state are each a state. It runs on both projects
-  with the same call, so the phone layout is checked too.
+  with the same call, so the phone layout is checked too. `expectAccessible`
+  also re-checks (up to three passes in all) a pass that has violations AND saw a
+  finite animation or transition start while axe ran (a row fading into a live
+  list), because axe read a half-faded frame; a green pass, or a red on a screen
+  that held still, is final, and the last pass is what it reports, so a
+  violation the settled screen really has is never hidden.
 - **Helpers.** A `support/` helper whose product is a screen, dialog or
   wizard it opens and returns with showing (`fetchChecklistToWizard`,
   `openCrossListForm`) runs `expectAccessible` itself on arrival, so every
@@ -1088,6 +1093,12 @@ sessions at once.
    usually visibly different from what is there.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
    `convex-logs-*-a<attempt>` artifacts, before deciding which branch the spec took.
+   A burst of 502 "preprocess pipeline upstream failure" across several jobs
+   is an outside-service signature: read the preprocess tracebacks (Cloud
+   Logging, the fast and the heavy service) and the LLM provider's status feed
+   before blaming our code. NEO-538 was an Anthropic API incident (5xx on
+   classify, 2026-11-13 12:51-13:26 UTC) and the pool's retries behaved
+   correctly.
 5. A red during a `pr-queue` turn gets one full rerun (`gh run rerun`, never
    `--failed`) only when the evidence names an outside service (BuySportsCards,
    SportLots, eBay, ESPN, Wikidata, Clerk, Vercel, Convex's platform, GitHub's
