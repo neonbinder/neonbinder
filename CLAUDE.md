@@ -135,8 +135,11 @@ re-measure before quoting them for Playwright.
    use shared dev instead.
 4. **Audit once.** One full audit round per ticket (the auditors the change
    calls for, all in parallel). After the fixes, re-audit only the delta: the
-   fix commits, briefed to the auditor whose findings they answer. Never rerun
-   the full round.
+   fix commits, sent to every auditor whose findings they answer or whose
+   area they touch (a public Convex function, `services/browser`, a workflow
+   or `.claude/` always reaches `security-auditor`). Any commit made after
+   the round, a red's fix included, gets a delta audit before the ticket
+   joins the queue again. Never rerun the full round.
 5. **Join the queue** (`pr-queue join NEO-123`) once the ticket is ready for
    production: audits applied, gates and covering specs green, main merged, any
    UI verdict given. **Do not push before your turn** (the one exception is a
@@ -149,13 +152,15 @@ re-measure before quoting them for Playwright.
    notification, tell every other session main moved, and tell the queue you
    are done.
 7. **On a red, pass the turn at once, triage cheaply, then stop.** A Sonnet
-   agent searches the `ci-fail` tickets in Linear for the failing spec and
-   signature. A failure seen before gets its ticket's occurrence count
-   bumped and the ticket rejoins the queue unchanged. A new failure goes to
-   `feature-planner`, which says whether it is an outside outage (rerun) or
-   something to fix. Either way, report to Jason and wait for his lead: no
-   fix, no rejoin, no rerun until he says. Churning on reds is what burns
-   CI cycles and tokens.
+   agent finds candidate `ci-fail` tickets in Linear; the session matches
+   them against the run's error signature. A known failure (signature
+   matches, nothing in the diff touches it, first rejoin for that ticket on
+   this PR) gets its occurrence count bumped and rejoins the queue unchanged.
+   Anything else goes to `feature-planner`, which says whether it is an
+   outside outage (rerun) or something to fix; report that to Jason and wait
+   for his lead: no fix, no rejoin, no rerun until he says. The `pr-queue`
+   skill has the exact steps. Churning on reds is what burns CI cycles and
+   tokens.
 
 #### The fast gates, by area
 
