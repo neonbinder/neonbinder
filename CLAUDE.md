@@ -133,23 +133,29 @@ re-measure before quoting them for Playwright.
 3. **Run the specs covering the change on this worktree's own Convex
    deployment**, before the first push (below). Seller specs and cloud threads
    use shared dev instead.
-4. **Join the queue** (`pr-queue join NEO-123`) once the ticket is ready for
+4. **Audit once.** One full audit round per ticket (the auditors the change
+   calls for, all in parallel). After the fixes, re-audit only the delta: the
+   fix commits, briefed to the auditor whose findings they answer. Never rerun
+   the full round.
+5. **Join the queue** (`pr-queue join NEO-123`) once the ticket is ready for
    production: audits applied, gates and covering specs green, main merged, any
    UI verdict given. **Do not push before your turn** (the one exception is a
    push Jason asks for, such as a preview to look at). Every push starts a CI
    run, a run and its merge take up to an hour, and only one run at a time can
    end in a merge, so CI is handed out one ticket at a time by the queue
    session (`pr-queue run`).
-5. **On your turn** (the `pr-queue` skill has the steps): merge main, push and
-   open the PR, watch CI, one rerun only for a flake that names an outside
-   service (BuySportsCards, SportLots, eBay and the like, never our own code),
-   merge on green with `pr-close`, send the Mac notification, tell every other
-   session main moved, and tell the queue you are done.
-6. **On any other red, pass the turn** at once (and send the Mac notification),
-   reproduce the failing spec locally on your own deployment, or against the
-   PR's own preview stack when your deployment cannot reproduce it (below), fix
-   it, and join again. Push again only on your next turn. This is the actual
-   cost control: push-and-hope is what burns CI cycles.
+6. **On your turn** (the `pr-queue` skill has the steps): merge main, push and
+   open the PR, watch CI, merge on green with `pr-close`, send the Mac
+   notification, tell every other session main moved, and tell the queue you
+   are done.
+7. **On a red, pass the turn at once, triage cheaply, then stop.** A Sonnet
+   agent searches the `ci-fail` tickets in Linear for the failing spec and
+   signature. A failure seen before gets its ticket's occurrence count
+   bumped and the ticket rejoins the queue unchanged. A new failure goes to
+   `feature-planner`, which says whether it is an outside outage (rerun) or
+   something to fix. Either way, report to Jason and wait for his lead: no
+   fix, no rejoin, no rerun until he says. Churning on reds is what burns
+   CI cycles and tokens.
 
 #### The fast gates, by area
 

@@ -7,7 +7,7 @@ description: |
   - "Plan NEO-2xx: operators need to merge two duplicate players and keep every card, stint and marketplace link." → returns the schema question, the Convex mutations, the UI surface, the E2E coverage, and a delegation table.
   - "Plan the checklist re-sync suggestion flow so an upstream rename becomes an operator-reviewed suggestion rather than a silent overwrite."
   - "We planned this as one PR; the browser-service half turns out to need a contract bump. Re-plan the sequencing."
-model: fable
+model: opus
 effort: high
 memory: project
 color: yellow

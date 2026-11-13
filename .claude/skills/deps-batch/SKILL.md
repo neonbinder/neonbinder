@@ -315,7 +315,7 @@ Once approved: `/pr-queue join <NEO-###>`. Do not push until the turn comes.
 ## Step 8 — On the turn: push, open the PR, watch, merge
 
 Follow the `pr-queue` turn steps (merge main, push and open the PR, watch CI,
-one rerun only for a flake that names an outside service, merge on green with
+on a red pass the turn and triage per that skill, merge on green with
 `pr-close`, notify, tell the other sessions, tell the queue). For this skill:
 
 ```bash

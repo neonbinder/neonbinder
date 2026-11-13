@@ -1,7 +1,7 @@
 ---
 name: playwright-e2e-author
 description: "Authors, extends and debugs the Playwright web E2E specs under apps/web/playwright for the feature that just changed, following the rulebook in apps/web/playwright/GUIDE.md (R1-R9 and the hard rules). Use in the audit round after a user-facing change, when a CI spec is red and needs a diagnosis from the run artifacts, or to review specs for silent fall-through. Do not use for unit tests (unit-test-author), for coverage audits (test-coverage-auditor), for manual or exploratory testing (card-collector-tester), or to run the full suite.\n\nExamples:\n- \"NEO-236 split Team Location and Name; extend the New Team spec to assert both fields and the livery row.\"\n- \"checklist-one-marketplace-skips-match-dialog is red on its launch gate in CI run N; diagnose from the screenshot and error-context.md.\"\n- \"Review the set-selector specs touched this week for R2 silent fall-through and sleeps or settle waits.\""
-model: sonnet
+model: opus
 effort: high
 memory: project
 color: red

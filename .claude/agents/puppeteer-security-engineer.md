@@ -7,7 +7,7 @@ description: |
   - "Login to SportLots fails when the site shows a challenge page" → the engineer extends the SportLots adapter and the login diagnostic to classify the challenge without capturing credential fields.
   - "Return a new field from `/login/<site>`" → the engineer adds it behind a contract-version bump and updates the health payload and tests.
   - "Add a webhook route for EasyPost tracking events" → the engineer adds the route with signature verification, rate limiting and a `node --test` file.
-model: opus
+model: sonnet
 effort: high
 memory: project
 color: purple
