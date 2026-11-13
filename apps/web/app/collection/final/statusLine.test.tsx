@@ -677,3 +677,106 @@ describe("a refusal on the line (NEO-529)", () => {
     expect(result.current.notice?.message).toBe("Nope.");
   });
 });
+
+describe("a newer write's success never erases an unread refusal (NEO-529)", () => {
+  type Ticket = ReturnType<ReturnType<typeof useStatusLine>["beginWrite"]>;
+
+  it("lands behind the refusal: both shown, only the success said, the Undo the success's", () => {
+    const newerUndo = vi.fn();
+    const { result } = renderHook(() => useStatusLine());
+    let older!: Ticket;
+    let newer!: Ticket;
+    act(() => {
+      older = result.current.beginWrite();
+      newer = result.current.beginWrite();
+    });
+    act(() => older.refused("That box is full."));
+    act(() => newer.done("Moved it.", newerUndo));
+    expect(result.current.notice).toMatchObject({
+      message: "That box is full. Moved it.",
+      announce: "Moved it.",
+      kind: "refusal",
+      undo: newerUndo,
+    });
+    act(() => result.current.undoLast());
+    expect(newerUndo).toHaveBeenCalledTimes(1);
+  });
+
+  it("run's success lands the same way", async () => {
+    const write = deferred<{ undo: () => Promise<void> }>();
+    const undo = vi.fn(async () => {});
+    const { result } = renderHook(() => useStatusLine());
+    let older!: Ticket;
+    act(() => {
+      older = result.current.beginWrite();
+    });
+    let p!: Promise<unknown>;
+    act(() => {
+      p = result.current.run(() => write.promise, () => "Added.");
+    });
+    act(() => older.refused("Nope."));
+    await act(async () => {
+      write.resolve({ undo });
+      await p;
+    });
+    expect(result.current.notice).toMatchObject({ message: "Nope. Added.", announce: "Added.", undo });
+  });
+
+  it("one refusal in front, never stacked: a later success replaces the words behind it, a later refusal the one in front", () => {
+    const { result } = renderHook(() => useStatusLine());
+    const begin = () => {
+      let t!: Ticket;
+      act(() => {
+        t = result.current.beginWrite();
+      });
+      return t;
+    };
+    const w1 = begin();
+    const w2 = begin();
+    act(() => w1.refused("R1."));
+    act(() => w2.done("B.", () => {}));
+    expect(result.current.notice?.message).toBe("R1. B.");
+    const w3 = begin();
+    act(() => w3.done("C.", () => {}));
+    expect(result.current.notice).toMatchObject({ message: "R1. C.", announce: "C." });
+    const w4 = begin();
+    const w5 = begin();
+    act(() => w4.refused("R2."));
+    act(() => w5.done("D.", () => {}));
+    expect(result.current.notice).toMatchObject({ message: "R2. D.", announce: "D." });
+    // And a refusal merged in front of the live Undo replaces R2 rather than stacking.
+    const late = begin();
+    const w6 = begin();
+    act(() => w6.done("E.", () => {}));
+    act(() => late.refused("R3."));
+    expect(result.current.notice).toMatchObject({ message: "R3. E.", announce: "R3." });
+  });
+
+  it("carries the refusal only while it is young: past NOTICE_MS a success stands alone", () => {
+    const { result } = renderHook(() => useStatusLine());
+    let older!: Ticket;
+    let newer!: Ticket;
+    act(() => {
+      older = result.current.beginWrite();
+      newer = result.current.beginWrite();
+    });
+    act(() => older.refused("R."));
+    act(() => void vi.advanceTimersByTime(NOTICE_MS / 2));
+    act(() => newer.done("B.", () => {}));
+    expect(result.current.notice?.message).toBe("R. B.");
+    // The line's timer started over with B, so it is still up; R is now past its time.
+    act(() => void vi.advanceTimersByTime(NOTICE_MS / 2 + 1));
+    expect(result.current.notice?.message).toBe("R. B.");
+    act(() => result.current.beginWrite().done("C.", () => {}));
+    expect(result.current.notice).toMatchObject({ message: "C." });
+    expect(result.current.notice?.kind).toBeUndefined();
+  });
+
+  it("a plain notify (not a write's answer) still replaces a refusal", () => {
+    const { result } = renderHook(() => useStatusLine());
+    act(() => result.current.beginWrite().refused("R."));
+    act(() => result.current.notify("Pick a binder first."));
+    expect(result.current.notice).toMatchObject({ message: "Pick a binder first." });
+    expect(result.current.notice?.kind).toBeUndefined();
+  });
+});

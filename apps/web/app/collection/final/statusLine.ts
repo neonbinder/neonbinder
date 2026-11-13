@@ -97,12 +97,48 @@ export function useStatusLine(): StatusLine {
    */
   const refuse = (message: string, ran?: number) => {
     const id = nextId();
+    const refusal = { words: message, id, at: Date.now() };
     setNotice((prev) => {
       if (prev && prev.id !== ran && prev.undo && !prev.undoing) {
-        const undoWords = prev.undoWords ?? prev.message;
-        return { ...prev, id, kind: "refusal", message: `${message} ${undoWords}`, announce: message, undoWords };
+        const undoFor = prev.undoFor ?? { words: prev.message, id: prev.id };
+        return {
+          ...prev,
+          id,
+          kind: "refusal",
+          refusal,
+          undoFor,
+          message: `${message} ${undoFor.words}`,
+          announce: message,
+        };
       }
-      return { id, message, kind: "refusal" };
+      return { id, message, kind: "refusal", refusal };
+    });
+  };
+  /**
+   * The newest write landed: its words, with its Undo. A refusal still in
+   * its time on the line (younger than NOTICE_MS, so maybe not yet read)
+   * stays in front of them, and only the new words are said, the refusal
+   * having been said when it came up; the Undo is this write's. Its timer
+   * starts over, but the refusal is carried into a later write's words only
+   * while it is that young, so it never rides along for good. Only a write's
+   * answer does this (`beginWrite`'s `done`, and so `run`): a plain `notify`
+   * is a fresh word that replaces whatever is on the line.
+   */
+  const land = (message: string, undo?: () => void) => {
+    const id = nextId();
+    const now = Date.now();
+    setNotice((prev) => {
+      const refusal = prev?.refusal;
+      if (!refusal || now - refusal.at >= NOTICE_MS) return { id, message, undo };
+      return {
+        id,
+        kind: "refusal",
+        refusal,
+        undoFor: { words: message, id },
+        message: `${refusal.words} ${message}`,
+        announce: message,
+        undo,
+      };
     });
   };
   /** Says `message` with the line's words left as they are (shown when it has none). */
@@ -183,7 +219,7 @@ export function useStatusLine(): StatusLine {
       // on the line), never over the Undo the later one brought.
       done: (message, undo) => {
         settle();
-        if (mine === lastWrite.current) notify(message, undo);
+        if (mine === lastWrite.current) land(message, undo);
         else inform(message);
       },
       refused: (message) => {

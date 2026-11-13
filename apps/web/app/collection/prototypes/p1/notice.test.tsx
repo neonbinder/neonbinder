@@ -181,4 +181,75 @@ describe("NoticeLine's live region", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Dismiss message" }));
     expect(screen.getByText("Undone.", { selector: "p:not([role])" })).toBeTruthy();
   });
+
+  it("two notices inside one frame are both said, each once", async () => {
+    const props = { onUndo: () => {}, onDismiss: () => {} };
+    const { rerender } = render(<NoticeLine notice={null} {...props} />);
+    const live = heard();
+    rerender(<NoticeLine notice={{ id: 1, message: "Added." }} {...props} />);
+    rerender(<NoticeLine notice={{ id: 2, message: "Moved." }} {...props} />);
+    await nextFrame();
+    expect(region().textContent).toBe("Added. Moved.");
+    rerender(<NoticeLine notice={{ id: 3, message: "Saved." }} {...props} />);
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual(["Added. Moved.", "Saved."]);
+  });
+
+  it("a newer write's success behind a refusal says only the success; the line shows both", async () => {
+    const { line } = page();
+    let older!: ReturnType<StatusLine["beginWrite"]>;
+    let newer!: ReturnType<StatusLine["beginWrite"]>;
+    act(() => {
+      older = line().beginWrite();
+      newer = line().beginWrite();
+    });
+    const live = heard();
+    act(() => older.refused("That box is full."));
+    await nextFrame();
+    act(() => newer.done("Moved it.", () => {}));
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual(["That box is full.", "Moved it."]);
+    expect(screen.getByText("That box is full. Moved it.", { selector: "p:not([role])" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+  });
+
+  it("a refusal and the success behind it landing in one render are said whole", async () => {
+    const { line } = page();
+    let older!: ReturnType<StatusLine["beginWrite"]>;
+    let newer!: ReturnType<StatusLine["beginWrite"]>;
+    act(() => {
+      older = line().beginWrite();
+      newer = line().beginWrite();
+    });
+    const live = heard();
+    act(() => {
+      older.refused("That box is full.");
+      newer.done("Moved it.", () => {});
+    });
+    await nextFrame();
+    live.flush();
+    expect(live.said).toEqual(["That box is full. Moved it."]);
+  });
+
+  it("a line mounted over a joined line says nothing of it", async () => {
+    const props = { onUndo: () => {}, onDismiss: () => {} };
+    const joined: Notice = {
+      id: 7,
+      kind: "refusal",
+      refusal: { words: "R.", id: 6, at: 0 },
+      undoFor: { words: "B.", id: 7 },
+      message: "R. B.",
+      announce: "B.",
+    };
+    const { rerender } = render(<NoticeLine notice={joined} {...props} />);
+    const live = heard();
+    await nextFrame();
+    rerender(<NoticeLine notice={{ ...joined, id: 8, undoFor: { words: "C.", id: 8 }, message: "R. C.", announce: "C." }} {...props} />);
+    await nextFrame();
+    live.flush();
+    // R (id 6) came up before this line was drawn: said already, so only C.
+    expect(live.said).toEqual(["C."]);
+  });
 });

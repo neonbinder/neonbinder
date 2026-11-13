@@ -13,19 +13,26 @@ export interface Notice {
   /** What the line shows. */
   message: string;
   /**
-   * What the live region says when it is not `message`: a refusal merged in
-   * front of a newer write's words says only itself, and "Still saving."
-   * is said with the words on the line left as they are.
+   * What the live region says when it is not `message`: on a line that
+   * joins a refusal and a write's words, only the part that is new (the
+   * other part was said when it first came up), and "Still saving." is said
+   * with the words on the line left as they are.
    */
   announce?: string;
   /** A refusal: never replaced by an aside (`useStatusLine`'s `inform`). */
   kind?: "refusal";
   /**
-   * On a refusal merged in front of a newer write's live Undo: that write's
-   * own words, which the Undo still belongs to. A later refusal replaces the
-   * one in front of them rather than stacking.
+   * The refusal on a `kind: "refusal"` line: its words (the whole line, or
+   * the part in front of `undoFor`), the notice that first said them, and
+   * when. Only one ever goes in front: a later refusal replaces it.
    */
-  undoWords?: string;
+  refusal?: { words: string; id: number; at: number };
+  /**
+   * On a refusal line that carries a write's live Undo: that write's words
+   * (behind the refusal) and the notice that first said them. The Undo
+   * belongs to that write, never to the refusal in front of it.
+   */
+  undoFor?: { words: string; id: number };
   undo?: () => void;
   /** The undo is running: Undo stays put but does nothing until it lands. */
   undoing?: boolean;
@@ -41,24 +48,62 @@ export type Notify = (message: string, undo?: () => void) => void;
  * The same notice drawn again says nothing, and the notice already up when
  * the line mounts (the card drawer opening over it) is not news either. A
  * line taken down empties it, so no stale words are left to find.
+ *
+ * Nothing drawn is dropped unsaid: a notice that comes up before the last
+ * one's frame has run joins it ("A B"), each said once. A line that joins
+ * two notices' words (a refusal and a write's) says only the new part, unless
+ * this region never drew the notice that first said the other part (both
+ * landed in one render): then it says the whole line.
  */
 function useLiveWords(notice: Notice | null) {
   const region = useRef<HTMLParagraphElement>(null);
   const id = notice?.id ?? null;
   const spokeFor = useRef(id);
-  const words = useEffectEvent(() => (notice ? (notice.announce ?? notice.message) : ""));
+  // Ids are only ever handed out in order: one at or below the notice up at
+  // mount counts as said (the line drawn before this region was).
+  const floor = useRef(id ?? 0);
+  const heard = useRef(new Set<number>());
+  const pending = useRef<{ frame: number; words: string[] } | null>(null);
+  const words = useEffectEvent(() => {
+    if (!notice) return "";
+    const unheard = [notice.refusal?.id, notice.undoFor?.id].some(
+      (earlier) =>
+        earlier !== undefined && earlier !== notice.id && earlier > floor.current && !heard.current.has(earlier),
+    );
+    return unheard ? notice.message : (notice.announce ?? notice.message);
+  });
   useEffect(() => {
     const el = region.current;
     if (!el || id === spokeFor.current) return;
     spokeFor.current = id;
-    el.textContent = "";
-    if (id === null) return;
+    if (id === null) {
+      if (pending.current) cancelAnimationFrame(pending.current.frame);
+      pending.current = null;
+      el.textContent = "";
+      return;
+    }
+    heard.current.add(id);
     const said = words();
-    const frame = requestAnimationFrame(() => {
-      el.textContent = said;
+    // The frame has not run yet: these words go with the ones waiting.
+    if (pending.current) {
+      pending.current.words.push(said);
+      return;
+    }
+    el.textContent = "";
+    const next = { frame: 0, words: [said] };
+    next.frame = requestAnimationFrame(() => {
+      pending.current = null;
+      el.textContent = next.words.join(" ");
     });
-    return () => cancelAnimationFrame(frame);
+    pending.current = next;
   }, [id]);
+  useEffect(
+    () => () => {
+      if (pending.current) cancelAnimationFrame(pending.current.frame);
+      pending.current = null;
+    },
+    [],
+  );
   return region;
 }
 
