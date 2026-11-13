@@ -9,7 +9,7 @@ import { writeErrorMessage } from "@/app/collection/final/data/store";
 import { problemCopyReadOnly } from "@/app/collection/final/inventory/listing/copy";
 import { MAX_SYNC_REPORT_NOTE } from "@/lib/collection/sync-report";
 import { PLATFORM_NAME } from "@/lib/marketplace/listing-copy";
-import { alsoReportedSentence, heldBackWords } from "./syncReportCopy";
+import { ALSO_REPORTED_INK, alsoReportedSentence, heldBackWords, syncReportWhen } from "./syncReportCopy";
 
 /** What the server says too, said first here so the admin isn't sent to it. */
 export const NOT_A_BUG_NEEDS_A_NOTE = "Add a note saying why it isn't a bug. The collector reads it.";
@@ -104,17 +104,17 @@ export default function SyncReportReview({ reportId, onDone }: { reportId: strin
           Sync report: {r.label}
         </h3>
         <p className="text-xs text-ink-3">
-          {platform}, {heldBackWords(r.heldBack)}. Reported {new Date(r.reportedAt).toLocaleString()}
-          {r.lastUpdated > r.reportedAt ? `, refreshed ${new Date(r.lastUpdated).toLocaleString()}` : ""}.
+          {platform}, {heldBackWords(r.heldBack)}. Reported {syncReportWhen(r.reportedAt)}
+          {r.lastUpdated > r.reportedAt ? `, refreshed ${syncReportWhen(r.lastUpdated)}` : ""}.
         </p>
-        {also && <p className="text-sm font-semibold text-neon-blue-text">{also}</p>}
+        {also && <p className={`text-sm font-semibold ${ALSO_REPORTED_INK}`}>{also}</p>}
       </div>
 
       {r.status !== "open" && (
         <div className="space-y-1">
           <p className="flex flex-wrap items-center gap-2 text-sm text-ink-2">
             <span className={`rounded-full border px-2 py-0.5 text-xs ${OUTCOME[r.status].cls}`}>{OUTCOME[r.status].label}</span>
-            {r.closedAt !== undefined && <span>Closed {new Date(r.closedAt).toLocaleString()}</span>}
+            {r.closedAt !== undefined && <span>Closed {syncReportWhen(r.closedAt)}</span>}
           </p>
           {r.closeNote && (
             <p className="text-sm text-ink-2">
@@ -126,7 +126,7 @@ export default function SyncReportReview({ reportId, onDone }: { reportId: strin
 
       {r.listedCleanlySince !== undefined && (
         <p className="rounded-md border border-neon-green/50 px-3 py-2 text-sm text-neon-green-text">
-          Listed cleanly since {new Date(r.listedCleanlySince).toLocaleString()}. Their last sync held none of these back.
+          Listed cleanly since {syncReportWhen(r.listedCleanlySince)}. Their last sync held none of these back.
         </p>
       )}
 

@@ -44,6 +44,22 @@ export function waitedFor(since: number, now: number): string {
   return `waiting ${Math.floor(days / 7)} weeks`;
 }
 
+/**
+ * When a report or an ask happened, one way everywhere it is shown: the
+ * dashboard's crew rows (read, to tell two asks of one name apart) and the
+ * admin's review. "Nov 13, 2026, 3:05 PM" in the reader's own locale, no seconds.
+ */
+export function syncReportWhen(at: number): string {
+  return new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+/**
+ * The ink "+N reported" wears wherever it shows: the tag on the dashboard and
+ * Card Requests (`AlsoReportedTag`) and the review's sentence. Blue, the
+ * crew's colour, never the warning amber: more reports are news, not trouble.
+ */
+export const ALSO_REPORTED_INK = "text-neon-blue-text";
+
 /** "1 card held back" / "12 cards held back". */
 export function heldBackWords(n: number): string {
   return `${n} ${n === 1 ? "card" : "cards"} held back`;

@@ -34,3 +34,14 @@ and green alone and in the next full run, in files the diff never touched:
   the session JSON carries real `Date.now()` stamps, so it goes red whenever
   the wall clock's milliseconds happen to contain those four digits. Not a
   leak; the fixture should use digits a timestamp cannot hold, or a fake clock.
+
+Seen 2026-11-13 (NEO-536) with machine load average ~50-60 (parallel agents
+plus a live Playwright run): every test that renders the whole
+`DashboardScreen` (CrewDesk.test, DashboardScreen.test) took 3-9 s each and
+hit vitest's 5 s timeout, and `app/dashboard/screen/panelLink.test.tsx` →
+"a Fresh Pull: the click pushes…" failed `findByRole("dialog")` (1 s RTL
+wait on the lazy card panel) even run alone — and equally on a detached HEAD
+worktree, so not the diff. To tell load from logic, check `uptime` and rerun
+the file with `--testTimeout=60000`; a scratch `git worktree add --detach`
+at HEAD with `apps/web/node_modules` symlinked (copy `convex/_generated`)
+proves a baseline red without touching the shared worktree.

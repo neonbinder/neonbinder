@@ -382,8 +382,35 @@ describe("My requests: sync reports (NEO-536)", () => {
       throw new Error("The crew closed that report already.");
     });
     open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
     fireEvent.click(screen.getByRole("button", { name: "Withdraw the report on 2024 Topps Chrome Base (BuySportsCards)" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("The crew closed that report already.");
+    await waitFor(() => expect(within(item).getByRole("alert").textContent).toBe("The crew closed that report already."));
+  });
+
+  it("each report's alert and the section's status are there, empty, before anything happens, so they are announced", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report(), report({ _id: "sr2", status: "fixed", label: "1996 Contenders Base", closedAt: 2 })]);
+    open("mine");
+    const items = within(screen.getByRole("list", { name: "My sync reports" })).getAllByRole("listitem");
+    for (const item of items) {
+      const alert = within(item).getByRole("alert");
+      expect(alert.textContent).toBe("");
+      // Empty, it gives back the gap it would take.
+      expect(alert.className).toContain("empty:-mt-2");
+    }
+    const status = screen
+      .getAllByRole("status")
+      .find((el) => el.parentElement?.querySelector("h3")?.textContent === "Sets you reported");
+    expect(status?.textContent).toBe("");
+    expect(status?.className).toContain("empty:-mt-2");
+  });
+
+  it("a fixed report says the cards go up next sync, no hedging", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report({ status: "fixed", closedAt: 2 })]);
+    open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
+    within(item).getByText("Those cards go up next sync.");
   });
 
   it("keeps the old empty line when there is nothing at all", () => {

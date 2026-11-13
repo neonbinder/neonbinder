@@ -3,8 +3,8 @@ import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent 
 import { Link, useLocation } from "react-router";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
-import { MAX_SYNC_REPORT_NOTE } from "@/lib/collection/sync-report";
-import type { SyncProblemSet, SyncStatusData } from "../fake-data";
+import { isReportableSyncReason, MAX_SYNC_REPORT_NOTE } from "@/lib/collection/sync-report";
+import type { HeldBackCard, SyncProblemSet, SyncStatusData } from "../fake-data";
 import { MARKETPLACES } from "../dash-labels";
 import { CardTitle, count, MarketBadge, sideHref, Thumb } from "./bits";
 import { useCrew, type Crew } from "./crew";
@@ -107,13 +107,24 @@ export default function SyncStatus({ status }: { status: SyncStatusData }) {
 export function heldLead(set: Pick<SyncProblemSet, "heldBack" | "marketplace" | "crewFix">): string {
   const lead = `${count(set.heldBack, "card")} held back from ${MARKETPLACES[set.marketplace].name}.`;
   const one = set.heldBack === 1;
-  if (set.crewFix === "all") {
-    return `${lead} ${one ? "That one's on our crew, not you. Report it and we'll fix it:" : "These are on our crew, not you. Report them and we'll fix them:"}`;
-  }
-  if (set.crewFix === "some") {
-    return `${lead} Fix what you can on each card and it goes up next sync. The rest are on our crew, so report them:`;
-  }
+  // The crew's cases end on a full stop: the action is the Report button under the tiles.
+  if (set.crewFix === "all") return `${lead} On our crew, not you.`;
+  if (set.crewFix === "some") return `${lead} Fix yours on the card. The rest are on us.`;
   return `${lead} ${one ? "Fix it on the card and it goes up next sync:" : "Fix each one on its card and it goes up next sync:"}`;
+}
+
+/** A held-back card only the crew can fix (NEO-536): its reason's code says so. */
+export function isCrewCard(card: Pick<HeldBackCard, "code">): boolean {
+  return card.code !== undefined && isReportableSyncReason(card.code);
+}
+
+/**
+ * A set's held-back cards in the order they show: the collector's own fixes
+ * first, the crew's after them, each kind in the read's order. In a mixed
+ * set the crew's tiles say so ("On our crew"), so the ones to act on lead.
+ */
+export function heldOrder<C extends Pick<HeldBackCard, "code">>(cards: readonly C[]): C[] {
+  return [...cards.filter((c) => !isCrewCard(c)), ...cards.filter(isCrewCard)];
 }
 
 function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }) {
@@ -121,13 +132,16 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
   const market = MARKETPLACES[set.marketplace].name;
   const headingId = `${set.id}-heading`;
   const [all, toggle] = useOpen(set.id);
-  const shown = all ? set.cards : set.cards.slice(0, HELD_PREVIEW);
-  const folded = set.cards.length - HELD_PREVIEW;
-  const unnamed = set.heldBack - set.cards.length;
-  // ↑ ↓ in a held-back card's panel walk the set's held-back cards, the folded ones too, each with its reason.
-  const heldIds = set.cards.map((c) => c.card.id);
+  const cards = heldOrder(set.cards);
+  // Only a mixed set tags the crew's tiles; where every card is the crew's, the lead says so once.
+  const tagCrew = set.crewFix === "some";
+  const shown = all ? cards : cards.slice(0, HELD_PREVIEW);
+  const folded = cards.length - HELD_PREVIEW;
+  const unnamed = set.heldBack - cards.length;
+  // ↑ ↓ in a held-back card's panel walk the set's held-back cards in the order they show, the folded ones too, each with its reason.
+  const heldIds = cards.map((c) => c.card.id);
   const heldList = new Map(
-    set.cards.flatMap((c) => {
+    cards.flatMap((c) => {
       const held = heldOf(set.marketplace, c.code);
       return held ? [[c.card.id, held] as const] : [];
     }),
@@ -164,6 +178,14 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
                         className="font-semibold text-ink underline-offset-2 group-hover:underline"
                       />
                       <span className="mt-1 block text-notice-warn-ink">{reason}</span>
+                      {tagCrew && isCrewCard({ code }) && (
+                        // Words, not only a colour: the crew's blue, on the card's own ground, off the warn tint.
+                        <span className="mt-1.5 block">
+                          <span className="inline-flex items-center rounded-full border border-neon-blue/60 bg-raised px-2 py-0.5 font-semibold text-neon-blue-text">
+                            On our crew
+                          </span>
+                        </span>
+                      )}
                     </span>
                   </PanelLink>
                 </li>
@@ -184,7 +206,7 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
                     className={`size-4 transition-transform motion-reduce:transition-none ${all ? "rotate-180" : ""}`}
                   />
                   {/* The words on it lead its name (WCAG 2.5.3): the count it adds is seen, the set it is in is read, last. */}
-                  {all ? "Show fewer" : `Show all ${set.cards.length}`}
+                  {all ? "Show fewer" : `Show all ${cards.length}`}
                   {!all && (
                     <span aria-hidden="true" className="text-ink-3">
                       {" "}

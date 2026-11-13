@@ -256,6 +256,10 @@ describe("the Sync reports list", () => {
     // The tag is seen; a reader hears who else reported it.
     expect(within(item).getByText("+2 reported").getAttribute("aria-hidden")).toBe("true");
     expect(item.textContent).toContain("also reported by 2 other collectors");
+    // The same pill as the dashboard's "From collectors" rows: the crew's blue, a rounded tag.
+    const tag = within(item).getByText("+2 reported");
+    expect(tag.className).toContain("text-neon-blue-text");
+    expect(tag.className).toContain("rounded-full");
   });
 
   it("says 20+ at the server's count cap, and that more are waiting past the list", () => {

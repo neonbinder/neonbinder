@@ -8,7 +8,8 @@ import { PLATFORM_NAME } from "@/lib/marketplace/listing-copy";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import RequestReview from "./RequestReview";
 import SyncReportReview from "./SyncReportReview";
-import { alsoReportedLine, alsoReportedSpoken, heldBackWords, waitedFor } from "./syncReportCopy";
+import AlsoReportedTag from "./AlsoReportedTag";
+import { heldBackWords, waitedFor } from "./syncReportCopy";
 
 type Status = Doc<"cardRequests">["status"];
 
@@ -200,37 +201,28 @@ export default function AdminCardRequestsPage() {
           ) : (
             <>
               <ul className="space-y-1.5">
-                {reports.reports.map((r) => {
-                  const also = alsoReportedLine(r.alsoReportedBy);
-                  return (
-                    <li key={r._id}>
-                      <button
-                        type="button"
-                        aria-current={openId === r._id ? "true" : undefined}
-                        onClick={() => openItem(r._id)}
-                        className={itemClass(openId === r._id)}
-                      >
-                        <span className="block text-sm text-ink">
-                          <span className="text-ink-3">{PLATFORM_NAME[r.platform]}: </span>
-                          {r.label}
-                        </span>
-                        <span className="block text-xs text-ink-3">
+                {reports.reports.map((r) => (
+                  <li key={r._id}>
+                    <button
+                      type="button"
+                      aria-current={openId === r._id ? "true" : undefined}
+                      onClick={() => openItem(r._id)}
+                      className={itemClass(openId === r._id)}
+                    >
+                      <span className="block text-sm text-ink">
+                        <span className="text-ink-3">{PLATFORM_NAME[r.platform]}: </span>
+                        {r.label}
+                      </span>
+                      <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-3">
+                        <span>
                           {heldBackWords(r.heldBack)}, {waitedFor(r.reportedAt, now)}
-                          {also && (
-                            <>
-                              <span aria-hidden="true" className="font-semibold text-neon-blue-text">
-                                {" "}
-                                {also}
-                              </span>
-                              <span className="sr-only">, {alsoReportedSpoken(r.alsoReportedBy)}</span>
-                            </>
-                          )}
                         </span>
-                        {r.note && <span className="mt-1 block line-clamp-2 text-xs text-ink-2">“{r.note}”</span>}
-                      </button>
-                    </li>
-                  );
-                })}
+                        <AlsoReportedTag n={r.alsoReportedBy} />
+                      </span>
+                      {r.note && <span className="mt-1 block line-clamp-2 text-xs text-ink-2">“{r.note}”</span>}
+                    </button>
+                  </li>
+                ))}
               </ul>
               {reports.more && (
                 <p className="text-xs text-ink-3">More waiting past these. Close a few and they move up.</p>

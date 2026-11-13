@@ -13,9 +13,10 @@ import { SYNC_REPORT_GROUP_COUNT_CAP } from "@/lib/collection/sync-report";
 import { getDashboard, type DashboardData, type SyncProblemSet } from "../fake-data";
 import DashboardScreen from "./DashboardScreen";
 import { alsoReportedLine } from "@/app/admin/card-requests/syncReportCopy";
+import { WITHDREW_SHOWN_MS } from "./CrewDesk";
 import { CREW_DESK_WAITING } from "@/convex/crewDesk";
 import { CrewProvider, MY_REQUESTS_HREF, WAITING_SHOWN, type Crew, type CrewAsk, type CrewDeskData } from "./crew";
-import { heldLead } from "./SyncStatus";
+import { heldLead, heldOrder, HELD_PREVIEW } from "./SyncStatus";
 
 afterEach(cleanup);
 
@@ -62,18 +63,14 @@ describe("the lead over a set's held-back cards says who fixes them", () => {
     );
   });
 
-  it("the crew, every card: report it", () => {
-    expect(heldLead({ ...base, heldBack: 1, crewFix: "all" })).toBe(
-      "1 card held back from eBay. That one's on our crew, not you. Report it and we'll fix it:",
-    );
-    expect(heldLead({ ...base, heldBack: 4, crewFix: "all" })).toBe(
-      "4 cards held back from eBay. These are on our crew, not you. Report them and we'll fix them:",
-    );
+  it("the crew, every card: short, and no colon (the action is the Report button)", () => {
+    expect(heldLead({ ...base, heldBack: 1, crewFix: "all" })).toBe("1 card held back from eBay. On our crew, not you.");
+    expect(heldLead({ ...base, heldBack: 4, crewFix: "all" })).toBe("4 cards held back from eBay. On our crew, not you.");
   });
 
-  it("both: fix yours, report the rest", () => {
+  it("both: fix yours, the rest are on us", () => {
     expect(heldLead({ ...base, heldBack: 4, crewFix: "some" })).toBe(
-      "4 cards held back from eBay. Fix what you can on each card and it goes up next sync. The rest are on our crew, so report them:",
+      "4 cards held back from eBay. Fix yours on the card. The rest are on us.",
     );
   });
 
@@ -82,6 +79,72 @@ describe("the lead over a set's held-back cards says who fixes them", () => {
     draw(data, crewOf());
     const sync = screen.getByRole("region", { name: "Sync status" });
     expect(within(sync).getByText(heldLead(set))).toBeTruthy();
+  });
+});
+
+describe("a mixed set's tiles say which cards are the crew's", () => {
+  /** The demo's Finest set, its first `crew` cards made ones only the crew can fix, `size` cards in all. */
+  function mixedSet(size: number, crew: number): { data: DashboardData; set: SyncProblemSet } {
+    const data = getDashboard();
+    const status = data.syncStatus!;
+    const finest = status.problems[1];
+    const cards = finest.cards.slice(0, size).map((c, i) => (i < crew ? { ...c, code: i % 2 ? ("rejected" as const) : ("noLink" as const) } : c));
+    const set: SyncProblemSet = { ...finest, cards, heldBack: size, variantId: "variant-2", crewFix: crew === size ? "all" : "some" };
+    return { data: { ...data, syncStatus: { ...status, problems: [status.problems[0], set] } }, set };
+  }
+
+  const tiles = (set: SyncProblemSet) =>
+    within(screen.getByRole("article", { name: `${set.setLabel} on eBay` })).getAllByRole("listitem");
+
+  it("tags each crew tile \"On our crew\" in words, and sorts them after the collector's own", () => {
+    const { data, set } = mixedSet(3, 1);
+    draw(data, crewOf());
+    const items = tiles(set);
+    expect(items).toHaveLength(3);
+    // The read named the crew's card first; it shows last.
+    const hrefOf = (li: HTMLElement) => decodeURIComponent(within(li).getByRole("link").getAttribute("href") ?? "");
+    expect(hrefOf(items[2])).toContain(String(set.cards[0].card.id));
+    expect(hrefOf(items[0])).toContain(String(set.cards[1].card.id));
+    expect(within(items[2]).getByText("On our crew")).toBeTruthy();
+    expect(within(items[0]).queryByText("On our crew")).toBeNull();
+    expect(within(items[1]).queryByText("On our crew")).toBeNull();
+    // The tag is part of the tile's link, so a reader hears it too.
+    expect(within(items[2]).getByRole("link").textContent).toContain("On our crew");
+  });
+
+  it("the crew's tiles fold past the preview behind the collector's own, and Show all brings them", () => {
+    const { data, set } = mixedSet(8, 2);
+    draw(data, crewOf());
+    expect(tiles(set)).toHaveLength(HELD_PREVIEW);
+    expect(screen.queryAllByText("On our crew")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(`^Show all 8 held back in ${set.setLabel}`) }));
+    const items = tiles(set);
+    expect(items).toHaveLength(8);
+    expect(within(items[6]).getByText("On our crew")).toBeTruthy();
+    expect(within(items[7]).getByText("On our crew")).toBeTruthy();
+  });
+
+  it("a set whose every card is the crew's carries no tags: the lead says it once", () => {
+    const { data, set } = mixedSet(3, 3);
+    draw(data, crewOf());
+    expect(set.crewFix).toBe("all");
+    expect(screen.queryAllByText("On our crew")).toHaveLength(0);
+  });
+
+  it("the demo's sets (no crew cards) keep their order and carry no tags", () => {
+    draw(getDashboard(), null);
+    expect(screen.queryAllByText("On our crew")).toHaveLength(0);
+  });
+
+  it("heldOrder keeps each kind in the read's order", () => {
+    const cards = [
+      { id: 1, code: "noLink" as const },
+      { id: 2, code: "noPrice" as const },
+      { id: 3, code: "rejected" as const },
+      { id: 4 },
+      { id: 5, code: "noPhoto" as const },
+    ];
+    expect(heldOrder(cards).map((c) => c.id)).toEqual([2, 4, 5, 1, 3]);
   });
 });
 
@@ -256,8 +319,15 @@ describe("the crew section under Sync status", () => {
     expect(within(mine).getByText("Card request")).toBeTruthy();
     expect(within(mine).getByText("Set request")).toBeTruthy();
     expect(within(mine).getByText("7 open")).toBeTruthy();
-    // Only a report is withdrawn here.
+    // Only a report is withdrawn here; a card or set request opens My requests, its name telling it apart.
     expect(within(mine).getAllByRole("button", { name: /^Withdraw/ })).toHaveLength(1);
+    const card = within(mine).getByRole("link", { name: /^2024 Topps Chrome #12 Ohtani/ });
+    expect(card.getAttribute("href")).toBe(MY_REQUESTS_HREF);
+    expect(card.textContent).toMatch(/Card request, in My requests, asked \S/);
+    const set = within(mine).getByRole("link", { name: /^1991 Upper Deck Final Edition/ });
+    expect(set.getAttribute("href")).toBe(MY_REQUESTS_HREF);
+    expect(set.textContent).toContain("Set request, in My requests");
+    expect(within(mine).queryByRole("link", { name: /^2024 Topps Chrome Base/ })).toBeNull();
     expect(within(mine).getByRole("link", { name: "4 more in My requests" }).getAttribute("href")).toBe(MY_REQUESTS_HREF);
     expect(screen.queryByRole("region", { name: "From collectors" })).toBeNull();
   });
@@ -347,6 +417,93 @@ describe("the crew section under Sync status", () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Sync status" })));
   });
 
+  it("two requests of one name read apart by when each was asked", () => {
+    const desk: CrewDeskData = {
+      ...EMPTY_DESK,
+      mine: [
+        ask({ id: "a", kind: "card", label: "1991 Donruss #1 Ripken", at: Date.UTC(2026, 10, 1, 15) }),
+        ask({ id: "b", kind: "card", label: "1991 Donruss #1 Ripken", at: Date.UTC(2026, 10, 9, 15) }),
+      ],
+    };
+    draw(getDashboard(), crewOf({ desk }));
+    const [one, two] = within(screen.getByRole("region", { name: "With our crew" })).getAllByRole("link", { name: /^1991 Donruss/ });
+    expect(one.textContent).not.toBe(two.textContent);
+  });
+
+  it("while it withdraws, the button says so and its name still starts with Withdraw", async () => {
+    const desk: CrewDeskData = { ...EMPTY_DESK, mine: [REPORT_ASK] };
+    draw(getDashboard(), crewOf({ desk, withdraw: vi.fn(() => new Promise<string | null>(() => {})) }));
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on eBay" }));
+    const busy = await screen.findByRole("button", { name: "Withdrawing… report for 2024 Topps Chrome Base on eBay" });
+    expect(busy.getAttribute("aria-disabled")).toBe("true");
+    expect(busy.hasAttribute("aria-label")).toBe(false);
+  });
+
+  it(`the withdraw line clears itself after ${WITHDREW_SHOWN_MS} ms, and the line stays mounted`, async () => {
+    vi.useFakeTimers();
+    try {
+      render(<WithdrawHarness asks={[REPORT_ASK, ask({ id: "c1", kind: "card", label: "A card" })]} data={getDashboard()} />);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on eBay" }));
+      });
+      const line = screen.getByText("Withdrew the report on 2024 Topps Chrome Base (eBay).");
+      act(() => {
+        vi.advanceTimersByTime(WITHDREW_SHOWN_MS - 1);
+      });
+      expect(line.textContent).not.toBe("");
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(line.textContent).toBe("");
+      expect(line.getAttribute("role")).toBe("status");
+      expect(line.isConnected).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the next withdraw clears the last one's line as it starts", async () => {
+    const second = ask({ id: "r2", kind: "report", label: "1993 Finest Base", platform: "bsc" });
+    let release: (v: string | null) => void = () => {};
+    let calls = 0;
+    function Harness() {
+      const [mine, setMine] = useState([REPORT_ASK, second]);
+      const crew = crewOf({
+        desk: { ...EMPTY_DESK, mine },
+        withdraw: (id) => {
+          calls += 1;
+          if (calls === 1) {
+            setMine((m) => m.filter((a) => a.id !== id));
+            return Promise.resolve(null);
+          }
+          return new Promise<string | null>((resolve) => {
+            release = resolve;
+          });
+        },
+      });
+      return (
+        <MemoryRouter initialEntries={["/dashboard"]}>
+          <CrewProvider value={crew}>
+            <DashboardScreen data={getDashboard()} />
+          </CrewProvider>
+        </MemoryRouter>
+      );
+    }
+    render(<Harness />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on eBay" }));
+    });
+    const line = screen.getByText("Withdrew the report on 2024 Topps Chrome Base (eBay).");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 1993 Finest Base on BuySportsCards" }));
+    });
+    expect(line.textContent).toBe("");
+    await act(async () => {
+      release(null);
+    });
+    expect(line.textContent).toBe("Withdrew the report on 1993 Finest Base (BuySportsCards).");
+  });
+
   it("Withdraw calls the withdraw with the report's id", async () => {
     const desk: CrewDeskData = {
       ...EMPTY_DESK,
@@ -396,6 +553,9 @@ describe("the crew section under Sync status", () => {
     expect(within(waiting).getByText("4 waiting")).toBeTruthy();
     // The tag is seen; a reader hears who else reported it, and when each was asked.
     expect(within(waiting).getByText("+3 reported").getAttribute("aria-hidden")).toBe("true");
+    // One look with Card Requests: the crew's blue pill, never the warning amber.
+    expect(within(waiting).getByText("+3 reported").className).toContain("text-neon-blue-text");
+    expect(within(waiting).getByText("+3 reported").className).not.toContain("notice-warn");
     const reportOne = within(waiting).getByRole("link", { name: /^Report one/ });
     expect(reportOne.textContent).toContain("also reported by 3 other collectors");
     expect(reportOne.textContent).toMatch(/asked \S/);

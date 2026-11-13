@@ -114,7 +114,8 @@ function MySyncReports({
           ))}
         </ul>
       )}
-      <p role="status" className="text-sm text-neon-green-text">
+      {/* Mounted from the start, so it is announced; empty, it cancels its own gap. */}
+      <p role="status" className="text-sm text-neon-green-text empty:-mt-2">
         {withdrawn ?? ""}
       </p>
     </div>
@@ -161,7 +162,7 @@ function SyncReportRow({ report: r, onWithdrawn }: { report: MyReport; onWithdra
         </p>
       )}
       {r.status === "fixed" && (
-        <p className="text-xs text-ink-3">Sync it again and those cards should go up.</p>
+        <p className="text-xs text-ink-3">Those cards go up next sync.</p>
       )}
       {r.status === "open" && (
         <div className="flex justify-end">
@@ -181,11 +182,10 @@ function SyncReportRow({ report: r, onWithdrawn }: { report: MyReport; onWithdra
           </NeonButton>
         </div>
       )}
-      {problem && (
-        <p role="alert" className="text-sm text-neon-pink-text">
-          {problem}
-        </p>
-      )}
+      {/* Mounted from the start, so a refusal is announced; empty, it cancels its own gap. */}
+      <p role="alert" className="text-sm text-neon-pink-text empty:-mt-2">
+        {problem}
+      </p>
     </li>
   );
 }

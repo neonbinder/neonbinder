@@ -26,6 +26,10 @@ vi.mock("convex/react", async () => {
 });
 
 import SyncReportReview, { NOT_A_BUG_NEEDS_A_NOTE } from "./SyncReportReview";
+import { ALSO_REPORTED_INK, syncReportWhen } from "./syncReportCopy";
+
+/** A string as a literal piece of a RegExp. */
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function review(over: Record<string, unknown> = {}) {
   return {
@@ -97,9 +101,30 @@ describe("SyncReportReview", () => {
   });
 
   it("says when the collector's set last listed cleanly", () => {
-    answers.set("syncReports:review", review({ listedCleanlySince: Date.UTC(2026, 10, 12, 18) }));
+    const since = Date.UTC(2026, 10, 12, 18);
+    answers.set("syncReports:review", review({ listedCleanlySince: since }));
     show();
-    screen.getByText(/^Listed cleanly since .+\. Their last sync held none of these back\.$/);
+    screen.getByText(`Listed cleanly since ${syncReportWhen(since)}. Their last sync held none of these back.`);
+  });
+
+  it("every date reads one way, the dashboard's: medium date, short time", () => {
+    const reportedAt = Date.UTC(2026, 10, 1, 15, 5, 42);
+    const lastUpdated = Date.UTC(2026, 10, 3, 9, 30, 7);
+    const closedAt = Date.UTC(2026, 10, 9, 20, 0, 13);
+    answers.set("syncReports:review", review({ reportedAt, lastUpdated, status: "fixed", closedAt, alsoReportedBy: 0 }));
+    show();
+    expect(
+      screen.getByText(new RegExp(`Reported ${literal(syncReportWhen(reportedAt))}, refreshed ${literal(syncReportWhen(lastUpdated))}\\.$`)),
+    ).toBeTruthy();
+    screen.getByText(`Closed ${syncReportWhen(closedAt)}`);
+    // No seconds anywhere.
+    expect(document.body.textContent).not.toMatch(/\d:\d\d:\d\d/);
+  });
+
+  it("the also-reported sentence wears the tag's blue", () => {
+    show();
+    const also = screen.getByText("Also reported by 3 other collectors. Closing this closes theirs too.");
+    expect(also.className).toContain(ALSO_REPORTED_INK);
   });
 
   it("marks it fixed, with the note when there is one, and lands on the outcome", async () => {
