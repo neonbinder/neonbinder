@@ -11,6 +11,18 @@ import { writeErrorMessage } from "@/app/collection/final/data/store";
 import SetPick from "./SetPick";
 
 /**
+ * A photo link's box is a card-shaped frame (2.5 x 3.5 in, so 5/7) at a fixed
+ * height, sized before the photo decodes. Sizing the link from the image
+ * (`h-48 w-auto`) left it 0 px wide until the image loaded: a keyboard user
+ * tabbed onto nothing, and axe's target-size check failed in that window.
+ * `object-contain` letterboxes a photo that isn't card-shaped instead of
+ * cropping it.
+ */
+const PHOTO_LINK =
+  "block aspect-[5/7] h-48 overflow-hidden rounded border border-rule-strong bg-raised-deep focus-outline";
+const PHOTO_IMAGE = "h-full w-full object-contain text-xs text-ink-3";
+
+/**
  * NEO-361 — one request, reviewed. For a card: what the collector typed and
  * photographed, the cards in that set already carrying its number (pick one
  * when it is the same card), or add it to its checklist here. For a set:
@@ -171,17 +183,17 @@ export default function RequestReview({
         <ul className="flex flex-wrap gap-3" aria-label="Their photos">
           {card.frontImageUrl && (
             <li>
-              <a href={card.frontImageUrl} target="_blank" rel="noreferrer" className="block rounded focus-outline">
+              <a href={card.frontImageUrl} target="_blank" rel="noreferrer" className={PHOTO_LINK}>
                 <span className="sr-only">(opens in a new tab)</span>
-                <img src={card.frontImageUrl} alt="Front of the card" className="h-48 w-auto rounded border border-rule-strong" />
+                <img src={card.frontImageUrl} alt="Front of the card" className={PHOTO_IMAGE} />
               </a>
             </li>
           )}
           {card.backImageUrl && (
             <li>
-              <a href={card.backImageUrl} target="_blank" rel="noreferrer" className="block rounded focus-outline">
+              <a href={card.backImageUrl} target="_blank" rel="noreferrer" className={PHOTO_LINK}>
                 <span className="sr-only">(opens in a new tab)</span>
-                <img src={card.backImageUrl} alt="Back of the card" className="h-48 w-auto rounded border border-rule-strong" />
+                <img src={card.backImageUrl} alt="Back of the card" className={PHOTO_IMAGE} />
               </a>
             </li>
           )}

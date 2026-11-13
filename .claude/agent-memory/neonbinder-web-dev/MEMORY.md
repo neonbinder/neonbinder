@@ -223,3 +223,4 @@
 - [No NB account-deletion sweep](reference_no_nb_account_deletion_sweep.md) — deletion is manual; per-user scrubs are operator-run internal mutations (forgetUploader pattern)
 - [Picker context league is the row's own feature](reference_picker_context_league_is_the_rows_own_feature.md) — pickerCandidates reads L off the context row only (year walks up); prove tiers on a tree built via addCustomSelectorOption
 - [sr-only suffix in a name is unstable](reference_sr_only_suffix_in_a_name_is_unstable.md) — extra screen-reader words on a role=heading: aria-label, not an sr-only child (happy-dom pads it)
+- [Image-sized link is 0 px wide before decode](reference_image_sized_link_is_zero_wide_before_decode.md) — `h-N w-auto` img in a link fails axe target-size pre-load; frame the link aspect-[5/7] h-N
