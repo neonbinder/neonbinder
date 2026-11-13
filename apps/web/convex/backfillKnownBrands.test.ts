@@ -16,6 +16,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
+import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
 
 const modules = (
   import.meta as unknown as {
@@ -534,5 +535,213 @@ describe("backfillKnownBrands — bounds", () => {
       brandUnavailable: 0,
     });
     expect(report.setRowsRead).toBe(0);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-527 — the majors, now that SportLots no longer supplies them
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The year shapes the NEO-527 prod run meets. SportLots is paused for every
+ * case (`NEONBINDER_PAUSED_PLATFORMS=sportlots`), which is why the majors
+ * landed in Unknown in the first place: the year's chain still carries
+ * SportLots ids, so only the pause keeps a minted brand from being born with
+ * the SportLots placeholder.
+ */
+describe("backfillKnownBrands — the majors while SportLots is paused (NEO-527)", () => {
+  beforeEach(() => {
+    vi.stubEnv(PAUSED_PLATFORMS_ENV, "sportlots");
+  });
+
+  /** 2026 Football's Unknown bucket, as the paused sync left it. */
+  const FOOTBALL_2026_UNKNOWN = {
+    moved: {
+      "Topps Chrome": "Topps",
+      "Topps Flagship": "Topps",
+      Bowman: "Bowman",
+      "Bowman Sapphire Edition": "Bowman",
+      "Panini Instant NIL": "Panini",
+      Donruss: "Donruss",
+      "Upper Deck CFL": "Upper Deck",
+    } as Record<string, string>,
+    noMatch: ["Valiant Michigan Moments", "Skyline Chili Cincinnati Bengals"],
+  };
+
+  async function seedFootball2026(t: ReturnType<typeof convexTest>) {
+    const year = await seedYear(t, "2026");
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const ids: Record<string, Id<"selectorOptions">> = {};
+    for (const name of [
+      ...Object.keys(FOOTBALL_2026_UNKNOWN.moved),
+      ...FOOTBALL_2026_UNKNOWN.noMatch,
+    ]) {
+      ids[name] = await seedSet(t, unknown, name);
+    }
+    return { year, unknown, ids };
+  }
+
+  const snapshotAll = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ctx.db.query("selectorOptions").collect());
+
+  test("2026 Football: the dry run reports seven moves and two no-matches, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    await seedFootball2026(t);
+    const before = await snapshotAll(t);
+
+    const report = await dry(t);
+
+    expect(report.counts).toEqual({
+      brandsCreated: 0,
+      moved: 7,
+      clashAtTarget: 0,
+      operatorPlaced: 0,
+      noMatch: 2,
+      brandUnavailable: 0,
+    });
+    const planned = Object.fromEntries(
+      report.rows
+        .filter((r) => r.action === "moved")
+        .map((r) => [r.value, r.brand]),
+    );
+    expect(planned).toEqual(FOOTBALL_2026_UNKNOWN.moved);
+    expect(
+      report.rows
+        .filter((r) => r.action === "no_match")
+        .map((r) => r.value)
+        .sort(),
+    ).toEqual([...FOOTBALL_2026_UNKNOWN.noMatch].sort());
+    // Not a single document changed, `lastUpdated` included.
+    expect(await snapshotAll(t)).toEqual(before);
+  });
+
+  test("2026 Football: the armed run mints the five majors with no SportLots slot and re-homes the seven sets", async () => {
+    const t = convexTest(schema, modules);
+    const { year, unknown, ids } = await seedFootball2026(t);
+
+    const report = await armed(t);
+
+    expect(report.counts.brandsCreated).toBe(5);
+    expect(report.counts.moved).toBe(7);
+    expect(report.counts.noMatch).toBe(2);
+
+    const mfrs = await manufacturersOf(t, year);
+    expect(mfrs.map((m) => m.value).sort()).toEqual([
+      "Bowman",
+      "Donruss",
+      "Panini",
+      "Topps",
+      "Unknown",
+      "Upper Deck",
+    ]);
+    for (const brand of mfrs.filter((m) => m._id !== unknown)) {
+      // NB's own row: its prefix is its name, and SportLots, paused, gets
+      // no slot at all — not even the all-brands placeholder.
+      expect(brand.metadata?.setNamePrefix, brand.value).toBe(brand.value);
+      expect(brand.metadata?.isBrandUnknown, brand.value).toBeUndefined();
+      expect(brand.platformData.sportlots, brand.value).toBeUndefined();
+      expect(brand.platformSlotSeq?.sportlots, brand.value).toBeUndefined();
+    }
+
+    const brandId = new Map(mfrs.map((m) => [m.value, m._id]));
+    for (const [name, brand] of Object.entries(FOOTBALL_2026_UNKNOWN.moved)) {
+      const row = await t.run(async (ctx) => ctx.db.get(ids[name]));
+      // Same row, new parent, the manufacturer feature following it; the
+      // set's own name is never touched.
+      expect(row?.parentId, name).toBe(brandId.get(brand));
+      expect(row?.value, name).toBe(name);
+      expect(row?.features?.manufacturer, name).toBe(brand);
+    }
+    // The two no-matches stay exactly where they were.
+    expect((await setsUnder(t, unknown)).map((r) => r.value).sort()).toEqual(
+      [...FOOTBALL_2026_UNKNOWN.noMatch].sort(),
+    );
+    const topps = mfrs.find((m) => m.value === "Topps")!;
+    expect([...topps.children].sort()).toEqual(
+      [ids["Topps Chrome"], ids["Topps Flagship"]].sort(),
+    );
+  });
+
+  test("2026 Football: a dry run after the armed run moves nothing", async () => {
+    const t = convexTest(schema, modules);
+    await seedFootball2026(t);
+    await armed(t);
+
+    const again = await dry(t);
+
+    expect(again.counts).toEqual({
+      brandsCreated: 0,
+      moved: 0,
+      clashAtTarget: 0,
+      operatorPlaced: 0,
+      noMatch: 2,
+      brandUnavailable: 0,
+    });
+  });
+
+  test("a pre-pause year: the SportLots-made Topps row is adopted, never a sibling beside it", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t, "2019");
+    // Made by a SportLots manufacturer sync before the pause: a real SL id.
+    const topps = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Topps",
+        platformData: { sportlots: { s0: "1" } },
+        platformLabels: { sportlots: { s0: "Topps" } },
+        platformSlotSeq: { sportlots: 1 },
+        metadata: { setNamePrefix: "Topps" },
+        features: { manufacturer: "Topps" },
+        parentId: year,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      await ctx.db.patch(year, { children: [id] });
+      return id;
+    });
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const heritage = await seedSet(t, unknown, "Topps Heritage");
+
+    const report = await armed(t);
+
+    expect(report.counts.brandsCreated).toBe(0);
+    expect(report.counts.moved).toBe(1);
+    const mfrs = await manufacturersOf(t, year);
+    expect(mfrs.map((m) => m.value).sort()).toEqual(["Topps", "Unknown"]);
+    expect((await t.run(async (ctx) => ctx.db.get(heritage)))?.parentId).toBe(
+      topps,
+    );
+    // The adopted row keeps its SportLots link exactly as it was.
+    const toppsRow = mfrs.find((m) => m._id === topps)!;
+    expect(toppsRow.platformData.sportlots).toEqual({ s0: "1" });
+    expect(toppsRow.platformLabels?.sportlots).toEqual({ s0: "Topps" });
+    expect(toppsRow.children).toEqual([heritage]);
+  });
+
+  test("a row an operator placed under Unknown stays there, and no major is minted for it", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t, "2026");
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const placed = await seedSet(t, unknown, "Topps Chrome", {
+      setByOperator: true,
+    });
+
+    const report = await armed(t);
+
+    expect(report.counts.operatorPlaced).toBe(1);
+    expect(report.counts.moved).toBe(0);
+    expect(report.counts.brandsCreated).toBe(0);
+    expect((await manufacturersOf(t, year)).map((m) => m.value)).toEqual([
+      "Unknown",
+    ]);
+    const row = await t.run(async (ctx) => ctx.db.get(placed));
+    expect(row?.parentId).toBe(unknown);
+    expect(row?.lastUpdated).toBe(SENTINEL);
   });
 });
