@@ -2229,6 +2229,19 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["commonPrices.forVariants", (t) => t.query(api.commonPrices.forVariants, { variantIds: [] })],
     // NEO-370 — the listing gate's read: the caller's own state rows, home and common price only.
     ["listingGate.forHome", (t) => t.query(api.listingGate.forHome, {})],
+    // NEO-464 — the signed-in dashboard's own reads and its visit stamp.
+    ["dashboard.justCompleted", (t) => t.query(api.dashboard.justCompleted, { sinceMs: 0 })],
+    ["dashboard.setBoard", (t) => t.query(api.dashboard.setBoard, { setId: NOT_AN_ID })],
+    ["dashboard.smartChecklist", (t) => t.query(api.dashboard.smartChecklist, { containerId: NOT_AN_ID })],
+    ["dashboard.newSince", (t) => t.query(api.dashboard.newSince, { sinceMs: 0 })],
+    ["dashboard.freshPulls", (t) => t.query(api.dashboard.freshPulls, { sinceMs: 0 })],
+    ["dashboard.markVisit", (t) => t.mutation(api.dashboard.markVisit, {})],
+    ["dashboard.couldFit", (t) => t.query(api.dashboard.couldFit, { containerId: NOT_AN_ID })],
+    ["dashboard.intake", (t) => t.query(api.dashboard.intake, {})],
+    ["dashboard.sales", (t) => t.query(api.dashboard.sales, {})],
+    ["dashboard.newSets", (t) => t.query(api.dashboard.newSets, {})],
+    ["dashboard.newListings", (t) => t.query(api.dashboard.newListings, { sinceMs: 0 })],
+    ["dashboard.syncAlerts", (t) => t.query(api.dashboard.syncAlerts, {})],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
@@ -2388,6 +2401,29 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["intakeRuns.ts", "recordIntakePhotoSide", "internalMutation"],
     ["intakePhotos.ts", "attachIntakePhotos", "internalAction"],
     ["intakePhotos.ts", "reattachIntakeRunPhotos", "internalAction"],
+    // NEO-481 — hand photo edits: every row function takes a userId/ownerId
+    // argument, and the renders take keys' parts, so none may ever be public.
+    ["photoEditRows.ts", "scanSourceFacts", "internalQuery"],
+    ["photoEditRows.ts", "copySourceFacts", "internalQuery"],
+    ["photoEditRows.ts", "reserveScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "commitScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "failScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "reserveCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "commitCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "failCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "undoCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "dismissFailure", "internalMutation"],
+    ["photoEditRows.ts", "sweepPhotoEditTickets", "internalMutation"],
+    ["photoEditRows.ts", "claimEditWarmup", "internalMutation"],
+    ["photoEdits.ts", "renderScanEdit", "internalAction"],
+    ["photoEdits.ts", "renderCopyEdit", "internalAction"],
+    ["photoEdits.ts", "warmEditRenderer", "internalAction"],
+    // NEO-481 — the public edit entry points are actions that sign in first.
+    ["photoEdits.ts", "photoEditSource", "action"],
+    ["photoEdits.ts", "saveScanEdit", "action"],
+    ["photoEdits.ts", "saveCopyPhotoEdit", "action"],
+    ["photoEdits.ts", "undoCopyPhotoEdit", "action"],
+    ["photoEdits.ts", "dismissPhotoEditFailure", "action"],
   ])(
     "%s :: %s is declared %s",
     (file, fn, kind) => {
@@ -2685,6 +2721,8 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
       () => t.mutation(api.intakeRuns.setIntakePhotoAside, { runId, entryIndex: 0, setAside: true }),
       // NEO-427: the Saved tile's Try again.
       () => t.action(api.intakePhotos.retryIntakePhotos, { matchId }),
+      // NEO-481: a box tile's own price.
+      () => t.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 100 }),
     ];
     for (const call of writes) await expect(call()).rejects.toThrow(/Not authenticated/);
     expect((await t.run((ctx) => ctx.db.get(matchId)))?.photos).toBe("failed");
@@ -2694,6 +2732,76 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
     expect(await t.query(api.intakeRuns.searchIntakeCards, { runId, q: "1" })).toEqual([]);
     const copies = await t.run(async (ctx) => ctx.db.query("collectionCopies").collect());
     expect(copies).toEqual([]);
+  });
+});
+
+describe("NEO-481: the hand photo edit functions are signed-in", () => {
+  test("every public edit function rejects an anonymous caller and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { copyId, photoId } = await t.run(async (ctx) => {
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        name: "B",
+        lastUpdated: 0,
+      });
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "A",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 0,
+      } as never);
+      const copyId = await ctx.db.insert("collectionCopies", {
+        ownerId: "someone",
+        cardId,
+        variantId: sportId,
+        setId: sportId,
+        homeId,
+        quantity: 1,
+        lastUpdated: 0,
+      });
+      const photoId = await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: "someone",
+        copyId,
+        side: "front",
+        token: "a".repeat(32),
+        contentType: "image/jpeg",
+        imageBytes: 1,
+        thumbBytes: 1,
+        status: "live",
+        since: 0,
+      });
+      return { copyId, photoId };
+    });
+    const jobId = "00000000-0000-4000-8000-000000000000";
+    const edit = { turns: 1 as const, crop: null };
+    const calls = [
+      () => t.action(api.photoEdits.photoEditSource, { ref: { kind: "scan", jobId, entryIndex: 0 } }),
+      () => t.action(api.photoEdits.photoEditSource, { ref: { kind: "copy", copyId, side: "front" } }),
+      () => t.action(api.photoEdits.saveScanEdit, { jobId, entryIndex: 0, edit, expectVersion: 0 }),
+      () =>
+        t.action(api.photoEdits.saveCopyPhotoEdit, {
+          copyId,
+          side: "front",
+          edit,
+          expectToken: "a".repeat(32),
+          mode: "stored",
+        }),
+      () => t.action(api.photoEdits.undoCopyPhotoEdit, { copyId, photoId }),
+      () => t.action(api.photoEdits.dismissPhotoEditFailure, { ref: { kind: "copy", copyId, side: "front" } }),
+    ];
+    for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
+    const photos = await t.run(async (ctx) => ctx.db.query("collectionCopyPhotos").collect());
+    expect(photos.map((p) => [p._id, p.status])).toEqual([[photoId, "live"]]);
   });
 });
 
@@ -3058,6 +3166,62 @@ describe("NEO-475: the BSC call telemetry store is internal, never public", () =
     expect(serverImport).not.toBeNull();
     const names = serverImport![1].split(",").map((s) => s.trim()).filter(Boolean);
     expect(names.sort()).toEqual(["internalMutation", "internalQuery"]);
+  });
+});
+
+/**
+ * NEO-464 — `testing.backdateMyDashboardVisit`: public so the E2E test page can
+ * call it, and closed everywhere else. Pinned: refused off a testing deployment
+ * (`TESTING_RESET_SECRET` unset, i.e. production) even for a signed-in caller,
+ * and refused to an anonymous caller where it is enabled. Its caller scoping is
+ * testing.test.ts's.
+ */
+describe("NEO-464 testing.backdateMyDashboardVisit — testing deployments only, signed in", () => {
+  test("refused in production and to an anonymous caller", async () => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      delete process.env.TESTING_RESET_SECRET;
+      const prod = convexTest(schema, modules);
+      await expect(
+        prod.withIdentity(SIGNED_IN).mutation(api.testing.backdateMyDashboardVisit, {}),
+      ).rejects.toThrow(/not enabled/);
+      process.env.TESTING_RESET_SECRET = "x";
+      const dev = convexTest(schema, modules);
+      await expect(dev.mutation(api.testing.backdateMyDashboardVisit, {})).rejects.toThrow(/Not authenticated/);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
+  });
+});
+
+/**
+ * NEO-464 — the dashboard's test seeds (`testing.seedMyTestSale`,
+ * `seedMyTestSync`, `clearMyTestDashboardSeeds`): public so the E2E test page
+ * can call them, and closed everywhere else. Pinned like
+ * `backdateMyDashboardVisit`: refused in production even for a signed-in
+ * caller, and refused to an anonymous caller where they are enabled. Their
+ * caller scoping is testing.test.ts's.
+ */
+describe("NEO-464 testing dashboard seeds — testing deployments only, signed in", () => {
+  const CALLS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["testing.seedMyTestSale", (t) => t.mutation(api.testing.seedMyTestSale, {})],
+    ["testing.seedMyTestSync", (t) => t.mutation(api.testing.seedMyTestSync, { pending: true, error: true })],
+    ["testing.clearMyTestDashboardSeeds", (t) => t.mutation(api.testing.clearMyTestDashboardSeeds, {})],
+  ];
+  test.each(CALLS)("%s is refused in production and to an anonymous caller", async (_name, call) => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      delete process.env.TESTING_RESET_SECRET;
+      const prod = convexTest(schema, modules);
+      await expect(call(prod.withIdentity(SIGNED_IN) as unknown as ReturnType<typeof convexTest>)).rejects.toThrow(/not enabled/);
+      process.env.TESTING_RESET_SECRET = "x";
+      const dev = convexTest(schema, modules);
+      await expect(call(dev)).rejects.toThrow(/Not authenticated/);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
   });
 });
 

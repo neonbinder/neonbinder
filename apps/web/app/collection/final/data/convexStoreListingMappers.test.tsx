@@ -78,7 +78,7 @@ describe("toSyncStatus", () => {
               setLabel: "Base",
               status: "idle",
               problemsTotal: 1,
-              problems: [{ reason: "noPrice" }, { reason: "graded", cardNo: "3" }],
+              problems: [{ reason: "noPrice" }, { reason: "graded", cardNo: "3", cardId: "c3" }],
               steps: [],
             },
           ],
@@ -86,7 +86,8 @@ describe("toSyncStatus", () => {
       ],
     } as RawStatus).platforms;
     expect(p.sets[0].problemsTotal).toBe(2);
-    expect(p.sets[0].problems).toEqual([{ reason: "noPrice" }, { reason: "graded", cardNo: "3" }]);
+    // The card id rides along (the row opens that card's panel); absent stays absent.
+    expect(p.sets[0].problems).toEqual([{ reason: "noPrice" }, { reason: "graded", cardNo: "3", cardId: "c3" }]);
     expect(p.sets[0]).not.toHaveProperty("counts");
   });
 

@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  intakeSavePriceCents,
   INTAKE_MATCHED_MIN,
   INTAKE_NONE_BELOW,
   intakeBandFor,
@@ -158,5 +159,15 @@ describe("intakeNamesFor", () => {
       intakeNamesFor("Aaron Judge / Juan Soto", [{ nameOnCard: "Aaron Judge" }]),
     ).toEqual(["Aaron Judge", "Juan Soto"]);
     expect(intakeNamesFor("Doc Gooden", undefined)).toEqual(["Doc Gooden"]);
+  });
+});
+
+describe("NEO-481 — a box save's price", () => {
+  test("own, then the run's Min price, then the common price; none is null and zero counts", () => {
+    expect(intakeSavePriceCents(300, 150, 40)).toBe(300);
+    expect(intakeSavePriceCents(undefined, 150, 40)).toBe(150);
+    expect(intakeSavePriceCents(undefined, undefined, 40)).toBe(40);
+    expect(intakeSavePriceCents(undefined, 0, 40)).toBe(0);
+    expect(intakeSavePriceCents(undefined, undefined, null)).toBeNull();
   });
 });

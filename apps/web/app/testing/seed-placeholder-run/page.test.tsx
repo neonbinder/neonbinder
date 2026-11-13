@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   seedFailed: vi.fn(),
   seedSavedFailure: vi.fn(),
   seedLoose: vi.fn(),
+  seedHopper: vi.fn(),
+  clearHopper: vi.fn(),
 }));
 
 // Plain string tokens for the generated api so `useMutation` can tell the reset
@@ -36,6 +38,8 @@ vi.mock("@/convex/_generated/api", () => ({
       seedMyTestFailedPhotoRun: "testing:seedMyTestFailedPhotoRun",
       seedMyTestSavedPhotoFailureRun: "testing:seedMyTestSavedPhotoFailureRun",
       seedMyTestLoosePhotosRun: "testing:seedMyTestLoosePhotosRun",
+      seedMyTestHopperRun: "testing:seedMyTestHopperRun",
+      clearMyTestHopper: "testing:clearMyTestHopper",
     },
   },
 }));
@@ -51,7 +55,11 @@ vi.mock("convex/react", () => ({
           ? mocks.seedSavedFailure
           : ref === "testing:seedMyTestLoosePhotosRun"
             ? mocks.seedLoose
-            : mocks.seed,
+            : ref === "testing:seedMyTestHopperRun"
+              ? mocks.seedHopper
+              : ref === "testing:clearMyTestHopper"
+                ? mocks.clearHopper
+                : mocks.seed,
 }));
 
 import TestingSeedPlaceholderRunPage from "./page";
@@ -70,6 +78,7 @@ function renderPage(entry = "/testing/seed-placeholder-run") {
         />
         <Route path="/pipeline-runs" element={<div>operator view</div>} />
         <Route path="/collection" element={<div>add cards screen</div>} />
+        <Route path="/dashboard" element={<div>dashboard</div>} />
         <Route path="/print/placeholders" element={<ShowSearch />} />
       </Routes>
     </MemoryRouter>,
@@ -100,7 +109,29 @@ describe("TestingSeedPlaceholderRunPage", () => {
       mocks.calls.push("seedLoose");
       return { runId: "run789" };
     });
+    mocks.seedHopper = vi.fn(async () => {
+      mocks.calls.push("seedHopper");
+      return { runId: "runHopper" };
+    });
+    mocks.clearHopper = vi.fn(async () => {
+      mocks.calls.push("clearHopper");
+      return { cleared: 1 };
+    });
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
+  });
+
+  it("NEO-464: with clearHopper=1, resets, clears the open scans and lands on the redirect", async () => {
+    renderPage("/testing/seed-placeholder-run?clearHopper=1&redirect=/dashboard");
+    await waitFor(() => expect(screen.getByText("dashboard")).not.toBeNull());
+    expect(mocks.calls).toEqual(["reset", "clearHopper"]);
+    expect(mocks.seedHopper).not.toHaveBeenCalled();
+  });
+
+  it("NEO-464: with hopperScan=1, resets, seeds the open scan and opens its run", async () => {
+    renderPage("/testing/seed-placeholder-run?hopperScan=1");
+    await waitFor(() => expect(screen.getByText("add cards screen")).not.toBeNull());
+    expect(mocks.calls).toEqual(["reset", "seedHopper"]);
+    expect(mocks.seed).not.toHaveBeenCalled();
   });
 
   it("NEO-441: with loosePhotos=1, resets, seeds the unpaired photos and opens the run", async () => {

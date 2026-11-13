@@ -1,0 +1,239 @@
+{
+  "about": "NEO-481 hand-edit geometry, shared by apps/web vitest (lib/photo-edit/geometry.test.ts) and services/preprocess pytest. Parameters in, corner points and output sizes out. Change only with both sides in the same PR.",
+  "conventions": {
+    "frame": "Source pixels, origin top-left, y down. For a scan the source is the EXIF-uprighted extracted/ original; for a stored photo it is that photo.",
+    "angle": "crop.angle is degrees clockwise on screen, in (-180, 180]. The box's own top edge becomes the output's top edge.",
+    "turns": "Quarter turns clockwise, applied last, after the crop.",
+    "corners": "The box's own top-left, top-right, bottom-right, bottom-left, in source pixels, before turns. A null crop is the whole frame. Compare with an absolute tolerance of 1e-3.",
+    "scale": "A crop drawn on a frame of another size (crop.srcW x crop.srcH) scales uniformly by src[0] / crop.srcW.",
+    "rounding": "Pixel sizes round half up: floor(v + 0.5). Never banker's rounding.",
+    "output": "The rendered size before fitting: round(crop.w) x round(crop.h) (whole frame when crop is null), swapped by an odd turn.",
+    "image": "Pillow Image.thumbnail((1600, 1600)) of output: aspect kept, never upscaled.",
+    "thumb": "Pillow Image.thumbnail((360, 360)) of image.",
+    "openingTurns": "A scan with no hand edit opens on turns = floor(((360 - rotationDegrees) mod 360) / 90 + 0.5) mod 4; rotationDegrees is the pipeline's counter-clockwise turn, null = 0."
+  },
+  "cases": [
+    {
+      "name": "no crop, no turn",
+      "src": [3000, 4200],
+      "edit": {
+        "turns": 0,
+        "crop": null
+      },
+      "expect": {
+        "corners": [
+          [0, 0],
+          [3000, 0],
+          [3000, 4200],
+          [0, 4200]
+        ],
+        "output": [3000, 4200],
+        "image": [1143, 1600],
+        "thumb": [257, 360]
+      }
+    },
+    {
+      "name": "no crop, a quarter turn right",
+      "src": [3000, 4200],
+      "edit": {
+        "turns": 1,
+        "crop": null
+      },
+      "expect": {
+        "corners": [
+          [0, 0],
+          [3000, 0],
+          [3000, 4200],
+          [0, 4200]
+        ],
+        "output": [4200, 3000],
+        "image": [1600, 1143],
+        "thumb": [360, 257]
+      }
+    },
+    {
+      "name": "no crop, upside down",
+      "src": [3000, 4200],
+      "edit": {
+        "turns": 2,
+        "crop": null
+      },
+      "expect": {
+        "corners": [
+          [0, 0],
+          [3000, 0],
+          [3000, 4200],
+          [0, 4200]
+        ],
+        "output": [3000, 4200],
+        "image": [1143, 1600],
+        "thumb": [257, 360]
+      }
+    },
+    {
+      "name": "no crop, a quarter turn left",
+      "src": [3000, 4200],
+      "edit": {
+        "turns": 3,
+        "crop": null
+      },
+      "expect": {
+        "corners": [
+          [0, 0],
+          [3000, 0],
+          [3000, 4200],
+          [0, 4200]
+        ],
+        "output": [4200, 3000],
+        "image": [1600, 1143],
+        "thumb": [360, 257]
+      }
+    },
+    {
+      "name": "upright crop inside a landscape scan",
+      "src": [4000, 3000],
+      "edit": {
+        "turns": 0,
+        "crop": { "cx": 2000, "cy": 1500, "w": 1000, "h": 1400, "angle": 0, "srcW": 4000, "srcH": 3000 }
+      },
+      "expect": {
+        "corners": [
+          [1500, 800],
+          [2500, 800],
+          [2500, 2200],
+          [1500, 2200]
+        ],
+        "output": [1000, 1400],
+        "image": [1000, 1400],
+        "thumb": [257, 360]
+      }
+    },
+    {
+      "name": "crop tilted 30 degrees clockwise",
+      "src": [4000, 3000],
+      "edit": {
+        "turns": 0,
+        "crop": { "cx": 2000, "cy": 1500, "w": 1200, "h": 1680, "angle": 30, "srcW": 4000, "srcH": 3000 }
+      },
+      "expect": {
+        "corners": [
+          [1900.384758, 472.538661],
+          [2939.615242, 1072.538661],
+          [2099.615242, 2527.461339],
+          [1060.384758, 1927.461339]
+        ],
+        "output": [1200, 1680],
+        "image": [1143, 1600],
+        "thumb": [257, 360]
+      }
+    },
+    {
+      "name": "crop tilted 7.25 degrees counter-clockwise, then a quarter turn right",
+      "src": [5184, 3456],
+      "edit": {
+        "turns": 1,
+        "crop": { "cx": 2600.4, "cy": 1700.2, "w": 2100.3, "h": 1500.6, "angle": -7.25, "srcW": 5184, "srcH": 3456 }
+      },
+      "expect": {
+        "corners": [
+          [1463.958916, 1088.426534],
+          [3547.466911, 823.370839],
+          [3736.841084, 2311.973466],
+          [1653.333089, 2577.029161]
+        ],
+        "output": [1501, 2100],
+        "image": [1144, 1600],
+        "thumb": [257, 360]
+      }
+    },
+    {
+      "name": "crop on its side (90) and turned back with three quarter turns",
+      "src": [4000, 3000],
+      "edit": {
+        "turns": 3,
+        "crop": { "cx": 2000, "cy": 1500, "w": 2000, "h": 1400, "angle": 90, "srcW": 4000, "srcH": 3000 }
+      },
+      "expect": {
+        "corners": [
+          [2700, 500],
+          [2700, 2500],
+          [1300, 2500],
+          [1300, 500]
+        ],
+        "output": [1400, 2000],
+        "image": [1120, 1600],
+        "thumb": [252, 360]
+      }
+    },
+    {
+      "name": "crop spun all the way round (180)",
+      "src": [4000, 3000],
+      "edit": {
+        "turns": 2,
+        "crop": { "cx": 1800, "cy": 1400, "w": 1000, "h": 1400, "angle": 180, "srcW": 4000, "srcH": 3000 }
+      },
+      "expect": {
+        "corners": [
+          [2300, 2100],
+          [1300, 2100],
+          [1300, 700],
+          [2300, 700]
+        ],
+        "output": [1000, 1400],
+        "image": [1000, 1400],
+        "thumb": [257, 360]
+      }
+    },
+    {
+      "name": "crop drawn on a half-size frame scales to the source",
+      "src": [4000, 3000],
+      "edit": {
+        "turns": 0,
+        "crop": { "cx": 1000, "cy": 750, "w": 500, "h": 700, "angle": 12, "srcW": 2000, "srcH": 1500 }
+      },
+      "expect": {
+        "corners": [
+          [1656.464383, 711.340834],
+          [2634.611984, 919.252525],
+          [2343.535617, 2288.659166],
+          [1365.388016, 2080.747475]
+        ],
+        "output": [1000, 1400],
+        "image": [1000, 1400],
+        "thumb": [257, 360]
+      }
+    },
+    {
+      "name": "stored 1600 photo trimmed small: never upscaled",
+      "src": [1143, 1600],
+      "edit": {
+        "turns": 1,
+        "crop": { "cx": 571.5, "cy": 800, "w": 300.2, "h": 420.4, "angle": -3, "srcW": 1143, "srcH": 1600 }
+      },
+      "expect": {
+        "corners": [
+          [410.604689, 597.943699],
+          [710.393275, 582.232445],
+          [732.395311, 1002.056301],
+          [432.606725, 1017.767555]
+        ],
+        "output": [420, 300],
+        "image": [420, 300],
+        "thumb": [360, 257]
+      }
+    }
+  ],
+  "openingTurns": [
+    { "rotationDegrees": null, "turns": 0 },
+    { "rotationDegrees": 0, "turns": 0 },
+    { "rotationDegrees": 90, "turns": 3 },
+    { "rotationDegrees": 180, "turns": 2 },
+    { "rotationDegrees": 270, "turns": 1 },
+    { "rotationDegrees": -90, "turns": 1 },
+    { "rotationDegrees": 360, "turns": 0 },
+    { "rotationDegrees": 450, "turns": 3 },
+    { "rotationDegrees": 2, "turns": 0 },
+    { "rotationDegrees": 88, "turns": 3 },
+    { "rotationDegrees": 179, "turns": 2 }
+  ]
+}

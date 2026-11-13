@@ -27,9 +27,15 @@
 // open runs first, for the active-run cap). The run stands open until the idle
 // sweep or the next seed; the pairs it makes are on that run only.
 //
+// NEO-481: one loose photo is opened in the card photo viewer: view-only, with
+// the reason, no tools; Escape gives the keyboard back to its thumbnail.
+//
 // R5: every wait is the standard 7 s; the first load goes through the sign-in
 // hop and the seed, so its gate is LAUNCH_GATE.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+
+/** What the viewer says of a scan whose file is gone (`PHOTO_EDIT_COPY.scanGone`, convex/photoEditRows.ts). */
+const SCAN_GONE = "This scan has aged out, so there's nothing left to crop.";
 
 test(
   "Add cards from photos: the pair button follows the picks, and Pair Images moves the two photos on",
@@ -38,10 +44,11 @@ test(
     const pairing = page.getByRole("region", { name: /^Pairing, \d+$/ });
     // The pile's button, whichever of its three labels it wears.
     const pairButton = pairing.getByRole("button", { name: /^(Select 2 to Pair|Select Partner|Pair Images)$/ });
-    // The photo's tile, not its "Set aside loose-N.jpg" (NEO-446) or "Try again:" button,
-    // which name the photo too and count as not pressed.
+    // The photo's pick, not its "Set aside loose-N.jpg" (NEO-446), "Try again:", or
+    // NEO-481's "Open photo loose-N.jpg" (the thumbnail, which opens the viewer) and
+    // "Crop by hand: loose-N.jpg", which name the photo too and count as not pressed.
     const photo = (n: number, pressed?: boolean) =>
-      pairing.getByRole("button", { name: new RegExp(`^(?!Set aside |Try again: ).*loose-${n}\\.jpg`), pressed });
+      pairing.getByRole("button", { name: new RegExp(`^(?!Set aside |Try again: |Open photo |Crop by hand: |Keep the old photo: ).*loose-${n}\\.jpg`), pressed });
     const matching = (n: number) => page.getByRole("region", { name: `Matching, ${n}`, exact: true });
     const needsYou = (n: number) => page.getByRole("region", { name: `Needs you, ${n}`, exact: true });
 
@@ -55,6 +62,24 @@ test(
     await expect(pairButton).toHaveAccessibleName("Select 2 to Pair");
     await expect(pairButton).toBeDisabled();
     await expectAccessible(page, { label: "Add cards, four loose photos, none picked" });
+
+    // --- NEO-481: a loose photo opens in the viewer, to look at only ------------------
+    // The seed uploads no scan, so there is nothing to crop: the viewer says why
+    // (the server's own words for a scan whose file is gone) and offers no tools.
+    // The thumbnail's press opens it; the pick beside it stays unpressed.
+    const openLoose = pairing.getByRole("button", { name: "Open photo loose-1.jpg", exact: true });
+    await openLoose.click();
+    const viewer = page.getByRole("dialog", { name: "Front of loose-1.jpg", exact: true });
+    await expect(viewer).toBeVisible();
+    await expect(viewer.getByText(SCAN_GONE, { exact: true })).toBeVisible();
+    await expect(viewer.getByRole("button", { name: "Close", exact: true })).toBeVisible();
+    await expect(viewer.getByRole("toolbar", { name: "Photo tools" })).toHaveCount(0);
+    await expect(viewer.getByRole("button", { name: "Save photo" })).toHaveCount(0);
+    await expectAccessible(page, { within: viewer, label: "Card photo viewer, a loose photo with no scan, view-only" });
+    await page.keyboard.press("Escape");
+    await expect(viewer).toBeHidden();
+    await expect(openLoose).toBeFocused();
+    await expect(photo(1, false)).toBeVisible();
 
     // --- One picked: it still needs a partner ---------------------------------------
     await photo(2).click();

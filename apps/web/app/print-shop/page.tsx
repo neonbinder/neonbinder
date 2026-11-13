@@ -57,7 +57,7 @@ export default function PrintShopPage() {
           {/* Section 1: Spine labels */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-teal/10 to-neon-green/10 rounded-2xl p-12 border border-neon-teal/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-teal/10 to-neon-green/10 rounded-2xl p-6 sm:p-12 border border-neon-teal/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -131,7 +131,7 @@ export default function PrintShopPage() {
           {/* Section 2: Placeholder sheets */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-6 sm:p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -207,7 +207,7 @@ export default function PrintShopPage() {
           {/* Section 3: Works with your printer */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-teal/10 rounded-2xl p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-teal/10 rounded-2xl p-6 sm:p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"

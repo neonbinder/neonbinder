@@ -1,7 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, type ReactNode } from "react";
 import { Outlet, useLocation } from "react-router";
 import BinderHeader from "@/components/modules/binder-header";
-import BinderTabs from "@/components/modules/binder-tabs";
+import BinderTabs, { type NavItem } from "@/components/modules/binder-tabs";
 import MobileNav from "@/components/modules/mobile-nav";
 
 /**
@@ -44,7 +44,15 @@ import MobileNav from "@/components/modules/mobile-nav";
  * within 208px of filling the fold — a page shorter than that still does not
  * scroll and gains no scrollbar.
  */
-export default function BinderLayout() {
+export default function BinderLayout({
+  navItems,
+  headerActions,
+}: {
+  /** The tabs to show; left out, the signed-in shell's (the dashboard demo passes its own, NEO-464). */
+  navItems?: NavItem[];
+  /** The header's right-hand controls; left out, the account controls. */
+  headerActions?: ReactNode;
+} = {}) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const closeMobileMenu = useCallback(() => setMobileMenuOpen(false), []);
@@ -58,6 +66,7 @@ export default function BinderLayout() {
       <BinderHeader
         isMobileMenuOpen={mobileMenuOpen}
         onMobileMenuToggle={() => setMobileMenuOpen((prev) => !prev)}
+        actions={headerActions}
       />
       <div className="flex flex-1 relative">
         {/* min-w-0 lets this flex item shrink below its content's min-content
@@ -74,8 +83,8 @@ export default function BinderLayout() {
               before changing or deleting this. */}
           <div aria-hidden="true" className="h-[208px]" />
         </main>
-        <BinderTabs />
-        {mobileMenuOpen && <MobileNav onClose={closeMobileMenu} />}
+        <BinderTabs items={navItems} />
+        {mobileMenuOpen && <MobileNav items={navItems} onClose={closeMobileMenu} />}
       </div>
     </div>
   );

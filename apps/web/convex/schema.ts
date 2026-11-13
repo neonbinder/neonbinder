@@ -728,6 +728,47 @@ export const intakeDefaultsValidator = v.object({
   notes: v.optional(v.string()),
   minPriceCents: v.optional(v.number()),
 });
+/** NEO-481 — a hand crop, in source pixels of the frame srcW x srcH. */
+export const photoEditCropValidator = v.object({
+  cx: v.number(),
+  cy: v.number(),
+  w: v.number(),
+  h: v.number(),
+  // Degrees clockwise, (-180, 180]; the box's own top edge becomes the output's top.
+  angle: v.number(),
+  srcW: v.number(),
+  srcH: v.number(),
+});
+/**
+ * NEO-481 — `PhotoEdit`: quarter turns clockwise, applied last; crop null =
+ * the whole source. Shared by function `args` AND stored rows, so never
+ * tighten it in place.
+ */
+export const photoEditValidator = v.object({
+  turns: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
+  crop: v.union(v.null(), photoEditCropValidator),
+});
+/** NEO-481 — a scan's current edit: the parameters plus the write-once output version they rendered to. */
+export const storedPhotoEditValidator = v.object({
+  ...photoEditValidator.fields,
+  version: v.number(),
+  editedAt: v.number(),
+});
+/** NEO-481 — the scan a copy photo was made from. Server-only; never projected to a client. */
+export const copyPhotoScanValidator = v.object({ jobId: v.string(), entryIndex: v.number() });
+/**
+ * NEO-481 — an edit accepted but not yet rendered (the save is asynchronous:
+ * the reserve returns at once, a scheduled action renders, a commit lands the
+ * new file). `failed` keeps the edit and its error so the UI can offer Try
+ * again; the old photo stays live throughout.
+ */
+export const pendingPhotoEditValidator = v.object({
+  ...photoEditValidator.fields,
+  version: v.number(),
+  requestedAt: v.number(),
+  status: v.union(v.literal("rendering"), v.literal("failed")),
+  error: v.optional(v.string()),
+});
 /** NEO-427 — a saved pair's scans on their way onto its line (`intakeMatches.photos`). */
 export const intakePhotosValidator = v.union(v.literal("pending"), v.literal("attached"), v.literal("failed"));
 /** NEO-427 — why a "failed" attach failed (`intakeMatches.photoFailure`). */
@@ -1383,6 +1424,34 @@ export default defineSchema({
     // unauthenticated at /u/:username. Optional so existing rows need no
     // migration; /labels treats absent as "not set up yet".
     returnAddress: v.optional(postalAddressValidator),
+    /**
+     * NEO-464 — the dashboard's "since your last visit". `seenAt`: the last
+     * time the dashboard opened. `sinceAt`: where the current visit's "new"
+     * starts (the `seenAt` of the visit before; absent on the first visit).
+     * A visit runs while the dashboard reopens within `VISIT_GAP_MS` of the
+     * last open, so Back to the dashboard keeps its news. Written only by
+     * `dashboard.markVisit` (`nextVisit` is the rule). Top level, not under
+     * `preferences`: `getUserProfile` returns `preferences` through a fixed
+     * validator, and `updateUserProfile` replaces it whole. Optional, no
+     * backfill: absent reads as a first visit.
+     */
+    dashboardVisit: v.optional(
+      v.object({
+        seenAt: v.number(),
+        sinceAt: v.optional(v.number()),
+      }),
+    ),
+    /**
+     * NEO-464 — the collector's first dashboard open since NB stamps when
+     * cards were added (`collectionCopies.addedAt`) and listed (`listedAt`).
+     * A line with no stamp written before this moment predates the stamps,
+     * so Fresh Pulls and New Listings read its `_creationTime` instead; one
+     * written after it was never an add (a move, a split, an undo's
+     * put-back). Set once, by `dashboard.markVisit`; no backfill. Absent: the
+     * dashboard has not opened since, and nothing reads a line without a
+     * stamp.
+     */
+    dashboardStampsFrom: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     // NEO-415: eBay's Marketplace Account Deletion notice names the seller by
@@ -3959,6 +4028,22 @@ export default defineSchema({
     // ever on a done or failed row: a restart that re-reads the photo clears it
     // and one that keeps a done row keeps it, like the row's other user decisions.
     setAside: v.optional(v.boolean()),
+    // NEO-481: the collector's current hand edit (turns + crop) and the
+    // write-once output version it rendered to. Absent = the pipeline's own
+    // output is current. Cleared (with `autoCrop`) when a restart or Try
+    // again re-reads the photo; `edits` is never reset.
+    edit: v.optional(storedPhotoEditValidator),
+    // NEO-481: the box the winning crop stage cut, in the EXIF-uprighted
+    // original's pixels (`crop_box` from /process-entry). Built field by
+    // field in adapters/preprocess.ts so a malformed box is dropped, never
+    // refused at settle.
+    autoCrop: v.optional(photoEditCropValidator),
+    // NEO-481: scan-form renders reserved on this scan — the version
+    // allocator and the paid-call cap (PLACEHOLDER_MAX_IMAGE_EDITS). Absent = 0.
+    edits: v.optional(v.number()),
+    // NEO-481: an edit accepted and rendering in the background, or one whose
+    // render failed (with the reason, for Try again). Cleared at commit.
+    pendingEdit: v.optional(pendingPhotoEditValidator),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in filename order", so a
@@ -4121,6 +4206,11 @@ export default defineSchema({
     photoFailure: v.optional(intakePhotoFailureValidator),
     photoAttempt: v.optional(v.number()),
     photoSidesAttached: v.optional(v.array(v.union(v.literal("front"), v.literal("back")))),
+    // NEO-481 — this tile's own price (box runs), overriding the run's
+    // default at save. Absent = the run's default. Set by
+    // `setIntakeMatchPrice`; cleared when the row's card changes. Only ever
+    // this card's `minPriceCents`, never a common price.
+    minPriceCents: v.optional(v.number()),
   })
     .index("by_run", ["runId"])
     .index("by_pair", ["pairId"])
@@ -4465,12 +4555,72 @@ export default defineSchema({
      */
     hasPhotos: v.optional(v.literal(true)),
     lastUpdated: v.number(),
+    /**
+     * NEO-464 — when cards last arrived in this line's home (Jason,
+     * 2026-11-10: "adding cards to a binder in any way is filed"): any add
+     * into a binder (Main included) or a box, Add cards saves, a box raise
+     * (`collection.addOne`, `collectionInventory.setBoxQuantity`), a move or
+     * split into another home, and a container emptied back to Main or
+     * Unsorted (`collection.moveCopyCore`, `collectionContainers.empty`). A
+     * line that folds arriving cards into itself takes the stamp too; a part
+     * split off inside the same home keeps its source's. Never set by an
+     * edit, a sale, a trade flag, a pocket shuffle inside the same home, or
+     * an undo's put-back. The dashboard's "since your last visit" reads only
+     * this (`dashboard.newSince`). Optional, no backfill: absent is "not
+     * filed since this shipped".
+     */
+    filedAt: v.optional(v.number()),
+    /**
+     * NEO-464 — when this line's cards were added straight into the
+     * collection (a binder, Main included), as new cards: what the
+     * dashboard's Fresh Pulls reads (`dashboard.freshPulls`; Jason,
+     * 2026-11-10: "only cards new to the collection, never moves"). Stamped
+     * only by an add (`collection.addOne`: Add cards, a pasted range, an
+     * intake save) into a binder, folded or a new line. A move, a split, a
+     * container emptied and a merge carry it (a split part keeps its
+     * source's; a merge keeps the newer of the two), never set it; a box
+     * add or raise, an edit and an undo's put-back never stamp it. Unlike
+     * `filedAt`, which every arrival in a home stamps. A move INTO a box
+     * drops it (cards for sale are not pulls), so a later Take off sale back
+     * into a binder is a move, never a pull. Optional, no backfill: a line
+     * with none that was written before the collector's first dashboard
+     * open under this rule (`userProfiles.dashboardStampsFrom`) reads its
+     * `_creationTime` instead (`dashboard.freshPulls`).
+     */
+    addedAt: v.optional(v.number()),
+    /**
+     * NEO-464 — when this line's cards landed in Inventory (a box, Unsorted
+     * included): what the dashboard's New Listings reads
+     * (`dashboard.newListings`; Jason, 2026-11-10: "Listings come from our
+     * Inventory ... don't worry about if it has sync'd yet or not"). Stamped
+     * by an add into a box (`collection.addOne`), a box raise
+     * (`collectionInventory.setBoxQuantity`) and a move from a binder into a
+     * box (Sell). A move between boxes, a split, a box emptied into Unsorted
+     * and a merge carry it (a merge keeps the newer); a move out to a binder
+     * drops it; an edit and an undo's put-back never stamp it. NB data only:
+     * never a marketplace's listing state. Optional, no backfill: a line with
+     * none written before `userProfiles.dashboardStampsFrom` reads its
+     * `_creationTime` instead.
+     */
+    listedAt: v.optional(v.number()),
   })
     // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
     .index("by_owner_and_card", ["ownerId", "cardId"])
     // "Everything I own", most recently touched first, paged
     // (`collection.ownedCards`). Every write to a row stamps `lastUpdated`.
     .index("by_owner_and_lastUpdated", ["ownerId", "lastUpdated"])
+    // NEO-464 — the dashboard's "since your last visit": the lines filed
+    // after a stamp, newest first (`dashboard.newSince`, a bounded range). A
+    // line never stamped has no `filedAt` and sorts below every stamp.
+    .index("by_owner_and_filedAt", ["ownerId", "filedAt"])
+    // NEO-464 — Fresh Pulls: the lines added into the collection after a
+    // stamp, newest first (`dashboard.freshPulls`, a bounded range). A line
+    // never stamped has no `addedAt` and sorts below every stamp.
+    .index("by_owner_and_addedAt", ["ownerId", "addedAt"])
+    // NEO-464 — New Listings: the lines that landed in a box after a stamp,
+    // newest first (`dashboard.newListings`, a bounded range). The lines with
+    // no stamp sit first, in `_creationTime` order, for the legacy read.
+    .index("by_owner_and_listedAt", ["ownerId", "listedAt"])
     // copiesInVariant and variantCompletion (all three), set completion
     // (prefix: ownerId + setId).
     .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])
@@ -4814,6 +4964,24 @@ export default defineSchema({
    *     back (`restoreCopy`, `undoBoxQuantity`), then swept with its objects.
    * All reads and writes go through `convex/copyPhotos.ts`.
    */
+  /**
+   * ── NEO-481: one row per hand photo edit sent to the renderer ───────────
+   *
+   * Renders run on the shared preprocess service outside the capacity-pinned
+   * pipeline pool, so each owner is held to a rate (renders an hour) and a
+   * number in flight (`settledAt` unset, newer than the stale window). The
+   * reserve inserts one; the commit or the failure settles it. Rows older
+   * than an hour are swept hourly (`photoEditRows.sweepPhotoEditTickets`).
+   */
+  photoEditTickets: defineTable({
+    ownerId: v.string(),
+    createdAt: v.number(),
+    settledAt: v.optional(v.number()),
+  })
+    .index("by_owner_and_created", ["ownerId", "createdAt"])
+    // The hourly sweep.
+    .index("by_created", ["createdAt"]),
+
   collectionCopyPhotos: defineTable({
     ownerId: v.string(),
     copyId: v.id("collectionCopies"),
@@ -4828,7 +4996,20 @@ export default defineSchema({
     since: v.number(),
     // NEO-427 — "intake": made from a scanned pair when it was saved, not
     // added by hand. Exempt from the hourly upload cap, either way.
-    source: v.optional(v.literal("intake")),
+    // NEO-481 — "edit": a hand turn/crop of the side's live photo. Counted
+    // against its own hourly cap (MAX_COPY_PHOTO_EDITS_PER_HOUR), never the
+    // hand-upload cap.
+    source: v.optional(v.union(v.literal("intake"), v.literal("edit"))),
+    // NEO-481 — the scan this photo was made from, so an edit inside the
+    // scan's two days can re-render from its original. Server-only: never
+    // projected to a client. Carried onto every edit row.
+    scan: v.optional(copyPhotoScanValidator),
+    // NEO-481 — on a `pending` edit row only: the edit being rendered in the
+    // background, or the reason its render failed (Try again re-saves).
+    pendingEdit: v.optional(pendingPhotoEditValidator),
+    // NEO-481 — on a landed edit row: the photo it replaced, while Undo can
+    // still put that one back. Undo clears it, so an edit is undone once.
+    replacesPhotoId: v.optional(v.id("collectionCopyPhotos")),
   })
     .index("by_copy_and_status", ["copyId", "status"])
     // The per-account test reset.
@@ -4894,6 +5075,20 @@ export default defineSchema({
     seq: v.number(),
     /** When the latest change was recorded (ms). */
     changedAt: v.number(),
+    /**
+     * NEO-481 — a photo of this card changed: the BSC drain uploads the card's
+     * photo even over an existing seller photo. Only `true` is stored; the
+     * upsert sets it and never clears it, and the row's delete at its `seq`
+     * takes it away.
+     */
+    refreshPhotos: v.optional(v.literal(true)),
+    /**
+     * NEO-481 — BSC runs that tried this card's photo refresh and could not
+     * finish it. At `MAX_PHOTO_REFRESH_ATTEMPTS` the drain drops the refresh
+     * and records a listing problem, so a refresh that keeps failing never
+     * retries forever. A new photo change starts the count again.
+     */
+    refreshAttempts: v.optional(v.number()),
   })
     // The hook's upsert (all three, `.unique()`), and nothing else.
     .index("by_owner_platform_card", ["ownerId", "platform", "cardId"])

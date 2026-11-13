@@ -14,6 +14,9 @@ NEO-170:  `/extract` + `/process-entry` — stateless batch routes behind the
 NEO-427:  `/process-entry` also stores the listing and thumbnail sizes of the
           output it writes, for Convex to read when the card is saved.
           `/derive-copy-photos` makes them on request for an entry without them.
+NEO-481:  `/render-edit` renders a collector's hand edit (quarter turns and a
+          turnable crop, `app.edit`) from a scan's original or from a stored
+          photo's bytes, and `/process-entry` reports the auto crop's box.
 NEO-484:  `/process-entry` answers a terminal 422 `ENTRY_UNDECODABLE` for bytes
           that are not an image, binds the dev cache policy for its request
           (`app.devcache`), and the heavy startup hook loads the BiRefNet ORT
@@ -40,16 +43,30 @@ import re
 import sys
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
+from io import BytesIO
 from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
-from PIL import UnidentifiedImageError
-from pydantic import BaseModel, Field, ValidationError
+from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile as FormFile
 
 from app import cropper, prewarm
+from app import edit as photo_edit
 from app.classify import ClassifyError
-from app.copy_photos import CopyPhotoTooLargeError, derive_copy_photos
+from app.copy_photos import (
+    COPY_PHOTO_CONTENT_TYPE,
+    CopyPhotoTooLargeError,
+    DerivedCopyPhotos,
+    derive_copy_photos,
+    derive_copy_photos_from_image,
+    read_dpi,
+    to_plain_rgb,
+    usable_icc_profile,
+)
 from app.cropper import (
     CROP_QUALITIES,
     CROP_QUALITY_FAST,
@@ -60,10 +77,11 @@ from app.cropper import (
     birefnet,
 )
 from app.cropper._utils import rotate_image_bytes
+from app.cropper.boxes import CropBox
 from app.devcache import policy as devcache_policy
 from app.dhash import compute_dhash
 from app.exif import apply_exif_orientation
-from app.imaging import RasterTooLargeError, check_raster_size
+from app.imaging import RasterTooLargeError, check_raster_size, read_raster_size
 from app.jobs import layout, zipsafe
 from app.jobs.gcs import ObjectAlreadyExistsError, ObjectRef, ObjectStore
 from app.jobs.layout import InvalidJobIdentifierError
@@ -462,14 +480,16 @@ def _verify_internal_key(x_internal_key: str | None) -> None:
 
 
 def _validate_content_type(content_type: str | None, *, field: str) -> None:
+    # Error details name the field (a literal from this file) and never echo
+    # what the caller sent (NEO-481 audit).
     if (content_type or "").split(";")[0].strip() not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"unsupported content-type for {field}: {content_type}",
+            detail=f"unsupported content-type for {field}",
         )
 
 
-async def _read_upload(upload: UploadFile, *, field: str) -> bytes:
+async def _read_upload(upload: FormFile, *, field: str) -> bytes:
     _validate_content_type(upload.content_type, field=field)
     data = await upload.read()
     if not data:
@@ -492,10 +512,10 @@ async def _read_upload(upload: UploadFile, *, field: str) -> bytes:
     # existing error paths own that case.
     try:
         check_raster_size(data)
-    except RasterTooLargeError as exc:
+    except RasterTooLargeError:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=f"{field}: {exc}",
+            detail=f"{field} exceeds the pixel limit",
         ) from None
     return data
 
@@ -890,6 +910,81 @@ class BaselineOrientation(BaseModel):
 # The serialised dHash: 16 lowercase hex characters (see ProcessEntryResponse).
 DHASH_PATTERN = r"^[0-9a-f]{16}$"
 
+# Bounds on a crop's numbers. Generous: an original is at most 64 MP, so no
+# real box comes near them; they keep a hostile value from becoming a
+# multi-gigabyte canvas or a nonsense float.
+EDIT_MAX_COORDINATE = 1_000_000.0
+EDIT_MAX_FRAME_EDGE = 100_000
+
+
+class EditCropModel(BaseModel):
+    """A crop box in `PhotoEdit`'s geometry (NEO-481; see `app.edit`).
+
+    The wire names are the TypeScript contract's: `srcW` and `srcH` are
+    camelCase so Convex can pass `PhotoEdit.crop` (and store `crop_box` as
+    `placeholderImages.autoCrop`) field for field. The same model is the
+    request's `edit.crop` and the response's `crop_box`.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    cx: float = Field(ge=-EDIT_MAX_COORDINATE, le=EDIT_MAX_COORDINATE, allow_inf_nan=False)
+    cy: float = Field(ge=-EDIT_MAX_COORDINATE, le=EDIT_MAX_COORDINATE, allow_inf_nan=False)
+    w: float = Field(gt=0, le=EDIT_MAX_COORDINATE, allow_inf_nan=False)
+    h: float = Field(gt=0, le=EDIT_MAX_COORDINATE, allow_inf_nan=False)
+    angle: float = Field(gt=-180, le=180, allow_inf_nan=False)
+    src_w: int = Field(alias="srcW", ge=1, le=EDIT_MAX_FRAME_EDGE)
+    src_h: int = Field(alias="srcH", ge=1, le=EDIT_MAX_FRAME_EDGE)
+
+    @classmethod
+    def from_box(cls, box: CropBox | None) -> EditCropModel | None:
+        """The wire form of a cascade box, or None when it falls outside the contract.
+
+        Never raises: `/process-entry` must not fail an entry over its box.
+        """
+        if box is None:
+            return None
+        try:
+            return cls(
+                cx=box.cx,
+                cy=box.cy,
+                w=box.w,
+                h=box.h,
+                angle=box.angle,
+                srcW=box.src_w,
+                srcH=box.src_h,
+            )
+        except ValidationError:
+            logger.warning("process_entry: crop box outside the wire contract, omitting")
+            return None
+
+    def to_crop(self) -> photo_edit.EditCrop:
+        return photo_edit.EditCrop(
+            cx=self.cx,
+            cy=self.cy,
+            w=self.w,
+            h=self.h,
+            angle=self.angle,
+            src_w=self.src_w,
+            src_h=self.src_h,
+        )
+
+
+class PhotoEditModel(BaseModel):
+    """`PhotoEdit`: quarter turns clockwise (applied last) and an optional crop.
+
+    `crop` null means the whole source. Fields beyond these two (a stored
+    edit's `version`, `editedAt`) are ignored.
+    """
+
+    turns: Literal[0, 1, 2, 3]
+    crop: EditCropModel | None
+
+    def to_edit(self) -> photo_edit.PhotoEdit:
+        return photo_edit.PhotoEdit(
+            turns=self.turns, crop=None if self.crop is None else self.crop.to_crop()
+        )
+
 
 class ProcessEntryRequest(BaseModel):
     """Body for POST /process-entry. Same no-path rule as `ExtractRequest`.
@@ -1004,6 +1099,12 @@ class ProcessEntryResponse(BaseModel):
     output_written: bool = False
     # NEO-315 — whole-image Vision orient, only on a FAST decline (case b).
     baseline: BaselineOrientation | None = None
+    # NEO-481 — the box the winning stage cut, in the EXIF-uprighted
+    # original's pixels and before the `rotation_degrees` turn, inside that
+    # frame. Only on a completed result (case a), and absent when the stage
+    # reports no box. Convex stores it as `placeholderImages.autoCrop`; the
+    # editor opens on it with turns from `rotation_degrees`.
+    crop_box: EditCropModel | None = None
 
 
 class DeriveCopyPhotosRequest(BaseModel):
@@ -1684,6 +1785,7 @@ def _process_entry(
         cropped_source=result.source,
         dhash=dhash_hex,
         output_written=output_written,
+        crop_box=EditCropModel.from_box(getattr(result, "crop_box", None)),
     )
 
 
@@ -1782,6 +1884,512 @@ def derive_copy_photos_route(
         thumb=base64.b64encode(derived.thumb).decode("ascii"),
         content_type=derived.content_type,
     )
+
+
+# ── /render-edit (NEO-481) ──────────────────────────────────────────────────
+# A collector's hand edit, rendered into a new saved image. Two request forms
+# share the one route, told apart by content type:
+#
+#   scan form   application/json, `RenderEditScanRequest`. Reads the scan's
+#               EXIF-uprighted original from `extracted/` and writes the
+#               version's three write-once objects under `output/edits/`
+#               (`app.jobs.layout`). Optionally re-reads the new crop.
+#   bytes form  multipart/form-data: `image` (a stored photo, JPEG/PNG/WebP)
+#               and `edit` (the `PhotoEdit` JSON). Writes nothing; returns the
+#               two sizes base64-encoded, since they go to R2, which this
+#               service holds no key for. Never classifies.
+#
+# Both make the sizes with `app.copy_photos` (1600 px / 360 px long edge,
+# never enlarged, the same byte caps and quality steps), carrying the
+# source's ICC profile and pixel density.
+
+# The bytes form's own ceiling (NEO-481 audit). Its source is a stored photo,
+# which NeonBinder keeps at most 1600 px on the long edge, so nothing honest
+# comes near this. It is far below the 65 MP scan ceiling because a stored
+# photo reaches R2 through a signed PUT that bounds bytes, never pixels, and a
+# flat JPEG of a few MB can decode to 64 MP. Checked from the header before
+# the first full decode (the EXIF upright). The long edge survives that
+# transpose unchanged, so the order costs nothing.
+RENDER_EDIT_BYTES_MAX_EDGE = 4096
+
+# Quality steps for the full-resolution crop a scan edit stores. The first that
+# fits the extracted-object ceiling wins: it is read back through that same
+# ceiling by the re-read and by anything that serves it.
+_EDIT_CROP_JPEG_QUALITIES = (92, 85, 75, 65)
+
+_RENDER_EDIT_REQUEST_BODY = {
+    "required": True,
+    "content": {
+        "application/json": {
+            "schema": {"$ref": "#/components/schemas/RenderEditScanRequest"},
+        },
+        "multipart/form-data": {
+            "schema": {
+                "type": "object",
+                "required": ["image", "edit"],
+                "properties": {
+                    "image": {"type": "string", "format": "binary"},
+                    "edit": {
+                        "type": "string",
+                        "description": "The PhotoEdit as JSON: {turns, crop}.",
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+class RenderEditScanRequest(BaseModel):
+    """The scan form of POST /render-edit. Same no-path rule as `ExtractRequest`.
+
+    `version` is the write-once version Convex allocated for this edit
+    (`placeholderImages.edits`); the route refuses one already rendered.
+    `classify` re-reads the new crop (Vision orient + Anthropic classify).
+    """
+
+    job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
+    user_id: str = Field(description="The Clerk subject id that owns the job.")
+    entry_index: int = Field(
+        ge=0,
+        le=zipsafe.MAX_ZIP_ENTRIES,
+        description="The entry's zip ordinal, from /extract.",
+    )
+    edit: PhotoEditModel
+    version: int = Field(ge=1, le=layout.MAX_EDIT_VERSION, strict=True)
+    classify: bool = False
+
+
+class RenderedPhoto(BaseModel):
+    """One rendered JPEG: its size, and its bytes only in the bytes form."""
+
+    width: int
+    height: int
+    size_bytes: int
+    data_b64: str | None = None
+
+
+class RenderEditResponse(BaseModel):
+    """Response body for POST /render-edit.
+
+    Both forms: `image` (long edge at most 1600) and `thumb` (at most 360),
+    always JPEG (`content_type`). In the bytes form each carries `data_b64`;
+    in the scan form they are stored at their keys and carry none.
+
+    Scan form only: `version`, and `crop`, the full-resolution crop (the
+    output before fitting) stored beside them. The read fields are filled only
+    when `classify` was asked: `dhash` is the hash of the uprighted ORIGINAL
+    (the same rule as `/process-entry`), and `classified` is true when the read
+    of the new crop succeeded. A failed read never fails the render, since the
+    objects are already written: it comes back `classified: false` with the
+    read fields null.
+    """
+
+    content_type: str = COPY_PHOTO_CONTENT_TYPE
+    image: RenderedPhoto
+    thumb: RenderedPhoto
+    version: int | None = None
+    crop: RenderedPhoto | None = None
+    classified: bool = False
+    players: list[str] = Field(default_factory=list)
+    player: str | None = None
+    team: str | None = None
+    card_number: str | None = None
+    side: str | None = None
+    text_count: int | None = None
+    orient_confidence: float | None = None
+    dhash: str | None = None
+
+
+def _error(status_code: int, error_code: str, detail: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code, content={"error_code": error_code, "detail": detail}
+    )
+
+
+def _invalid_edit_response(detail: str) -> JSONResponse:
+    return _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "INVALID_EDIT", detail)
+
+
+def _validation_summary(exc: ValidationError) -> str:
+    """Which fields failed, without echoing what the caller sent."""
+    fields = sorted({".".join(str(part) for part in err["loc"]) or "body" for err in exc.errors()})
+    return "invalid fields: " + ", ".join(fields)
+
+
+class _RenderFailedError(Exception):
+    """A render that ends in a terminal error response."""
+
+    def __init__(self, response: JSONResponse) -> None:
+        super().__init__(response.status_code)
+        self.response = response
+
+
+@dataclass(frozen=True)
+class _Rendered:
+    crop_bytes: bytes | None
+    crop_size: tuple[int, int]
+    sizes: DerivedCopyPhotos
+
+
+def _encode_edit_crop(
+    image: Image.Image, icc_profile: bytes | None, dpi: tuple[float, float] | None
+) -> bytes:
+    extra = {} if dpi is None else {"dpi": dpi}
+    for quality in _EDIT_CROP_JPEG_QUALITIES:
+        out = BytesIO()
+        image.save(out, format="JPEG", quality=quality, icc_profile=icc_profile, **extra)
+        if out.tell() <= zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES:
+            return out.getvalue()
+    raise CopyPhotoTooLargeError("no JPEG quality fits the crop ceiling")
+
+
+def _render(source_bytes: bytes, edit: photo_edit.PhotoEdit, *, keep_crop: bool) -> _Rendered:
+    """Decode, apply the edit, and make the sizes. Raises `_RenderFailedError`.
+
+    `source_bytes` must already be uprighted and pixel-checked. Profile and
+    density are read off the source and carried to every output.
+    """
+    try:
+        with Image.open(BytesIO(source_bytes)) as source:
+            source.load()
+            icc_profile = usable_icc_profile(source)
+            dpi = read_dpi(source)
+            rgb = to_plain_rgb(source)
+    except Exception:
+        logger.warning("render_edit: source undecodable")
+        raise _RenderFailedError(
+            _error(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "IMAGE_UNDECODABLE",
+                "the source image could not be decoded",
+            )
+        ) from None
+
+    try:
+        rendered = photo_edit.render_edit(rgb, edit)
+    except photo_edit.EditError as exc:
+        raise _RenderFailedError(
+            _error(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, str(exc))
+        ) from None
+
+    try:
+        crop_bytes = _encode_edit_crop(rendered, icc_profile, dpi) if keep_crop else None
+        sizes = derive_copy_photos_from_image(rendered, icc_profile=icc_profile, dpi=dpi)
+    except CopyPhotoTooLargeError as exc:
+        raise _RenderFailedError(
+            _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PHOTO_TOO_LARGE", str(exc))
+        ) from None
+    return _Rendered(crop_bytes=crop_bytes, crop_size=rendered.size, sizes=sizes)
+
+
+def _photo(data: bytes, *, include_data: bool) -> RenderedPhoto:
+    size = read_raster_size(data) or (0, 0)
+    return RenderedPhoto(
+        width=size[0],
+        height=size[1],
+        size_bytes=len(data),
+        data_b64=base64.b64encode(data).decode("ascii") if include_data else None,
+    )
+
+
+@app.post(
+    "/render-edit",
+    response_model=RenderEditResponse,
+    openapi_extra={"requestBody": _RENDER_EDIT_REQUEST_BODY},
+)
+async def render_edit(
+    request: Request,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> RenderEditResponse | JSONResponse:
+    """Render a hand edit into a new saved image (NEO-481).
+
+    See the section comment above for the two forms. The scan form is safe to
+    retry with a NEW version only: a version is write-once, and its crop is
+    written last, so a crop already at the key means the version is complete
+    and the route answers `VERSION_EXISTS` rather than rendering it again.
+
+    Failure codes: `INVALID_IDENTIFIER` (400), `MISSING_IMAGE` (400),
+    `ENTRY_NOT_FOUND` (404, terminal: the original is gone, normally aged out
+    of the bucket), `VERSION_EXISTS` (409, terminal), `IMAGE_TOO_LARGE` and
+    `ENTRY_TOO_MANY_PIXELS` (413, terminal), `UNSUPPORTED_MEDIA_TYPE` (415),
+    `INVALID_EDIT`, `EDIT_FRAME_MISMATCH`, `EDIT_OUT_OF_FRAME`,
+    `IMAGE_UNDECODABLE` and `PHOTO_TOO_LARGE` (422, terminal: the same request
+    fails the same way), `EXTRACT_NOT_CONFIGURED` (503, retryable); storage
+    failures surface as 502.
+    """
+    _verify_internal_key(x_internal_key)
+
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type == "application/json":
+        try:
+            body = await request.json()
+            scan_request = RenderEditScanRequest.model_validate(body)
+        except ValidationError as exc:
+            return _invalid_edit_response(_validation_summary(exc))
+        except ValueError:
+            return _invalid_edit_response("body is not JSON")
+        return await run_in_threadpool(_render_edit_scan, scan_request)
+    if content_type == "multipart/form-data":
+        return await _render_edit_bytes(request)
+    return _error(
+        status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        "UNSUPPORTED_MEDIA_TYPE",
+        "send application/json (scan form) or multipart/form-data (bytes form)",
+    )
+
+
+async def _render_edit_bytes(request: Request) -> RenderEditResponse | JSONResponse:
+    """The bytes form: a stored photo in, its two sizes out, nothing written."""
+    async with request.form(max_files=1, max_fields=2) as form:
+        upload = form.get("image")
+        raw_edit = form.get("edit")
+        if not isinstance(upload, FormFile):
+            return _error(status.HTTP_400_BAD_REQUEST, "MISSING_IMAGE", "image is required")
+        if not isinstance(raw_edit, str):
+            return _invalid_edit_response("edit is required")
+        try:
+            edit = PhotoEditModel.model_validate(json.loads(raw_edit)).to_edit()
+        except ValidationError as exc:
+            return _invalid_edit_response(_validation_summary(exc))
+        except ValueError:
+            return _invalid_edit_response("edit is not JSON")
+        try:
+            image_bytes = await _read_upload(upload, field="image")
+        except HTTPException as exc:
+            code = {
+                status.HTTP_400_BAD_REQUEST: "MISSING_IMAGE",
+                status.HTTP_413_CONTENT_TOO_LARGE: "IMAGE_TOO_LARGE",
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
+            }.get(exc.status_code, "INVALID_IMAGE")
+            return _error(exc.status_code, code, str(exc.detail))
+    return await run_in_threadpool(_render_edit_bytes_sync, image_bytes, edit)
+
+
+def _render_edit_bytes_sync(
+    image_bytes: bytes, edit: photo_edit.PhotoEdit
+) -> RenderEditResponse | JSONResponse:
+    started = time.monotonic()
+    try:
+        size = read_raster_size(image_bytes)
+    except RasterTooLargeError:
+        size = (RENDER_EDIT_BYTES_MAX_EDGE + 1, RENDER_EDIT_BYTES_MAX_EDGE + 1)
+    if size is not None and max(size) > RENDER_EDIT_BYTES_MAX_EDGE:
+        logger.warning("render_edit: form=bytes stored photo over the edge ceiling")
+        return _error(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "IMAGE_TOO_LARGE",
+            "the image is larger than a stored photo can be",
+        )
+    try:
+        # A stored photo carries no orientation tag today, but one that did
+        # would be shown uprighted, so that is the frame its edit was drawn in.
+        upright, _orientation = apply_exif_orientation(image_bytes)
+        rendered = _render(upright, edit, keep_crop=False)
+    except _RenderFailedError as failure:
+        return failure.response
+    except Exception:
+        logger.warning("render_edit: stored photo undecodable")
+        return _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "IMAGE_UNDECODABLE",
+            "the image could not be decoded",
+        )
+    logger.info(
+        "render_edit: form=bytes turns=%d crop=%s ms=%d",
+        edit.turns,
+        edit.crop is not None,
+        int((time.monotonic() - started) * 1000),
+    )
+    return RenderEditResponse(
+        image=_photo(rendered.sizes.image, include_data=True),
+        thumb=_photo(rendered.sizes.thumb, include_data=True),
+    )
+
+
+def _read_extracted(bucket: str, request: RenderEditScanRequest) -> bytes | None:
+    """The scan's extracted original, or None when it no longer exists."""
+    for extension in _EXTRACTED_EXTENSIONS:
+        candidate = ObjectRef(
+            bucket=bucket,
+            name=layout.extracted_image_object(
+                request.user_id, request.job_id, request.entry_index, extension
+            ),
+        )
+        stat = _object_store.stat(candidate)
+        if stat is not None:
+            return _object_store.download(
+                candidate, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES, stat=stat
+            )
+    return None
+
+
+def _render_edit_scan(request: RenderEditScanRequest) -> RenderEditResponse | JSONResponse:
+    """The scan form, run off the event loop."""
+    started = time.monotonic()
+    try:
+        layout.validate_identifiers(request.user_id, request.job_id)
+    except InvalidJobIdentifierError as exc:
+        return _invalid_identifier_response(exc)
+
+    bucket = os.environ.get(layout.BUCKET_ENV)
+    if not bucket:
+        return _not_configured_response()
+
+    def ref(name: str) -> ObjectRef:
+        return ObjectRef(bucket=bucket, name=name)
+
+    args = (request.user_id, request.job_id, request.entry_index, request.version)
+    crop_ref = ref(layout.edit_output_object(*args))
+    image_ref = ref(layout.edit_copy_photo_object(*args, "image"))
+    thumb_ref = ref(layout.edit_copy_photo_object(*args, "thumb"))
+
+    def version_exists() -> JSONResponse:
+        return _error(
+            status.HTTP_409_CONFLICT, "VERSION_EXISTS", "this edit version is already rendered"
+        )
+
+    try:
+        if _object_store.stat(crop_ref) is not None:
+            return version_exists()
+        source_bytes = _read_extracted(bucket, request)
+    except Exception:
+        logger.exception("render_edit: extracted image read failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+    if source_bytes is None:
+        return _error(
+            status.HTTP_404_NOT_FOUND, "ENTRY_NOT_FOUND", "no extracted image at this index"
+        )
+
+    # The same pixel guard and uprighting as /process-entry, so the frame the
+    # edit was drawn in (and `crop_box` was measured in) is the frame read here.
+    try:
+        check_raster_size(source_bytes)
+    except RasterTooLargeError:
+        return _error(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "ENTRY_TOO_MANY_PIXELS",
+            "the extracted image exceeds the pixel limit",
+        )
+    try:
+        upright, _orientation = apply_exif_orientation(source_bytes)
+    except Exception:
+        logger.warning("render_edit: extracted image undecodable")
+        return _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "IMAGE_UNDECODABLE",
+            "the extracted image could not be decoded",
+        )
+
+    try:
+        rendered = _render(upright, request.edit.to_edit(), keep_crop=True)
+    except _RenderFailedError as failure:
+        return failure.response
+    assert rendered.crop_bytes is not None  # keep_crop=True
+
+    # Sizes first, the crop last: the crop's presence is what marks a version
+    # complete. A size already at its key is an earlier attempt at this same
+    # version, which rendered the same request to the same bytes.
+    try:
+        for size_ref, data in (
+            (image_ref, rendered.sizes.image),
+            (thumb_ref, rendered.sizes.thumb),
+        ):
+            try:
+                _object_store.create(size_ref, data, content_type=COPY_PHOTO_CONTENT_TYPE)
+            except ObjectAlreadyExistsError:
+                pass
+        _object_store.create(crop_ref, rendered.crop_bytes, content_type=COPY_PHOTO_CONTENT_TYPE)
+    except ObjectAlreadyExistsError:
+        return version_exists()
+    except Exception:
+        logger.exception("render_edit: edit write failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+
+    response = RenderEditResponse(
+        image=_photo(rendered.sizes.image, include_data=False),
+        thumb=_photo(rendered.sizes.thumb, include_data=False),
+        version=request.version,
+        crop=RenderedPhoto(
+            width=rendered.crop_size[0],
+            height=rendered.crop_size[1],
+            size_bytes=len(rendered.crop_bytes),
+        ),
+    )
+    if request.classify:
+        response = _reread(response, upright, rendered.crop_bytes)
+
+    logger.info(
+        "render_edit: form=scan index=%d version=%d classify=%s classified=%s ms=%d",
+        request.entry_index,
+        request.version,
+        request.classify,
+        response.classified,
+        int((time.monotonic() - started) * 1000),
+    )
+    return response
+
+
+def _reread(response: RenderEditResponse, original: bytes, crop: bytes) -> RenderEditResponse:
+    """Read the new crop the way /process-entry reads its winner. Never raises.
+
+    The crop is read as the collector turned it: the orient call reports its
+    text count and confidence but turns nothing, since the edit's `turns` are
+    the photo's orientation now. The dHash describes the original, as ever.
+    """
+    try:
+        dhash_hex = f"{compute_dhash(original):016x}"
+    except Exception:
+        logger.warning("render_edit: dhash failed on the extracted image")
+        dhash_hex = None
+    try:
+        orientation = cropper.detect_orientation(crop)
+        classification = cropper.classify_card(crop)
+    except Exception:
+        logger.exception("render_edit: re-read failed, returning the render unread")
+        return response.model_copy(update={"dhash": dhash_hex})
+    return response.model_copy(
+        update={
+            "classified": True,
+            "players": list(classification.players),
+            "player": classification.player,
+            "team": classification.team,
+            "card_number": classification.card_number,
+            "side": classification.side,
+            "text_count": orientation.text_count,
+            "orient_confidence": orientation.confidence,
+            "dhash": dhash_hex,
+        }
+    )
+
+
+# The scan form's body is read by hand (the route takes two content types), so
+# FastAPI never sees `RenderEditScanRequest` and would leave the request body's
+# `$ref` to it dangling. Register it, and the models it nests, as components.
+_default_openapi = app.openapi
+
+
+def _openapi_with_render_edit_scan_form() -> dict[str, object]:
+    if app.openapi_schema is None:
+        schema = _default_openapi()
+        scan_form = RenderEditScanRequest.model_json_schema(
+            ref_template="#/components/schemas/{model}"
+        )
+        nested = scan_form.pop("$defs", {})
+        components = schema.setdefault("components", {}).setdefault("schemas", {})
+        for name, nested_schema in nested.items():
+            components.setdefault(name, nested_schema)
+        components["RenderEditScanRequest"] = scan_form
+    return app.openapi_schema
+
+
+app.openapi = _openapi_with_render_edit_scan_form  # type: ignore[method-assign]
 
 
 # Last statement of the module: the `cold_start` line's import share.

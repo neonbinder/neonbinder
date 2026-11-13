@@ -8,6 +8,9 @@ Every object a job reads or writes lives under one prefix:
         output/images/{n:04d}.ext one cropped, rotated image per processed entry
         output/copy-photos/image/{n:04d}.jpg  that image's listing size
         output/copy-photos/thumb/{n:04d}.jpg  that image's thumbnail
+        output/edits/{n:04d}/{v}.jpg          a hand edit's crop at full resolution
+        output/edits/{n:04d}/{v}/image.jpg    that edit's listing size
+        output/edits/{n:04d}/{v}/thumb.jpg    that edit's thumbnail
 
 **Convex owns all job state and results** (NEO-170): there is no status log and
 no manifest under this prefix, and nothing may recreate them — progress and
@@ -69,6 +72,14 @@ INPUT_OBJECT = "input.zip"
 EXTRACTED_DIR = "extracted"
 OUTPUT_DIR = "output"
 COPY_PHOTOS_DIR = "copy-photos"
+EDITS_DIR = "edits"
+
+# Hand edits are numbered by Convex (`placeholderImages.edits`, NEO-481), which
+# caps them per image far below this. The bound keeps the version a short,
+# fixed-alphabet path segment whatever a caller sends.
+MAX_EDIT_VERSION = 9999
+
+EDIT_SIZE_NAMES = ("image", "thumb")
 
 # Zero-padding width for per-entry object names. Extracted and output objects
 # are located by their zip ordinal, and `/process-entry` finds an extracted
@@ -150,3 +161,38 @@ def copy_photo_image_object(user_id: str, job_id: str, index: int) -> str:
 def copy_photo_thumb_object(user_id: str, job_id: str, index: int) -> str:
     """Key for one processed image's thumbnail. See `copy_photo_image_object`."""
     return f"{output_prefix(user_id, job_id)}{COPY_PHOTOS_DIR}/thumb/{_indexed_name(index, 'jpg')}"
+
+
+def _edit_version_segment(version: int) -> str:
+    """A hand edit's version as a path segment: a plain positive decimal."""
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise InvalidJobIdentifierError("edit version must be an integer")
+    if not 1 <= version <= MAX_EDIT_VERSION:
+        raise InvalidJobIdentifierError("edit version is out of range")
+    return str(version)
+
+
+def _edit_dir(user_id: str, job_id: str, index: int, version: int) -> str:
+    entry = _indexed_name(index, "jpg").removesuffix(".jpg")
+    return f"{output_prefix(user_id, job_id)}{EDITS_DIR}/{entry}/{_edit_version_segment(version)}"
+
+
+def edit_output_object(user_id: str, job_id: str, index: int, version: int) -> str:
+    """Key for one hand edit's crop at full resolution (NEO-481).
+
+    Written last by `/render-edit`, so its presence means the version is
+    complete, and the route refuses a version whose crop already exists. The
+    re-read classifies these pixels. Always JPEG.
+    """
+    return f"{_edit_dir(user_id, job_id, index, version)}.jpg"
+
+
+def edit_copy_photo_object(user_id: str, job_id: str, index: int, version: int, size: str) -> str:
+    """Key for one hand edit's listing size (`image`) or thumbnail (`thumb`).
+
+    Convex builds the same keys (`convex/lib/placeholderObjects.ts`) to copy an
+    edited scan's sizes onto the saved copy.
+    """
+    if size not in EDIT_SIZE_NAMES:
+        raise InvalidJobIdentifierError("edit size must be image or thumb")
+    return f"{_edit_dir(user_id, job_id, index, version)}/{size}.jpg"

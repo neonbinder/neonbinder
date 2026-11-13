@@ -228,7 +228,9 @@ export const SHORT_NAME_RULE: ShortNameRule = "A";
  * space, and the `startsWithWord` collapse branch is unreachable (it needs a
  * truthy `manufacturer`), which is right: there is nothing to collapse into.
  */
-function manufacturerAndSetTokens(inputs: ListingCardInputs): string[] {
+function manufacturerAndSetTokens(
+  inputs: Pick<ListingCardInputs, "manufacturer" | "setName" | "manufacturerBrandUnknown">,
+): string[] {
   const manufacturer = inputs.manufacturerBrandUnknown
     ? undefined
     : inputs.manufacturer?.trim();
@@ -237,6 +239,21 @@ function manufacturerAndSetTokens(inputs: ListingCardInputs): string[] {
     return [setName];
   }
   return [manufacturer, setName].filter((value): value is string => Boolean(value));
+}
+
+/**
+ * NEO-464 — a set's name the way its cards' listing titles say it: the brand,
+ * then the set's own name, collapsed when the name already leads with its
+ * brand ("Topps" + "Finest" reads "Topps Finest"; "Topps" + "Topps Chrome"
+ * stays "Topps Chrome"). Any NB screen that heads a group of cards whose
+ * titles it also shows names the set with this, so the heading and the titles
+ * under it read as one set. NB's own rows only: the brand is the set's
+ * `manufacturer` ancestor, never a marketplace value.
+ */
+export function brandedSetName(
+  inputs: Pick<ListingCardInputs, "manufacturer" | "setName" | "manufacturerBrandUnknown">,
+): string {
+  return manufacturerAndSetTokens(inputs).join(" ");
 }
 
 function startsWithWord(value: string, prefix: string): boolean {

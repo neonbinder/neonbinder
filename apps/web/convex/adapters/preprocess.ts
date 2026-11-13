@@ -50,6 +50,7 @@ import {
   type PreprocessBaseline,
   type PreprocessBaselineWire,
 } from "../lib/preprocessBaseline";
+import { parseCropBox, photoEditToWire, type PhotoEdit, type PhotoEditCrop } from "../lib/photoEdit";
 
 // The escalation-hint contract (NEO-315 D4) lives in a pure lib module so the
 // default-runtime settle in placeholderPipeline.ts can read it too (a default-
@@ -330,14 +331,24 @@ export type ProcessEntryResponse = {
    * `readEscalationHints` (convex/lib/preprocessBaseline.ts).
    */
   baseline: PreprocessBaseline | null;
+  /**
+   * NEO-481 — the box the winning crop stage cut, in the EXIF-uprighted
+   * original's pixels, narrowed field by field (`parseCropBox`). Absent when
+   * the stage had no box, the revision predates it, or any value was bad: a
+   * malformed box is dropped, never refused, because the settle stores it.
+   */
+  crop_box?: PhotoEditCrop;
 };
 
-/** Narrow the two escalation-hint fields; pass everything else through. */
+/** Narrow the escalation hints and the crop box; pass everything else through. */
 function normalizeProcessEntry(wire: ProcessEntryWire): ProcessEntryResponse {
+  const { crop_box: rawCropBox, ...rest } = wire as ProcessEntryWire & { crop_box?: unknown };
+  const cropBox = parseCropBox(rawCropBox);
   return {
-    ...wire,
+    ...rest,
     dhash: parseDhash(wire.dhash),
     baseline: parseWireBaseline(wire.baseline),
+    ...(cropBox ? { crop_box: cropBox } : {}),
   };
 }
 
@@ -387,7 +398,8 @@ async function preprocessPost<T>(
   ctx: ActionCtx,
   service: PreprocessService,
   path: string,
-  body: Record<string, unknown>,
+  // JSON, or (NEO-481's bytes form of `/render-edit`) a multipart form.
+  body: Record<string, unknown> | FormData,
   operation: string,
   // Per-call fetch budget (ms). Fast/heavy/extract differ by orders of
   // magnitude — see the PREPROCESS_*_TIMEOUT_MS constants.
@@ -426,10 +438,14 @@ async function preprocessPost<T>(
 
   let response: Response;
   try {
+    const headers = await preprocessHeaders(service);
+    const multipart = body instanceof FormData;
+    // fetch writes a multipart body's own Content-Type, boundary included.
+    if (multipart) delete headers["Content-Type"];
     response = await fetch(`${service.url}${path}`, {
       method: "POST",
-      headers: await preprocessHeaders(service),
-      body: JSON.stringify(body),
+      headers,
+      body: multipart ? body : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
       dispatcher: preprocessDispatcher,
     } as RequestInit);
@@ -604,9 +620,9 @@ export type DerivedCopyPhotos = {
   contentType: "image/jpeg" | "image/webp";
 };
 
-function decodeBase64(value: unknown, field: string): Uint8Array<ArrayBuffer> {
+function decodeBase64(value: unknown, field: string, path = "/derive-copy-photos"): Uint8Array<ArrayBuffer> {
   if (typeof value !== "string" || !BASE64_RE.test(value)) {
-    throw new Error(`preprocess returned an unreadable ${field} from /derive-copy-photos`);
+    throw new Error(`preprocess returned an unreadable ${field} from ${path}`);
   }
   return Uint8Array.from(Buffer.from(value, "base64"));
 }
@@ -640,6 +656,111 @@ export async function callDeriveCopyPhotos(
     image: decodeBase64(wire.image, "image"),
     thumb: decodeBase64(wire.thumb, "thumb"),
     contentType: wire.content_type,
+  };
+}
+
+/**
+ * NEO-481 — `/render-edit`'s budget. FAST, but a cold instance takes about
+ * 23 s (p50) to 36 s (p95) to answer, and the render of a 64 MP original plus
+ * a re-read rides on top. The save does not wait on it (it renders in the
+ * background), so this only bounds a stuck call.
+ */
+const PREPROCESS_RENDER_EDIT_TIMEOUT_MS = 120_000;
+
+/** `/render-edit`'s answer when the scan's `extracted/` original has aged out. */
+export const ENTRY_NOT_FOUND_CODE = "ENTRY_NOT_FOUND";
+
+/**
+ * What a scan-form `/render-edit` read off the new crop, when `classify` was
+ * asked for: the `/process-entry` field names, untouched. The commit mutation
+ * narrows them (`imageFieldsFromResult`), as the settle does a process result.
+ */
+export type RenderEditClassify = {
+  players?: unknown;
+  team?: unknown;
+  card_number?: unknown;
+  side?: unknown;
+  text_count?: unknown;
+  dhash?: unknown;
+  orient_confidence?: unknown;
+};
+
+const CLASSIFY_KEYS = ["players", "team", "card_number", "side", "text_count", "dhash", "orient_confidence"] as const;
+
+/**
+ * Render one hand edit of a scan from its `extracted/` original (the scan
+ * form). The service writes the full-resolution crop at
+ * `output/edits/{index:04d}/{version}.jpg` and its 1600/360 sizes beside it
+ * (`lib/placeholderObjects.ts` names them), and refuses a version that
+ * exists. With `classify` it also reads the new crop, and those fields come
+ * back for the commit to narrow; without it, `classified` is null.
+ *
+ * Throws as every call here does. A 404 `ENTRY_NOT_FOUND_CODE` means the
+ * original aged out (`parsePreprocessErrorCode`).
+ */
+export async function callRenderEdit(
+  ctx: ActionCtx,
+  args: { jobId: string; userId: string; entryIndex: number; edit: PhotoEdit; version: number; classify: boolean },
+): Promise<{ classified: RenderEditClassify | null }> {
+  const wire = await preprocessPost<Record<string, unknown>>(
+    ctx,
+    FAST_SERVICE(),
+    "/render-edit",
+    {
+      job_id: args.jobId,
+      user_id: args.userId,
+      entry_index: args.entryIndex,
+      edit: photoEditToWire(args.edit),
+      version: args.version,
+      classify: args.classify,
+    },
+    "preprocessRenderEdit",
+    PREPROCESS_RENDER_EDIT_TIMEOUT_MS,
+    { jobId: args.jobId, entryIndex: args.entryIndex },
+  );
+  // A read that failed still answers 200 (the objects are written) with
+  // `classified: false` and its read fields empty: nothing to write then.
+  if (!args.classify || !wire || typeof wire !== "object" || wire.classified !== true) return { classified: null };
+  const classified: RenderEditClassify = {};
+  for (const key of CLASSIFY_KEYS) if (key in wire) classified[key] = wire[key];
+  return { classified };
+}
+
+/** `/render-edit`'s answer: each size an object, carrying its bytes (`data_b64`) only in the bytes form. */
+type RenderEditWire = {
+  image?: { data_b64?: unknown } | null;
+  thumb?: { data_b64?: unknown } | null;
+  content_type?: unknown;
+};
+
+/**
+ * Render one hand edit of a stored photo (the bytes form): the photo goes up
+ * as multipart (`image`, plus `edit` as JSON) and its 1600/360 sizes come
+ * back as `{ width, height, size_bytes, data_b64 }`. Writes nothing on the service.
+ */
+export async function callRenderEditBytes(
+  ctx: ActionCtx,
+  args: { image: Uint8Array<ArrayBuffer>; contentType: "image/jpeg" | "image/webp"; edit: PhotoEdit },
+): Promise<DerivedCopyPhotos> {
+  const form = new FormData();
+  form.append("image", new Blob([args.image], { type: args.contentType }), "photo");
+  form.append("edit", JSON.stringify(photoEditToWire(args.edit)));
+  const wire = await preprocessPost<RenderEditWire>(
+    ctx,
+    FAST_SERVICE(),
+    "/render-edit",
+    form,
+    "preprocessRenderEditBytes",
+    PREPROCESS_RENDER_EDIT_TIMEOUT_MS,
+  );
+  const contentType = wire.content_type ?? "image/jpeg";
+  if (contentType !== "image/jpeg" && contentType !== "image/webp") {
+    throw new Error("preprocess returned an unknown content type from /render-edit");
+  }
+  return {
+    image: decodeBase64(wire.image?.data_b64, "image", "/render-edit"),
+    thumb: decodeBase64(wire.thumb?.data_b64, "thumb", "/render-edit"),
+    contentType,
   };
 }
 

@@ -62,6 +62,8 @@ import { fastPreprocessPool } from "./placeholderPool";
 import { heavyPreprocessPool } from "./placeholderHeavyPool";
 import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
+import { parseCropBox } from "./lib/photoEdit";
+import { pendingPhotoEditValidator } from "./schema";
 import {
   rejectedSummaryValidator,
   summarizeRejections,
@@ -1312,6 +1314,11 @@ export const registerExtractedImages = internalMutation({
           // collector as a new answer. A kept done row above keeps its set-aside:
           // same bytes, same decision, like its `sideByUser` and `unpairedFrom`.
           setAside: undefined,
+          // NEO-481: a hand edit and the auto crop belong to the read being
+          // thrown away. `edits` stays: it is the paid-call cap, like `retries`.
+          edit: undefined,
+          autoCrop: undefined,
+          pendingEdit: undefined,
         });
       }
     }
@@ -1589,6 +1596,38 @@ function imageFieldsFromResult(returnValue: unknown): Partial<Doc<"placeholderIm
     textCount: asNumber(body.text_count),
     croppedSource: asString(body.cropped_source),
     dhash: asDhash(body.dhash),
+    // NEO-481: the box the winning stage cut, narrowed field by field; a bad
+    // box is dropped (undefined), never refused, because this is the settle.
+    autoCrop: parseCropBox(body.crop_box),
+  };
+}
+
+/**
+ * NEO-481 — what a hand crop's re-read (`/render-edit` with `classify`) may
+ * write, narrowed exactly as a `/process-entry` result is. Never orientation
+ * (`rotationDegrees`, `croppedSource`): the edit's `turns` is the photo's
+ * orientation now. The commit decides which of these it writes (the
+ * first-read rule, `photoEditRows.commitScanEdit`).
+ */
+export function readFieldsFromResult(returnValue: unknown): {
+  players?: string[];
+  team?: string;
+  cardNumber?: string;
+  side?: string;
+  textCount?: number;
+  dhash?: string;
+  orientConfidence?: number;
+} {
+  if (!returnValue || typeof returnValue !== "object") return {};
+  const body = returnValue as Record<string, unknown>;
+  return {
+    players: asStringArray(body.players),
+    team: asString(body.team),
+    cardNumber: asString(body.card_number),
+    side: asString(body.side),
+    textCount: asNumber(body.text_count),
+    dhash: asDhash(body.dhash),
+    orientConfidence: asNumber(body.orient_confidence),
   };
 }
 
@@ -2332,6 +2371,8 @@ export const getImageForDownload = internalQuery({
       imageId: v.id("placeholderImages"),
       /** Absent until the first mint for this image probes for it. */
       outputExtension: v.optional(v.string()),
+      /** NEO-481: the hand edit whose render is current; the mint serves it instead. */
+      editVersion: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2350,7 +2391,7 @@ export const getImageForDownload = internalQuery({
     // that looks like an infrastructure fault rather than "not ready yet".
     if (image.status !== "done") return null;
 
-    return { imageId: image._id, outputExtension: image.outputExtension };
+    return { imageId: image._id, outputExtension: image.outputExtension, editVersion: image.edit?.version };
   },
 });
 
@@ -2592,6 +2633,14 @@ export const listPlaceholderImages = query({
       retries: v.optional(v.number()),
       // NEO-446: the collector set this loose photo aside.
       setAside: v.optional(v.boolean()),
+      // NEO-481: the current hand edit's version (the photo's URL key: a new
+      // version is a new file), the renders reserved so far (the cap is
+      // PLACEHOLDER_MAX_IMAGE_EDITS), and an edit still rendering or whose
+      // render failed. The full `edit` and `autoCrop` stay out of this
+      // subscription; `photoEdits.photoEditSource` returns them on open.
+      editVersion: v.optional(v.number()),
+      edits: v.optional(v.number()),
+      pendingEdit: v.optional(pendingPhotoEditValidator),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2626,6 +2675,9 @@ export const listPlaceholderImages = query({
       settledAt: r.settledAt,
       retries: r.retries,
       setAside: r.setAside,
+      editVersion: r.edit?.version,
+      edits: r.edits,
+      pendingEdit: r.pendingEdit,
       // `workId` is intentionally omitted — it is a handle into the workpool
       // component, not something a client has any use for.
     }));

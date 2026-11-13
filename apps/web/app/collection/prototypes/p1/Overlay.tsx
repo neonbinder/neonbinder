@@ -4,6 +4,46 @@ import { Theme } from "@radix-ui/themes";
 import { inertBackground } from "@/lib/dom/inert-background";
 
 /**
+ * Where focus can go when the opener is gone, nearest first, resolved while
+ * the opener is still on the page: an ancestor marked `data-focus-home`, the
+ * heading that labels an ancestor `section` or `article` (looked up by id at
+ * close, so a redraw of the heading still counts), and last the page's `h1`.
+ */
+export function focusHomes(opener: Element | null): (() => HTMLElement | null)[] {
+  const homes: (() => HTMLElement | null)[] = [];
+  for (let el = opener?.parentElement ?? null; el; el = el.parentElement) {
+    if (el.hasAttribute("data-focus-home")) {
+      const home = el as HTMLElement;
+      homes.push(() => home);
+    }
+    if ((el.tagName === "SECTION" || el.tagName === "ARTICLE") && el.hasAttribute("aria-labelledby")) {
+      const id = el.getAttribute("aria-labelledby")?.split(/\s+/)[0];
+      if (id) homes.push(() => document.getElementById(id));
+    }
+  }
+  homes.push(() => document.querySelector<HTMLElement>("h1"));
+  return homes;
+}
+
+/** Focus the first home still on the page, making it focusable (never a tab stop) if it was not. */
+export function focusFirstHome(homes: readonly (() => HTMLElement | null)[]): HTMLElement | null {
+  for (const resolve of homes) {
+    const home = resolve();
+    if (!home || !home.isConnected) continue;
+    if (!home.hasAttribute("tabindex") && home.tabIndex < 0) home.tabIndex = -1;
+    home.focus({ preventScroll: false });
+    if (document.activeElement === home) return home;
+  }
+  return null;
+}
+
+/** Focus has nowhere to be: on the page's body, or on something no longer in it. */
+function focusIsFree(): boolean {
+  const active = document.activeElement;
+  return !active || active === document.body || !active.isConnected;
+}
+
+/**
  * A modal layer for prototype 1: portalled to <body> (inside its own nested
  * Radix `<Theme>`, so Radix tokens resolve), the rest of the page
  * made `inert` (so Tab cannot leave and a screen reader cannot wander), Tab
@@ -18,6 +58,13 @@ import { inertBackground } from "@/lib/dom/inert-background";
  * On open, focus lands on the element marked `data-autofocus`, else the
  * labelling heading. The panel takes focus itself (never a tab stop), so a click
  * on something that can't hold focus leaves it in here, where Escape still works.
+ *
+ * On close, focus goes back to the opener. When the opener is gone (what was
+ * done in here took it off the page: a held-back card priced, a need filled),
+ * it goes to the nearest place that still stands around where the opener was
+ * (`focusHomes`), so the keyboard never falls to the page's top. That waits a
+ * frame and only steps in when focus is still nowhere, so a page that parks
+ * focus itself after a close keeps doing so.
  */
 export default function Overlay({
   labelledBy,
@@ -38,6 +85,10 @@ export default function Overlay({
     const panel = panelRef.current;
     if (!root || !panel) return;
     const opener = document.activeElement as HTMLElement | null;
+    // Resolved now: once the opener is gone, its ancestors cannot be read. No
+    // opener (a link opened it on load, or a click that focuses nothing, as in
+    // Safari): nowhere to go back to, so nothing is moved on close.
+    const homes = opener && opener !== document.body ? focusHomes(opener) : [];
     const release = inertBackground(root);
     const target =
       panel.querySelector<HTMLElement>("[data-autofocus]") ??
@@ -45,13 +96,27 @@ export default function Overlay({
     target?.focus({ preventScroll: true });
     return () => {
       release();
-      if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
+      if (opener && opener !== document.body && document.contains(opener)) {
+        opener.focus({ preventScroll: true });
+        return;
+      }
+      // The opener went while this was open: a frame on, once the page has
+      // redrawn (and had its own say), the nearest home that still stands.
+      if (homes.length > 0) {
+        requestAnimationFrame(() => {
+          if (focusIsFree()) focusFirstHome(homes);
+        });
+      }
     };
     // Open once per mount; the heading id never changes while open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // A layer opened from inside this one is portalled to <body>, but React
+    // still bubbles its keys up here: they are that layer's, never this one's
+    // (its Tab would otherwise be trapped back into this panel, now inert).
+    if (!panelRef.current?.contains(e.target as Node)) return;
     if (e.key === "Escape" && !e.defaultPrevented) {
       e.preventDefault();
       onClose();

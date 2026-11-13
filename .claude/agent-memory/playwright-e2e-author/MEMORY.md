@@ -73,7 +73,7 @@
 - [Prove a theme by painted colour](patterns_prove_a_theme_by_painted_colour.md) — banner bg + heading colour via toHaveCSS; pre-mount false positive after reload; second-context profile proof; no-flash is a gap
 - [Read a row name with ariaSnapshot](patterns_read_a_row_name_with_aria_snapshot.md) — pick an unknown seed row by role+regex, read its accessible name via ariaSnapshot, then exact names
 - [Collection checklist total and drawer](patterns_collection_checklist_total_and_drawer.md) — NEO-358: T = listed minus variation rows; missing stored count invisible; drawer URL, add-mode route, width
-- [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the server-confirmed notice before leaving /collection; hand-made card names, Insert column
+- [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the server-confirmed notice before leaving /collection or pressing the next Remove (a notice reflow loses the press); hand-made card names, Insert column
 - [Wizard save wait is a commit headroom ruler](patterns_wizard_save_wait_is_a_commit_headroom_ruler.md) — red 'Saved N cards' on a 300-card commit: not thrown; Step 1 of N in the PNG is the review drain; ~3.5s healthy vs 7s budget
 - [Hidden empty levels need app-created rows](patterns_hidden_empty_levels_need_app_created_rows.md) — NEO-358: prove the zero-hide on a spec-made set, sibling visible first, then absent/present/absent
 - [Collection binders flake mechanisms](patterns_collection_binders_flake_mechanisms.md) — NEO-359: Undo-before-write id swap, tray focus-scroll eats clicks, parallel hits break prefix regexes
@@ -103,13 +103,22 @@
 - [Custom-sport player fixture makes no lookup](patterns_custom_sport_player_fixture_makes_no_lookup.md) — NEO-462: minted players in the custom sport, no_match log is a refusal, birth-year forks, Back is an exit
 - [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
 - [Collector insert checklist names](patterns_collector_insert_checklist_names.md) — CollectorSet.checklist drill; checklist vs Sync status vs drawer naming for Base/insert/parallel; BSC $900 vs eBay sandbox under $20
+- [Card photo viewer specs](patterns_card_photo_viewer_specs.md) — NEO-481: viewer/tile names, served-file orientation, crop-box drag geometry, More steps, restart a frozen Vite after resync
+- [aria-disabled refusal by keyboard](patterns_aria_disabled_refusal_by_keyboard.md) — focus()+Enter to prove a refusal; blur (Tab) a field before clicking the control its value enables
+- [Shell tabs live in the Menu on a phone](patterns_shell_tabs_phone_menu.md) — use goViaShell for /demo and signed-in shell tabs; match [?&]tab= in URLs
+- [Keep failure artifacts across runs](patterns_keep_failure_artifacts.md) — every run wipes results/; use --output=<scratch> when chasing an intermittent red
+- [Responsive duplicates and text locators](patterns_responsive_duplicates_and_text_locators.md) — getByText matches the CSS-hidden twin; filter({ visible: true }); branch on isMobile only for layout facts
+- [Failure hook that finishes every step](patterns_failure_hook_that_finishes_every_step.md) — afterEach with a fresh context page, attempt() collecting errors, idempotent steps, deleteBoxNamed
+- [Dashboard shelf boxes and demo limits](reference_dashboard_shelf_boxes_and_demo_limits.md) — demo has one box; 7 real boxes = 5 ends desktop / 3 phone; Sell vs Fresh Pulls; Hunt tray; stale panel run
 - [Route key is the object name, not the path](patterns_route_key_is_the_object_name_not_the_path.md) — retry PUT has another pathname; key by the 32-hex; prove red on a git-archive HEAD copy
 - [Column sync failed hides the empty line](patterns_column_sync_failed_hides_the_empty_line.md) — NEO-450: wake on columnSyncError, empty line hidden is no proof; marker-split regex from the builder
 - [Fake a Convex query value over the WebSocket](patterns_fake_a_convex_query_value_over_the_websocket.md) — NEO-450: routeWebSocket, key udfPath+args, no-op-version Transition inject, end on the retry's ActionResponse
 - [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic, measured-wait credit, blocked Next via Enter, radiogroup per card
 - [Capture slug probe](patterns_capture_checklist_slug_probe.md) — find BSC facet slugs from aggregations, check numbers across merged series before capturing
 - [Checklist upload team claim blocks career prefill](patterns_checklist_upload_team_claim_blocks_career_prefill.md) — NEO-478: an uploaded row's team is a permanent claim; Roanoke spec cannot take the upload; aria-disabled Use via Enter; burst 429s
+- [Full local run on one account](patterns_full_local_run_on_one_account.md) — reds that are the single-account run: 12/hour cap, CI-only env switches, dirty reruns, box clutter, newest-N lists, near-budget photo step
 - [Name-fallback Match Cards solo + cancel confirm](patterns_name_fallback_match_cards_solo_and_modal_cancel_confirm.md) — NEO-490: nameFallbackFacts, Cancel opens a discard confirm, virtualized list, two-phase fresh-only spec
 - [Dual-layout rows and CardFace text](patterns_dual_layout_rows_and_card_face_text.md) — row text drawn twice + thumbnails print names: filter({visible:true}) or a cell by name; empty:hidden status is absent
 - [Optimistic tick, then navigate](patterns_optimistic_tick_then_navigate_reads_from_a_second_tab.md) — NEO-500: a goto right after an optimistic tick loses it; check from a second tab first; disjoint minted suffixes; clean up on a new page
 - [Print emulation + rare-state axe](patterns_print_emulation_and_rare_state_axe.md) — NEO-500: print media keeps the phone viewport; vitest axe-core has no contrast; setup needs the reference bundle
+- [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)

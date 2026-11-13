@@ -40,7 +40,14 @@ describe("PrivacyPage", () => {
 
   it("shows the last-updated date", () => {
     renderPrivacy();
-    expect(screen.getByText("November 11, 2026").getAttribute("datetime")).toBe("2026-11-11");
+    expect(screen.getByText("November 12, 2026").getAttribute("datetime")).toBe("2026-11-12");
+  });
+
+  it("says a scan cropped by hand is read again by the same services (NEO-481)", () => {
+    renderPrivacy();
+    expect(
+      screen.getByText(/If you turn or crop a scan by hand before you save its card, the new crop is read again the same way\./),
+    ).toBeTruthy();
   });
 
   it("covers eBay and lets the visitor jump to each section", () => {

@@ -1,3 +1,5 @@
+// First: the demo's sample sets and cards (1989 Score, Reggie White), before anything reads the catalog.
+import "@/app/collection/final/data/sample";
 import { useSearchParams } from "react-router";
 import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "./data/demoStore";
 import FinalCollectionPage from "./FinalCollectionPage";
@@ -19,16 +21,29 @@ import FinalCollectionPage from "./FinalCollectionPage";
 export default function PublicCollectionDemo({
   onExit,
   keepParams,
+  shell = false,
 }: {
   /** Leave the demo and go back to the tour. */
-  onExit: () => void;
+  onExit?: () => void;
   /** The marketing page's own params, kept on every demo view URL (`demo=on`). */
   keepParams: Record<string, string>;
+  /**
+   * Inside the dashboard demo's shell (NEO-464): the shell is the frame (its
+   * column, its scroll headroom, its tabs), so only the page is drawn here.
+   */
+  shell?: boolean;
 }) {
   // Add cards (NEO-369) is a lane per pipeline stage, and the Pick List (NEO-522)
   // is read from across the room: both take the full width.
   const [params] = useSearchParams();
   const wide = params.get("tab") === "add" || params.get("tab") === "pick";
+  if (shell) {
+    return (
+      <DemoCollectionProvider storageKey={PUBLIC_STORAGE_KEY}>
+        <FinalCollectionPage mode="public" keepParams={keepParams} shell />
+      </DemoCollectionProvider>
+    );
+  }
   return (
     <main className="min-h-screen min-w-0 bg-background lg:pr-[170px]">
       <div className={`mx-auto p-4 sm:p-6 ${wide ? "max-w-[1600px]" : "max-w-6xl"}`}>

@@ -12,8 +12,8 @@
 //
 // The signed-in page is the REAL collection (Convex, per user), not the demo:
 // it shows "My Cards", "Checklists" and (NEO-359) "My Binders", no demo bar and
-// no "Demo theme" switch. The public demo (/binder-tracking?demo=on) is proved by the
-// home/binder-tracking-demo* specs; this spec replaces the retired
+// no "Demo theme" switch. The public demo (/demo/collection) is proved by the
+// home/demo-* specs; this spec replaces the retired
 // home/collection-demo-signed-in and home/collection-demo-theme.
 //
 // R7/R7a: writes only `collectionCopies` (per user; the account's copies are

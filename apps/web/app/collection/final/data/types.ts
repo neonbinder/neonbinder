@@ -19,6 +19,7 @@
  */
 
 import type { StoredRule, StoredRuleLeaf, StoredRuleTerm } from "@/lib/collection/binder-rule";
+import type { PendingPhotoEdit } from "@/lib/photo-edit/geometry";
 
 // ---------------------------------------------------------------------------
 // Ids
@@ -380,6 +381,11 @@ export type PhotoSide = "front" | "back";
 export interface PhotoUrls {
   imageUrl: string;
   thumbUrl: string;
+  /**
+   * NEO-481 — a turn or crop saved and still rendering, or one whose render
+   * failed. `imageUrl` is still the old photo until the new file lands.
+   */
+  pending?: PendingPhotoEdit;
 }
 
 /** A copy line's photos. A side with none is absent. */
@@ -564,6 +570,12 @@ export function isHome(container: Pick<Container, "system" | "rule"> | undefined
 export interface Want {
   cardId: CardId;
   binderId: ContainerId | null;
+  /**
+   * NEO-464 — when the want was last set (ms since epoch), as the server
+   * stamps it: the dashboard's chase takes the newest. Absent from the demo
+   * store and on a want just set and not yet confirmed (read it as newest).
+   */
+  lastUpdated?: number;
 }
 
 /**
@@ -1014,6 +1026,8 @@ export type ListingProblemReason =
 /** One card a sync held back, named as the collector reads it. */
 export interface SyncProblem {
   reason: ListingProblemReason;
+  /** The card the row names, when NB knows it: the row opens that card's panel. */
+  cardId?: CardId;
   /** NB's card number; absent for a platform row NB cannot tie to a card. */
   cardNo?: string;
   /** The card's player(s), as NB names them. */
