@@ -17,23 +17,37 @@
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { CatalogReader } from "./catalogView";
+import { brandedSetName } from "../features/generateListing";
+import { CatalogReader, type SetRef } from "./catalogView";
 
 type Ctx = Pick<QueryCtx, "db">;
 
 /** What a variant reads as when its row (or its set) is gone from NB. */
 export const MISSING_SET_LABEL = "A set no longer in NeonBinder";
 
+/**
+ * NEO-464 — a set as its cards' listing titles name it: the season, then the
+ * brand and set name collapsed the way the title collapses them
+ * (`brandedSetName`): "1993 Topps Finest", "2024 Topps Chrome". The dashboard
+ * heads its cards with this, so a heading and the titles under it agree.
+ */
+export function brandedSetLabel(set: Pick<SetRef, "season" | "name" | "manufacturer">): string {
+  return `${set.season} ${brandedSetName({ manufacturer: set.manufacturer?.name, setName: set.name })}`.trim();
+}
+
 /** The pieces of a variant's label, as the collection screens map them. */
 export function setAndVariantLabel(parts: {
   season: string;
   setName: string;
+  /** NEO-464: the set's brand, put before its name as the listing title does; left out, the name alone. */
+  brand?: string | null;
   level: string;
   typeKind: "base" | "insert" | "parallel" | null;
   name: string;
   insertName: string | null;
 }): string {
-  const set = `${parts.season} ${parts.setName}`.trim();
+  const setName = parts.brand ? brandedSetName({ manufacturer: parts.brand, setName: parts.setName }) : parts.setName;
+  const set = `${parts.season} ${setName}`.trim();
   // A variant type row: Base reads as the set alone; any other type by name.
   if (parts.level === "variantType") {
     return parts.typeKind === "base" || !parts.name ? set : `${set} ${parts.name}`;
@@ -66,7 +80,15 @@ export class ListingLabels {
   private readonly cards = new Map<string, LabeledCard | null>();
   private readonly players = new Map<string, Doc<"players"> | null>();
 
-  constructor(private readonly ctx: Ctx) {
+  /**
+   * `brand`: name each set with its brand, as its cards' listing titles do
+   * (`brandedSetLabel`; the dashboard, NEO-464). Left out, the set's name
+   * alone, as the collection screens and the Sync status tab say it.
+   */
+  constructor(
+    private readonly ctx: Ctx,
+    private readonly options: { brand?: boolean } = {},
+  ) {
     this.reader = new CatalogReader(ctx);
   }
 
@@ -82,13 +104,16 @@ export class ListingLabels {
         ? setAndVariantLabel({
             season: set.season,
             setName: set.name,
+            brand: this.options.brand ? (set.manufacturer?.name ?? null) : null,
             level: variant.level,
             typeKind: variant.kind,
             name: variant.name,
             insertName: variant.insert?.name ?? null,
           })
         : set
-          ? `${set.season} ${set.name}`.trim()
+          ? this.options.brand
+            ? brandedSetLabel(set)
+            : `${set.season} ${set.name}`.trim()
           : MISSING_SET_LABEL;
     this.sets.set(key, label);
     return label;

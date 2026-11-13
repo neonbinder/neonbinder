@@ -59,7 +59,7 @@ export default function ShippingLabelsPage() {
           {/* Section 1: Your address, saved once */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-teal/10 to-neon-green/10 rounded-2xl p-12 border border-neon-teal/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-teal/10 to-neon-green/10 rounded-2xl p-6 sm:p-12 border border-neon-teal/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -124,7 +124,7 @@ export default function ShippingLabelsPage() {
           {/* Section 2: Type the buyer, hit print */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-6 sm:p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -197,7 +197,7 @@ export default function ShippingLabelsPage() {
           {/* Section 3: Fits any 4x6 label printer */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-teal/10 rounded-2xl p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-teal/10 rounded-2xl p-6 sm:p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -275,7 +275,7 @@ export default function ShippingLabelsPage() {
           {/* Section 4: Buy the postage too (NEO-120) */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-blue/10 to-neon-green/10 rounded-2xl p-12 border border-neon-blue/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-blue/10 to-neon-green/10 rounded-2xl p-6 sm:p-12 border border-neon-blue/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"

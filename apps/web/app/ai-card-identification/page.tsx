@@ -41,7 +41,7 @@ export default function AiCardIdentificationPage() {
           {/* Section 1: Instant Recognition */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-green/10 to-neon-blue/10 rounded-2xl p-6 sm:p-12 border border-neon-green/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -98,7 +98,7 @@ export default function AiCardIdentificationPage() {
           {/* Section 2: Complete Card Data */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-pink/10 rounded-2xl p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-purple/10 to-neon-pink/10 rounded-2xl p-6 sm:p-12 border border-neon-purple/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -160,7 +160,7 @@ export default function AiCardIdentificationPage() {
           {/* Section 3: Accuracy & Verification */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div>
-              <div className="bg-gradient-to-br from-neon-yellow/10 to-neon-green/10 rounded-2xl p-12 border border-neon-yellow/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-yellow/10 to-neon-green/10 rounded-2xl p-6 sm:p-12 border border-neon-yellow/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"
@@ -219,7 +219,7 @@ export default function AiCardIdentificationPage() {
           {/* Section 4: Machine Learning */}
           <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
             <div className="md:order-2">
-              <div className="bg-gradient-to-br from-neon-pink/10 to-neon-purple/10 rounded-2xl p-12 border border-neon-pink/30 aspect-square flex items-center justify-center">
+              <div className="bg-gradient-to-br from-neon-pink/10 to-neon-purple/10 rounded-2xl p-6 sm:p-12 border border-neon-pink/30 aspect-square flex items-center justify-center">
                 <svg
                   viewBox="0 0 200 200"
                   width="200"

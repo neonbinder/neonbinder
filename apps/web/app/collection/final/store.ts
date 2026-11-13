@@ -188,9 +188,10 @@ export interface OpResult<T> {
  * single trade-bait dupe stays in the collection, up for trade; the rest of
  * Trade bait goes to the Show box, for sale. v6 (NEO-364): the Unsorted box.
  * v7: every card in a binder sits in a pocket (no "in the binder but not in
- * a pocket").
+ * a pocket"). v8 (NEO-464): the Show box's cards carry their price, and the
+ * public demo's sample sets (1989 Score, Reggie White, `./data/sample`).
  */
-const STATE_VERSION = 7;
+const STATE_VERSION = 8;
 const STORAGE_KEY = "nb-collection-final";
 /** The public demo's own sessionStorage key (never the app's). */
 export const PUBLIC_STORAGE_KEY = "nb-collection-demo-public";
@@ -238,20 +239,27 @@ function seedRef(setId: SetId, variantName: string | null, cardNumber: string): 
 }
 
 /**
- * The Show box's rows for the seed's for-sale copies, by copy: football up
- * front, the hockey stack behind it. One is left unsorted, so the box shows
- * its "not sorted into a row yet" strip.
+ * The Show box's rows for the seed's for-sale copies, by set: new football up
+ * front, the hockey stack behind it, then the '89 Score dupes and the Finest
+ * (when the demo loaded its sample, `./data/sample`). The Chrome auto is left
+ * unsorted, so the box shows its "not sorted into a row yet" strip.
  */
+const SHOW_BOX_ROWS: Record<SetId, number | undefined> = {
+  "2024-topps-chrome-baseball": undefined,
+  "1996-97-upper-deck-hockey": 1,
+  "1989-score-football": 2,
+  "1993-finest-baseball": 3,
+};
+
 function showBoxRow(copy: FixtureCopy): number | undefined {
   const card = catalogCards.find((c) => c.id === copy.cardId);
   if (!card) return undefined;
-  if (card.setId === "2024-topps-chrome-baseball") return undefined;
-  return card.setId === "1996-97-upper-deck-hockey" ? 1 : 0;
+  return card.setId in SHOW_BOX_ROWS ? SHOW_BOX_ROWS[card.setId] : 0;
 }
 
 /** The prototype seed's copy as the demo's: one home, a slot, the trade flag. */
 function seedCopy(copy: FixtureCopy, pockets: Map<CopyId, [ContainerId, number]>): DemoCopy {
-  const { binderIds, forSale, askPrice: _askPrice, ...details } = copy;
+  const { binderIds, forSale, askPrice, ...details } = copy;
   const wasTradeBait = binderIds.includes(TRADE_BINDER_ID);
   const binder = binderIds.find((id) => id !== TRADE_BINDER_ID);
   const pocket = pockets.get(copy.id);
@@ -264,6 +272,8 @@ function seedCopy(copy: FixtureCopy, pockets: Map<CopyId, [ContainerId, number]>
     wasTradeBait && copy.quantity === 1 && !copy.serialNumber && copy.costBasis === undefined;
   let homeId: ContainerId;
   let slot: number | undefined;
+  // A card for sale carries its own price into the box: the seed's asking price.
+  const price = forSale && !upForTrade ? (details.minPrice ?? askPrice) : undefined;
   if (forSale && !upForTrade) {
     homeId = SHOW_BOX_ID;
     slot = showBoxRow(copy);
@@ -271,14 +281,24 @@ function seedCopy(copy: FixtureCopy, pockets: Map<CopyId, [ContainerId, number]>
     homeId = binder ?? MAIN_BINDER_ID;
     slot = pocket && pocket[0] === homeId ? pocket[1] : undefined;
   }
+  const { minPrice: _ownPrice, ...rest } = details;
   return {
-    ...details,
+    ...rest,
     id: copy.id,
     cardId: copy.cardId,
     homeId,
     upForTrade,
     ...(slot === undefined ? {} : { slot }),
+    ...(price === undefined ? {} : { minPrice: price }),
   };
+}
+
+/** The one regular base card at (set, number), or null when the catalog has none (the demo's sample not loaded). */
+function sampleRef(setId: SetId, cardNumber: string): CardId | null {
+  const matches = catalogCards.filter(
+    (c) => c.setId === setId && c.variantPath.type === "Base" && c.cardNumber === cardNumber && c.variation === null,
+  );
+  return matches.length === 1 ? matches[0].id : null;
 }
 
 /** The Unsorted box as the seed makes it. */
@@ -350,6 +370,10 @@ function seedState(): CollectionState {
   ];
   const chrome = "2024-topps-chrome-baseball";
   const containers = sortContainers([...system, ...own]);
+  // The public demo's sample (`./data/sample`): the 1989 Score Barry Sanders
+  // rookie, pulled today to finish the set, and still wanted, graded, for the
+  // Slab case.
+  const barry = sampleRef("1989-score-football", "257");
   return {
     copies: pocketLoose(seeded, containers),
     containers,
@@ -359,6 +383,7 @@ function seedState(): CollectionState {
       { cardId: seedRef(chrome, "Red Refractor", "1"), binderId: OHTANI_BINDER_ID },
       { cardId: seedRef(chrome, null, "12"), binderId: null },
       { cardId: seedRef("1996-playoff-contenders", null, "13"), binderId: null },
+      ...(barry ? [{ cardId: barry, binderId: SLAB_BINDER_ID }] : []),
     ],
     cardRequests: [],
     browseFilter: NO_BROWSE_FILTER,

@@ -223,10 +223,22 @@ export function labelOf(container: LabelSubject | "all", hints?: LabelHints): Co
 export const LARGE_TEXT_PX = 18.66;
 /** Never letter a spine smaller than this, however long the name. */
 export const MIN_LETTERING_PX = 12;
-/** The phone shelf's spine height: the smallest a spine is ever drawn. */
-const PHONE_SPINE_PX = 196;
+/** My Binders' phone shelf spine height: the smallest it ever draws a spine. */
+export const PHONE_SPINE_PX = 196;
+/**
+ * A box end's tape lettering, in px. `box.css` sets it as a fixed hand
+ * (`.nb-boxspine-end .nb-label-name`), not by the fitter, so the contrast
+ * check reads this number rather than an estimate from the box's width. Keep
+ * the two in step.
+ */
+export const BOX_LETTERING_PX = 15;
 /** What the spine's rim, the count sticker and the gaps take off its height. */
 const SPINE_CHROME_PX = 52;
+/**
+ * What a badge at the head of the label (a smart binder's "Smart" chip) takes
+ * off the lettering's length: its 16px line and the label's 6px gap under it.
+ */
+export const BADGE_ROOM_PX = 22;
 /** What the rim takes off its width. */
 const SPINE_RIM_PX = 10;
 
@@ -250,10 +262,21 @@ export function letteringSizeCss(name: string, font: SpineFont): string {
   return `max(${MIN_LETTERING_PX}px, min(${across.toFixed(2)}cqw, ${along.toFixed(2)}cqh))`;
 }
 
-/** The smallest the lettering is ever drawn (on a phone), in px. */
-export function smallestLetteringPx(name: string, font: SpineFont, spineWidthPx: number): number {
+/**
+ * The smallest the lettering is ever drawn, in px: at this spine width and
+ * the shortest height the shelf draws it (My Binders' phone spine unless the
+ * shelf says otherwise; the dashboard's spines are shorter), less whatever
+ * stands at the head of the label (`BADGE_ROOM_PX` for the Smart chip).
+ */
+export function smallestLetteringPx(
+  name: string,
+  font: SpineFont,
+  spineWidthPx: number,
+  spineHeightPx: number = PHONE_SPINE_PX,
+  headPx = 0,
+): number {
   const width = spineWidthPx - SPINE_RIM_PX;
-  const height = PHONE_SPINE_PX - SPINE_CHROME_PX;
+  const height = spineHeightPx - SPINE_CHROME_PX - headPx;
   const across = fitFontSizeIn("", width, height, font.charWidthRatio);
   const along = fitFontSizeIn(name, Number.POSITIVE_INFINITY, height, font.charWidthRatio) * SHELF_ALONG;
   return Math.max(MIN_LETTERING_PX, Math.min(across, along));

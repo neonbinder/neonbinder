@@ -1396,6 +1396,34 @@ export default defineSchema({
     // unauthenticated at /u/:username. Optional so existing rows need no
     // migration; /labels treats absent as "not set up yet".
     returnAddress: v.optional(postalAddressValidator),
+    /**
+     * NEO-464 — the dashboard's "since your last visit". `seenAt`: the last
+     * time the dashboard opened. `sinceAt`: where the current visit's "new"
+     * starts (the `seenAt` of the visit before; absent on the first visit).
+     * A visit runs while the dashboard reopens within `VISIT_GAP_MS` of the
+     * last open, so Back to the dashboard keeps its news. Written only by
+     * `dashboard.markVisit` (`nextVisit` is the rule). Top level, not under
+     * `preferences`: `getUserProfile` returns `preferences` through a fixed
+     * validator, and `updateUserProfile` replaces it whole. Optional, no
+     * backfill: absent reads as a first visit.
+     */
+    dashboardVisit: v.optional(
+      v.object({
+        seenAt: v.number(),
+        sinceAt: v.optional(v.number()),
+      }),
+    ),
+    /**
+     * NEO-464 — the collector's first dashboard open since NB stamps when
+     * cards were added (`collectionCopies.addedAt`) and listed (`listedAt`).
+     * A line with no stamp written before this moment predates the stamps,
+     * so Fresh Pulls and New Listings read its `_creationTime` instead; one
+     * written after it was never an add (a move, a split, an undo's
+     * put-back). Set once, by `dashboard.markVisit`; no backfill. Absent: the
+     * dashboard has not opened since, and nothing reads a line without a
+     * stamp.
+     */
+    dashboardStampsFrom: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     // NEO-415: eBay's Marketplace Account Deletion notice names the seller by
@@ -4478,12 +4506,72 @@ export default defineSchema({
      */
     hasPhotos: v.optional(v.literal(true)),
     lastUpdated: v.number(),
+    /**
+     * NEO-464 — when cards last arrived in this line's home (Jason,
+     * 2026-11-10: "adding cards to a binder in any way is filed"): any add
+     * into a binder (Main included) or a box, Add cards saves, a box raise
+     * (`collection.addOne`, `collectionInventory.setBoxQuantity`), a move or
+     * split into another home, and a container emptied back to Main or
+     * Unsorted (`collection.moveCopyCore`, `collectionContainers.empty`). A
+     * line that folds arriving cards into itself takes the stamp too; a part
+     * split off inside the same home keeps its source's. Never set by an
+     * edit, a sale, a trade flag, a pocket shuffle inside the same home, or
+     * an undo's put-back. The dashboard's "since your last visit" reads only
+     * this (`dashboard.newSince`). Optional, no backfill: absent is "not
+     * filed since this shipped".
+     */
+    filedAt: v.optional(v.number()),
+    /**
+     * NEO-464 — when this line's cards were added straight into the
+     * collection (a binder, Main included), as new cards: what the
+     * dashboard's Fresh Pulls reads (`dashboard.freshPulls`; Jason,
+     * 2026-11-10: "only cards new to the collection, never moves"). Stamped
+     * only by an add (`collection.addOne`: Add cards, a pasted range, an
+     * intake save) into a binder, folded or a new line. A move, a split, a
+     * container emptied and a merge carry it (a split part keeps its
+     * source's; a merge keeps the newer of the two), never set it; a box
+     * add or raise, an edit and an undo's put-back never stamp it. Unlike
+     * `filedAt`, which every arrival in a home stamps. A move INTO a box
+     * drops it (cards for sale are not pulls), so a later Take off sale back
+     * into a binder is a move, never a pull. Optional, no backfill: a line
+     * with none that was written before the collector's first dashboard
+     * open under this rule (`userProfiles.dashboardStampsFrom`) reads its
+     * `_creationTime` instead (`dashboard.freshPulls`).
+     */
+    addedAt: v.optional(v.number()),
+    /**
+     * NEO-464 — when this line's cards landed in Inventory (a box, Unsorted
+     * included): what the dashboard's New Listings reads
+     * (`dashboard.newListings`; Jason, 2026-11-10: "Listings come from our
+     * Inventory ... don't worry about if it has sync'd yet or not"). Stamped
+     * by an add into a box (`collection.addOne`), a box raise
+     * (`collectionInventory.setBoxQuantity`) and a move from a binder into a
+     * box (Sell). A move between boxes, a split, a box emptied into Unsorted
+     * and a merge carry it (a merge keeps the newer); a move out to a binder
+     * drops it; an edit and an undo's put-back never stamp it. NB data only:
+     * never a marketplace's listing state. Optional, no backfill: a line with
+     * none written before `userProfiles.dashboardStampsFrom` reads its
+     * `_creationTime` instead.
+     */
+    listedAt: v.optional(v.number()),
   })
     // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
     .index("by_owner_and_card", ["ownerId", "cardId"])
     // "Everything I own", most recently touched first, paged
     // (`collection.ownedCards`). Every write to a row stamps `lastUpdated`.
     .index("by_owner_and_lastUpdated", ["ownerId", "lastUpdated"])
+    // NEO-464 — the dashboard's "since your last visit": the lines filed
+    // after a stamp, newest first (`dashboard.newSince`, a bounded range). A
+    // line never stamped has no `filedAt` and sorts below every stamp.
+    .index("by_owner_and_filedAt", ["ownerId", "filedAt"])
+    // NEO-464 — Fresh Pulls: the lines added into the collection after a
+    // stamp, newest first (`dashboard.freshPulls`, a bounded range). A line
+    // never stamped has no `addedAt` and sorts below every stamp.
+    .index("by_owner_and_addedAt", ["ownerId", "addedAt"])
+    // NEO-464 — New Listings: the lines that landed in a box after a stamp,
+    // newest first (`dashboard.newListings`, a bounded range). The lines with
+    // no stamp sit first, in `_creationTime` order, for the legacy read.
+    .index("by_owner_and_listedAt", ["ownerId", "listedAt"])
     // copiesInVariant and variantCompletion (all three), set completion
     // (prefix: ownerId + setId).
     .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])

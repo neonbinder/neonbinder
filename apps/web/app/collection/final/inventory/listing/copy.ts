@@ -130,6 +130,21 @@ export function problemSentence(
   return base;
 }
 
+/**
+ * NEO-464 — the card panel's one line for a card a sync held back, when the
+ * dashboard's Sync status opened it: why, and that the fix is right here. A
+ * price or a photo is fixed on the copy below (the panel opens its Edit form
+ * there); every other reason says what it says on Sync status.
+ */
+export function heldBackNotice(reason: ListingProblemReason, platform: ListingPlatform): string {
+  const name = PLATFORM_NAME[platform];
+  if (reason === "noPrice") return `Held back from ${name}: no price yet. Set one on your copy below and it goes up next sync.`;
+  if (reason === "noPhoto") {
+    return `Held back from ${name}: listings there need a photo. Add one to your copy below and it goes up next sync.`;
+  }
+  return problemSentence({ reason }, false, platform);
+}
+
 /** The paused and expired lines for the admin's read-only view, about the collector rather than to them. */
 export function pausedLineReadOnly(platform: ListingPlatform): string {
   return `${PLATFORM_NAME[platform]} is on a break. Changes wait here and go up when it's back.`;
