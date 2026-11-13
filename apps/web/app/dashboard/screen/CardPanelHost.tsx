@@ -103,6 +103,7 @@ function PanelOverDashboard() {
     inform: line.inform,
     undoLast: line.undoLast,
     run: line.run,
+    beginWrite: line.beginWrite,
   };
 
   return (

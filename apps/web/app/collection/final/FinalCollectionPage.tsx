@@ -477,7 +477,7 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
   // --- Status line -----------------------------------------------------------
   // One line with its Undo for every tab and the card drawer (`./statusLine`).
   const line = useStatusLine();
-  const { notice, notify, inform, undoLast, run, undo, dismiss } = line;
+  const { notice, notify, inform, undoLast, run, beginWrite, undo, dismiss } = line;
 
   // --- Checklists: writing the URL ------------------------------------------
   const writeQuery = useCallback(
@@ -626,6 +626,7 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
     inform,
     undoLast,
     run,
+    beginWrite,
   };
 
   const resetDemo = () => {

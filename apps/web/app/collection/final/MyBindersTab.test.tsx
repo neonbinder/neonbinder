@@ -7,6 +7,10 @@ import { demoCard } from "./data/demoStore";
 import { cardLabel, shortCardName } from "./data/labels";
 import { shortName as trayName } from "./binders/model";
 import { initialCollectionState, MAIN_BINDER_ID, SHOW_BOX_ID } from "./store";
+import { DemoCollectionProvider } from "./data/demoStore";
+import { CollectionStoreContext, useCollectionStore } from "./data/store";
+import type { NewContainer } from "./data/types";
+import type { ReactNode } from "react";
 
 // NEO-356: the demo bar's theme switch asks Clerk who is looking (signed in here).
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true }) }));
@@ -1255,5 +1259,61 @@ describe("My Boxes (NEO-364)", () => {
     const said = () => screen.getAllByRole("status").filter((s) => /off sale\. They're back in /.test(s.textContent ?? ""));
     await waitFor(() => expect(said()).toHaveLength(1));
     expect(drawer.contains(said()[0])).toBe(true);
+  });
+});
+
+/**
+ * NEO-460 — a dialog write goes through the page's status line like any other:
+ * the previous write's Undo is gone while it saves. The demo store answers in
+ * the same click, so the second create is held by a wrapper over the store.
+ */
+describe("the status line while a shelf write saves (NEO-460)", () => {
+  function HoldSecondWrite({ hold, children }: { hold: { release?: () => void }; children: ReactNode }) {
+    const store = useCollectionStore();
+    const actions = {
+      ...store.actions,
+      updateContainer: (...args: Parameters<typeof store.actions.updateContainer>) => {
+        const real = store.actions.updateContainer(...args);
+        return new Promise<Awaited<typeof real>>((resolve) => {
+          hold.release = () => void real.then(resolve);
+        });
+      },
+    };
+    return <CollectionStoreContext.Provider value={{ ...store, actions }}>{children}</CollectionStoreContext.Provider>;
+  }
+
+  it("a rename drops the create's Undo while it saves, and brings its own when it lands", async () => {
+    const hold: { release?: () => void } = {};
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={["/inventory?tab=boxes"]}>
+          <DemoCollectionProvider>
+            <HoldSecondWrite hold={hold}>
+              <FinalCollectionPage surface="inventory" />
+            </HoldSecondWrite>
+          </DemoCollectionProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
+    fireEvent.click(screen.getByRole("button", { name: "New box" }));
+    const made = screen.getByRole("dialog");
+    fireEvent.change(within(made).getByLabelText("Box name"), { target: { value: "Dime box" } });
+    fireEvent.click(within(made).getByRole("button", { name: "Put it on the shelf" }));
+    await waitFor(() => expect(statusSays(/^Dime box is on the shelf/)).toBe(true));
+    expect(screen.getAllByRole("button", { name: "Undo" }).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename or delete Dime box" }));
+    const edit = screen.getByRole("dialog");
+    fireEvent.change(within(edit).getByLabelText("Box name"), { target: { value: "Nickel box" } });
+    fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
+    // Saving: the create's words stay, its Undo does not.
+    await waitFor(() => expect(hold.release).toBeDefined());
+    expect(statusSays(/^Dime box is on the shelf/)).toBe(true);
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+
+    await act(async () => hold.release!());
+    await waitFor(() => expect(statusSays(/^Dime box is now Nickel box\./)).toBe(true));
+    expect(screen.getAllByRole("button", { name: "Undo" }).length).toBeGreaterThan(0);
   });
 });

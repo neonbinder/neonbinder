@@ -60,6 +60,33 @@ export interface PageApi {
    * when it was refused.
    */
   run: <T extends { undo: Undo }>(write: () => Promise<T>, message: (result: T) => string) => Promise<T | null>;
+  /**
+   * NEO-460: for a write that does not go through `run` (its own queue, a
+   * dialog that shows its own refusal). Call it as the write starts: the
+   * line's live Undo (the write before it) goes at once, so it is never
+   * pressed while this one saves. The ticket says how the write went. Read
+   * it through `startWrite(api)`. Every page that holds a status line gives
+   * it; optional only so a test rig may leave it out.
+   */
+  beginWrite?: () => WriteTicket;
+}
+
+/** How a write started with `beginWrite` went, said on the status line. */
+export interface WriteTicket {
+  /** It landed: the words, with its Undo while no later write has started. */
+  done: (message: string, undo?: () => void) => void;
+  /** It was refused: why. Never left unsaid; a newer write's Undo stays. */
+  refused: (message: string) => void;
+}
+
+/** `api.beginWrite()`, or plain `notify` where the page gives none (a test rig). */
+export function startWrite(api: PageApi): WriteTicket {
+  return (
+    api.beginWrite?.() ?? {
+      done: (message, undo) => api.notify(message, undo),
+      refused: (message) => api.notify(message),
+    }
+  );
 }
 
 export const PageApiContext = createContext<PageApi | null>(null);

@@ -127,21 +127,75 @@ async function settle(page: Page): Promise<void> {
   );
 }
 
-async function runAxe(page: Page, opts: AccessibleOptions): Promise<AxeResults> {
-  await settle(page);
-  let builder = new AxeBuilder({ page }).withTags([...WCAG_TAGS]);
-  for (const { selector } of EXCLUDED_REGIONS) builder = builder.exclude(selector);
+/** Window key the motion watch below sets once something starts to move. */
+const MOVED_KEY = "__nbAxeMoved";
 
+/**
+ * Clears the moved flag and makes sure a capture-phase listener sets it when
+ * a finite animation or a transition starts. `settle` only proves the screen
+ * was still when axe began; a live screen (Convex pushing a row into a list
+ * that animates in) can start moving while axe runs, and axe then measures a
+ * half-faded row: NEO-529's add-cards board read a tile at ~43% opacity as
+ * four contrast failures its settled colours (7:1 and up) never have.
+ * Infinite animations (spinners, the neon glow) never settle and are ignored,
+ * as in `settle`.
+ */
+async function watchForMotion(page: Page): Promise<void> {
+  await page.evaluate((key) => {
+    const w = window as unknown as Record<string, unknown>;
+    w[key] = false;
+    if (w[`${key}Armed`]) return;
+    w[`${key}Armed`] = true;
+    const moved = (e: Event) => {
+      if (e instanceof AnimationEvent && e.target instanceof Element) {
+        const style = getComputedStyle(e.target);
+        const names = style.animationName.split(",").map((s) => s.trim());
+        const counts = style.animationIterationCount.split(",").map((s) => s.trim());
+        const at = names.indexOf(e.animationName);
+        // CSS repeats a shorter list to the length of animation-name.
+        if (at >= 0 && counts[at % counts.length] === "infinite") return;
+      }
+      w[key] = true;
+    };
+    document.addEventListener("animationstart", moved, true);
+    document.addEventListener("transitionrun", moved, true);
+  }, MOVED_KEY);
+}
+
+/** True when the screen started to move after the last `watchForMotion`. A navigation reads as not moved. */
+async function movedSinceWatch(page: Page): Promise<boolean> {
+  return page
+    .evaluate((key) => (window as unknown as Record<string, unknown>)[key] === true, MOVED_KEY)
+    .catch(() => false);
+}
+
+/**
+ * A red pass that ran while something started to move is checked again on
+ * the settled screen, up to this many passes in all. A green pass, or a red
+ * one on a screen that held still, is final: this never hides a violation
+ * the settled screen has, it only stops a mid-animation frame from being
+ * reported as one.
+ */
+const MAX_AXE_PASSES = 3;
+
+async function runAxe(page: Page, opts: AccessibleOptions): Promise<AxeResults> {
   let token: string | undefined;
   if (opts.within) {
     // axe takes a CSS context, specs never write CSS: mark the one element
     // the Locator resolves to, scope to the mark, remove it afterwards.
     token = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     await opts.within.evaluate((el, [attr, value]) => el.setAttribute(attr, value), [SCOPE_ATTR, token] as const);
-    builder = builder.include(`[${SCOPE_ATTR}="${token}"]`);
   }
   try {
-    return await builder.analyze();
+    for (let pass = 1; ; pass++) {
+      await settle(page);
+      await watchForMotion(page);
+      let builder = new AxeBuilder({ page }).withTags([...WCAG_TAGS]);
+      for (const { selector } of EXCLUDED_REGIONS) builder = builder.exclude(selector);
+      if (token) builder = builder.include(`[${SCOPE_ATTR}="${token}"]`);
+      const results = await builder.analyze();
+      if (results.violations.length === 0 || pass >= MAX_AXE_PASSES || !(await movedSinceWatch(page))) return results;
+    }
   } finally {
     if (opts.within && token) {
       await opts.within.evaluate((el, attr) => el.removeAttribute(attr), SCOPE_ATTR).catch(() => undefined);

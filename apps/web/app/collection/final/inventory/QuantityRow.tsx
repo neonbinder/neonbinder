@@ -8,7 +8,7 @@ import type { RowActions } from "../CardRows";
 import { cardLabel, playerNames, printRunLabel, setAndVariant, shortCardName, teamNames, teamTextColor } from "../data/labels";
 import { inventoryCopies, useCollectionActions, useCopiesOf, useDefaultCondition, writeErrorMessage } from "../data/store";
 import type { Card, Container, Copy, CopyId, QuantityResult } from "../data/types";
-import { usePageApi } from "../pageApi";
+import { startWrite, usePageApi } from "../pageApi";
 import { FeatureBadges } from "./badges";
 import { useQuickEntry } from "./QuickEntry";
 import {
@@ -224,6 +224,8 @@ export default function QuantityRow({
     lastSent.current = quantity;
     setDraft({ text: String(quantity), boxId: target.id });
     setStatus({ kind: "saving" });
+    // NEO-460: the line's last Undo goes now, never pressed while this saves.
+    const ticket = startWrite(api);
     const settle = () => {
       pending.current -= 1;
       if (mine !== seq.current) return false;
@@ -236,12 +238,12 @@ export default function QuantityRow({
       .then(
         (result) => {
           if (settle()) setStatus({ kind: "saved" });
-          api.notify(quantityMessage(shortCardName(card), target, result), result.undo);
+          ticket.done(quantityMessage(shortCardName(card), target, result), result.undo);
         },
         (error: unknown) => {
           const message = writeErrorMessage(error);
           if (settle()) setStatus({ kind: "error", message });
-          api.notify(`${shortCardName(card)} didn't change. ${message}`);
+          ticket.refused(`${shortCardName(card)} didn't change. ${message}`);
         },
       );
   };

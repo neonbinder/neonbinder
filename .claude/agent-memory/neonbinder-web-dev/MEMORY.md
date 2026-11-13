@@ -217,3 +217,4 @@
 - [Device preference store](reference_device_preference_store.md) — per-device setting shared by page + layout: one useSyncExternalStore module, storage try/catch, test reset in afterEach
 - [Segmented switch is a radiogroup](reference_segmented_switch_is_a_radiogroup.md) — one-of-two pill = roving radiogroup; reserve the check slot; padded track keeps focus ring off the cyan fill
 - [Convex prod redacts plain Error text](reference_convex_prod_redacts_plain_error_messages.md) — never string-match a server refusal; coded ConvexError from a pure convex/lib module, read data.code
+- [Axe contrast red: read the attachment first](reference_axe_contrast_red_read_the_attachment_first.md) — blob report holds every node fg/bg; a role blended toward the bg = mid-fade frame, not a token bug
