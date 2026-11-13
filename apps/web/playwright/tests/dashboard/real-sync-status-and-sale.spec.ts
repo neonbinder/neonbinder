@@ -27,6 +27,7 @@
 // and an afterEach does the same on a failure (clear first: a seed left behind
 // would show on this account's dashboard to every spec that follows). The box's
 // name is a single token minted from `env.ATTEMPT_TOKEN`.
+import { pickList } from "../../support/pick-list";
 import { createBox, deleteBoxNamed, deleteOpenBox, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import type { Page } from "@playwright/test";
@@ -144,7 +145,17 @@ test(
     await expect(outTheDoor.getByRole("heading", { level: 3, name: / order #TEST-[0-9A-F]+$/ })).toBeVisible();
     const [syncBox, doorBox] = [await sync.boundingBox(), await outTheDoor.boundingBox()];
     expect(syncBox!.y).toBeLessThan(doorBox!.y);
+    // The order to ship puts the Pick List link up, where it is pulled (NEO-539).
+    const pullThem = outTheDoor.getByRole("link", { name: "Pull them on the Pick List", exact: true });
+    await expect(pullThem).toHaveAttribute("href", "/inventory?tab=pick");
     await expectAccessible(page, { label: "Dashboard, sync status and an order to ship" });
+    await pullThem.click();
+    await expect(page).toHaveURL(/\/inventory\?tab=pick$/);
+    await expect(inventoryTabs(page).getByRole("link", { name: "Pick List", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(pickList(page).heading).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(outTheDoor.getByRole("heading", { level: 3, name: / order #TEST-[0-9A-F]+$/ })).toBeVisible();
 
     // Held-back cards lead the set: this card, with its reason, comes before the failure sentence.
     const heldBack = ebaySet

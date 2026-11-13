@@ -2,8 +2,9 @@
 // section the collector's data fills, with no dealer/collector switch. The
 // public demo draws that same screen on a fake collector who has a bit of
 // everything, so every section shows, an order waiting to ship leads, and the
-// Hopper's processing scans link each run to the Add cards tab that finishes
-// it (here, the demo's Inventory side). Signed out, fake data, read-only (R7).
+// Hopper holds one block per open run, each linked to the Add cards tab that
+// finishes it (here, the demo's Inventory side), and Out the Door links to the
+// Pick List where its orders are pulled (NEO-539). Signed out, fake data, read-only (R7).
 // With no binder open, the first stands shut where the pocket page opens; its
 // cover opens it. The panels the screen opens (a binder's pocket page, an order's cards) are
 // checked for accessibility OPEN, as well as the closed page: the open state is
@@ -13,6 +14,7 @@
 // said (a New Listing's box). Needs a Look has nothing to
 // open (a plain list), so there is no open state of it to check.
 import { test, expect, expectAccessible } from "../../support/fixtures";
+import { pickList } from "../../support/pick-list";
 
 test(
   "Dashboard demo: one screen with every section, and a hopper run opens Add cards where it is finished",
@@ -63,16 +65,55 @@ test(
     expect(order.indexOf("Out the Door")).toBeGreaterThanOrEqual(0);
     expect(order.indexOf("Out the Door")).toBeLessThan(order.indexOf("On the Bubble"));
 
-    // The hopper says "processing", never "still being identified".
+    // The hopper leads with what waits on the collector, then one block per run still open (NEO-539).
+    // The fake collector's two runs: Show pickups (into a box: Inventory) and Garage shoebox (a binder:
+    // Collection). The demo adds a Want List guess to Show pickups, so it waits on one more yes.
     const hopper = page.getByRole("region", { name: "In the Hopper" });
-    await expect(hopper.getByRole("heading", { level: 3, name: /^\d+ scans? processing$/ })).toBeVisible();
+    // Each line is parts joined by a dot on screen and a comma for a reader, so its parts are read one by one.
+    await expect(hopper.getByText("3 scans need your yes")).toBeVisible();
+    await expect(hopper.getByText("18 to identify")).toBeVisible();
+    const runs = hopper.getByRole("list", { name: "Runs to finish", exact: true });
+    const blockOf = (title: string) =>
+      runs.getByRole("listitem").filter({ has: page.getByRole("heading", { level: 3, name: title, exact: true }) });
+    const pickups = blockOf("Show pickups on Inventory");
+    const shoebox = blockOf("Garage shoebox on Collection");
+    await expect(pickups).toBeVisible();
+    await expect(shoebox).toBeVisible();
+    await expect(runs.getByRole("heading", { level: 3 })).toHaveCount(2);
+    await expect(pickups.getByText("1 needs your yes")).toBeVisible();
+    await expect(pickups.getByText("2 to identify")).toBeVisible();
+    await expect(shoebox.getByText("2 need your yes")).toBeVisible();
+    await expect(shoebox.getByText("16 to identify")).toBeVisible();
+    // Each block's link names its run and its screen, and goes to that screen's Add cards tab.
+    const finishPickups = pickups.getByRole("link", { name: "Finish this run into Show pickups on Inventory", exact: true });
+    await expect(finishPickups).toHaveAttribute("href", "/demo/inventory?side=inventory&tab=add");
+    await expect(shoebox.getByRole("link", { name: "Finish this run into Garage shoebox on Collection", exact: true })).toHaveAttribute(
+      "href",
+      "/demo/collection?tab=add",
+    );
+    // A run sorted is only counted, never a row; no "N of M done" progress is left anywhere.
+    await expect(hopper.getByText("3 runs sorted this week")).toBeVisible();
+    await expect(hopper.getByText("14 all-time")).toBeVisible();
+    await expect(page.getByText(/\d+ of \d+ scans? done/)).toHaveCount(0);
     await expect(hopper.getByText(/still being identified/)).toHaveCount(0);
+    await expect(hopper.getByText(/scans? processing/)).toHaveCount(0);
+
+    // The demo's Want List guess waits in Show pickups: the block says so, and the guess opens its card panel.
+    await expect(pickups.getByText("On your Want List", { exact: true })).toBeVisible();
+    await expect(shoebox.getByText("On your Want List", { exact: true })).toHaveCount(0);
+    const wantedGuess = pickups.getByRole("link", { name: /^1996 Playoff Contenders Deion Sanders #13\b.*, on your Want List$/ });
+    await expect(wantedGuess).toBeVisible();
     await expectAccessible(page, { label: "Dashboard demo" });
+    await wantedGuess.click();
+    await expect(page).toHaveURL(/\/demo\?(.*&)?detail=[^&]+/);
+    const guessPanel = page.getByRole("dialog");
+    await expect(guessPanel.getByRole("button", { name: "Close card detail" })).toBeVisible();
+    await page.goBack();
+    await expect(guessPanel).toBeHidden();
+    await expect(page).toHaveURL(/\/demo$/);
 
     // A run going into a box is finished on Inventory's Add cards tab, and Back comes home.
-    const run = hopper.getByRole("link", { name: /^Show pickups \d+ of \d+ scans? done Finish on Inventory Last scan yesterday$/ });
-    await expect(hopper.getByRole("link", { name: /^Garage shoebox \d+ of \d+ scans? done Finish on Collection Last scan .+$/ })).toBeVisible();
-    await run.click();
+    await finishPickups.click();
     await expect(page).toHaveURL(/\/demo\/inventory\?(.*&)?tab=add/);
     await expect(page.getByLabel("Put them in this box")).toBeVisible();
 
@@ -80,8 +121,18 @@ test(
     await expect(page).toHaveURL(/\/demo$/);
     await expect(hopper).toBeVisible();
 
-    // An order opens to every card on it: check the opened order.
+    // Orders wait to ship, so Out the Door links to the Pick List where they are pulled; Back comes home.
     const orders = page.getByRole("region", { name: "Out the Door" });
+    const pullThem = orders.getByRole("link", { name: "Pull them on the Pick List", exact: true });
+    await expect(pullThem).toHaveAttribute("href", "/demo/inventory?tab=pick");
+    await pullThem.click();
+    await expect(page).toHaveURL(/\/demo\/inventory\?tab=pick$/);
+    await expect(pickList(page).heading).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/demo$/);
+    await expect(orders).toBeVisible();
+
+    // An order opens to every card on it: check the opened order.
     const showCards = orders.getByRole("button", { name: /^Show all \d+ cards? in .+ order / }).first();
     await showCards.click();
     // The button's words flip with the state, so the open one is found by its new name.
