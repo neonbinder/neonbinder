@@ -571,9 +571,6 @@ export interface IntakeInProgress {
   uploads: IntakeUpload[];
   /** Runs sorted (every scan saved or set aside) in the last 7 days. */
   sortedThisWeek: number;
-  /** Runs sorted ever; a floor when `sortedAllTimeMore`. */
-  sortedAllTime: number;
-  sortedAllTimeMore: boolean;
 }
 
 /**
@@ -609,8 +606,6 @@ const INTAKE: IntakeInProgress = {
     },
   ],
   sortedThisWeek: 3,
-  sortedAllTime: 14,
-  sortedAllTimeMore: false,
 };
 
 /** A box (inventory for sale) holding cards not listed anywhere yet. */

@@ -17,7 +17,7 @@ import { HELD_PREVIEW, syncFrame } from "./SyncStatus";
 import type { ShelfBinder } from "./shelf-model";
 import { boxLabel, spineCssWidth, STARTER_ROOM_NARROW } from "./Shelf";
 import { NEED_CHIPS } from "./Boards";
-import { intakeCountParts, runTells, sortedParts } from "./Hopper";
+import { intakeCountParts, runTells, sortedLabel } from "./Hopper";
 import { pickListHref } from "./ToDo";
 
 /** An element's text as drawn: the reader-only words left out. */
@@ -56,8 +56,6 @@ const NO_INTAKE: DashboardData["intake"] = {
   unidentified: 0,
   uploads: [],
   sortedThisWeek: 0,
-  sortedAllTime: 0,
-  sortedAllTimeMore: false,
 };
 
 describe("DashboardScreen: one screen, sections by data", () => {
@@ -218,8 +216,12 @@ describe("the hopper", () => {
     expect(within(blocks[1]).getByText(drawn("2 to identify"))).toBeTruthy();
     const show = within(blocks[1]).getByRole("link", { name: "Finish this run into Show pickups on Inventory" });
     expect(show.getAttribute("href")).toBe("/demo/inventory?side=inventory&tab=add");
-    // The sorted runs are one line of stats, never rows.
-    expect(within(hopper()).getByText(drawn("3 runs sorted this week · 14 all-time"))).toBeTruthy();
+    // The sorted runs are one lit number with its words, never rows, and come after every run.
+    const stat = within(hopper()).getByText(drawn("3 runs sorted this week"));
+    expect(heardText(stat)).toBe("3 runs sorted this week");
+    expect(stat.querySelector(".cb-numeral")?.textContent).toBe("3");
+    expect(before(runs, stat)).toBe(true);
+    expect(within(hopper()).queryByText(/all-time/)).toBeNull();
   });
 
   it("drops the old intake note, the explanation, the processing pile and the progress bars", () => {
@@ -332,15 +334,16 @@ describe("the hopper", () => {
   });
 
   it("with nothing open but a run sorted this week, the hopper is just the stat; with neither, no hopper", () => {
-    draw({ ...getDashboard(), intake: { ...NO_INTAKE, sortedThisWeek: 1, sortedAllTime: 1 } });
+    draw({ ...getDashboard(), intake: { ...NO_INTAKE, sortedThisWeek: 1 } });
     expect(within(hopper()).getByText(drawn("1 run sorted this week"))).toBeTruthy();
     expect(within(hopper()).queryByRole("list")).toBeNull();
     expect(within(hopper()).queryByRole("link")).toBeNull();
   });
 
-  it("all-time on its own does not hold the panel open", () => {
-    draw({ ...getDashboard(), intake: { ...NO_INTAKE, sortedAllTime: 9 } });
-    expect(heading("In the Hopper")).toBeNull();
+  it("with scans open but nothing sorted this week, no stat at all", () => {
+    draw({ ...getDashboard(), intake: { ...NO_INTAKE, total: 1, needsYou: 1, uploads: [upload()] } });
+    expect(within(hopper()).queryByText(/sorted this week/)).toBeNull();
+    expect(hopper().querySelector(".cb-numeral")).toBeNull();
   });
 
   it("the runs' open scans add up to the hopper's total", () => {
@@ -383,16 +386,10 @@ describe("the hopper's words", () => {
     expect(counts({ needsYou: 0, unidentified: 2 })).toBe("2 to identify");
   });
 
-  it("says the runs sorted: a zero part left out, all-time only when it adds something, a floor as N+", () => {
-    const line = (week: number, all: number, more = false) =>
-      sortedParts({ sortedThisWeek: week, sortedAllTime: all, sortedAllTimeMore: more }).join(" · ");
-    expect(line(6, 42)).toBe("6 runs sorted this week · 42 all-time");
-    expect(line(1, 1)).toBe("1 run sorted this week");
-    expect(line(20, 20, true)).toBe("20 runs sorted this week · 20+ all-time");
-    expect(line(0, 42)).toBe("42 runs sorted all-time");
-    expect(line(0, 1)).toBe("1 run sorted all-time");
-    expect(line(0, 18, true)).toBe("18+ runs sorted all-time");
-    expect(line(0, 0)).toBe("");
+  it("says the words beside the week's number: one run, or runs", () => {
+    expect(sortedLabel(1)).toBe("run sorted this week");
+    expect(sortedLabel(6)).toBe("runs sorted this week");
+    expect(sortedLabel(20)).toBe("runs sorted this week");
   });
 });
 

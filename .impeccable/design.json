@@ -18,7 +18,7 @@
       "dark-sheet": { "role": "neutral", "displayName": "Sheet (dark)", "canonical": "#020618" },
       "dark-field": { "role": "neutral", "displayName": "Field (dark)", "canonical": "#0F172B" },
       "dark-hover": { "role": "neutral", "displayName": "Hover (dark)", "canonical": "#1E2939" },
-      "dark-rule": { "role": "neutral", "displayName": "Rule (dark)", "canonical": "#1D293D" },
+      "dark-rule": { "role": "neutral", "displayName": "Rule (dark)", "canonical": "#2A394E" },
       "dark-rule-strong": { "role": "neutral", "displayName": "Rule Strong (dark)", "canonical": "#314158" },
       "dark-control": { "role": "neutral", "displayName": "Control (dark)", "canonical": "#62748E" },
       "dark-ink": { "role": "neutral", "displayName": "Ink (dark)", "canonical": "#FFFFFF" },

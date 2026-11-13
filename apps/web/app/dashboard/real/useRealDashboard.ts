@@ -135,8 +135,6 @@ const NO_INTAKE: IntakeInProgress = {
   unidentified: 0,
   uploads: [],
   sortedThisWeek: 0,
-  sortedAllTime: 0,
-  sortedAllTimeMore: false,
 };
 
 /** The chase: the Want List's newest wants, at most this many (and only their cards are read). */
@@ -750,7 +748,7 @@ export function lastScanLabel(at: number, now: number): string {
 export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefined, now: number): IntakeInProgress {
   if (!raw) return NO_INTAKE;
   const total = raw.needsYou + raw.unidentified;
-  if (total === 0 && raw.sortedThisWeek === 0 && raw.sortedAllTime === 0) return NO_INTAKE;
+  if (total === 0 && raw.sortedThisWeek === 0) return NO_INTAKE;
   return {
     total,
     needsYou: raw.needsYou,
@@ -769,8 +767,6 @@ export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefine
       }),
     })),
     sortedThisWeek: raw.sortedThisWeek,
-    sortedAllTime: raw.sortedAllTime,
-    sortedAllTimeMore: raw.sortedAllTimeMore,
   };
 }
 

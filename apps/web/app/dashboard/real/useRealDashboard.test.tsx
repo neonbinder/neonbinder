@@ -1130,21 +1130,17 @@ describe("the hopper: intakeOf", () => {
     unidentified: 3,
     runs: [run1],
     sortedThisWeek: 2,
-    sortedAllTime: 5,
-    sortedAllTimeMore: false,
     truncated: false,
     ...over,
   });
 
-  it("counts every open scan, per run too; a run's thumbnails are its hydrated guesses; the sorted counts pass through", () => {
+  it("counts every open scan, per run too; a run's thumbnails are its hydrated guesses; the week's sorted count passes through", () => {
     const intake = intakeOf(raw(), cardsAB(), NOW);
     expect(intake).toMatchObject({
       total: 5,
       needsYou: 2,
       unidentified: 3,
       sortedThisWeek: 2,
-      sortedAllTime: 5,
-      sortedAllTimeMore: false,
       uploads: [
         {
           id: "run-1",
@@ -1169,14 +1165,12 @@ describe("the hopper: intakeOf", () => {
   });
 
   it("nothing open but runs sorted: the stats alone; nothing at all, or not read yet: empty, so the hopper stays hidden", () => {
-    const empty = { total: 0, needsYou: 0, unidentified: 0, uploads: [], sortedThisWeek: 0, sortedAllTime: 0, sortedAllTimeMore: false };
+    const empty = { total: 0, needsYou: 0, unidentified: 0, uploads: [], sortedThisWeek: 0 };
     expect(intakeOf(undefined, cardsAB(), NOW)).toEqual(empty);
-    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, runs: [], sortedThisWeek: 0, sortedAllTime: 0 }), cardsAB(), NOW)).toEqual(empty);
-    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, runs: [], sortedThisWeek: 1, sortedAllTime: 21, sortedAllTimeMore: true }), cardsAB(), NOW)).toEqual({
+    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, runs: [], sortedThisWeek: 0 }), cardsAB(), NOW)).toEqual(empty);
+    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, runs: [], sortedThisWeek: 1 }), cardsAB(), NOW)).toEqual({
       ...empty,
       sortedThisWeek: 1,
-      sortedAllTime: 21,
-      sortedAllTimeMore: true,
     });
   });
 
@@ -1272,8 +1266,6 @@ describe("useRealDashboard: sales to ship, the hopper and what could fit", () =>
         },
       ],
       sortedThisWeek: 1,
-      sortedAllTime: 4,
-      sortedAllTimeMore: false,
       truncated: false,
     };
     const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
@@ -1286,7 +1278,9 @@ describe("useRealDashboard: sales to ship, the hopper and what could fit", () =>
     expect(screen.queryByText(/processing/)).toBeNull();
     const run = screen.getByRole("link", { name: "Finish this run into Show box on Inventory" });
     expect(run.getAttribute("href")).toBe("/inventory?tab=add&run=run-1");
-    expect(screen.getByText(/^1 run sorted this week/).textContent).toBe("1 run sorted this week · , 4 all-time");
+    const stat = screen.getByText((_, el) => el?.tagName === "P" && el.textContent === "1 run sorted this week");
+    expect(stat.querySelector(".cb-numeral")?.textContent).toBe("1");
+    expect(screen.queryByText(/all-time/)).toBeNull();
   });
 
   it("with no sales, no scans and nothing that could fit: no Out the Door, no hopper, no could-fit strip", () => {
@@ -1298,8 +1292,6 @@ describe("useRealDashboard: sales to ship, the hopper and what could fit", () =>
       unidentified: 0,
       runs: [],
       sortedThisWeek: 0,
-      sortedAllTime: 0,
-      sortedAllTimeMore: false,
       truncated: false,
     };
     server.couldFit = new Map();

@@ -9,14 +9,14 @@ import { PanelLink } from "./panelLink";
  * NEO-464 combined dashboard — In the Hopper. The dashboard holds only stats
  * worth a look and the things to do (Jason, 2026-11-13, NEO-539), so the
  * hopper is a run to finish per row (rules between them, no card in the
- * card), and one line of what got sorted:
+ * card), and under them the week's score, lit like Out the Door's day block:
  *
  *   7 scans need your yes · 1 to identify
  *   Unsorted → Inventory               ▯▯▯
  *   5 need your yes · 1 to identify          one row per run with a scan
  *   [Finish this run]                        still open, newest first
  *   ─────────────────────────────────────
- *   6 runs sorted this week · 42 all-time
+ *   6  runs sorted this week                 only when the week has one
  *
  * Each block's button opens the run on the Add cards tab that finishes it:
  * Collection for a run into a binder, Inventory for one into a box (Jason,
@@ -44,18 +44,9 @@ export function intakeCountParts(n: Pick<IntakeInProgress, "needsYou" | "unident
   return parts;
 }
 
-/**
- * "6 runs sorted this week", "42 all-time". A zero part is left out, and so
- * is an all-time count that says no more than the week does. A floor reads
- * "20+". Nothing to say: empty.
- */
-export function sortedParts(intake: Pick<IntakeInProgress, "sortedThisWeek" | "sortedAllTime" | "sortedAllTimeMore">): string[] {
-  const { sortedThisWeek: week, sortedAllTime: all, sortedAllTimeMore: more } = intake;
-  const allText = `${all}${more ? "+" : ""}`;
-  const showAll = all > 0 && (more || all > week);
-  if (week > 0) return showAll ? [`${count(week, "run")} sorted this week`, `${allText} all-time`] : [`${count(week, "run")} sorted this week`];
-  if (showAll) return [`${allText} ${all === 1 && !more ? "run" : "runs"} sorted all-time`];
-  return [];
+/** "run sorted this week", "runs sorted this week": the words beside the week's number. */
+export function sortedLabel(sortedThisWeek: number): string {
+  return `${sortedThisWeek === 1 ? "run" : "runs"} sorted this week`;
 }
 
 /**
@@ -104,7 +95,6 @@ export function runTells(uploads: readonly IntakeUpload[]): Map<string, string |
 
 export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; wanted: Set<string> }) {
   if (!hopperShows(intake)) return null;
-  const sorted = sortedParts(intake);
   const tells = runTells(intake.uploads);
 
   return (
@@ -117,10 +107,9 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
         </p>
       )}
 
-      {/* The runs and the stat line are parted by rules, not cards in the card. `rule-strong`: in dark,
-          `rule` is the panel's own tone and the rule would vanish. */}
+      {/* The runs and the week's score are parted by rules, not cards in the card. */}
       {intake.uploads.length > 0 && (
-        <ul aria-label="Runs to finish" className="mt-1 divide-y divide-rule-strong">
+        <ul aria-label="Runs to finish" className="mt-1 divide-y divide-rule">
           {intake.uploads.map((u) => (
             <li key={u.id} className="py-3">
               <RunBlock upload={u} tell={tells.get(u.id) ?? null} wanted={wanted} />
@@ -129,9 +118,16 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
         </ul>
       )}
 
-      {sorted.length > 0 && (
-        <p className={`text-xs text-ink-3 ${intake.uploads.length > 0 ? "border-t border-rule-strong pt-2.5" : ""}`}>
-          <Parts parts={sorted} />
+      {/* The week's score: the number lit in blue, as the Boards' percentages are, so the green
+          button above stays the one thing to press. Read as one phrase, "6 runs sorted this week". */}
+      {intake.sortedThisWeek > 0 && (
+        <p
+          className={`flex items-baseline gap-2.5 text-neon-blue-text ${
+            intake.uploads.length > 0 ? "border-t border-rule pt-3" : intake.total > 0 ? "mt-3" : ""
+          }`}
+        >
+          <span className="cb-numeral cb-glow text-4xl tabular-nums sm:text-5xl">{intake.sortedThisWeek}</span>{" "}
+          <span className="text-sm font-semibold text-ink-2">{sortedLabel(intake.sortedThisWeek)}</span>
         </p>
       )}
     </section>

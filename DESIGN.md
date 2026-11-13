@@ -16,7 +16,7 @@ colors:
   dark-sheet: "#020618"
   dark-field: "#0F172B"
   dark-hover: "#1E2939"
-  dark-rule: "#1D293D"
+  dark-rule: "#2A394E"
   dark-rule-strong: "#314158"
   dark-control: "#62748E"
   dark-ink: "#FFFFFF"
@@ -177,7 +177,7 @@ Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as t
 | `sheet` | big sheets and dialogs | #020618 (slate-950) | #FFFFFF |
 | `field` | input wells | #0F172B (slate-900) | #FFFFFF |
 | `hover` | a row on the page under the pointer | #1E2939 | #F0F2F9 |
-| `rule` | dividers, the header rule | #1D293D | #DDE0EA |
+| `rule` | dividers, the header rule. Visible on `surface`, `raised` and `raised-deep` in both modes, and quieter than `rule-strong` on each | #2A394E | #DDE0EA |
 | `rule-strong` | card and panel edges | #314158 | #BCB9CF |
 | `field-rule` | a text field's edge (3:1) | #314158 | #757090 |
 | `control` | a control's boundary: checkbox, radio, chip, a field on a card (3:1) | #62748E | #757090 |

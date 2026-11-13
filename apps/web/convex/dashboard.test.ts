@@ -1169,10 +1169,10 @@ describe("intake", () => {
       ]),
     );
     expect(out.runs).toHaveLength(2);
-    expect(out).toMatchObject({ sortedThisWeek: 0, sortedAllTime: 0, sortedAllTimeMore: false });
+    expect(out.sortedThisWeek).toBe(0);
   });
 
-  test("a sorted run is a count, never a row: this week within the week, and all-time; an open one stays however old", async () => {
+  test("a sorted run is a count, never a row, and only within the week; an open one stays however old", async () => {
     const s = await setup();
     const old = Date.now() - 30 * DAY;
     const lately = Date.now() - 2 * DAY;
@@ -1186,15 +1186,15 @@ describe("intake", () => {
     expect(out.runs.map((r) => r.runId)).toEqual([stale.runId]);
     // The open run carries its last activity, so two runs into one home read apart on the dashboard.
     expect(out.runs[0].lastActivityAt).toBe(old);
-    expect(out).toMatchObject({ needsYou: 0, unidentified: 1, sortedThisWeek: 2, sortedAllTime: 3, sortedAllTimeMore: false });
+    expect(out).toMatchObject({ needsYou: 0, unidentified: 1, sortedThisWeek: 2 });
   });
 
-  test("past the runs it reads, all-time is a floor", async () => {
+  test("it reads only the newest runs: this week counts the sorted ones among them", async () => {
     const s = await setup();
     for (let i = 0; i < INTAKE_RUNS + 1; i++) await run(s, ["saved"], { lastActivityAt: Date.now() - (i + 1) * 60_000 });
     const out = await s.me.query(api.dashboard.intake, {});
     expect(out.runs).toEqual([]);
-    expect(out).toMatchObject({ sortedThisWeek: INTAKE_RUNS, sortedAllTime: INTAKE_RUNS, sortedAllTimeMore: true });
+    expect(out.sortedThisWeek).toBe(INTAKE_RUNS);
   });
 
   test("thumbnails: a few best guesses per run, and a cap across runs", async () => {
@@ -1217,11 +1217,9 @@ describe("intake", () => {
       { runId: mine.runId, homeName: "Main", side: "collection", needsYou: 0, unidentified: 1, lastActivityAt: expect.any(Number), guesses: [] },
     ]);
     expect(out).toMatchObject({ needsYou: 0, unidentified: 1 });
-    // The skipped run is not counted, so all-time is only a floor.
-    expect(out.sortedAllTimeMore).toBe(true);
   });
 
-  test("a run whose home is gone is skipped, and all-time says it may be more", async () => {
+  test("a run whose home is gone is skipped, never counted", async () => {
     const s = await setup();
     await run(s, ["saved"]);
     const gone = await run(s, ["saved"], { homeId: s.homes.box });
@@ -1230,7 +1228,7 @@ describe("intake", () => {
       await ctx.db.delete(r!.homeId);
     });
     const out = await s.me.query(api.dashboard.intake, {});
-    expect(out).toMatchObject({ runs: [], sortedThisWeek: 1, sortedAllTime: 1, sortedAllTimeMore: true });
+    expect(out).toMatchObject({ runs: [], sortedThisWeek: 1 });
   });
 
   test("nothing in intake, and another collector's runs are theirs: all zero", async () => {
@@ -1241,8 +1239,6 @@ describe("intake", () => {
       unidentified: 0,
       runs: [],
       sortedThisWeek: 0,
-      sortedAllTime: 0,
-      sortedAllTimeMore: false,
       truncated: false,
     });
   });

@@ -37,7 +37,7 @@
  * - `intake` (read once): the collector's recent runs with scans still open,
  *   counted from their match rows, each with the side its home is on (a
  *   binder's run finishes on Collection, a box's on Inventory), and how many
- *   runs were sorted this week and all-time.
+ *   runs were sorted this week.
  * - `newSets` (read once, a few entries): the catalog's newest checklist
  *   uploads, grouped by set, the same for everyone (New on NeonBinder).
  * - `sales` (read once): whether the account sells (the sales section shows), and
@@ -983,15 +983,13 @@ export const couldFit = query({
  * The hopper: the caller's `INTAKE_RUNS` most recently active runs, each
  * counted from its match rows (`intakeRunTally`). Every run with a scan still
  * open is returned, with its counts and a few best guesses; a sorted run is
- * only counted (`intakeRunSorted`): this week when its last activity is
- * within `INTAKE_RECENT_MS`, and all-time. Read once on mount.
+ * only counted (`intakeRunSorted`), and only when its last activity is
+ * within `INTAKE_RECENT_MS` (sorted this week). Read once on mount.
  *
  * Bounded: at most `INTAKE_RUN_ROWS` match rows per run and
  * `INTAKE_READ_BUDGET` across them, one home read per run. `truncated`: a
  * run held more rows than were read, or the budget ran out, so the counts
- * are a floor. All-time counts only the runs read: `sortedAllTimeMore` says
- * there may be more (older runs past `INTAKE_RUNS`, a read cut short, or a
- * run skipped because its home is gone or not the caller's).
+ * are a floor. Sorted this week counts only the runs read.
  * Photos still being processed have no match row yet and are not counted.
  */
 export const intake = query({
@@ -1018,21 +1016,16 @@ export const intake = query({
     ),
     /** Sorted runs whose last activity is within `INTAKE_RECENT_MS`. */
     sortedThisWeek: v.number(),
-    /** Sorted runs among those read. */
-    sortedAllTime: v.number(),
-    /** `sortedAllTime` is a floor: more runs exist than were read, a read was cut short, or a run was skipped. */
-    sortedAllTimeMore: v.boolean(),
     truncated: v.boolean(),
   }),
   handler: async (ctx) => {
     const userId = await requireSignedIn(ctx);
     const now = Date.now();
-    const read = await ctx.db
+    const runs = await ctx.db
       .query("intakeRuns")
       .withIndex("by_user_and_activity", (q) => q.eq("userId", userId))
       .order("desc")
-      .take(INTAKE_RUNS + 1);
-    const runs = read.slice(0, INTAKE_RUNS);
+      .take(INTAKE_RUNS);
     const out = {
       needsYou: 0,
       unidentified: 0,
@@ -1046,8 +1039,6 @@ export const intake = query({
         guesses: Array<Id<"cardChecklist">>;
       }>,
       sortedThisWeek: 0,
-      sortedAllTime: 0,
-      sortedAllTimeMore: read.length > INTAKE_RUNS,
       truncated: false,
     };
     let budget = INTAKE_READ_BUDGET;
@@ -1058,12 +1049,8 @@ export const intake = query({
         break;
       }
       const home = await ctx.db.get(run.homeId);
-      // A run names its home by id; only the caller's own home's name is ever returned. A run
-      // skipped here is not counted at all, so all-time says it may be more.
-      if (!home || home.ownerId !== userId) {
-        out.sortedAllTimeMore = true;
-        continue;
-      }
+      // A run names its home by id; only the caller's own home's name is ever returned.
+      if (!home || home.ownerId !== userId) continue;
       const cap = Math.min(INTAKE_RUN_ROWS, budget);
       const rows = await ctx.db
         .query("intakeMatches")
@@ -1074,7 +1061,6 @@ export const intake = query({
       const tally = intakeRunTally(rows.slice(0, cap));
       if (tally.scans === 0) continue;
       if (intakeRunSorted(tally)) {
-        out.sortedAllTime += 1;
         if (now - run.lastActivityAt <= INTAKE_RECENT_MS) out.sortedThisWeek += 1;
         continue;
       }
@@ -1092,7 +1078,6 @@ export const intake = query({
         guesses,
       });
     }
-    if (out.truncated) out.sortedAllTimeMore = true;
     return out;
   },
 });

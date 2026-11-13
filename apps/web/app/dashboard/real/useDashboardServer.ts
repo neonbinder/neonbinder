@@ -188,8 +188,6 @@ const NO_INTAKE_RAW: IntakeRaw = {
   unidentified: 0,
   runs: [],
   sortedThisWeek: 0,
-  sortedAllTime: 0,
-  sortedAllTimeMore: false,
   truncated: false,
 };
 
