@@ -52,6 +52,18 @@ export const VARIANT_CHIP: Record<VariantRole, string> = {
   insertParallel: "bg-variant-insert-parallel text-on-variant border-variant-insert-parallel-rule",
 };
 
+/**
+ * NEO-522 — the heavier rule under the last row of a variant's run, in the
+ * colour of the variant that starts next: the on-screen divider card. The
+ * edge roles carry it in both modes (the white Base edge turns grey in light).
+ */
+export const VARIANT_RULE: Record<VariantRole, string> = {
+  base: "border-b-variant-base-rule",
+  parallel: "border-b-variant-parallel-rule",
+  insert: "border-b-variant-insert-rule",
+  insertParallel: "border-b-variant-insert-parallel-rule",
+};
+
 /** The stripe down a row's left edge, with the same edge so a white Base stripe shows on a white row. */
 export const VARIANT_STRIPE: Record<VariantRole, string> = {
   base: "bg-variant-base border-variant-base-rule",

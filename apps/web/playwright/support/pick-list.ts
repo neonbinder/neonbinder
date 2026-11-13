@@ -59,6 +59,17 @@ export function pickList(page: Page) {
     find: region.getByRole("textbox", { name: "Find a card" }),
     quickFilters: region.getByRole("group", { name: "Quick filters" }),
     backToDefault: region.getByRole("button", { name: "Back to default", exact: true }),
+    /**
+     * NEO-522: the "Row size" switch, a radio group: Spacious (the default) or
+     * Condensed (the pre-NEO-522 rows), the choice in `aria-checked`. One Tab
+     * stop; the arrow keys move and pick. This device keeps the choice; Back to
+     * default leaves it alone.
+     */
+    rowSize: {
+      group: region.getByRole("radiogroup", { name: "Row size", exact: true }),
+      spacious: region.getByRole("radiogroup", { name: "Row size", exact: true }).getByRole("radio", { name: "Spacious", exact: true }),
+      condensed: region.getByRole("radiogroup", { name: "Row size", exact: true }).getByRole("radio", { name: "Condensed", exact: true }),
+    },
     /** The page's status line (outside the region): a pull says so here, with Undo. */
     notice: (message: string) => page.getByRole("status").filter({ hasText: message }),
     undo: page.getByRole("button", { name: "Undo", exact: true }),
@@ -83,6 +94,29 @@ export function pickRow(scope: Locator, row: string): Locator {
 /** A row's "Bigger picture of …" button (only a row with a card has one). */
 export function pictureButton(scope: Locator, row: string): Locator {
   return scope.getByRole("button", { name: escapeRegex(`Bigger picture of ${row}`) });
+}
+
+/**
+ * NEO-522: a row's variant tag, between its picture and its number: the
+ * variant's own name ("8 Bit Ballers"; "Base" on a base row), titled with its
+ * kind when the name does not say it ("Insert: 8 Bit Ballers"), which a
+ * screen reader hears first. Only the copy in view (`seen`).
+ */
+export function variantTag(row: Locator, name: string, kind?: string): Locator {
+  return seen(row.getByTitle(kind ? `${kind}: ${name}` : name, { exact: true }));
+}
+
+/**
+ * NEO-522: the cell that names the row's player, the copy in view: the wide
+ * screen's Player column (the name, then its tags, and no team: the card's
+ * picture carries it) or a phone's one Card cell, which leads with the
+ * variant tag and the number (`Base #27 Mike Trout …`). `lead` is that
+ * phone lead ("Base #27"). Never the picture's cell, whose name is "Bigger
+ * picture of …".
+ */
+export function nameCell(row: Locator, player: string, lead: string): Locator {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s*");
+  return seen(row.getByRole("cell", { name: new RegExp(`^(${escape(lead)}\\s*)?${escape(player)}`) }));
 }
 
 /**
