@@ -29,6 +29,13 @@ import { EMPTY_DRILL, type Drill } from "./catalog/drill";
 
 /** Every param the drill writes. */
 export const DRILL_PARAMS = ["sport", "year", "brand", "set", "type", "variant", "sub"] as const;
+/**
+ * NEO-536 — `ask=mine` opens "Can't find it?" on My requests (the
+ * dashboard's link to a collector's asks and sync reports). The dialog is an
+ * in-view tweak, so closing it clears the param with a replace.
+ */
+export const ASK_PARAM = "ask";
+export const ASK_MINE = "mine";
 /** The search box's text. */
 export const QUERY_PARAM = "q";
 /** The row a search jumped to, ringed on the checklist. */

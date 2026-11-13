@@ -38,6 +38,18 @@ import {
  */
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true }) }));
 vi.mock("convex/react", () => ({}));
+// NEO-536 — the real "Can't find it?" dialog reads Convex itself; here only
+// which tab it opens on and its close matter.
+vi.mock("./requests/RequestsDialog", () => ({
+  default: ({ initialTab, onClose }: { initialTab?: string; onClose: () => void }) => (
+    <div role="dialog" aria-label="Can't find it?">
+      <p>Opened on {initialTab}</p>
+      <button type="button" onClick={onClose}>
+        Close requests
+      </button>
+    </div>
+  ),
+}));
 
 const SET: SetRef = {
   id: "set-chrome",
@@ -1557,5 +1569,21 @@ describe("the Sales tab (NEO-370)", () => {
   it("the flag alone is not enough: capabilities on but no listing half still hides the tab", () => {
     renderAt("/inventory", makeStore({ capabilities: { ...REAL_CAPABILITIES, marketplaceListing: true } }));
     expect(inventoryTabs()).not.toContain("Sales");
+  });
+});
+
+describe("?ask=mine (NEO-536)", () => {
+  it("opens My requests on arrival, and closing takes the param off without a Back step", () => {
+    renderAt("/collection?tab=checklists&ask=mine");
+    const dialog = screen.getByRole("dialog", { name: "Can't find it?" });
+    within(dialog).getByText("Opened on mine");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close requests" }));
+    expect(screen.queryByRole("dialog", { name: "Can't find it?" })).toBeNull();
+    expect(pageUrl()).toBe("/collection?tab=checklists");
+  });
+
+  it("leaves it shut on the inventory side, where requests don't live", () => {
+    renderAt("/inventory?tab=checklists&ask=mine");
+    expect(screen.queryByRole("dialog", { name: "Can't find it?" })).toBeNull();
   });
 });
