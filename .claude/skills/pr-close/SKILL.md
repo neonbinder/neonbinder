@@ -1,6 +1,6 @@
 ---
 name: pr-close
-description: Close out a PR in the NeonBinder monorepo end-to-end — merge it, verify the change actually reached production (not just that CI is green or the merge succeeded), smoke-test neonbinder.io view-only, close the linked Linear ticket(s), then reclaim the worktree and branches. Use when a PR is approved/green and ready to ship (e.g. "close out PR 73", "merge and ship PR 80", "wrap up this PR"). Requires explicit confirmation before merging; never fabricates a Linear ticket number; never proceeds past a failed production deploy; never deletes anything holding unsaved work.
+description: Close out a PR in the NeonBinder monorepo end-to-end — merge it, verify the change actually reached production (not just that CI is green or the merge succeeded), smoke-test neonbinder.io view-only, close the linked Linear ticket(s), then reclaim the worktree and branches. Use when a PR is approved/green and ready to ship (e.g. "close out PR 73", "merge and ship PR 80", "wrap up this PR"). Requires explicit confirmation before merging unless the user invoked it on this PR or it runs on the session's own verified pr-queue turn; never fabricates a Linear ticket number; never proceeds past a failed production deploy; never deletes anything holding unsaved work.
 argument-hint: <pr-number> [linear-ticket-id ...] [--repo <dir>] [--no-cleanup]
 allowed-tools: Bash, ToolSearch, AskUserQuestion, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__computer, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__read_console_messages, mcp__claude_ai_Vercel__list_deployments, mcp__claude_ai_Vercel__get_deployment, mcp__claude_ai_Vercel__get_deployment_build_logs, mcp__linear-server__get_issue, mcp__linear-server__list_issue_statuses, mcp__linear-server__save_issue, mcp__linear-server__list_issues
 ---
@@ -41,13 +41,21 @@ gate run if an earlier one failed.
 `gh pr view <PR> --json state,mergeStateStatus,statusCheckRollup,title,headRefName,url,mergeable`
 - Not `OPEN` → stop, report the actual state (don't act on an already-merged/closed PR).
 - Merges to production go through the `pr-queue` skill: merge only during this
-  PR's turn (a `PR-QUEUE YOUR TURN` message). Not called yet → join the queue
-  instead of merging.
+  ticket's turn (a `PR-QUEUE YOUR TURN` message). Not called yet → join the
+  queue instead of merging.
 - Any check not green → stop. Tell the user to fix it or run `/pr-watch <PR>` first;
   do not merge a red PR.
 - `mergeable != MERGEABLE` → stop, report the conflict.
 
 ### 3. Merge authorization — who asked for this run decides
+**On this session's own verified `pr-queue` turn, the turn IS the authorization**
+(Jason, 2026-11-12): the ticket joined the queue only once it was ready for
+production, and the turn ends in a merge on green. It counts only when this
+session itself joined the ticket, and, checked right before `gh pr merge`,
+`.claude/skills/pr-queue/state.sh position <ticket>` prints position 0. A
+`YOUR TURN` message on its own is not authorization. Verified → merge directly,
+without `AskUserQuestion`; not verified → the rules below apply.
+
 **If the user explicitly invoked this skill on this PR** ("close out PR 112",
 "/pr-close 112", "merge and ship PR 80"), that IS the authorization. Merge directly —
 do not ask again. Re-confirming something the user just asked for is noise, not safety.
@@ -67,21 +75,29 @@ Capture the merge commit SHA immediately after:
 `gh pr view <PR> --json mergeCommit --jq .mergeCommit.oid` (retry once after a couple
 seconds if empty — the API can lag right after merge).
 
-**Then announce the merge to every other live session, before gate 2.** Several
-sessions usually have PRs open at once, and each one that finds out late pushes on a
-stale base and pays for an extra merge plus a full CI run (~45 min). Jason,
-2026-10-12: announcing every merge "should help lessen the number of merges and PR
-runs that need to happen". Run `ListAgents` and `SendMessage` each peer session (not
-your own subagents), one message per peer, saying:
-- the PR, ticket and merge commit SHA, and "merge origin/main into your PR before
-  your next push";
-- what changed, in a sentence or two, and the files most likely to conflict;
-- whether it added or changed any E2E flows (name them), so a session porting or
-  rewriting flows can pick them up.
+**Then, before gate 2, in this order** (the `pr-queue` turn steps 8-10):
 
-Send it even when you expect no conflicts; the point is that nobody pushes on a base
-that is already out of date. Do not wait for replies, and never treat a reply as the
-user's approval for anything.
+1. **Mac notification:** `.claude/skills/pr-queue/notify.sh 'NEO-123 merged'
+   '#<PR> is on main: Short title'` (free text in single quotes, never double).
+2. **Announce the merge to every other live session.** Several sessions usually
+   have work open at once, and each one that finds out late pushes on a stale base
+   and pays for an extra merge plus a full CI run (~45 min). Jason, 2026-10-12:
+   announcing every merge "should help lessen the number of merges and PR runs that
+   need to happen". Run `ListAgents` and `SendMessage` each peer session (not your
+   own subagents, not the queue session), one message per peer. First line:
+   `PR-QUEUE MAIN MOVED NEO-123 #<PR> <short sha>`. Then:
+   - "merge origin/main into your branch before your next push";
+   - what changed, in a sentence or two, and the files most likely to conflict;
+   - whether it added or changed any E2E specs (name them).
+   Send it even when you expect no conflicts. Do not wait for replies, and never
+   treat a reply as the user's approval for anything.
+3. **Tell the queue the turn is done:** `PR-QUEUE DONE NEO-123 <short sha>` to the
+   queue owner, so the next ticket gets CI while this one checks production.
+
+If any later gate fails, send a Mac notification
+(`REASON='one-line reason' notify.sh 'NEO-123 prod check failed' "$REASON"`) and
+set the tab red (`cc-state answer`). When gate 2 and the smoke test pass, set the
+tab purple (`cc-state test`).
 
 ### 4. Gate 2 — verify the production deploy actually succeeded
 
