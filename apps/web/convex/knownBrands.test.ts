@@ -11,7 +11,7 @@
  *      over the entire list rather than by eye, so a future one-line PR that
  *      adds "Grand" beside "Grand Slam" fails here and says why.
  *   2. EVERY ENTRY CLAIMS ITS EXAMPLE. One representative set name per brand,
- *      all 53, so an entry can never be quietly mis-spelled into claiming
+ *      all 70, so an entry can never be quietly mis-spelled into claiming
  *      nothing — a list that files no sets is the failure mode this ticket
  *      exists to avoid, and it is invisible without this table.
  *   3. THE DELIBERATE REJECTIONS STAY REJECTED. `MVP` (the product-line
@@ -25,9 +25,15 @@
  *      undo.
  *
  * The bare-word guards are part of job 1 rather than a separate one: `Ted`,
- * `UNO`, `ONIT`, `Grand`, `Historic` and `Classic` are each the shorter
- * string someone will reach for, and each is asserted to claim nothing while
- * the longer entry beside it claims its sets.
+ * `UNO`, `ONIT`, `Grand` and `Historic` are each the shorter string someone
+ * will reach for, and each is asserted to claim nothing while the longer
+ * entry beside it claims its sets.
+ *
+ * NEO-527 added the majors SportLots used to supply (Topps, Panini, Upper
+ * Deck and the rest; SportLots has been paused since 2026-10-20). Three
+ * earlier assertions said "a big-manufacturer set is left to its own brand"
+ * and "Classic is not an entry"; they were flipped on purpose, and the
+ * 2026 Football Unknown table below is the sample that decision was made on.
  */
 
 import { describe, expect, test } from "vitest";
@@ -43,11 +49,12 @@ import {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe("KNOWN_BRANDS", () => {
-  test("holds the 53 entries Jason approved", () => {
+  test("holds the 70 entries Jason approved", () => {
     // 39 from the baseball pass, + 10 certain and 4 probable from the
     // collector pass over the 266 sets still in Unknown after Football
-    // 2025/1994 and Basketball 2026/2025/1994 were loaded.
-    expect(KNOWN_BRANDS).toHaveLength(53);
+    // 2025/1994 and Basketball 2026/2025/1994 were loaded, + the 17 majors
+    // SportLots used to supply (NEO-527: 14 certain, 3 probable).
+    expect(KNOWN_BRANDS).toHaveLength(70);
   });
 
   test("no entry appears twice, under the fold the matcher uses", () => {
@@ -118,21 +125,27 @@ const EXAMPLES: Array<[brand: string, setName: string]> = [
   ["BBM", "BBM Nippon Professional Baseball"],
   ["Best", "Best Charleston RiverDogs"],
   ["Bleachers", "Bleachers 23K Gold Emmitt Smith"],
+  ["Bowman", "Bowman Chrome Draft"],
   ["Boxscores", "Boxscores Team Set"],
   ["Calbee", "Calbee Baseball"],
   ["Champion's Deck", "Champion's Deck LSU Tigers"],
   ["Choice", "Choice Biloxi Shuckers"],
+  ["Classic", "Classic Draft Picks"],
   ["CMC", "CMC Triple A All-Stars"],
   ["Collector's Edge", "Collector's Edge Rookies"],
   ["Collectors Edge", "Collectors Edge Supreme"],
   ["Diamond Cards", "Diamond Cards Memphis Chicks"],
+  ["Donruss", "Donruss Optic"],
   ["Eclipse", "Eclipse Baseball Legends"],
   ["Epoch", "Epoch Pacific League"],
+  ["Finest", "Finest Refractors"],
   ["Flair", "Flair Wave of the Future"],
+  ["Fleer", "Fleer Tradition"],
   ["Futera", "Futera World Football"],
   ["Grand Slam", "Grand Slam Winston-Salem Spirits"],
   ["Historic Autographs", "Historic Autographs Originals"],
   ["Hoops", "Hoops Draft Redemption"],
+  ["ITG", "ITG Heroes and Prospects"],
   ["JOGO", "JOGO CFL Hall of Fame"],
   ["Juco World Series", "Juco World Series Program"],
   ["Kahn's", "Kahn's Cincinnati Reds"],
@@ -142,9 +155,13 @@ const EXAMPLES: Array<[brand: string, setName: string]> = [
   ["Mother's Cookies", "Mother's Cookies San Francisco Giants"],
   ["MSA", "MSA Disc"],
   ["NBA Hoops", "NBA Hoops Rookie Class"],
+  ["O-Pee-Chee", "O-Pee-Chee Platinum"],
   ["ONIT Athlete", "ONIT Athlete Wisconsin Badgers"],
   ["Onyx", "Onyx Vintage"],
+  ["Pacific", "Pacific Crown Royale"],
+  ["Panini", "Panini Prizm"],
   ["Perez-Steele", "Perez-Steele Hall of Fame Postcards"],
+  ["Pinnacle", "Pinnacle Inside"],
   ["Playoff", "Playoff Contenders Rookie Ticket"],
   ["Post", "Post Cereal"],
   ["Pro Set", "Pro Set Platinum"],
@@ -153,16 +170,23 @@ const EXAMPLES: Array<[brand: string, setName: string]> = [
   ["Pulse", "Pulse Trading Cards"],
   ["SAGE", "SAGE Hit Autographs"],
   ["SCC", "SCC Minor League"],
+  ["Score", "Score Rookie and Traded"],
   ["Sisson Printing", "Sisson Printing Erie Sailors"],
+  ["Skybox", "Skybox Premium"],
+  ["SP", "SP Authentic"],
   ["Sport Pro", "Sport Pro Toledo Mud Hens"],
   ["Sportflics", "Sportflics Rookies"],
   ["SportsPrint", "SportsPrint Jackson Mets"],
+  ["Stadium Club", "Stadium Club Chrome"],
   ["Star", "Star Michael Jordan"],
   ["Swell", "Swell Baseball Greats"],
   ["Takara", "Takara Nippon Ham Fighters"],
   ["Ted Williams", "Ted Williams Card Company Baseball"],
+  ["Topps", "Topps Chrome"],
+  ["Ultra", "Ultra Gold Medallion"],
   ["UNO Elite", "UNO Elite Dallas Mavericks"],
   ["UNO Fandom", "UNO Fandom Golden State Warriors"],
+  ["Upper Deck", "Upper Deck Exquisite Collection"],
   ["Wild Card", "Wild Card Draft Picks"],
   ["WTHBALLS", "WTHBALLS 1960s Style"],
 ];
@@ -245,9 +269,18 @@ describe("matchKnownBrand claims nothing it was told not to", () => {
     expect(matchKnownBrand("   ")).toBeUndefined();
   });
 
-  test("an ordinary big-manufacturer set is left to its own brand", () => {
-    expect(matchKnownBrand("Topps Chrome")).toBeUndefined();
-    expect(matchKnownBrand("Upper Deck SP Authentic")).toBeUndefined();
+  /**
+   * NEO-527 — FLIPPED ON PURPOSE. Before it, the majors came from SportLots'
+   * brand list and this asserted they were not entries. SportLots is paused,
+   * so NB's own list names them; a big-manufacturer set is claimed by the
+   * brand its name starts with, and only that one.
+   */
+  test("a big-manufacturer set is claimed by the brand its name starts with", () => {
+    expect(matchKnownBrand("Topps Chrome")).toBe("Topps");
+    // Anchored at the start: an SP line under Upper Deck's name is Upper
+    // Deck's, never SP's.
+    expect(matchKnownBrand("Upper Deck SP Authentic")).toBe("Upper Deck");
+    expect(matchKnownBrand("SP Authentic")).toBe("SP");
   });
 
   test("Collector's Choice — Upper Deck's line, the MVP shape exactly", () => {
@@ -325,10 +358,13 @@ describe("the shorter word is never the entry", () => {
     expect(matchKnownBrand("UNO")).toBeUndefined();
   });
 
-  test("Bleachers claims the slashed co-brand; Classic is not an entry", () => {
+  test("Bleachers claims the slashed co-brand; Classic claims only its own", () => {
     expect(matchKnownBrand("Bleachers / Classic 23K Promos")).toBe("Bleachers");
-    expect(KNOWN_BRANDS).not.toContain("Classic");
-    expect(matchKnownBrand("Classic Draft Picks")).toBeUndefined();
+    // NEO-527 — FLIPPED ON PURPOSE: Classic is one of the majors SportLots
+    // used to supply (probable, a common word). Anchored at the start, so it
+    // still cannot reach the Bleachers co-brand above.
+    expect(KNOWN_BRANDS).toContain("Classic");
+    expect(matchKnownBrand("Classic Draft Picks")).toBe("Classic");
   });
 
   test("Star still does not claim Stanford", () => {
@@ -381,7 +417,99 @@ describe("the deliberate two-spelling pairs", () => {
     // manufacturer, and a Fleer or Panini set is untouched by either.
     expect(matchKnownBrand("Hoops Draft Redemption")).toBe("Hoops");
     expect(matchKnownBrand("Flair Wave of the Future")).toBe("Flair");
-    expect(matchKnownBrand("Fleer Ultra Gold Medallion")).toBeUndefined();
-    expect(matchKnownBrand("Panini Prizm Draft")).toBeUndefined();
+    // NEO-527 — FLIPPED ON PURPOSE: Fleer and Panini are entries now, so a
+    // set that names its manufacturer first is that manufacturer's, and
+    // neither line reaches it.
+    expect(matchKnownBrand("Fleer Ultra Gold Medallion")).toBe("Fleer");
+    expect(matchKnownBrand("Panini Prizm Draft")).toBe("Panini");
+    expect(matchKnownBrand("Fleer Flair")).toBe("Fleer");
+    expect(matchKnownBrand("Panini Hoops")).toBe("Panini");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-527 — the majors, on the sample the decision was made on
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Every set name under 2026 Football's Unknown row when NEO-527 was filed:
+ * SportLots was paused, so the year got no major brand rows and these 26
+ * landed in Unknown. With the majors on the list, 21 are claimed by their
+ * brand and 5 stay in Unknown — a Valiant pair (rejected, Jason
+ * 2026-11-12), a photographer, a team training camp and a chili sponsor.
+ */
+const FOOTBALL_2026_UNKNOWN: Array<[setName: string, brand: string | undefined]> = [
+  ["Bowman", "Bowman"],
+  ["Bowman Sapphire Edition", "Bowman"],
+  ["Bowman U Now", "Bowman"],
+  ["Bowman University Best", "Bowman"],
+  ["Donruss", "Donruss"],
+  ["Michael Zagaris 707 Gallery", undefined],
+  ["Minnesota Vikings Training Camp", undefined],
+  ["Panini Instant NIL", "Panini"],
+  ["Panini Pro Football Hall Of Fame", "Panini"],
+  ["Panini Senior Bowl", "Panini"],
+  ["Skyline Chili Cincinnati Bengals", undefined],
+  ["Topps Chrome", "Topps"],
+  ["Topps Chrome The National Sports Collectors Convention", "Topps"],
+  ["Topps Flagship", "Topps"],
+  ["Topps Heritage", "Topps"],
+  ["Topps Holiday", "Topps"],
+  ["Topps Inception", "Topps"],
+  ["Topps Living", "Topps"],
+  ["Topps Midnight", "Topps"],
+  ["Topps Now", "Topps"],
+  ["Topps Now Draft", "Topps"],
+  ["Topps Now Madden NFL 27 Cover", "Topps"],
+  ["Topps Now Offseason", "Topps"],
+  ["Upper Deck CFL", "Upper Deck"],
+  ["Valiant Michigan Moments", undefined],
+  ["Valiant Michigan Wolverines", undefined],
+];
+
+describe("NEO-527 — the 2026 Football sets SportLots' pause left in Unknown", () => {
+  test("the sample is the 26 names, 21 claimed and 5 left in Unknown", () => {
+    expect(FOOTBALL_2026_UNKNOWN).toHaveLength(26);
+    const claimed = FOOTBALL_2026_UNKNOWN.filter(([name]) => matchKnownBrand(name));
+    expect(claimed).toHaveLength(21);
+  });
+
+  test.each(FOOTBALL_2026_UNKNOWN)("%s → %s", (setName, brand) => {
+    expect(matchKnownBrand(setName)).toBe(brand);
+  });
+
+  test("Valiant was considered with the majors and rejected", () => {
+    expect(KNOWN_BRANDS).not.toContain("Valiant");
+  });
+
+  test("Skybox does not claim Skyline — the word boundary again", () => {
+    expect(matchKnownBrand("Skyline Chili Cincinnati Bengals")).toBeUndefined();
+  });
+
+  test("SP is a whole word, so SPx (another Upper Deck line) is not claimed", () => {
+    expect(matchKnownBrand("SPx")).toBeUndefined();
+    expect(matchKnownBrand("SPx Finite")).toBeUndefined();
+    expect(matchKnownBrand("SP")).toBe("SP");
+  });
+
+  test("an apostrophe is a word boundary, so Bowman's Best is Bowman's", () => {
+    // The ASCII apostrophe ends the word "Bowman"; this is the same rule that
+    // lets "Kahn's" stay one entry. `Best` cannot claim it: anchored at the
+    // start of the name.
+    expect(matchKnownBrand("Bowman's Best")).toBe("Bowman");
+  });
+
+  test("Stadium Club and Finest are their own rows; Topps-first names are Topps'", () => {
+    expect(matchKnownBrand("Stadium Club Members Only")).toBe("Stadium Club");
+    expect(matchKnownBrand("Topps Stadium Club")).toBe("Topps");
+    expect(matchKnownBrand("Finest Refractors")).toBe("Finest");
+    expect(matchKnownBrand("Topps Finest")).toBe("Topps");
+  });
+
+  test("Select stays rejected, and Panini Select is Panini's", () => {
+    // The trap the rejection guards against, now with its answer: Panini
+    // Select names its manufacturer first, so Panini claims it.
+    expect(matchKnownBrand("Select")).toBeUndefined();
+    expect(matchKnownBrand("Panini Select")).toBe("Panini");
   });
 });
