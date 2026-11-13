@@ -95,8 +95,11 @@ test(
     await expect(hopper.getByText(/scans? processing/)).toHaveCount(0);
 
     // The demo's Want List guess waits in Show pickups: the block says so, and the guess opens its card panel.
-    await expect(pickups.getByText("On your Want List", { exact: true })).toBeVisible();
-    await expect(shoebox.getByText("On your Want List", { exact: true })).toHaveCount(0);
+    // The flag's star is a hidden span inside it, so its text reads "★ On your Want List": one pattern
+    // for both, and the positive one first, so the zero count below cannot pass on a pattern that finds nothing.
+    const wantFlag = /^★?\s*On your Want List$/;
+    await expect(pickups.getByText(wantFlag)).toBeVisible();
+    await expect(shoebox.getByText(wantFlag)).toHaveCount(0);
     // Each run's guesses are a list of their own, named for the run and its screen.
     const wantedTitle = "1996 Playoff Contenders Deion Sanders #13 Dallas Cowboys Football";
     const pickupGuesses = pickups.getByRole("list", { name: "Best guesses for Show pickups on Inventory", exact: true });
