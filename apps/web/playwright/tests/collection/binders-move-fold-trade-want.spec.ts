@@ -39,7 +39,7 @@
 // Minted names are single tokens from `env.ATTEMPT_TOKEN` (never rebuilt by
 // hand), so the binders of this run are this run's alone.
 import type { Locator } from "@playwright/test";
-import { drillToCollectorBase, goViaShell, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, goViaShell, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -560,6 +560,7 @@ test(
     await expect(line("Raw, Excellent ×3").getByText("Main")).toBeVisible();
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent ×3`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 

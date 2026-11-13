@@ -33,7 +33,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator } from "@playwright/test";
 import { addCardViaForm, escapeRe } from "../../support/cards";
-import { collectorCascade, intakeDropzone, pickIntakeSet } from "../../support/collection";
+import { collectorCascade, confirmRemoved, intakeDropzone, pickIntakeSet } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { EDIT_LANDED, EDIT_LANDS, STORED_MODE, servedPhotoSize } from "../../support/photo-viewer";
 import { VARIANT_TYPES_SYNC, columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
@@ -305,6 +305,7 @@ test(
         // Clean up the copy (R7).
         await yourCopies.getByRole("button", { name: /^Remove #160\b/ }).click();
         await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+        await confirmRemoved(drawer);
         copyLeft = false;
         await drawer.getByRole("button", { name: "Close card detail" }).click();
         await expect(drawer).toBeHidden();
@@ -334,9 +335,10 @@ test(
       }
       if (copyLeft) {
         await tidy(async () => {
-          const { yourCopies } = await openDrawer();
+          const { drawer, yourCopies } = await openDrawer();
           await yourCopies.getByRole("button", { name: /^Remove #160\b/ }).click();
           await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+          await confirmRemoved(drawer);
         });
       }
       if (left.length > 0) {

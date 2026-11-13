@@ -23,20 +23,7 @@
 //
 // Minted names are single tokens from `env.ATTEMPT_TOKEN`.
 import type { Locator } from "@playwright/test";
-import {
-  backToBoxes,
-  cardsWord,
-  createBox,
-  deleteOpenBox,
-  drillToCollectorBase,
-  forSaleOnMyBoxes,
-  goViaShell,
-  inventoryTabs,
-  myBoxesStock,
-  nameOf,
-  openListFilters,
-  quantityField,
-} from "../../support/collection";
+import { backToBoxes, cardsWord, confirmRemoved, createBox, deleteOpenBox, drillToCollectorBase, forSaleOnMyBoxes, goViaShell, inventoryTabs, myBoxesStock, nameOf, openListFilters, quantityField } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -327,6 +314,7 @@ test(
         const remove = copies.getByRole("button", { name: `Remove ${c.short}, ${line}`, exact: true });
         await remove.click();
         await expect(remove).toHaveCount(0);
+        await confirmRemoved(d);
       }
       await expect(copies.getByRole("heading", { name: /^Your copies/ })).toBeVisible();
       await d.getByRole("button", { name: "Close card detail" }).click();
