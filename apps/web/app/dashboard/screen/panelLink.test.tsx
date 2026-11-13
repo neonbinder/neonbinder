@@ -323,7 +323,7 @@ describe("↑ ↓ step through the run of cards the panel was opened from", () =
 describe("every card the dashboard shows opens its panel", () => {
   const hrefOf = (cardId: string, side = "") => `/demo?detail=${encodeURIComponent(cardId)}${side}`;
 
-  it("the chase, Binders Filling Up, Could fit, the hopper's guesses and the boards' needs, on the collection side", () => {
+  it("the chase, Binders Filling Up, Could fit, the hopper's guesses (a binder run's) and the boards' needs, on the collection side", () => {
     const data = renderDashboard("/demo");
     const chase = screen.getByRole("region", { name: "The Chase" });
     expect(within(chase).getAllByRole("link").map((l) => l.getAttribute("href"))).toEqual(
@@ -341,6 +341,21 @@ describe("every card the dashboard shows opens its panel", () => {
     }
     const needs = screen.getAllByRole("link").filter((l) => l.closest("article")?.textContent?.includes("Need:") && l.getAttribute("href")?.includes("detail="));
     expect(needs.length).toBeGreaterThan(0);
+  });
+
+  it("a hopper guess opens on its run's side: a binder run's on the collection, a box run's as stock (side=inventory)", () => {
+    const base = getDashboard();
+    const binderRun = base.intake.uploads.find((u) => u.side === "collection" && u.guesses.length > 0)!;
+    const card = binderRun.guesses[0];
+    const boxRun = { ...binderRun, id: "box-run", name: "Show box", side: "inventory" as const, href: "/demo/inventory?side=inventory&tab=add" };
+    renderDashboard("/demo", {
+      ...base,
+      intake: { ...base.intake, uploads: [{ ...binderRun, guesses: [card] }, { ...boxRun, guesses: [card] }] },
+    });
+    const hopper = screen.getByRole("region", { name: "In the Hopper" });
+    const [inBinder, inBox] = within(hopper).getAllByRole("list", { name: "Best guesses waiting on your yes" });
+    expect(within(inBinder).getByRole("link").getAttribute("href")).toBe(hrefOf(card.id));
+    expect(within(inBox).getByRole("link").getAttribute("href")).toBe(hrefOf(card.id, "&side=inventory"));
   });
 
   it("an order's picture opens its card too, for a pointer: out of the Tab order and hidden from a reader, beside the named link", () => {

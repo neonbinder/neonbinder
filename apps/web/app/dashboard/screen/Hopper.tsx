@@ -87,7 +87,8 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
  * One run still open: its binder or box and the screen it is finished on,
  * what is left in it, a few of its best guesses, and the way in. Each guess
  * opens its card panel, as every card on the dashboard does, named by its
- * title. The button reads "Finish this run"; a reader also hears which run,
+ * title, on the run's side: a box run's as stock for sale (its add form
+ * offers boxes), a binder run's as a pull. The button reads "Finish this run"; a reader also hears which run,
  * so every block's button has its own name.
  */
 function RunBlock({ upload: u, twin, wanted }: { upload: IntakeUpload; twin: boolean; wanted: Set<string> }) {
@@ -117,7 +118,7 @@ function RunBlock({ upload: u, twin, wanted }: { upload: IntakeUpload; twin: boo
               <li key={`${card.id}-${i}`} className={`-ml-2 first:ml-0 ${FAN_TILT[fan.length - 1][i]}`}>
                 <PanelLink
                   cardId={card.id}
-                  side="collection"
+                  side={u.side}
                   list={fanIds}
                   className={`block rounded-[6%] focus-outline ${wanted.has(card.id) ? WANT_RING : ""}`}
                 >

@@ -71,3 +71,11 @@ account starts polling or pushing. Check every later reader:
   cleanup can match a record a real run is holding (`status: "running"`);
   deleting/replacing it drops `conditionsPushed` (NEO-475). Guard on status.
 Related: [[patterns-testing-endpoint-gate]], [[patterns-neo370-scheduled-marketplace-poll]].
+
+**Shape-change re-audits (NEO-539, intake per-run guesses).** When a capped
+aggregate moves from one global preview list to per-row lists, check a
+cross-row cap still bounds the total (each id becomes a hydration read), and
+that a `take(N + 1)` "more exists" probe uses only `length`, never the extra
+row's content. A row skipped by an ownership `continue` (foreign/missing
+home) should not count toward any tally; it also does not set the "floor"
+flag, which is a correctness note, not exposure.
