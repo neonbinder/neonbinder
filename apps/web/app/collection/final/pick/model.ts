@@ -415,6 +415,54 @@ function factsOf(row: PickRow): RowFacts | null {
   };
 }
 
+/** What a row's variant tag says, and the divider colour it wears. */
+export interface VariantTag {
+  /** The variant's own name ("Wicked Power", "8 Bit Ballers Red"); "Base" on a base row. */
+  text: string;
+  /** The divider colour; null for a listing's word NB does not file by (a plain tag). */
+  role: VariantRole | null;
+  /** The kind, for assistive tech, when the name does not say it ("Insert"); null otherwise. */
+  kind: string | null;
+}
+
+/**
+ * NEO-522 — the tag between a row's picture and its number: the variant's
+ * own name in its divider's colour, so "Wicked Power" and "N43" read apart
+ * from a few feet. A name-less variant says its kind ("Insert"). A listing's
+ * word NB does not file by ("Variation") joins its name once, as the title
+ * does. Null when the row names no variant at all.
+ */
+export function variantTag(facts: RowFacts): VariantTag | null {
+  const { role, variantWord: word, variantName: name } = facts;
+  const phrase = word && name ? (containsWholeWords(name, word) ? name : `${word} ${name}`) : (word ?? name);
+  const label = role ? VARIANT_ROLE_LABEL[role] : null;
+  const text = phrase ?? label;
+  if (!text) return null;
+  return { text, role, kind: label && fold(label) !== fold(text) ? label : null };
+}
+
+/** Two rows show the same variant when their role, word and name agree. */
+function variantKey(facts: RowFacts | null): string {
+  return facts ? [facts.role ?? "", fold(facts.variantWord ?? ""), fold(facts.variantName ?? "")].join("|") : "";
+}
+
+/**
+ * NEO-522 — where the variant changes inside a set's run: for each row, the
+ * variant that starts on the next row when it differs from this one (the
+ * heavier rule under this row wears the new variant's colour), else
+ * undefined. `null` is a next variant of no role (a plain listing word).
+ */
+export function variantBreaks(rows: readonly PickRow[]): (VariantRole | null | undefined)[] {
+  return rows.map((row, i) => {
+    const next = rows[i + 1];
+    if (!next) return undefined;
+    const here = rowFacts(row);
+    const there = rowFacts(next);
+    if (!here || !there || variantKey(here) === variantKey(there)) return undefined;
+    return there.role;
+  });
+}
+
 /** A row is pulled once every line in it is. */
 export function isPulled(row: PickRow, pulled: ReadonlySet<string>): boolean {
   return row.lines.every((l) => pulled.has(l.id));

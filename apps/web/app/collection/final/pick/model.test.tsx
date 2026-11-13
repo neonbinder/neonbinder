@@ -28,7 +28,9 @@ import {
   setsOnList,
   SORT_KEYS,
   sortRows,
+  variantBreaks,
   variantRole,
+  variantTag,
   type PickRow,
 } from "./model";
 import type { ListedCard, PickBox, PickOrder, SaleLine } from "./types";
@@ -532,6 +534,73 @@ describe("NEO-509: a sale filed by its listing's words", () => {
         }
       }
     }
+  });
+});
+
+describe("NEO-522: the variant tag", () => {
+  const tagOf = (c: Card) => variantTag(rowFacts(mergeLines([line(c)])[0])!);
+
+  it("names the variant itself, the kind read out only when the name does not say it", () => {
+    expect(tagOf(card({ number: "1" }))).toEqual({ text: "Base", role: "base", kind: null });
+    expect(tagOf(card({ number: "1", kind: "insert", name: "Wicked Power" }))).toEqual({ text: "Wicked Power", role: "insert", kind: "Insert" });
+    expect(tagOf(card({ number: "1", kind: "parallel", name: "Gold" }))).toEqual({ text: "Gold", role: "parallel", kind: "Parallel" });
+    expect(tagOf(card({ number: "1", kind: "parallel", name: "Red", insertName: "8 Bit Ballers" }))).toEqual({
+      text: "8 Bit Ballers Red",
+      role: "insertParallel",
+      kind: "Insert parallel",
+    });
+  });
+
+  it("says the kind when the variant has no name, and never twice", () => {
+    expect(tagOf(card({ number: "1", kind: "insert" }))).toEqual({ text: "Insert", role: "insert", kind: null });
+  });
+
+  it("joins a listing's word to its name once, plain when NB files by neither", () => {
+    const facts = (listed: ListedCard) => rowFacts(mergeLines([line(null, { sportCode: null, listed })])[0])!;
+    const base = { sportName: "Football", year: 2024, season: "2024", setName: "Score", cardNumber: "302" };
+    expect(variantTag(facts({ ...base, variantWord: "Variation", variantName: "Photo" }))).toEqual({ text: "Variation Photo", role: null, kind: null });
+    expect(variantTag(facts({ ...base, variantWord: "Variation", variantName: "Photo Variation" }))).toEqual({
+      text: "Photo Variation",
+      role: null,
+      kind: null,
+    });
+    expect(variantTag(facts({ ...base, role: "insert", variantName: "1991 Throwback" }))).toEqual({
+      text: "1991 Throwback",
+      role: "insert",
+      kind: "Insert",
+    });
+    expect(variantTag(facts({ ...base, role: "base" }))).toEqual({ text: "Base", role: "base", kind: null });
+    // A listing that names no variant gets no tag: NB never guesses one.
+    expect(variantTag(facts(base))).toBeNull();
+  });
+});
+
+describe("NEO-522: where the variant changes", () => {
+  const rowsOf = (...cards: Card[]) => sortRows(mergeLines(cards.map((c) => line(c))), null);
+
+  it("marks the last row of each variant's run with the next variant's role", () => {
+    const rows = rowsOf(
+      card({ number: "1" }),
+      card({ number: "2" }),
+      card({ number: "3", kind: "parallel", name: "Gold" }),
+      card({ number: "4", kind: "insert", name: "Flyers" }),
+      card({ number: "5", kind: "insert", name: "Power" }),
+      card({ number: "6", kind: "insert", name: "Power" }),
+      card({ number: "7", kind: "parallel", name: "Red", insertName: "Power" }),
+    );
+    expect(variantBreaks(rows)).toEqual([undefined, "parallel", "insert", "insert", undefined, "insertParallel", undefined]);
+  });
+
+  it("tells two inserts of the same colour apart by name", () => {
+    const rows = rowsOf(card({ number: "N43-1", kind: "insert", name: "N43" }), card({ number: "WP-1", kind: "insert", name: "Wicked Power" }));
+    expect(variantBreaks(rows)).toEqual(["insert", undefined]);
+  });
+
+  it("gives a run of no role a neutral break, and none to a row with nothing to file by", () => {
+    const listed = { sportName: "Baseball", year: 2026, season: "2026", setName: "Topps", cardNumber: "9", variantWord: "SP" };
+    const rows = sortRows(mergeLines([line(card({ number: "1" })), line(null, { listed })]), null);
+    expect(variantBreaks(rows)).toEqual([null, undefined]);
+    expect(variantBreaks(mergeLines([line(null), line(null)]))).toEqual([undefined, undefined]);
   });
 });
 
