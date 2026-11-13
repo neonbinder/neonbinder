@@ -8,13 +8,14 @@ import { PanelLink } from "./panelLink";
 /**
  * NEO-464 combined dashboard — In the Hopper. The dashboard holds only stats
  * worth a look and the things to do (Jason, 2026-11-13, NEO-539), so the
- * hopper is a run to finish per block, and one line of what got sorted:
+ * hopper is a run to finish per row (rules between them, no card in the
+ * card), and one line of what got sorted:
  *
  *   7 scans need your yes · 1 to identify
- *   ┌ Unsorted → Inventory ─────────────┐
- *   │ 5 need your yes · 1 to identify   │  one block per run with a scan
- *   │ [Finish this run]          ▯▯▯    │  still open, newest first
- *   └───────────────────────────────────┘
+ *   Unsorted → Inventory               ▯▯▯
+ *   5 need your yes · 1 to identify          one row per run with a scan
+ *   [Finish this run]                        still open, newest first
+ *   ─────────────────────────────────────
  *   6 runs sorted this week · 42 all-time
  *
  * Each block's button opens the run on the Add cards tab that finishes it:
@@ -116,10 +117,12 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
         </p>
       )}
 
+      {/* The runs and the stat line are parted by rules, not cards in the card. `rule-strong`: in dark,
+          `rule` is the panel's own tone and the rule would vanish. */}
       {intake.uploads.length > 0 && (
-        <ul aria-label="Runs to finish" className="mt-3 flex flex-col gap-2.5">
+        <ul aria-label="Runs to finish" className="mt-1 divide-y divide-rule-strong">
           {intake.uploads.map((u) => (
-            <li key={u.id}>
+            <li key={u.id} className="py-3">
               <RunBlock upload={u} tell={tells.get(u.id) ?? null} wanted={wanted} />
             </li>
           ))}
@@ -127,7 +130,7 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
       )}
 
       {sorted.length > 0 && (
-        <p className={`text-xs text-ink-3 ${intake.uploads.length > 0 ? "mt-3 border-t border-rule pt-2.5" : ""}`}>
+        <p className={`text-xs text-ink-3 ${intake.uploads.length > 0 ? "border-t border-rule-strong pt-2.5" : ""}`}>
           <Parts parts={sorted} />
         </p>
       )}
@@ -151,7 +154,7 @@ function RunBlock({ upload: u, tell, wanted }: { upload: IntakeUpload; tell: str
   const fanIds = fan.map((c) => c.id);
   const wants = fan.some((c) => wanted.has(c.id));
   return (
-    <div className="rounded-xl border border-rule bg-raised-deep p-3">
+    <div>
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <h3 className="break-words text-base font-bold leading-snug text-ink">
