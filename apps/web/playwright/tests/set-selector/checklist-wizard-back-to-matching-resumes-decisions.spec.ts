@@ -28,70 +28,62 @@ test(
     // Nothing decided: on a name step x is the decided count plus one (NEO-335).
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
 
-    if (!env.SL_PAUSED) {
-      // UNMEASURED on the fixture (NEO-475 moved fetchChecklistToWizard's
-      // default from Topps Big League to Topps Stars of MLB Network while
-      // SportLots was paused): this branch needs that set's SportLots side to
-      // pair in Match Cards; the first live run must check it.
-      // Decide one player, then go back to the pairing step.
-      // READY_TO_CREATE: the create below needs a player whose create is not held
-      // by a career team the walk skipped.
-      await walkToPlayerRow(page, { readyToCreate: true });
-      const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
-      await answerPlayerAsNew(page);
-      // Read the create back off its own row ("Already decided: Added as new"),
-      // never off the "Decided (N)" history: with the reference catalogue loaded
-      // this create can be the batch's last name, the wizard has then walked on
-      // to its next step (the default set's file answers every card "No Team",
-      // so it is no longer "Cards with no team"; NEO-489), and the history is not rendered there. The
-      // footer Back is "Back to previous decision/step"; the panel's footer
-      // still carries "Back to Match Cards", which is pressed next.
-      await readBackDecision(page, "Added as new");
-      // The history collapses past five decided names, so after the round trip it
-      // is opened, then THIS name is found.
-      const added = (names: Locator) =>
-        names.getByRole("listitem").filter({ hasText: playerName }).filter({ hasText: "Added as new" });
-      await expectAccessible(page, { within: wizard, label: "Entity review wizard, player decided" });
+    // NEO-496 (D10, NQ1): the default fetch uploads the publisher's checklist, and BSC plus
+    // the checklist are two sources, so Match Cards always stands before the wizard, with
+    // SportLots paused or live. Before NEO-496 a paused run took the solo path, which has
+    // no pairing step to go back to, and this feature went unproved while SportLots was down.
+    // Decide one player, then go back to the pairing step.
+    // READY_TO_CREATE: the create below needs a player whose create is not held
+    // by a career team the walk skipped.
+    await walkToPlayerRow(page, { readyToCreate: true });
+    const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
+    await answerPlayerAsNew(page);
+    // Read the create back off its own row ("Already decided: Added as new"),
+    // never off the "Decided (N)" history: with the reference catalogue loaded
+    // this create can be the batch's last name, the wizard has then walked on
+    // to its next step (the default set's file answers every card "No Team",
+    // so it is no longer "Cards with no team"; NEO-489), and the history is not rendered there. The
+    // footer Back is "Back to previous decision/step"; the panel's footer
+    // still carries "Back to Match Cards", which is pressed next.
+    await readBackDecision(page, "Added as new");
+    // The history collapses past five decided names, so after the round trip it
+    // is opened, then THIS name is found.
+    const added = (names: Locator) =>
+      names.getByRole("listitem").filter({ hasText: playerName }).filter({ hasText: "Added as new" });
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, player decided" });
 
-      await wizard.getByRole("button", { name: "Back to Match Cards" }).click();
-      await expect(wizard).toBeHidden();
-      const confirmMatches = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirmMatches).toBeVisible();
-      await expectAccessible(page, {
-        within: page.getByRole("dialog", { name: /^Match Cards/ }),
-        label: "Match Cards dialog after Back to Match Cards",
-      });
+    await wizard.getByRole("button", { name: "Back to Match Cards" }).click();
+    await expect(wizard).toBeHidden();
+    const confirmMatches = page.getByRole("button", { name: "Confirm card matches", disabled: false });
+    await expect(confirmMatches).toBeVisible();
+    await expectAccessible(page, {
+      within: page.getByRole("dialog", { name: /^Match Cards/ }),
+      label: "Match Cards dialog after Back to Match Cards",
+    });
 
-      // Re-confirming returns to the same review, the decision still on it.
-      await confirmMatches.click();
-      await expect(wizard).toBeVisible({ timeout: 60_000 });
-      // The resumed review opens on a name step (names still undecided) or, when
-      // the create was the last name, past the names. The "Decided (N)" history
-      // renders on name steps and on Save, never on the teams / titles steps, so
-      // in the second shape walk to Save first on the defaults (nothing is saved:
-      // the review is discarded below). A Back that had cancelled the batch would
-      // reopen on a name step with nothing decided and fail the history assert.
-      const nameStepSkip = wizard.getByRole("button", {
-        name: /^Skip .* — (not a person|not a team|this team has no league)$/,
-      });
-      await expect(
-        nameStepSkip
-          .or(wizard.getByRole("button", { name: "Next (Enter)", exact: true }))
-          .or(wizard.getByRole("button", { name: /Confirm & Save/ }))
-          .first(),
-      ).toBeVisible();
-      if (!(await nameStepSkip.first().isVisible())) await advanceToSave(page);
-      await expectAccessible(page, { within: wizard, label: "Entity review wizard, resumed with decision" });
-      // Open the decided list: the player added as new is still on it.
-      await expect(added(await openDecidedList(page))).toBeVisible();
+    // Re-confirming returns to the same review, the decision still on it.
+    await confirmMatches.click();
+    await expect(wizard).toBeVisible({ timeout: 60_000 });
+    // The resumed review opens on a name step (names still undecided) or, when
+    // the create was the last name, past the names. The "Decided (N)" history
+    // renders on name steps and on Save, never on the teams / titles steps, so
+    // in the second shape walk to Save first on the defaults (nothing is saved:
+    // the review is discarded below). A Back that had cancelled the batch would
+    // reopen on a name step with nothing decided and fail the history assert.
+    const nameStepSkip = wizard.getByRole("button", {
+      name: /^Skip .* — (not a person|not a team|this team has no league)$/,
+    });
+    await expect(
+      nameStepSkip
+        .or(wizard.getByRole("button", { name: "Next (Enter)", exact: true }))
+        .or(wizard.getByRole("button", { name: /Confirm & Save/ }))
+        .first(),
+    ).toBeVisible();
+    if (!(await nameStepSkip.first().isVisible())) await advanceToSave(page);
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, resumed with decision" });
+    // Open the decided list: the player added as new is still on it.
+    await expect(added(await openDecidedList(page))).toBeVisible();
 
-      await cancelAndDiscard(page);
-    } else {
-      // The solo path has no pairing step to go back to.
-      await expect(wizard.getByRole("button", { name: /Cancel \(Esc\)/ })).toBeVisible();
-      await expect(wizard.getByRole("button", { name: "Back to Match Cards" })).toBeHidden();
-      await wizard.getByRole("button", { name: /Cancel \(Esc\)/ }).click();
-      await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
-    }
+    await cancelAndDiscard(page);
   },
 );

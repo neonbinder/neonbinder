@@ -1,14 +1,15 @@
 // NEO-490 (R1): WRITTEN, PAUSED UNTIL SPORTLOTS RESUMES. With both marketplaces
 // and a publisher's checklist in the mix, Match Cards is a three-source screen:
-// BSC only, SportLots only and "Your checklist" side by side, and a checklist row
+// BSC only, SportLots only and "Checklist only" side by side, and a checklist row
 // can be linked onto a card in any state: an unmatched card (which moves onto the
 // keep shelf), or a card of a matched pair (whose BSC half keeps its chip when the
 // pair is broken). Taking a kept, linked card off the save list returns its row.
 //
 // WHY IT IS PAUSED, and how: SportLots is paused everywhere the suite runs today
-// (PAUSED_PLATFORMS=sportlots, GUIDE -> "Operator switches"). A one-marketplace
-// sync commits at once and opens no dialog, so the dialog this spec is about has
-// no surface. The suite's way of sitting out is a branch on `env.SL_PAUSED`, never
+// (PAUSED_PLATFORMS=sportlots, GUIDE -> "Operator switches"). Paused, this set's
+// fetch has two sources, BSC and the checklist (NEO-496), not the three this spec
+// is about; the two-source screen is proved by set-checklist-pdf-topps-chrome-2026
+// and checklist-published-numbers-differ-pairs-by-player, which own their sets. The suite's way of sitting out is a branch on `env.SL_PAUSED`, never
 // a skip: the paused branch below proves what the pause shows on this set and
 // returns; the live branch is the flow, and it returns by itself the day the
 // variable is unset. The live branch has NOT been run (it cannot be: nothing may
@@ -46,8 +47,12 @@ import {
 } from "../../support/published-checklist";
 
 const WHOLE = nameFallbackFacts(CHECKLISTS.futureStars2024PublisherNumbering, CHECKLISTS.futureStars2024);
-/** The checklist column's heading: how many rows still wait for a card ("all linked!" when none). */
-const yourChecklist = (unlinked: number) => (unlinked === 0 ? "Your checklist (all linked!)" : `Your checklist (${unlinked} to link)`);
+/**
+ * The checklist column's heading: how many rows still wait for a card or a Keep. NEO-496 renamed it
+ * from "Your checklist (N to link)" / "(all linked!)" to "Checklist only (N)", in the words of the
+ * "BSC only (N)" column beside it (CardPairingModal `checklistColumnHeading`).
+ */
+const yourChecklist = (unlinked: number) => `Checklist only (${unlinked})`;
 
 test(
   "Checklist — with both marketplaces, Match Cards is three columns and a checklist row links to an unmatched card, keeps a broken pair's BSC half, and returns when its card is removed",
@@ -87,7 +92,7 @@ test(
     const seedChip = publishersChecklistChip(page, WHOLE.cards);
     await expect(publishersChecklistButton(page).or(seedChip).first()).toBeVisible();
     if (await seedChip.isVisible()) {
-      await page.getByRole("button", { name: "Remove the publisher's checklist" }).click();
+      await page.getByRole("button", { name: "Remove the official checklist" }).click();
     }
     await expect(publishersChecklistButton(page)).toBeVisible();
     await usePublishersChecklist(page, CHECKLISTS.futureStars2024PublisherNumbering);
@@ -101,14 +106,14 @@ test(
     await expect(dialog.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible({ timeout: 90_000 });
 
     // The 19 name pairs are pre-linked on the matched pairs (the counts differ, so nothing was applied by
-    // the fetch): the checklist column reads "all linked!" and Brayan Rocchio's card has no row.
+    // the fetch): the checklist column reads "Checklist only (0)" and Brayan Rocchio's card has no row.
     await expect(dialog.getByRole("heading", { name: yourChecklist(WHOLE.rows - WHOLE.suggested) })).toBeVisible();
     await expect(dialog.getByRole("button", { name: /^Unlink checklist row #101 .* from #FS-1 / })).toBeVisible();
 
     // ── STEP 1: pull #FS-2's row off its card and break its pair, so a BSC-only card (#FS-2), a
     // SportLots-only card and an unlinked row (#102) are all on screen: three columns.
     await dialog.getByRole("button", { name: /^Unlink checklist row #102 .* from #FS-2 / }).click();
-    await expect(dialog.getByRole("button", { name: /^Select #102 Gunnar Henderson/ })).toBeVisible();
+    await expect(dialog.getByRole("radio", { name: /^Select #102 Gunnar Henderson/ })).toBeVisible();
     await dialog.getByRole("button", { name: /^Unlink #FS-2 / }).click();
     await expect(dialog.getByRole("heading", { name: /^BSC only \(1\)$/ })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: /^SportLots only \(1\)$/ })).toBeVisible();
@@ -116,19 +121,19 @@ test(
     await expect(dialog.getByRole("textbox", { name: "Filter checklist rows" })).toBeVisible();
 
     // ── STEP 2: link the row onto the unmatched BSC card; the card moves onto its keep shelf.
-    await dialog.getByRole("button", { name: /^Select #102 Gunnar Henderson/ }).click();
+    await dialog.getByRole("radio", { name: /^Select #102 Gunnar Henderson/ }).click();
     await dialog.getByRole("button", { name: /^Link selected checklist row to #FS-2 / }).click();
     await expect(dialog.getByRole("heading", { name: /^BSC only \(0\)$/ })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: /^Keeping \(1\)$/ })).toBeVisible();
     const kept = dialog.getByRole("listitem").filter({ hasText: /^BSC: #FS-2 / });
-    await expect(kept).toContainText("Checklist #102");
+    await expect(kept).toContainText("Checklist: #102");
     await expect(dialog.getByRole("heading", { name: yourChecklist(0) })).toBeVisible();
 
     // ── STEP 3: break a linked pair. #FS-1's pair carries row #101; Unlink splits it, and the BSC half
     // keeps its "Checklist #101" chip (on the keep shelf), while the SportLots half waits in its column.
     await dialog.getByRole("button", { name: /^Unlink #FS-1 / }).click();
     await expect(dialog.getByRole("heading", { name: /^Keeping \(2\)$/ })).toBeVisible();
-    await expect(dialog.getByRole("listitem").filter({ hasText: /^BSC: #FS-1 / })).toContainText("Checklist #101");
+    await expect(dialog.getByRole("listitem").filter({ hasText: /^BSC: #FS-1 / })).toContainText("Checklist: #101");
     await expect(dialog.getByRole("button", { name: /^Unlink checklist row #101 .* from #FS-1 / })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: /^SportLots only \(2\)$/ })).toBeVisible();
 
@@ -138,7 +143,7 @@ test(
     // ── STEP 4: take the kept, linked #FS-2 card off the save list; its row returns to the list.
     await dialog.getByRole("button", { name: /^Remove #FS-2 .* from save list$/ }).click();
     await expect(dialog.getByRole("heading", { name: /^Keeping \(1\)$/ })).toBeVisible();
-    await expect(dialog.getByRole("button", { name: /^Select #102 Gunnar Henderson/ })).toBeVisible();
+    await expect(dialog.getByRole("radio", { name: /^Select #102 Gunnar Henderson/ })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: yourChecklist(1) })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: /^BSC only \(1\)$/ })).toBeVisible();
 

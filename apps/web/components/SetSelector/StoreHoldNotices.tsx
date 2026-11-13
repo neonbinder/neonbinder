@@ -14,6 +14,7 @@ import {
 import {
   ATTACH_MORE_LABEL,
   CUSTOM_BUTTON_LABEL,
+  EDIT_ATTRIBUTES_LABEL,
   MULTI_SOURCE_HEADING,
 } from "./control-labels";
 
@@ -177,7 +178,7 @@ function SiblingHoldsBox({
             <li key={`${i}-${w.label}`}>
               <span className="font-medium">{w.label}</span>
               <span className="block text-xs opacity-90">
-                {SIBLING_REASON_LINE[siblingFamily(w.reason)]}
+                {siblingReasonLine(w.reason, w.rows.length)}
               </span>
               {w.rows.length > 0 && (
                 <ul className="pl-3 text-xs">
@@ -253,13 +254,19 @@ function RefusedRenamesBox({
  *    marketplace id, or by name).
  *  - `link`  — the line's link is already on more than one row here.
  *  - `split` — its BSC link names one row and its SportLots link another.
+ *  - `sectionName` (NEO-496) — a checklist section made its own set, but a
+ *    set here already has that name.
+ *  - `section` (NEO-496) — the line's checklist section is already used by
+ *    another set (here, or under another variant type).
  */
-export type SiblingFamily = "name" | "twice" | "link" | "split";
+export type SiblingFamily = "name" | "sectionName" | "twice" | "link" | "section" | "split";
 
 const SIBLING_FAMILY_ORDER: readonly SiblingFamily[] = [
   "name",
+  "sectionName",
   "twice",
   "link",
+  "section",
   "split",
 ];
 
@@ -274,6 +281,10 @@ export function siblingFamily(reason: SiblingWithholdReason): SiblingFamily {
       return "link";
     case "idsPointAtDifferentRows":
       return "split";
+    case "nameTakenBySibling":
+      return "sectionName";
+    case "checklistKeyHeldByMany":
+      return "section";
     case "nameSharedBySiblings":
     case "nameLinkedToOtherSet":
     case "noIdToAttach":
@@ -300,16 +311,22 @@ export function siblingHoldSummary(n: number): string {
 
 /**
  * DRAFT (NEO-325). What to do, one line per family present. The verbs are the
- * controls' own: "Detach" (MultiSourcePanel's detach confirm) and "Attach"
- * (its `ATTACH_MORE_LABEL` button). Never "link", "take off" or "move".
+ * controls' own: "Detach" (MultiSourcePanel's detach confirm), "Attach" (its
+ * `ATTACH_MORE_LABEL` button) and "map" (the Reconcile dialog's own word: its
+ * "already mapped" and "Remove this mapping"). Never "link", "pair", "take
+ * off" or "move".
  */
 export const SIBLING_FIX: Record<SiblingFamily, string> = {
   name: "Name taken? Sync again and give it a name of its own.",
   twice:
-    "Doubled up? Sync again: pair just one with that set and give the other a name of its own.",
+    "Doubled up? Sync again: map just one to that set and give the other a name of its own.",
   link: "On two sets? Detach it from the extra one, then sync again.",
   split:
     "Split across two sets? Detach one and Attach it on the other set, then sync again.",
+  // NEO-496 — "map" and "Remove" are the Reconcile dialog's own words (its
+  // mapping, and the "Remove this section" control on a set's section).
+  sectionName: "Name taken? Sync again and map the section to the set that already has that name.",
+  section: "Section already on another set? Remove it there, then sync again.",
 };
 
 /** DRAFT (NEO-325). The line under each item, before the rows it names. */
@@ -318,7 +335,19 @@ export const SIBLING_REASON_LINE: Record<SiblingFamily, string> = {
   twice: "Points at the same set as another one in this save:",
   link: "Its link is already on more than one set:",
   split: "Its BSC and SportLots links point at different sets:",
+  sectionName: "A set here already goes by that name:",
+  section: "Its checklist section is already on another set:",
 };
+
+/**
+ * The line under a held item. It ends in a colon when the sets it names
+ * follow, and in a full stop when the store named none (the set is under
+ * another variant type, or the reason names no set).
+ */
+export function siblingReasonLine(reason: SiblingWithholdReason, rowCount: number): string {
+  const line = SIBLING_REASON_LINE[siblingFamily(reason)];
+  return rowCount > 0 ? line : line.replace(/:$/, ".");
+}
 
 /** DRAFT (NEO-325). */
 export function refusedRenameSummary(n: number): string {
@@ -426,12 +455,13 @@ export const LINKED_FIX =
  * A retry hits the same bound, so the fix is the manual attach, named by its
  * visible labels: the column's "+ Custom" (EntityColumn) makes the row, and
  * the selected row's "Multi-source sets" panel has "Attach more…"
- * (MultiSourcePanel). The labels come from `control-labels`, the same
+ * (MultiSourcePanel), inside its attributes panel since NEO-496, so the
+ * line says to open it first. The labels come from `control-labels`, the same
  * constants those components render, so a rename cannot leave this stale.
  * `attachPlatformIds` does not walk the set, so it works on a set past the
  * bound.
  */
-export const UNCHECKED_FIX = `You can still add it by hand: pick its row, or make one with ${CUSTOM_BUTTON_LABEL}, then use ${ATTACH_MORE_LABEL} under ${MULTI_SOURCE_HEADING}.`;
+export const UNCHECKED_FIX = `You can still add it by hand: pick its row, or make one with ${CUSTOM_BUTTON_LABEL}, then open ${EDIT_ATTRIBUTES_LABEL} and use ${ATTACH_MORE_LABEL} under ${MULTI_SOURCE_HEADING}.`;
 
 /** DRAFT. The line under each withheld item, before the rows it names. */
 export function reasonLine(reason: WithheldElsewhereEntry["reason"]): string {

@@ -15,10 +15,34 @@
  *
  * What a link never does: change the card's number (the card keeps the number
  * it was fetched with), touch `platformData`, or write a row anywhere. An
- * unlinked row is simply dropped at Confirm.
+ * unlinked row is dropped at Confirm unless the operator kept it (NEO-496).
+ *
+ * NEO-496: the rows now reach the dialog as `checklistOnly` candidates, so a
+ * stored checklist (whose rows the client never holds) and a pasted one are
+ * linked the same way; `checklistRowOf` in the dialog turns one back into a
+ * `ChecklistLinkRow` for the question.
  */
 
 import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
+import type { PairingCard } from "./CardPairingModal";
+
+/**
+ * NEO-496 — a card as Match Cards hands it on: the wire-only fields the dialog
+ * reads (`checklistLink`, the server's checklist pairing; `checklistRowId`, a
+ * checklist-only row's candidate id) taken off, because entity resolution and
+ * the commit validate cards strictly and refuse a field they do not know. A
+ * card carrying neither is returned by reference. Used by the dialog's
+ * Confirm and by the one-source auto-keep path, so both hand on the same card.
+ */
+export function committable<C extends PairingCard>(card: C): C {
+  if (card.checklistLink === undefined && card.checklistRowId === undefined) {
+    return card;
+  }
+  const out: C = { ...card };
+  delete out.checklistLink;
+  delete out.checklistRowId;
+  return out;
+}
 
 /** One row of the uploaded checklist, as the dialog lists it. */
 export type ChecklistLinkRow = {
@@ -180,9 +204,118 @@ export function applyChecklistAnswers<C extends AnswerableCard>(
   });
 }
 
-/** How many of these cards took their team from the checklist. */
-export function countChecklistTeams(
-  cards: readonly { teamLookup?: TeamLookupOutcome }[],
-): number {
-  return cards.filter((c) => c.teamLookup === "checklist").length;
+/**
+ * NEO-496 — the publisher row the server paired a fetched card with, as
+ * `checklistCandidates.checklistLink.row` carries it
+ * (`checklistPairedRowValidator`): the row as Match Cards lists one, plus the
+ * name it has as a card of its own.
+ */
+export type ServerPairedRow = {
+  number: string;
+  players: string[];
+  teams: string[];
+  noNumber?: true;
+  noTeam?: true;
+  cardName: string;
+};
+
+/**
+ * NEO-496 — the card as it was before the server applied its paired row
+ * (`checklistPairRevertValidator`). See that validator for each field.
+ */
+export type ServerPairRevert = {
+  players?: string[];
+  teamsFromRow: boolean;
+  teams?: string[];
+  teamLookup?: "failed";
+};
+
+type ServerLinkedCard = PairingCard & {
+  checklistLink: NonNullable<PairingCard["checklistLink"]> & {
+    row: ServerPairedRow;
+    revert: ServerPairRevert;
+  };
+};
+
+/**
+ * NEO-496 — can the operator undo this card's server pairing? Only when the
+ * link carries both the row (to list again) and the revert (to put the card
+ * back). A pair stored before those existed cannot be undone here: nothing
+ * says what the card was before the row, and guessing would be rule 8's
+ * guess.
+ */
+export function unlinkableServerPair(card: PairingCard): card is ServerLinkedCard {
+  return !!card.checklistLink?.row && !!card.checklistLink.revert;
+}
+
+/** The paired row as the dialog lists a row (`ChecklistLinkRow`). */
+export function pairedRowOf(row: ServerPairedRow): ChecklistLinkRow {
+  return {
+    number: row.number,
+    players: [...row.players],
+    teams: [...row.teams],
+    ...(row.noNumber ? { noNumber: true as const } : {}),
+    ...(row.noTeam ? { noTeam: true as const } : {}),
+  };
+}
+
+/**
+ * Prefix of the `checklistRowId` an unlinked row is listed under. It never
+ * came from the stream, so it must not collide with a streamed candidate's
+ * id (`ABSORB` tells re-delivered rows apart by it); wire-only like every
+ * `checklistRowId`, so `committable` takes it off.
+ */
+export const UNLINKED_ROW_ID_PREFIX = "unlinked:";
+
+/**
+ * The paired row as a checklist-only card: exactly what the fetch publishes
+ * for a row no card paired (`checklistOnlyCard` on the server). Its team is
+ * the checklist's answer (`teamLookup: "checklist"`) when the row names one
+ * or says No Team; a row naming no team makes no claim.
+ */
+export function pairedRowCard(row: ServerPairedRow, rowId: string): PairingCard {
+  const claimsTeam = row.teams.length > 0 || row.noTeam === true;
+  return {
+    cardNumber: row.number,
+    cardName: row.cardName,
+    ...(row.players.length > 0 ? { players: [...row.players] } : {}),
+    ...(claimsTeam ? { teams: [...row.teams], teamLookup: "checklist" as const } : {}),
+    platformData: {},
+    checklistRowId: rowId,
+  };
+}
+
+/**
+ * NEO-496 — the card with its server pairing undone: no link, no checklist
+ * disagreement (it was with the row), and the players and teams it had
+ * before the row.
+ *
+ *  - players: `revert.players`; absent means the card had none (the row
+ *    filled them), so it has none again.
+ *  - teams: only when the row settled them (`teamsFromRow`). Then the card's
+ *    own teams come back (absent: none) and so does its lookup outcome:
+ *    `"failed"` when BSC was never asked because the row answered, which is
+ *    the operator-picks state (rule 8: missing data is never guessed).
+ *    Otherwise the teams were the card's own, or its lookup's, and stay.
+ *
+ * Returns `null` for a card with no undoable pairing. The number, name and
+ * `platformData` are never touched.
+ */
+export function revertServerChecklistPair<C extends PairingCard>(card: C): C | null {
+  if (!unlinkableServerPair(card)) return null;
+  const { revert } = card.checklistLink;
+  const next: C = { ...card };
+  // Written through the base shape: these are the fields an Unlink owns.
+  const out: PairingCard = next;
+  delete out.checklistLink;
+  delete out.checklistConflict;
+  if (revert.players && revert.players.length > 0) out.players = [...revert.players];
+  else delete out.players;
+  if (revert.teamsFromRow) {
+    if (revert.teams && revert.teams.length > 0) out.teams = [...revert.teams];
+    else delete out.teams;
+    if (revert.teamLookup) out.teamLookup = revert.teamLookup;
+    else delete out.teamLookup;
+  }
+  return next;
 }

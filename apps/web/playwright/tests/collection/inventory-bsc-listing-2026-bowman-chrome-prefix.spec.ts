@@ -73,7 +73,7 @@ import {
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { bscReadCeiling, expectAfterMarketplace } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnOption,
   columnSearch,
@@ -226,7 +226,6 @@ async function clearCommonPrice(page: Page, checklist: Locator, was: string): Pr
  */
 async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
   const wizard = reviewWizard(page);
-  const pairing = page.getByRole("dialog", { name: /^Match Cards/ });
   const noCards = page.getByText("No cards in this checklist yet.");
   const someCard = page.getByText(/^#[0-9]/).first();
 
@@ -244,23 +243,12 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     // card one by one; the bulk checklist itself is still a live BSC round trip.
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowman2026Base);
     await syncChecklistButton(page).click();
-    await expectAfterMarketplace(page, pairing.or(wizard).or(page.getByText(/Kept all [0-9]+ cards? from BSC/)).first(), {
-      platform: BSC,
-      what: "the Base fetch landing",
-    });
-    if (await pairing.isVisible()) {
-      // SportLots live: two sides to pair. Keep every card only one side has, then confirm.
-      const confirm = pairing.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expectAfterMarketplace(page, confirm, { platform: BSC, what: "the pairing dialog's Confirm" });
-      for (const side of ["BSC", "SportLots"]) {
-        const unmatched = pairing.getByRole("heading", { name: new RegExp(`^${side} only \\([1-9][0-9]*\\)$`) });
-        if (await unmatched.isVisible()) await pairing.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
-      }
-      await confirm.click();
-      await expect(pairing).toBeHidden();
-    }
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
+    // opens with SportLots paused or live. The helper waits on it with
+    // `expectAfterMarketplace`, proves the teams line while it is open (the line is gone
+    // once the wizard takes over), keeps every card only one marketplace has, confirms.
+    await confirmChecklistMatchCards(page, { facts, what: "the Base fetch" });
     await expect(wizard).toBeVisible();
-    await expectTeamsFromChecklist(page, facts);
     // The names the catalogue does not know: added as new, in bulk, then any
     // team, league or pick step one at a time (the seed's walk).
     await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();

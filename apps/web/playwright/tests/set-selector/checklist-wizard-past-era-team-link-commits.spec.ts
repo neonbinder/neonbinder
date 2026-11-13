@@ -68,9 +68,9 @@ test(
     // R2(a): the notice counts what reached the review: ONE name, and it was LINKED for the
     // operator (NEO-490: Foxx's own career picks the era), not asked. The set's other clubs,
     // Brooklyn Dodgers included, were settled before it. NEO-335: one count, no per-type split.
-    await expect(
-      page.getByText(/Kept all [0-9]+ cards from BSC.* 1 name was linked for you\. Give it a look before this saves\./),
-    ).toBeVisible();
+    // NEO-496: the uploaded checklist is a second source, so the fetch went through Match Cards
+    // (the helper confirmed it) and no "Kept all … from BSC" line leads the notice any more.
+    await expect(page.getByText(/1 name was linked for you\. Give it a look before this saves\./)).toBeVisible();
     // The only name is decided, so the wizard stands on the Save step (nothing left to ask).
     await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
     const decided = await openDecidedList(page);

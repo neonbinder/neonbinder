@@ -220,6 +220,13 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 
 `notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and a red rule (#C4001F). A notice is not a button: buttons never borrow its red.
 
+A notice ink also stands alone as text on a dialog's `raised-deep` ground, with no tinted ground under it. Measured pairs that screens rely on, pinned by name in `tokens.test.tsx` (the adversarial sweep there covers every other text-on-surface pair):
+
+| Text | Ground | Where | Dark | Light |
+|---|---|---|---|---|
+| `notice-warn-ink` | `raised-deep` | Reconcile's paused and unasked pane | 12.26:1 | 7.74:1 |
+| `neon-green-text` | `raised-deep` | Match Cards' outline Keep buttons on a column | 9.01:1 | 5.46:1 |
+
 ### State that differs by mode
 
 - **`selection-line`**: transparent in dark, #006DA6 in light. Where a selection is otherwise a fill, a tint alone is a colour-only mark on paper (WCAG 1.4.1), so light adds a line. Applied through the `selection-edge` utility.

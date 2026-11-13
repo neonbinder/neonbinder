@@ -1,9 +1,10 @@
 // Origin: .maestro/flows/set-selector/multi-source-panel-opens-dialog.yaml (Maestro suite retired in NEO-341; see git history)
-// The Multi-source sets panel on a mapped Base variant: "Attach more" opens
+// The Multi-source sets panel on a mapped Base variant (inside its attributes
+// panel since NEO-496): "Attach more" opens
 // the picker dialog, a BSC search lists matches, SportLots lists candidates
 // (or is empty while paused), and Cancel closes it again. Read-only.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { drillToBaseVariant, setBuilderReady } from "../../support/set-builder";
+import { drillToBaseVariant, openAttributesPanel, setBuilderReady } from "../../support/set-builder";
 
 test(
   "Multi-source sets panel — Attach more dialog opens and cancels",
@@ -12,6 +13,8 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await drillToBaseVariant(page, env);
+    // NEO-496: the sources live inside the attributes panel, closed below the set.
+    await openAttributesPanel(page);
 
     const panelHeading = page.getByRole("heading", { name: "Multi-source sets" });
     await expect(panelHeading).toBeVisible();

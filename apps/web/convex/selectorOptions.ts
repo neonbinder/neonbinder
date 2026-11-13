@@ -285,6 +285,12 @@ import {
 // NEO-253: the shared normalisation core, imported rather than transcribed —
 // this file used to carry two separate hand copies of it.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+// NEO-496: the player-name score and pairing rule, shared with the publisher
+// checklist matcher (lib/checklists/match-published-checklist.ts).
+import {
+  PLAYER_NAME_AUTO_LINK,
+  pairNamesBySimilarity,
+} from "../lib/cards/name-similarity";
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
@@ -307,6 +313,7 @@ import {
 // PR 451 (NEO-478 / NEO-487) — the publisher checklist's pairing (pure, rule
 // 7), the shared team splitter, and the "Waiting on BuySportsCards…" run key.
 import {
+  isNoNumber,
   matchPublishedChecklist,
   rowHasNoNumber,
 } from "../lib/checklists/match-published-checklist";
@@ -322,14 +329,30 @@ import {
   applyChecklistRow,
   checklistTeamTextNeedsResolving,
 } from "../lib/checklists/apply-published-row";
+// NEO-496 — "Teams from your checklist: N of M cards", one definition for the
+// fetch's line and the save's line (Match Cards recounts with it).
+import { tallyFetchChecklistTeams } from "../lib/checklists/checklist-teams-tally";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
 import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
+import {
+  checkPublishedChecklist,
+  publishedChecklistValidator,
+  type PublishedChecklistStoredRow,
+} from "./lib/publishedChecklistCheck";
+import { sweepPublishedChecklistStateForDeletedRow } from "./publishedChecklists";
+import { classifySections } from "../lib/checklists/classify-sections";
+import {
+  newChecklistLinkWriteCache,
+  setRowChecklistSections,
+} from "./lib/publishedChecklistSections";
 import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
 import {
   cardPlatformDataValidator,
   cardPlatformWireDataValidator,
   cardTeamLookupValidator,
   checklistConflictValidator,
+  checklistPairRevertValidator,
+  checklistPairedRowValidator,
   selectorOptionFields,
   selectorOptionLevelValidator,
 } from "./schema";
@@ -4751,6 +4774,11 @@ export const renamePlatformLabel = mutation({
 //
 // Deliberately NOT here: any cascade. A row with something below it is
 // refused with what it holds, and the operator empties it first.
+//
+// NEO-496 — a set's publisher checklist and the rows' section links are NOT
+// holdings: they are set data that means nothing without the row, so they
+// are swept with it (`sweepPublishedChecklistStateForDeletedRow`), bounded by
+// TRANSIENT_DELETE_CAP like the other transient state.
 
 /** Ceiling on how many holding rows are read to produce a count. */
 const HOLDING_SCAN_CAP = 1000;
@@ -5139,6 +5167,16 @@ export async function deleteEmptySelectorOptionRow(
       .take(TRANSIENT_DELETE_CAP);
     for (const doc of statuses) await ctx.db.delete(doc._id);
   }
+
+  // NEO-496 — the publisher checklist state keyed on the row goes with it: a
+  // variant row's section links, and for a set row its checklists (retired
+  // here, their sections and rows deleted by the scheduled purge) and the
+  // links written under it. Capped like every sweep here; the link writer's
+  // own caps (50 per row, 4,000 per set) keep real counts far below it, and
+  // a set is only deletable once its variant rows (and so their links) are
+  // gone. Never a holding: a checklist is set data that means nothing
+  // without the set.
+  await sweepPublishedChecklistStateForDeletedRow(ctx, row, TRANSIENT_DELETE_CAP);
 
   // NEO-306 — a brand's pending SportLots review (one doc per year+brand) is
   // transient state keyed on the row, like the status rows above.
@@ -8855,13 +8893,21 @@ export const setVariantTypePlatformData = mutation({
     // that slot at whatever the other session just mapped. Refuse instead and
     // let the operator re-read.
     baseVersion: v.optional(v.number()),
+    /**
+     * NEO-496 (D7, Q4) — the publisher-checklist sections the Base uses
+     * ("Base" + "Base Rated Prospects"). Absent: its links are untouched.
+     * Present: REPLACED with these (`[]` clears), through
+     * `setRowChecklistSections`; refused when a key is not in the set's
+     * ready checklist.
+     */
+    checklistSectionKeys: v.optional(v.array(v.string())),
   },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
   }),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const adminUserId = await requireAdmin(ctx);
     const row = await ctx.db.get(args.variantTypeId);
     if (!row) {
       throw new Error("Variant type row not found");
@@ -9017,6 +9063,22 @@ export const setVariantTypePlatformData = mutation({
     ) {
       merged.platformSlotSeq = working.platformSlotSeq;
     }
+    // NEO-496 — the Base's checklist sections, when the picker sent them.
+    if (args.checklistSectionKeys !== undefined) {
+      if (!row.parentId) {
+        throw new ConvexError("This Base is not inside a set.");
+      }
+      await setRowChecklistSections(
+        ctx,
+        {
+          rowId: row._id,
+          setId: row.parentId,
+          keys: args.checklistSectionKeys,
+          userId: adminUserId,
+        },
+        newChecklistLinkWriteCache(),
+      );
+    }
     await ctx.db.patch(args.variantTypeId, merged);
     return { success: true, message: "Stored Base mapping" };
   },
@@ -9091,6 +9153,15 @@ type SetBuilderResetResult = {
    * cards they name.
    */
   marketplaceListingDeleted: number;
+  /**
+   * NEO-496 — the sets' publisher checklists: rows' section links, then the
+   * row chunks, the sections and the headers, all before the selector rows
+   * they name.
+   */
+  publishedChecklistLinksDeleted: number;
+  publishedChecklistChunksDeleted: number;
+  publishedChecklistSectionsDeleted: number;
+  publishedChecklistsDeleted: number;
   selectorOptionsDeleted: number;
   /** NEO-313 — the derived player → cards index, drained before the cards. */
   cardPlayerLinksDeleted: number;
@@ -9219,6 +9290,10 @@ async function runSetBuilderReset(
     intakeRunsDeleted: 0,
     placeholderJobsDeleted: 0,
     marketplaceListingDeleted: 0,
+    publishedChecklistLinksDeleted: 0,
+    publishedChecklistChunksDeleted: 0,
+    publishedChecklistSectionsDeleted: 0,
+    publishedChecklistsDeleted: 0,
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
     cardTeamLinksDeleted: 0,
@@ -9345,6 +9420,29 @@ async function runSetBuilderReset(
     [
       "marketplaceListingDeleted",
       internal.selectorOptions.resetMarketplaceListingBatch,
+    ],
+    // NEO-496 — the sets' publisher checklists. Links name a variant row and
+    // a set, headers a set, so all four go BEFORE the selector rows. Links
+    // first (they name sections only by key), then chunks before the
+    // sections they belong to, then sections before their headers, so an
+    // interrupted reset never leaves a row pointing at a deleted parent. Not
+    // reference-seed tables: every scope drains them, so the reference-seed
+    // import never lands set ids a leftover checklist still names.
+    [
+      "publishedChecklistLinksDeleted",
+      internal.selectorOptions.resetPublishedChecklistLinksBatch,
+    ],
+    [
+      "publishedChecklistChunksDeleted",
+      internal.selectorOptions.resetPublishedChecklistChunksBatch,
+    ],
+    [
+      "publishedChecklistSectionsDeleted",
+      internal.selectorOptions.resetPublishedChecklistSectionsBatch,
+    ],
+    [
+      "publishedChecklistsDeleted",
+      internal.selectorOptions.resetPublishedChecklistsBatch,
     ],
     // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
     // parent, de-duplicated — the biggest real case is a year's set list,
@@ -9512,7 +9610,9 @@ const RESET_BATCH_SIZE = 500;
 
 /**
  * The ONLY entry point to the Set Builder reset (NEO-214). Wipes
- * `slSetReviews`, `selectorOptions`, `cardPlayerLinks`, `cardChecklist`,
+ * `slSetReviews`, the four NEO-496 publisher-checklist tables
+ * (`publishedChecklistLinks`, `publishedChecklistChunks`,
+ * `publishedChecklistSections`, `publishedChecklists`), `selectorOptions`, `cardPlayerLinks`, `cardChecklist`,
  * `cardCrossListings`, `entityReviewQueue`, `checklistCandidates`,
  * `playerSports`, `players`, `playerAliases`, `teams`, `teamAliases`,
  * `franchises` and `leagues`. With `scope: "exceptReferenceSeed"` (NEO-330)
@@ -9611,6 +9711,11 @@ export const resetSetBuilderDataFromCli = internalAction({
     placeholderJobsDeleted: v.number(),
     // NEO-370 — collectors' marketplace listing rows, all four tables.
     marketplaceListingDeleted: v.number(),
+    // NEO-496 — the sets' publisher checklists, four tables.
+    publishedChecklistLinksDeleted: v.number(),
+    publishedChecklistChunksDeleted: v.number(),
+    publishedChecklistSectionsDeleted: v.number(),
+    publishedChecklistsDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
     // NEO-313 — the derived player → cards index.
     cardPlayerLinksDeleted: v.number(),
@@ -9808,6 +9913,99 @@ export const resetMarketplaceWaitsBatch = internalMutation({
   handler: async (ctx) => {
     assertResetArmed();
     const rows = await ctx.db.query("marketplaceWaits").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * NEO-496 — a publisher-checklist chunk holds up to 256 KiB of rows, so its
+ * reset batch is sized by bytes, not by the 500-row page: 24 chunks is ~6 MiB
+ * read, inside a mutation's read limit.
+ */
+const RESET_PUBLISHED_CHECKLIST_CHUNKS_BATCH = 24;
+
+/**
+ * Internal: drain `publishedChecklistLinks` (NEO-496), looped by
+ * `runSetBuilderReset` before the selector rows each link names.
+ */
+export const resetPublishedChecklistLinksBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("publishedChecklistLinks").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `publishedChecklistChunks` (NEO-496), before the sections
+ * they belong to; 24 per batch (see RESET_PUBLISHED_CHECKLIST_CHUNKS_BATCH).
+ */
+export const resetPublishedChecklistChunksBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("publishedChecklistChunks")
+      .take(RESET_PUBLISHED_CHECKLIST_CHUNKS_BATCH);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return {
+      deleted: rows.length,
+      hasMore: rows.length === RESET_PUBLISHED_CHECKLIST_CHUNKS_BATCH,
+    };
+  },
+});
+
+/**
+ * Internal: drain `publishedChecklistSections` (NEO-496), after their chunks
+ * and before their headers.
+ */
+export const resetPublishedChecklistSectionsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("publishedChecklistSections").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `publishedChecklists` (NEO-496), the headers, after their
+ * sections and before the set rows they name. A purge still scheduled for a
+ * drained header finds it gone and stops.
+ */
+export const resetPublishedChecklistsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("publishedChecklists").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -11643,6 +11841,63 @@ const EMPTY_SYNC_RESULT = {
   twinsLeftTotal: 0,
 };
 
+/** NEO-496 — the set's own names as a publisher prints them on a section's front. */
+function checklistSetNames(
+  parentFilters: { year?: string; setName?: string } | undefined,
+): string[] {
+  const setName = parentFilters?.setName;
+  if (!setName) return [];
+  return parentFilters?.year ? [setName, `${parentFilters.year} ${setName}`] : [setName];
+}
+
+/** NEO-496 (D16) — the title each variant-type kind gets when a checklist adds it. */
+const CHECKLIST_KIND_TITLES: Array<{ kind: "base" | "insert" | "parallel"; title: string }> = [
+  { kind: "base", title: "Base" },
+  { kind: "insert", title: "Inserts" },
+  { kind: "parallel", title: "Parallels" },
+];
+
+/**
+ * NEO-496 (D16) — the variant types a set's ready checklist calls for that
+ * the set does not have yet: Base when it has a base section, Inserts when
+ * it has another root section, Parallels when a section extends the base
+ * (`classifySections`, from the publisher's own section names). A kind is
+ * left out when a sibling or an incoming marketplace option already has it,
+ * by its word (`sameTitleWord`) or its kind. Additive and id-less: the store
+ * inserts each as a plain row. `[]` with no ready checklist.
+ */
+async function checklistVariantTypeOptions(
+  ctx: Pick<ActionCtx, "runQuery">,
+  setId: Id<"selectorOptions">,
+  setNames: string[],
+  incomingTitles: readonly string[],
+): Promise<Array<{ value: string; platformData: Record<string, never> }>> {
+  const stored = await ctx.runQuery(internal.publishedChecklists.sectionsForSet, { setId });
+  if (!stored || stored.sections.length === 0) return [];
+  // The stored summaries carry each section's number range, so the kinds are
+  // number-aware. A base subset asks for no type of its own: it is the Base's.
+  const { base, sections } = classifySections(stored.sections, { setNames });
+  const wanted = new Set<"base" | "insert" | "parallel">();
+  if (base !== null) wanted.add("base");
+  if (sections.some((s) => s.kind === "other" && s.parent === undefined)) wanted.add("insert");
+  if (sections.some((s) => s.kind === "base-child")) wanted.add("parallel");
+  if (wanted.size === 0) return [];
+
+  const siblings = await ctx.runQuery(api.selectorOptions.getSelectorOptions, {
+    level: "variantType",
+    parentId: setId,
+  });
+  const titles = [...siblings.map((row: { value: string }) => row.value), ...incomingTitles];
+  return CHECKLIST_KIND_TITLES.filter(
+    ({ kind, title }) =>
+      wanted.has(kind) &&
+      !titles.some(
+        (existing) =>
+          sameTitleWord(existing, title) || variantTypeKindFromTitle(existing) === kind,
+      ),
+  ).map(({ title }) => ({ value: title, platformData: {} }));
+}
+
 export const fetchAggregatedOptions = action({
   args: {
     level: levelValidator,
@@ -11868,6 +12123,33 @@ export const fetchAggregatedOptions = action({
       // happened and `NO_MARKETPLACE_IDS_MESSAGE` would send the operator to
       // attach an id they may already have. The paused sentence leads, and the
       // other side gets the no-ids sentence only if it models this level.
+      // NEO-496 (D16) — a set's checklist names its variant types with no
+      // marketplace behind it: those kinds are stored even when neither side
+      // can be asked (no coverage, so nothing is unlinked).
+      if (skippedSides.length === 2 && level === "variantType" && parentId) {
+        const kindOptions = await checklistVariantTypeOptions(
+          ctx,
+          parentId,
+          checklistSetNames(parentFilters),
+          [],
+        );
+        if (kindOptions.length > 0) {
+          const stored = await storeSelectorOptionsUntilDone(ctx, {
+            level,
+            options: kindOptions,
+            parentId,
+            coveredSides: [],
+          });
+          return {
+            ...EMPTY_SYNC_RESULT,
+            success: true,
+            message: `Added ${stored.optionsCount} variant type${stored.optionsCount === 1 ? "" : "s"} from your checklist.`,
+            optionsCount: stored.optionsCount,
+            skippedSides,
+            pausedSides: pausedList,
+          };
+        }
+      }
       if (skippedSides.length === 2) {
         await recordAdapterCall(ctx, {
           requestId,
@@ -12328,11 +12610,22 @@ export const fetchAggregatedOptions = action({
       // NEO-296 — replayed until the store has the whole list; see
       // `storeSelectorOptionsUntilDone`. A year-level SportLots list runs to
       // thousands of sets, which is past what one transaction may write.
+      // NEO-496 (D16) — and the kinds the set's checklist calls for that
+      // neither the set nor this fetch has (`checklistVariantTypeOptions`).
+      const checklistKinds =
+        level === "variantType" && parentId
+          ? await checklistVariantTypeOptions(
+              ctx,
+              parentId,
+              checklistSetNames(parentFilters),
+              deduped.map((option) => option.value),
+            )
+          : [];
       const result = await storeSelectorOptionsUntilDone(
         ctx,
         {
           level,
-          options: deduped,
+          options: checklistKinds.length > 0 ? [...deduped, ...checklistKinds] : deduped,
           parentId,
           coveredSides,
           // A non-serving side's key is OMITTED, not sent as `[]`. `[]` is the
@@ -14249,68 +14542,6 @@ function normalizeName(raw: string): string {
 }
 
 /**
- * Jaro similarity between two strings. Returns 0..1. Implementation
- * follows the canonical algorithm: count matching characters within a
- * window of floor(max(|a|,|b|)/2)-1 positions, then count transpositions.
- */
-function jaroSimilarity(a: string, b: string): number {
-  if (a === b) return 1;
-  if (!a.length || !b.length) return 0;
-
-  const matchDistance = Math.max(0, Math.floor(Math.max(a.length, b.length) / 2) - 1);
-  const aMatches = new Array(a.length).fill(false);
-  const bMatches = new Array(b.length).fill(false);
-  let matches = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    const start = Math.max(0, i - matchDistance);
-    const end = Math.min(i + matchDistance + 1, b.length);
-    for (let j = start; j < end; j++) {
-      if (bMatches[j] || a[i] !== b[j]) continue;
-      aMatches[i] = true;
-      bMatches[j] = true;
-      matches++;
-      break;
-    }
-  }
-  if (!matches) return 0;
-
-  let transpositions = 0;
-  let k = 0;
-  for (let i = 0; i < a.length; i++) {
-    if (!aMatches[i]) continue;
-    while (!bMatches[k]) k++;
-    if (a[i] !== b[k]) transpositions++;
-    k++;
-  }
-  transpositions /= 2;
-
-  return (
-    (matches / a.length + matches / b.length + (matches - transpositions) / matches) / 3
-  );
-}
-
-/**
- * Jaro-Winkler — Jaro plus a prefix bonus that rewards strings sharing
- * an initial prefix. Used for player-name reconciliation across BSC and
- * SportLots when card numbers don't match (parallels, inserts with
- * different numbering schemes between marketplaces).
- *
- * Threshold of 0.92 picks up "Mike Trout" ≈ "Michael Trout" while
- * keeping "Mike Trout" and "Mike Stanton" distinct.
- */
-function jaroWinkler(a: string, b: string): number {
-  const jaro = jaroSimilarity(a, b);
-  let prefix = 0;
-  const max = Math.min(4, a.length, b.length);
-  for (let i = 0; i < max; i++) {
-    if (a[i] === b[i]) prefix++;
-    else break;
-  }
-  return jaro + prefix * 0.1 * (1 - jaro);
-}
-
-/**
  * NEO-189 — merge the SportLots fan-out's per-set results.
  *
  * Two jobs, deliberately separated, because conflating them is the defect this
@@ -14489,11 +14720,6 @@ interface ReconciledCard {
   teamLookup?: "checklist";
 }
 
-/**
- * PR 451 (NEO-478) — the operator's publisher checklist as the fetch receives
- * it. Never stored: it is matched against this run's cards and dropped.
- */
-export const MAX_PUBLISHED_CHECKLIST_ROWS = 2000;
 
 /**
  * PR 451 (D-A, Jason) — the most cards `fetchCardChecklist` asks BSC about
@@ -14503,126 +14729,104 @@ export const MAX_PUBLISHED_CHECKLIST_ROWS = 2000;
  * BSC stop sends them down; the "Still looking up teams" line covers them.
  */
 export const BSC_FETCH_TIME_LOOKUP_CAP = 40;
-/**
- * One publisher-checklist row as it crosses the wire. NEO-490 — exported for
- * `publishedChecklistPairs.applyPublishedChecklistPairs`, which takes the rows
- * the operator linked in Match Cards in this same shape.
- */
-export const publishedChecklistRowValidator = v.object({
-  number: v.string(),
-  players: v.array(v.string()),
-  teams: v.array(v.string()),
-  // PR 451 (D-B) — the publisher printed no number ("NNO"). The re-check
-  // below sets it from the number too, so a row sent without the flag
-  // reads the same; the matcher pairs such a row by player only.
-  noNumber: v.optional(v.boolean()),
-  // NEO-489 — the checklist says the card shows no team ("No Team");
-  // `teams` is then empty. The re-check below also reads it from a team
-  // string that is exactly "No Team", so a row sent either way reads the
-  // same, and refuses a row that says No Team and names a team.
-  noTeam: v.optional(v.boolean()),
-  // The parser's subset label (a file's "set" / "insert" column). The
-  // client chooses rows by it; the fetch never reads it and drops it in
-  // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
-  subset: v.optional(v.string()),
-});
-const publishedChecklistValidator = v.object({
-  rows: v.array(publishedChecklistRowValidator),
-});
-type PublishedChecklist = Infer<typeof publishedChecklistValidator>;
-
-/** The characters a publisher checklist's card number may hold. */
-const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
-
-/**
- * The server's re-check of a publisher checklist (the client's parser applies
- * the same limits): at most `MAX_PUBLISHED_CHECKLIST_ROWS` rows, every number,
- * player and team within the stored-name cap, players and teams within a
- * card's caps. Refused whole, never trimmed, and named by row position only.
- * Strings are trimmed; empty names dropped. A row is a no-number row
- * (`noNumber: true`) when the client flagged it or its number is blank or
- * "NNO", by the matcher's own test (`rowHasNoNumber`), so the client's parse
- * and this re-check always agree on which rows pair by player.
- *
- * NEO-489: a row is a No Team row (`noTeam: true`, `teams: []`) when the
- * client flagged it or every team string is exactly "No Team"
- * (`isNoTeamText`, the parser's own test), so "No Team" never reaches the
- * fetch as a team name. A row that says No Team and also names a team
- * contradicts itself and refuses the whole checklist. A team string that
- * says nothing ("None", "N/A", a dash, "TBD": `isNoClaimTeamText`,
- * the parser's own list) as the row's only team is dropped, the same as a
- * blank cell, so a caller cannot plant a team named "None". Beside another
- * team it is kept as sent, exactly as the parser keeps it.
- */
-export function checkPublishedChecklist(
-  published: PublishedChecklist | undefined,
-): PublishedChecklist | undefined {
-  if (!published) return undefined;
-  if (published.rows.length > MAX_PUBLISHED_CHECKLIST_ROWS) {
-    throw new ConvexError(
-      `The publisher's checklist has ${published.rows.length} rows; the limit is ${MAX_PUBLISHED_CHECKLIST_ROWS}.`,
-    );
-  }
-  const rows = published.rows.map((row, index) => {
-    const where = `Row ${index + 1} of the publisher's checklist`;
-    const number = row.number.trim();
-    if (number.length > MAX_PLAYER_NAME_LENGTH) {
-      throw new ConvexError(`${where} has a card number over ${MAX_PLAYER_NAME_LENGTH} characters.`);
-    }
-    // Defence in depth (NEO-489 security audit): the client parser only ever
-    // sends letters, digits, ".", "-" (and "NNO"); "#" and spaces are what a
-    // hand-written number may still carry. Anything else is refused.
-    if (!PUBLISHED_CHECKLIST_NUMBER_CHARS.test(number)) {
-      throw new ConvexError(`${where} has a card number with characters a card number never has.`);
-    }
-    // The subset is dropped below, but it still crossed the wire: held to the
-    // same cap as a name, so an unread field cannot carry an unbounded string.
-    if (row.subset !== undefined && row.subset.trim().length > MAX_PLAYER_NAME_LENGTH) {
-      throw new ConvexError(`${where} has a set name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
-    }
-    const clean = (names: string[], max: number, unit: string) => {
-      const kept = names.map((n) => n.trim()).filter(Boolean);
-      if (kept.length > max) {
-        throw new ConvexError(`${where} names ${kept.length} ${unit}s; the limit is ${max}.`);
-      }
-      for (const n of kept) {
-        if (n.length > MAX_PLAYER_NAME_LENGTH) {
-          throw new ConvexError(
-            `${where} has a ${unit} name over ${MAX_PLAYER_NAME_LENGTH} characters.`,
-          );
-        }
-      }
-      return kept;
-    };
-    // A no-claim word is dropped only as the whole cell (one string), as the
-    // parser reads it; beside a team it is left as it is, like the client.
-    const cleaned = clean(row.teams, MAX_CARD_TEAMS, "team");
-    const named = cleaned.length === 1 && isNoClaimTeamText(cleaned[0]) ? [] : cleaned;
-    const teams = named.filter((t) => !isNoTeamText(t));
-    const noTeam = row.noTeam === true || teams.length < named.length;
-    if (noTeam && teams.length > 0) {
-      throw new ConvexError(`${where} says No Team and names a team.`);
-    }
-    return {
-      number,
-      players: clean(row.players, MAX_CARD_PLAYERS, "player"),
-      teams,
-      ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
-      ...(noTeam ? { noTeam: true } : {}),
-    };
-  });
-  return { rows };
-}
+// NEO-496 — the publisher checklist's wire row, its limit and the server's
+// re-check moved to `convex/lib/publishedChecklistCheck.ts` (the stored
+// checklist's upload re-checks every section with it). Re-exported here so
+// every existing import keeps working.
+export {
+  MAX_PUBLISHED_CHECKLIST_ROWS,
+  checkPublishedChecklist,
+  publishedChecklistRowValidator,
+} from "./lib/publishedChecklistCheck";
 
 /** NEO-490 — `fetchCardChecklist`'s `checklistMatch`; see its `returns`. */
 const checklistMatchSummaryValidator = v.object({
   needsOperator: v.boolean(),
   byNumber: v.number(),
   byPlayerName: v.number(),
+  /** NEO-496 — pairs made by a near first-player name (>= 0.92). */
+  byPlayerFuzzy: v.number(),
   unusedRowIndices: v.array(v.number()),
   leftoverCardKeys: v.array(v.string()),
+  /** NEO-496 — rows no card paired, published as `checklistOnly` candidates. */
+  checklistOnlyCount: v.number(),
 });
 export type ChecklistMatchSummary = Infer<typeof checklistMatchSummaryValidator>;
+
+/** NEO-496 — a source a card fetch drew from; see `fetchCardChecklist`'s `sources`. */
+const fetchSourceValidator = v.union(
+  v.literal("bsc"),
+  v.literal("sportlots"),
+  v.literal("checklist"),
+);
+export type FetchSource = Infer<typeof fetchSourceValidator>;
+
+/** NEO-496 — `fetchCardChecklist`'s `checklist`; see its `returns`. */
+const fetchChecklistInfoValidator = v.object({
+  source: v.union(v.literal("paste"), v.literal("stored")),
+  rowCount: v.number(),
+  /** `stored` only: the leaf's linked sections the rows came from. */
+  sectionKeys: v.optional(v.array(v.string())),
+  skippedOverCap: v.optional(v.object({ rowCount: v.number(), byteSize: v.number() })),
+});
+export type FetchChecklistInfo = Infer<typeof fetchChecklistInfoValidator>;
+
+/** NEO-496 — a candidate's `checklistLink` (see checklistCandidates.ts). */
+type ChecklistLink = {
+  via: "number" | "caseFolded" | "prefixStripped" | "player" | "playerName" | "playerFuzzy";
+  confidence?: number;
+  checklistNumber?: string;
+  row?: Infer<typeof checklistPairedRowValidator>;
+  revert?: Infer<typeof checklistPairRevertValidator>;
+};
+
+/**
+ * NEO-496 — a paired row as Match Cards lists one (`ChecklistLinkRow`), from
+ * the card the row would be on its own (`checklistOnlyCard`), so an Unlink
+ * puts back exactly the checklist-only card the fetch would have published.
+ */
+export function checklistPairedRow(
+  row: PublishedChecklistStoredRow,
+  resolveText: (text: string) => readonly string[] | null,
+): Infer<typeof checklistPairedRowValidator> {
+  const own = checklistOnlyCard(row, resolveText);
+  const teams = own.teams ?? [];
+  return {
+    number: own.cardNumber,
+    players: own.players ?? [],
+    teams,
+    ...(row.noNumber || isNoNumber(own.cardNumber) ? { noNumber: true as const } : {}),
+    ...(own.teamLookup === "checklist" && teams.length === 0 ? { noTeam: true as const } : {}),
+    cardName: own.cardName,
+  };
+}
+
+/**
+ * NEO-496 (D10) — a publisher-checklist row no fetched card paired, as a
+ * card of its own: the row's number as printed, its players, and its teams
+ * through the same resolution a matched row's take (`applyChecklistRow`
+ * against a card with nothing of its own). No marketplace link
+ * (`platformData: {}`). A row that names a team, or says "No Team", answers
+ * the team (`teamLookup: "checklist"`); one that names none leaves it to the
+ * operator, and nothing is looked up.
+ */
+export function checklistOnlyCard(
+  row: PublishedChecklistStoredRow,
+  resolveText: (text: string) => readonly string[] | null,
+): ReconciledCard {
+  const applied = applyChecklistRow({}, row, resolveText);
+  const players = [...(applied.fillPlayers ?? row.players)];
+  const number = row.number.trim();
+  return {
+    cardNumber: number,
+    cardName: players.length > 0 ? players.join(" / ") : `Card #${number || "NNO"}`,
+    ...(players.length > 0 ? { players } : {}),
+    ...(applied.answered && applied.teams
+      ? { teams: applied.teams, teamLookup: "checklist" as const }
+      : {}),
+    platformData: {},
+  };
+}
 
 /**
  * NEO-490 — `checklistMatch.leftoverCardKeys`: the cards no checklist row
@@ -15028,20 +15232,38 @@ export const fetchCardChecklist = action({
      * PR 451 (NEO-478) — with a publisher checklist: how many of this run's
      * candidates took their team answer from it (`matched`), of all the
      * candidates (`total`). "Teams from your checklist: N of M cards".
-     * Absent without a checklist.
+     * NEO-496 (D2): both count the marketplace cards only; a checklist-only
+     * row is counted only when no marketplace card came back (a
+     * checklist-only fetch). Absent without a checklist.
      */
     checklistTeams: v.optional(v.object({ matched: v.number(), total: v.number() })),
     /**
      * NEO-490 — with a publisher checklist: how it paired, and what is left
      * for the operator. `needsOperator` opens the checklist column in Match
      * Cards (solo mode on a one-marketplace set); `byNumber` counts today's
-     * passes (number, prefix strip, NNO by player), `byPlayerName` the name
-     * pairs applied on equal counts; `unusedRowIndices` are the rows no pair
+     * passes (number, prefix strip, NNO by player), `byPlayerName` the exact
+     * player-name pairs and `byPlayerFuzzy` the near-name pairs (NEO-496,
+     * every fetch); `unusedRowIndices` are the rows no pair
      * used (positions in the rows sent); `leftoverCardKeys` are the cards no
      * row paired, keyed as the dialog's `candidateKey` keys them. Absent
      * without a checklist.
      */
     checklistMatch: v.optional(checklistMatchSummaryValidator),
+    /**
+     * NEO-496 (D10) — every source this run drew cards from: the attached
+     * marketplace sides it did not pause, plus "checklist" when a publisher
+     * checklist was in play (pasted, or the leaf's own stored sections).
+     * Match Cards opens on two or more; one is kept whole, as a single
+     * marketplace is today. Present on every return.
+     */
+    sources: v.array(fetchSourceValidator),
+    /**
+     * NEO-496 (D9) — the checklist this run used, or skipped. `paste` wins
+     * over the leaf's stored sections. `skippedOverCap` is set (and
+     * `rowCount` 0) when the leaf's linked sections were too big to read, so
+     * the run went on without them. Absent with no checklist at all.
+     */
+    checklist: v.optional(fetchChecklistInfoValidator),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -15053,6 +15275,8 @@ export const fetchCardChecklist = action({
     readyAfterTeams?: number;
     checklistTeams?: { matched: number; total: number };
     checklistMatch?: ChecklistMatchSummary;
+    sources: FetchSource[];
+    checklist?: FetchChecklistInfo;
   }> => {
     // NEO-202: this was the one function in this file with no identity check.
     // It is not merely a read: it performs authenticated fetches against BSC
@@ -15074,10 +15298,58 @@ export const fetchCardChecklist = action({
     // PR 451 — both new inputs are checked before any marketplace is asked,
     // outside the `try` for the reason `requireAdmin` is: a refusal is not an
     // outage.
-    const published = checkPublishedChecklist(args.publishedChecklist);
+    let published: { rows: PublishedChecklistStoredRow[] } | undefined =
+      checkPublishedChecklist(args.publishedChecklist);
     if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
       throw new ConvexError("fetchCardChecklist: waitKey must be 1-64 letters, digits, _ or -.");
     }
+    // NEO-496 (D9, D10) — with nothing pasted, the leaf's OWN linked sections
+    // of the set's stored checklist (no parent fallback). Too big to read
+    // (`LEAF_READ_MAX_ROWS`): the run goes on without them and says so. A
+    // stored section that fails today's re-check is skipped the same way
+    // rather than failing the fetch: it was checked when it was uploaded.
+    let checklistInfo: FetchChecklistInfo | undefined =
+      published && published.rows.length > 0
+        ? { source: "paste", rowCount: published.rows.length }
+        : undefined;
+    if (!published) {
+      const stored = await ctx.runQuery(internal.publishedChecklists.rowsForLeaf, {
+        selectorOptionId: args.selectorOptionId,
+      });
+      if (stored.kind === "rows" && stored.rows.length > 0) {
+        try {
+          published = checkPublishedChecklist(
+            { rows: stored.rows },
+            { label: "the set's checklist" },
+          );
+          checklistInfo = {
+            source: "stored",
+            rowCount: stored.rows.length,
+            sectionKeys: stored.sections.map((section) => section.sectionKey),
+          };
+        } catch (error) {
+          console.warn(
+            JSON.stringify({
+              msg: "checklist_stored_rows_refused",
+              rows: stored.rows.length,
+              error: error instanceof Error ? error.name : "unknown",
+            }),
+          );
+        }
+      } else if (stored.kind === "tooBig") {
+        checklistInfo = {
+          source: "stored",
+          rowCount: 0,
+          skippedOverCap: { rowCount: stored.rowCount, byteSize: stored.byteSize },
+        };
+      }
+    }
+    if (published && published.rows.length === 0) published = undefined;
+    /** NEO-496 — the sources of a return, from what is known at that point. */
+    const sourcesOf = (): FetchSource[] => [
+      ...attachedSides.filter((side) => !pausedList.includes(side)),
+      ...(published ? (["checklist"] as const) : []),
+    ];
     const waitKeyArg = args.waitKey !== undefined ? { waitKey: args.waitKey } : {};
     // NEO-255 — hoisted out of the `try` so the failure return can carry it
     // too. A caller has to be able to tell "two marketplaces are attached and
@@ -15171,7 +15443,10 @@ export const fetchCardChecklist = action({
         leafGate: true,
       });
       pausedList = pausedSideList(resolution);
-      if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
+      // NEO-496 (D10) — with a checklist in play the run goes on with it as
+      // the only source: no marketplace is asked, and every row becomes a
+      // checklist-only candidate (step 3c).
+      if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable && !published) {
         console.log(
           `[fetchCardChecklist] no marketplace ids on this path — ` +
             `bsc_missing=${missingSummary(resolution.bsc)} ` +
@@ -15202,6 +15477,8 @@ export const fetchCardChecklist = action({
           // above it lands on this branch with the id still on the row.
           attachedSides,
           pausedSides: pausedList,
+          sources: sourcesOf(),
+          ...(checklistInfo ? { checklist: checklistInfo } : {}),
         };
       }
       if (!resolution.bsc.resolvable) {
@@ -15488,6 +15765,8 @@ export const fetchCardChecklist = action({
           candidateCount: 0,
           attachedSides,
           pausedSides: pausedList,
+          sources: sourcesOf(),
+          ...(checklistInfo ? { checklist: checklistInfo } : {}),
         };
       }
 
@@ -15708,8 +15987,10 @@ export const fetchCardChecklist = action({
       const slClaimKey = (c: { platformRef?: string; cardNumber: string }) =>
         c.platformRef ?? `#${c.cardNumber}`;
 
-      // 1. Walk BSC, attach matching SL data
-      for (const bsc of bscCards) {
+      // 1a. Every BSC card's IDENTITY answer first: the operator's stored
+      //     pairing, BSC's own SportLots cross-reference, a variation's
+      //     counterpart, the number, the prefix-stripped number.
+      const identitySlOf = bscCards.map((bsc) => {
         const stripped = cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
           ? bsc.cardNumber.slice(cardNumberPrefix.length)
           : bsc.cardNumber;
@@ -15718,7 +15999,7 @@ export const fetchCardChecklist = action({
         const storedSlRef = bsc.platformRef
           ? storedSlRefByBscRef.get(bsc.platformRef)
           : undefined;
-        let sl: typeof slCards[0] | undefined =
+        const sl: typeof slCards[0] | undefined =
           (storedSlRef && slByPlatformRef.get(storedSlRef))
           || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
           // NEO-189: a variation's counterpart, matched by label above. Ranks
@@ -15727,29 +16008,47 @@ export const fetchCardChecklist = action({
           // number against SportLots at all.
           || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
           || slByNumber.get(bsc.cardNumber)
-          || slByNumber.get(stripped);
+          || slByNumber.get(stripped)
+          || undefined;
         const fromStoredPairing =
           storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
+        return { sl, fromStoredPairing };
+      });
 
-        // 2. Fuzzy fallback: pick the unclaimed SL card whose first player
-        //    name is most similar to BSC's first player. Threshold 0.92.
+      // 1b. NEO-496 — the name fallback, over what no identity answer took:
+      //     BSC's first player against the SportLots card name, Jaro-Winkler
+      //     at or above `PLAYER_NAME_AUTO_LINK` (0.92). Each pair is BOTH
+      //     sides' one best (`pairNamesBySimilarity`); a tie on either side
+      //     leaves the cards unmatched for the operator (product rule 8).
+      //     Until NEO-496 this ran inside the walk below, so the first BSC
+      //     card in list order took a contested SportLots card, and could take
+      //     one a later BSC card was about to claim by number.
+      const identityClaimed = new Set<string>();
+      for (const { sl } of identitySlOf) if (sl) identityClaimed.add(slClaimKey(sl));
+      const nameSeekers = bscCards.map((bsc, i) =>
+        !identitySlOf[i].sl && bsc.players?.[0] ? normalizeName(bsc.players[0]) : undefined,
+      );
+      const nameOffers = slCards.map((card) =>
+        !identityClaimed.has(slClaimKey(card)) && card.cardName
+          ? normalizeName(card.cardName)
+          : undefined,
+      );
+      const namePairByBscIndex = new Map<number, { sl: typeof slCards[0]; score: number }>();
+      for (const p of pairNamesBySimilarity(nameSeekers, nameOffers, PLAYER_NAME_AUTO_LINK)) {
+        namePairByBscIndex.set(p.leftIndex, { sl: slCards[p.rightIndex], score: p.score });
+      }
+
+      // 1c. Walk BSC, attach matching SL data
+      for (const [bscIndex, bsc] of bscCards.entries()) {
+        const { fromStoredPairing } = identitySlOf[bscIndex];
+        let sl = identitySlOf[bscIndex].sl;
+
+        // 2. The name pair from 1b, if this card has one.
         let fuzzyScore: number | undefined;
-        if (!sl && bsc.players?.[0]) {
-          const target = normalizeName(bsc.players[0]);
-          let best: { card: typeof slCards[0]; score: number } | null = null;
-          for (const candidate of slCards) {
-            if (claimedSlRefs.has(slClaimKey(candidate))) continue;
-            const candName = candidate.cardName ? normalizeName(candidate.cardName) : "";
-            if (!candName) continue;
-            const score = jaroWinkler(target, candName);
-            if (score >= 0.92 && (!best || score > best.score)) {
-              best = { card: candidate, score };
-            }
-          }
-          if (best) {
-            sl = best.card;
-            fuzzyScore = best.score;
-          }
+        const namePair = sl ? undefined : namePairByBscIndex.get(bscIndex);
+        if (namePair) {
+          sl = namePair.sl;
+          fuzzyScore = namePair.score;
         }
 
         // Confidence: an exact number / sportlotsRef hit is certain; a
@@ -15973,6 +16272,10 @@ export const fetchCardChecklist = action({
       //
       //     The rows themselves are never written anywhere.
       const checklistAnswered = new Set<ReconciledCard>();
+      // NEO-496 — how each card paired with a row (Match Cards' badge), and
+      // the rows no card paired, as cards of their own (`checklistOnly`).
+      const checklistLinkByCard = new Map<ReconciledCard, ChecklistLink>();
+      const checklistOnlyCards: ReconciledCard[] = [];
       let checklistTeams: { matched: number; total: number } | undefined;
       // NEO-490 — what the operator still has to pair; see `returns`.
       let checklistMatch: ChecklistMatchSummary | undefined;
@@ -15991,17 +16294,44 @@ export const fetchCardChecklist = action({
         // and the operator pairs them in Match Cards. Equal counts: the unique
         // name pairs are in `matches` (`via: "playerName"`) and are applied
         // exactly like number pairs (`applyChecklistRow`).
+        // Matched rows' teams first, so the resolver's bound is spent on the
+        // cards a marketplace also lists before the checklist-only ones.
         const resolveText = await resolveChecklistCommaTexts(
           ctx,
           args.selectorOptionId,
-          match.matches.flatMap((m) => published.rows[m.rowIndex].teams),
+          [
+            ...match.matches.flatMap((m) => published.rows[m.rowIndex].teams),
+            ...match.unusedRowIndices.flatMap((i) => published.rows[i].teams),
+          ],
         );
         let conflicts = 0;
         let refused = 0;
         let noTeamFromChecklist = 0;
         for (const m of match.matches) {
           const card = out[m.cardIndex];
+          // NEO-496 — the card before the row touches it, for Match Cards'
+          // Unlink. "Would have been looked up" mirrors `needsTeamLookup`
+          // below exactly: a card the row answers skips that lookup, so
+          // unlinked it has no answer at all ("failed": the operator picks,
+          // nothing guesses, rule 8).
+          const ownPlayers = card.players ? [...card.players] : undefined;
+          const ownTeams = card.teams?.length ? [...card.teams] : undefined;
+          const wouldLookUp = !card.teams?.length && !card.team && !!card.platformData.bsc?.ref;
+          const link: ChecklistLink = {
+            via: m.via,
+            ...(m.confidence !== undefined ? { confidence: m.confidence } : {}),
+            ...(m.checklistNumber !== undefined ? { checklistNumber: m.checklistNumber } : {}),
+            row: checklistPairedRow(published.rows[m.rowIndex], resolveText),
+          };
+          checklistLinkByCard.set(card, link);
           const applied = applyChecklistRow(card, published.rows[m.rowIndex], resolveText);
+          const teamsFromRow = applied.answered && applied.teams !== null;
+          link.revert = {
+            ...(ownPlayers ? { players: ownPlayers } : {}),
+            teamsFromRow,
+            ...(teamsFromRow && ownTeams ? { teams: ownTeams } : {}),
+            ...(teamsFromRow && wouldLookUp ? { teamLookup: "failed" as const } : {}),
+          };
           if (applied.fillPlayers) card.players = [...applied.fillPlayers];
           if (applied.conflict) {
             card.checklistConflict = applied.conflict;
@@ -16028,13 +16358,37 @@ export const fetchCardChecklist = action({
           card.teamLookup = "checklist";
           checklistAnswered.add(card);
         }
-        checklistTeams = { matched: checklistAnswered.size, total: out.length };
+        // NEO-496 (D10) — a row no card paired is a card of its own: number,
+        // players and teams from the row, no marketplace link. Its team is
+        // the checklist's answer (never looked up: it has no BSC ref); a row
+        // naming no team leaves the team to the operator.
+        for (const rowIndex of match.unusedRowIndices) {
+          const card = checklistOnlyCard(published.rows[rowIndex], resolveText);
+          if (card.teamLookup === "checklist") {
+            checklistAnswered.add(card);
+            if (card.teams?.length === 0) noTeamFromChecklist++;
+          }
+          checklistOnlyCards.push(card);
+        }
+        // "Teams from your checklist: N of M cards" counts the cards the
+        // marketplaces listed (D2): a checklist-only row is not a card until
+        // the operator keeps it in Match Cards (NQ1), which recounts what was
+        // confirmed with the same definition (`tallyChecklistTeams`). With no
+        // marketplace card at all (a checklist-only fetch, every row kept),
+        // the rows are the cards. A card counts in N exactly when it is in
+        // `checklistAnswered`: both loops above stamp `teamLookup:
+        // "checklist"` on the cards they add to it, and on no other card.
+        checklistTeams = tallyFetchChecklistTeams(out, checklistOnlyCards);
         checklistMatch = {
           needsOperator: match.needsOperator,
-          byNumber: match.matches.filter((m) => m.via !== "playerName").length,
+          byNumber: match.matches.filter(
+            (m) => m.via !== "playerName" && m.via !== "playerFuzzy",
+          ).length,
           byPlayerName: match.matches.filter((m) => m.via === "playerName").length,
+          byPlayerFuzzy: match.matches.filter((m) => m.via === "playerFuzzy").length,
           unusedRowIndices: match.unusedRowIndices,
           leftoverCardKeys: checklistLeftoverCardKeys(out, match.unmatchedCardIndices),
+          checklistOnlyCount: checklistOnlyCards.length,
         };
         // Counts only — never a name.
         console.log(
@@ -16046,9 +16400,8 @@ export const fetchCardChecklist = action({
             matchedByPlayer: match.matches.filter((m) => m.via === "player").length,
             matchedByCaseFolded: match.matches.filter((m) => m.via === "caseFolded").length,
             matchedByPlayerName: checklistMatch.byPlayerName,
-            fallback: match.fallback,
+            matchedByPlayerFuzzy: checklistMatch.byPlayerFuzzy,
             needsOperator: match.needsOperator,
-            suggestions: match.suggestions.length,
             unusedRows: match.unusedRowIndices.length,
             teamsFromChecklist: checklistAnswered.size,
             noTeamFromChecklist,
@@ -16120,7 +16473,7 @@ export const fetchCardChecklist = action({
       // the caller's id; there is no unowned batch any more.
       const toCandidate = (
         card: ReconciledCard,
-        bucket: "matched" | "bscOnly" | "slOnly",
+        bucket: "matched" | "bscOnly" | "slOnly" | "checklistOnly",
         confidence?: number,
       ) => ({
         cardNumber: card.cardNumber,
@@ -16145,6 +16498,10 @@ export const fetchCardChecklist = action({
         ...(card.checklistConflict ? { checklistConflict: card.checklistConflict } : {}),
         ...(card.teamLookup ? { teamLookup: card.teamLookup } : {}),
         bucket,
+        // NEO-496 — how the card paired with the publisher checklist.
+        ...(checklistLinkByCard.has(card)
+          ? { checklistLink: checklistLinkByCard.get(card)! }
+          : {}),
         confidence,
         // NEO-341 — see `awaitingTeam` above.
         teamPending: awaitingTeam.has(card),
@@ -16161,6 +16518,7 @@ export const fetchCardChecklist = action({
             ),
             ...unmatchedBscCards.map((c) => toCandidate(c, "bscOnly")),
             ...unmatchedSlCards.map((c) => toCandidate(c, "slOnly")),
+            ...checklistOnlyCards.map((c) => toCandidate(c, "checklistOnly")),
           ],
           readyImmediately: needsTeamLookup.length === 0,
         },
@@ -16324,6 +16682,7 @@ export const fetchCardChecklist = action({
         message:
           `${autoMatchedCards.length} matched, ` +
           `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only` +
+          (published ? `, ${checklistOnlyCards.length} checklist-only` : "") +
           collisionNote +
           pausedNote +
           sideFailureNote,
@@ -16332,13 +16691,16 @@ export const fetchCardChecklist = action({
         candidateCount:
           autoMatchedCards.length +
           unmatchedBscCards.length +
-          unmatchedSlCards.length,
+          unmatchedSlCards.length +
+          checklistOnlyCards.length,
         attachedSides,
         pausedSides: pausedList,
         candidateBatchId,
         readyAfterTeams,
         ...(checklistTeams ? { checklistTeams } : {}),
         ...(checklistMatch ? { checklistMatch } : {}),
+        sources: sourcesOf(),
+        ...(checklistInfo ? { checklist: checklistInfo } : {}),
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
@@ -16353,6 +16715,8 @@ export const fetchCardChecklist = action({
         // `getAncestorChain`.
         attachedSides,
         pausedSides: pausedList,
+        sources: sourcesOf(),
+        ...(checklistInfo ? { checklist: checklistInfo } : {}),
       };
     }
   },
@@ -16560,6 +16924,7 @@ export { MAX_OPERATOR_DELETE_IDS };
 type MatchMapRow = {
   _id: Id<"cardChecklist">;
   cardNumber: string;
+  cardName?: string;
   platformData?: Doc<"cardChecklist">["platformData"];
 };
 
@@ -16673,7 +17038,8 @@ function buildMatchMaps(
         push(bySlotNumber, slotNumberMatchKey(side, src, row.cardNumber), row._id);
       }
     }
-    if (!bscRef && !slRef) push(byNumberNoRef, row.cardNumber, row._id);
+    // NEO-496 — a no-number row keys on its name too (`noRefMatchKey`).
+    if (!bscRef && !slRef) push(byNumberNoRef, noRefMatchKey(row), row._id);
   }
 
   const ambiguousMatchKeys: string[] = [];
@@ -21193,8 +21559,31 @@ export const commitCardChecklistFinalize = internalMutation({
  */
 type IncomingMatchCard = {
   cardNumber: string;
+  /** NEO-496 — the no-number key's second half; see `noRefMatchKey`. */
+  cardName?: string;
   platformData?: WirePlatformData;
 };
+
+/**
+ * NEO-496 — the key a card with NO marketplace ref is matched by (tier
+ * "noRef"), stored and incoming alike.
+ *
+ * A numbered card keys on its number, exactly as before. A card with no
+ * number ("NNO", blank) adds its folded card name: a publisher's checklist
+ * prints a whole section unnumbered (Topps' Fanatics Authentics, 30 lines),
+ * and keyed on the number alone every such card shared one key, so none ever
+ * matched and every re-sync inserted the section again. Same exactly-one
+ * guard on both sides as every tier; two no-number cards of one name still
+ * match nothing.
+ *
+ * The card NAME rather than its players: it is on the stored row and the
+ * incoming card both, with no read, so the commit and the review query
+ * (`diffChecklistAgainstExisting`) key a card identically.
+ */
+function noRefMatchKey(card: { cardNumber: string; cardName?: string }): string {
+  if (!isNoNumber(card.cardNumber)) return card.cardNumber;
+  return `\u0000nno\u0000${normalizeEntityName(card.cardName ?? "")}`;
+}
 
 type MatchResolution = {
   /** Incoming index → the stored row it updates. Absent means insert. */
@@ -21293,10 +21682,8 @@ function resolveExistingIds(
         incomingSlotKeyCount.set(key, (incomingSlotKeyCount.get(key) ?? 0) + 1);
       }
     }
-    incomingNumberCount.set(
-      card.cardNumber,
-      (incomingNumberCount.get(card.cardNumber) ?? 0) + 1,
-    );
+    const noRefKey = noRefMatchKey(card);
+    incomingNumberCount.set(noRefKey, (incomingNumberCount.get(noRefKey) ?? 0) + 1);
   }
 
   const existingIdByIndex: Array<Id<"cardChecklist"> | undefined> = [];
@@ -21333,7 +21720,7 @@ function resolveExistingIds(
         return true;
       }
     }
-    const number = card.cardNumber;
+    const number = noRefMatchKey(card);
     if (withheld.numberNoRef.has(number)) return true;
     if (
       (incomingNumberCount.get(number) ?? 0) > 1 &&
@@ -21375,8 +21762,9 @@ function resolveExistingIds(
         tier = "slotNumber";
         break;
       }
-      if (!matched && (incomingNumberCount.get(card.cardNumber) ?? 0) === 1) {
-        const candidate = byNumberNoRef.get(card.cardNumber);
+      const noRefKey = noRefMatchKey(card);
+      if (!matched && (incomingNumberCount.get(noRefKey) ?? 0) === 1) {
+        const candidate = byNumberNoRef.get(noRefKey);
         if (candidate) {
           matched = candidate;
           tier = "noRef";

@@ -21,6 +21,7 @@ import {
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
+  openAttributesPanel,
   setBuilderReady,
 } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
@@ -204,6 +205,8 @@ test(
       await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
 
+      // NEO-496: the sources live inside the attributes panel, closed below the set.
+      await openAttributesPanel(page);
       await expect(page.getByText("Multi-source sets")).toBeVisible();
       const chip = page.getByRole("button", { name: new RegExp(`^Remove .*${NEW_PARALLEL}$`) });
       await chip.click();

@@ -311,6 +311,60 @@ async function seedEveryDrainedTable(
       });
     }
 
+    // NEO-496 — a set's publisher checklist: publishedChecklists 14 headers,
+    // publishedChecklistSections 13 (under the first), publishedChecklistChunks
+    // 25 (one more than the 24-chunk reset page, so the loop pages), and
+    // publishedChecklistLinks 12. The ids only need to be the right tables'.
+    const checklistIds: Id<"publishedChecklists">[] = [];
+    for (let i = 0; i < 14; i += 1) {
+      checklistIds.push(
+        await ctx.db.insert("publishedChecklists", {
+          setId: sportId,
+          status: i === 0 ? "ready" : "retired",
+          fileName: `checklist-${i}.csv`,
+          format: "csv",
+          createdByUserId: "admin",
+          startedAt: NOW,
+          lastActivityAt: NOW,
+          sectionCount: 13,
+          rowCount: 25,
+          byteSize: 100,
+        }),
+      );
+    }
+    const sectionIds: Id<"publishedChecklistSections">[] = [];
+    for (let i = 0; i < 13; i += 1) {
+      sectionIds.push(
+        await ctx.db.insert("publishedChecklistSections", {
+          checklistId: checklistIds[0],
+          ordinal: i,
+          name: `Section ${i}`,
+          sectionKey: `section ${i}`,
+          rowCount: i === 0 ? 25 : 0,
+          byteSize: 4,
+          chunkCount: i === 0 ? 25 : 0,
+        }),
+      );
+    }
+    for (let i = 0; i < 25; i += 1) {
+      await ctx.db.insert("publishedChecklistChunks", {
+        checklistId: checklistIds[0],
+        sectionId: sectionIds[0],
+        seq: i,
+        firstRow: i,
+        rows: [{ number: String(i + 1), players: ["A One"], teams: [] }],
+      });
+    }
+    for (let i = 0; i < 12; i += 1) {
+      await ctx.db.insert("publishedChecklistLinks", {
+        setId: sportId,
+        selectorOptionId: variantId,
+        sectionKey: `section ${i}`,
+        createdAt: NOW,
+        createdByUserId: "admin",
+      });
+    }
+
     return { sportId };
   });
 }
@@ -456,6 +510,10 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       intakeRunsDeleted: 0,
       placeholderJobsDeleted: 0,
       marketplaceListingDeleted: 0,
+      publishedChecklistLinksDeleted: 12,
+      publishedChecklistChunksDeleted: 25,
+      publishedChecklistSectionsDeleted: 13,
+      publishedChecklistsDeleted: 14,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
@@ -512,6 +570,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetCollectionBuildingSetsBatch", "collectionBuildingSets"],
     ["resetVariantCommonPricesBatch", "variantCommonPrices"],
     ["resetCardTeamLinksBatch", "cardTeamLinks"],
+    // NEO-496 — the publisher-checklist tables.
+    ["resetPublishedChecklistLinksBatch", "publishedChecklistLinks"],
+    ["resetPublishedChecklistChunksBatch", "publishedChecklistChunks"],
+    ["resetPublishedChecklistSectionsBatch", "publishedChecklistSections"],
+    ["resetPublishedChecklistsBatch", "publishedChecklists"],
     ["resetSelectorOptionsBatch", "selectorOptions"],
     ["resetCardChecklistBatch", "cardChecklist"],
     ["resetCardCrossListingsBatch", "cardCrossListings"],
@@ -579,6 +642,10 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       intakeRunsDeleted: 0,
       placeholderJobsDeleted: 0,
       marketplaceListingDeleted: 0,
+      publishedChecklistLinksDeleted: 0,
+      publishedChecklistChunksDeleted: 0,
+      publishedChecklistSectionsDeleted: 0,
+      publishedChecklistsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
@@ -639,9 +706,10 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     const t = convexTest(schema, modules);
     await seedEveryDrainedTable(t);
 
-    // Mirrors the shell loop's cap: twelve tables need at most twelve passes
-    // under a zero budget, and a loop that needs more than 20 is stuck.
-    const MAX_PASSES = 20;
+    // Mirrors the shell loop's cap: every seeded table needs at most one pass
+    // per batch under a zero budget (~22 since NEO-496 added four checklist
+    // tables, chunks taking two), and a loop that needs more than 30 is stuck.
+    const MAX_PASSES = 30;
     let passes = 0;
     let complete = false;
     const totals = {
@@ -658,6 +726,10 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       intakeRunsDeleted: 0,
       placeholderJobsDeleted: 0,
       marketplaceListingDeleted: 0,
+      publishedChecklistLinksDeleted: 0,
+      publishedChecklistChunksDeleted: 0,
+      publishedChecklistSectionsDeleted: 0,
+      publishedChecklistsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
@@ -703,6 +775,10 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       intakeRunsDeleted: 0,
       placeholderJobsDeleted: 0,
       marketplaceListingDeleted: 0,
+      publishedChecklistLinksDeleted: 12,
+      publishedChecklistChunksDeleted: 25,
+      publishedChecklistSectionsDeleted: 13,
+      publishedChecklistsDeleted: 14,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
@@ -1155,6 +1231,9 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "entityReviewQueue",
     "checklistCandidates",
     "checklistNameResolutions",
+    // NEO-496 — a set's publisher checklist (setId) and the rows' section links.
+    "publishedChecklists",
+    "publishedChecklistLinks",
   ] as const;
 
   const runScoped = (
@@ -1430,6 +1509,10 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       placeholderJobsDeleted: 4,
       // NEO-370: outbox, sync record, state, sale; NEO-415: the eBay link row.
       marketplaceListingDeleted: 5,
+      publishedChecklistLinksDeleted: 12,
+      publishedChecklistChunksDeleted: 25,
+      publishedChecklistSectionsDeleted: 13,
+      publishedChecklistsDeleted: 14,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,
@@ -1472,7 +1555,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
 
     let complete = false;
     let passes = 0;
-    while (!complete && passes < 20) {
+    while (!complete && passes < 30) {
       passes += 1;
       complete = (await runScoped(t, "exceptReferenceSeed")).complete;
     }
@@ -1492,7 +1575,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     await seedAll(t);
 
     const results = [];
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 30; i += 1) {
       const r = await runScoped(t, "exceptReferenceSeed");
       results.push(r);
       if (r.complete) break;
@@ -1501,10 +1584,12 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     expect(results.at(-1)!.complete).toBe(true);
     // Every dependant holds rows, plus `cardTeamLinks` and
     // `collectionContainers` (NEO-358: drained in both scopes, but neither
-    // holds a selectorOptions id, so neither is a dependant), so it takes at
-    // most that many passes, never the 18 the unscoped reset needs; a loop
-    // still counting skipped tables would not finish early here.
-    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length + 2);
+    // holds a selectorOptions id, so neither is a dependant), plus NEO-496's
+    // checklist sections (one pass) and chunks (two: 25 rows over a 24-chunk
+    // page), which hold no selectorOptions id either. So it takes at most that
+    // many passes, never the ~22 the unscoped reset needs; a loop still
+    // counting skipped tables would not finish early here.
+    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length + 5);
   });
 
   test("scope \"all\" drains every table, exactly like omitting scope", async () => {
@@ -1662,4 +1747,99 @@ describe("PR 451: the reset clears the BSC cooldown, the wait rows and the team 
       });
     },
   );
+});
+
+describe("NEO-496: the reset drains the publisher-checklist tables", () => {
+  const checklistCounts = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ({
+      publishedChecklistLinks: (await ctx.db.query("publishedChecklistLinks").collect()).length,
+      publishedChecklistChunks: (await ctx.db.query("publishedChecklistChunks").collect()).length,
+      publishedChecklistSections: (await ctx.db.query("publishedChecklistSections").collect())
+        .length,
+      publishedChecklists: (await ctx.db.query("publishedChecklists").collect()).length,
+    }));
+
+  test("an armed run empties all four", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+    expect(await checklistCounts(t)).toEqual({
+      publishedChecklistLinks: 12,
+      publishedChecklistChunks: 25,
+      publishedChecklistSections: 13,
+      publishedChecklists: 14,
+    });
+
+    expect((await runReset(t)).complete).toBe(true);
+
+    expect(await checklistCounts(t)).toEqual({
+      publishedChecklistLinks: 0,
+      publishedChecklistChunks: 0,
+      publishedChecklistSections: 0,
+      publishedChecklists: 0,
+    });
+  });
+
+  test("the chunk batch takes 24, not the 500-row page (a chunk is up to 256 KiB)", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+    const first = await t.mutation(
+      internal.selectorOptions.resetPublishedChecklistChunksBatch,
+      {},
+    );
+    expect(first).toEqual({ deleted: 24, hasMore: true });
+    const second = await t.mutation(
+      internal.selectorOptions.resetPublishedChecklistChunksBatch,
+      {},
+    );
+    expect(second).toEqual({ deleted: 1, hasMore: false });
+  });
+
+  test("an interrupted run never leaves a chunk whose section, or a section whose header, is gone", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+    for (let pass = 0; pass < 30; pass += 1) {
+      const result = await runReset(t);
+      const dangling = await t.run(async (ctx) => {
+        const bad: string[] = [];
+        for (const chunk of await ctx.db.query("publishedChecklistChunks").collect()) {
+          if (!(await ctx.db.get(chunk.sectionId))) bad.push(`chunk ${chunk._id}`);
+        }
+        for (const section of await ctx.db.query("publishedChecklistSections").collect()) {
+          if (!(await ctx.db.get(section.checklistId))) bad.push(`section ${section._id}`);
+        }
+        return bad;
+      });
+      expect(dangling).toEqual([]);
+      if (result.complete) break;
+    }
+    expect(await checklistCounts(t)).toEqual({
+      publishedChecklistLinks: 0,
+      publishedChecklistChunks: 0,
+      publishedChecklistSections: 0,
+      publishedChecklists: 0,
+    });
+  });
+
+  test("unarmed, the four batches refuse and every checklist row stays", async () => {
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+    for (const fn of [
+      internal.selectorOptions.resetPublishedChecklistLinksBatch,
+      internal.selectorOptions.resetPublishedChecklistChunksBatch,
+      internal.selectorOptions.resetPublishedChecklistSectionsBatch,
+      internal.selectorOptions.resetPublishedChecklistsBatch,
+    ]) {
+      await expect(t.mutation(fn, {})).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
+    }
+    expect(await checklistCounts(t)).toEqual({
+      publishedChecklistLinks: 12,
+      publishedChecklistChunks: 25,
+      publishedChecklistSections: 13,
+      publishedChecklists: 14,
+    });
+  });
 });

@@ -51,7 +51,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../support/published-checklist";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistFacts } from "../support/published-checklist";
 import {
   addAsNewStep,
   advanceToSave,
@@ -82,7 +82,7 @@ async function expectNoSyncFailure(page: Page) {
  */
 async function fetchChecklist(
   page: Page,
-  slPaused: boolean,
+  facts: ChecklistFacts,
   { open, settle }: { open: number; settle: number },
 ) {
   const pairing = page.getByRole("dialog", { name: /^Match Cards/ });
@@ -90,29 +90,29 @@ async function fetchChecklist(
   const saved = page.getByText(/Saved [0-9]+/);
 
   await syncChecklistButton(page).click();
-  await expect(pairing.or(wizard).or(saved).first()).toBeVisible({ timeout: open });
-
-  if (!slPaused) {
-    if (await pairing.isVisible()) {
-      // The confirm button reads "Loading…" until both sides have streamed in.
-      const confirm = pairing.getByRole("button", { name: "Confirm card matches" });
-      await expect(confirm).toHaveText("Confirm", { timeout: 120_000 });
-      await expect(pairing.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
-      for (const side of ["BSC", "SportLots"]) {
-        // Each side's unmatched section is headed "<side> only (<n>)"; there
-        // is no section at all when everything paired.
-        const unmatched = pairing.getByRole("heading", { name: new RegExp(`^${side} only \\([1-9][0-9]*\\)$`) });
-        if (await unmatched.isVisible()) {
-          await pairing.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
-        }
-      }
-      await confirm.click();
-      await expect(pairing).toBeHidden({ timeout: settle });
+  // NEO-496 (D10, NQ1): the uploaded checklist is a source of its own, so Match Cards opens on
+  // both branches: live it lines up BSC, SportLots and the checklist; with SportLots paused, BSC
+  // and the checklist (two sources, as two marketplaces always were).
+  await expect(pairing).toBeVisible({ timeout: open });
+  // The confirm button reads "Loading…" until every source has streamed in and the teams landed.
+  const confirm = pairing.getByRole("button", { name: "Confirm card matches" });
+  await expect(confirm).toHaveText("Confirm", { timeout: 120_000 });
+  await expect(pairing.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
+  // The result line is the proof the file, not BSC, supplied the teams (N read off the file). It
+  // is on the page while the dialog is open; after Confirm only the saved line repeats it.
+  await expectTeamsFromChecklist(page, facts);
+  for (const side of ["BSC", "SportLots"]) {
+    // Each side's unmatched section is headed "<side> only (<n>)"; a card the file leaves out (the
+    // Base's #300) waits there and is discarded unless kept. The seed keeps every marketplace card.
+    const unmatched = pairing.getByRole("heading", { name: new RegExp(`^${side} only \\([1-9][0-9]*\\)$`) });
+    if (await unmatched.isVisible()) {
+      await pairing.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
+      await expect(pairing.getByRole("heading", { name: `${side} only (0)` })).toBeVisible();
     }
-  } else {
-    // One marketplace only: nothing to pair, the dialog never opens.
-    await expect(pairing).toBeHidden();
   }
+  // Checklist rows no card paired are left in their column: the seed saves the marketplace's cards.
+  await confirm.click();
+  await expect(pairing).toBeHidden({ timeout: settle });
   await expect(wizard.or(saved).first()).toBeVisible({ timeout: settle });
 }
 
@@ -324,7 +324,7 @@ test(
         await picker.getByRole("option", { name: /^BSC base candidate: / }).first().click();
         await sl.first().click();
       } else {
-        await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+        await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
         await expect(sl).toHaveCount(0);
         await picker.getByRole("option", { name: /^BSC base candidate: / }).first().click();
       }
@@ -345,15 +345,7 @@ test(
     // The captured checklist goes in before the Sync: the fetch then asks BSC for no card
     // the file answers (a seed with a card-listing call per card met BSC's 429).
     const facts = await usePublishersChecklist(page, CHECKLISTS.toppsChrome2024Base);
-    await fetchChecklist(page, env.SL_PAUSED, { open: 60_000, settle: 60_000 });
-    // The result line is the proof the file, not BSC, supplied the teams. N is read off the file.
-    await expectTeamsFromChecklist(page, facts);
-
-    if (!env.SL_PAUSED) {
-      // Pairing confirmed: no partial-pairing notice.
-    } else {
-      await expect(page.getByText(/Kept all [0-9]+ cards? from BSC/)).toBeVisible();
-    }
+    await fetchChecklist(page, facts, { open: 60_000, settle: 60_000 });
 
     // First run: confirm every new player/team/league the checklist names.
     // NEO-335: the wizard's dialog name starts "Tidy up" ("Tidy up 2024 Topps
@@ -385,8 +377,7 @@ test(
     // The seed's Future Stars checklist is BSC's own answers (the 20 cards), so the fetch asks BSC
     // for no card (D4): the BSC listing specs that read this set no longer depend on 20 live reads.
     const futureStars = await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
-    await fetchChecklist(page, env.SL_PAUSED, { open: 90_000, settle: 90_000 });
-    await expectTeamsFromChecklist(page, futureStars);
+    await fetchChecklist(page, futureStars, { open: 90_000, settle: 90_000 });
     // Every Future Stars player is already known from Base: no NAMES review.
     // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
     // steps only: a card that would save with no team (a SportLots-only card

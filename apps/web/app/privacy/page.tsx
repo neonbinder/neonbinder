@@ -241,6 +241,15 @@ export default function PrivacyPage() {
                 switch to make it private.
               </P>
             </Sub>
+            <Sub title="Set checklists">
+              <P>
+                NeonBinder admins can add a card maker&apos;s official checklist to a set, as a
+                spreadsheet, PDF, text file or pasted text. The file is read right in the admin&apos;s
+                browser and the file itself is never uploaded. We keep only what it lists (section names,
+                card numbers, players and teams), plus the file&apos;s name and type, who added it and
+                when. It lives in our app database at Convex and is never sent to a marketplace.
+              </P>
+            </Sub>
           </Section>
 
           <Section id="analytics">
@@ -349,7 +358,10 @@ export default function PrivacyPage() {
               are deleted after two days, apart from the photos we make from them for a card you save,
               which stay on that copy. Photos you replace or remove are deleted from storage soon
               after. Photos of a copy that sold stay with the sale until you delete your account or ask
-              us to remove them. When you ask us to delete your account, we delete it and the data tied to it.
+              us to remove them. A set&apos;s checklist stays until an admin replaces or removes it, and
+              then it&apos;s deleted; one left half-added for an hour is deleted too. The notes that tie a
+              set&apos;s inserts and parallels to parts of its checklist go when those are rebuilt or
+              deleted. When you ask us to delete your account, we delete it and the data tied to it.
               PostHog and Sentry keep analytics and error reports for their own standard periods.
             </P>
           </Section>

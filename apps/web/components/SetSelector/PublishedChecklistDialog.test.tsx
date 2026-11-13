@@ -1,9 +1,11 @@
 /**
- * NEO-478 — "Add the publisher's checklist": the preview IS the parse, skipped
+ * NEO-478 — "Add the official checklist": the preview IS the parse, skipped
  * lines are listed, Escape / Ctrl+Enter / Cmd+Enter, and focus returns to the
  * opener.
  */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import { NO_TEAM_AND_A_TEAM } from "../../lib/checklists/no-team";
@@ -17,6 +19,7 @@ import PublishedChecklistDialog, {
   PublishedChecklistChip,
   checklistTeamsLine,
   chipText,
+  droppedRowsText,
   rowCountText,
   skippedLinesText,
 } from "./PublishedChecklistDialog";
@@ -44,7 +47,7 @@ const paste = async (text: string) => {
 describe("PublishedChecklistDialog", () => {
   it("is a named modal dialog that opens on the paste box with 0 rows", () => {
     open();
-    expect(screen.getByRole("dialog", { name: "Publisher's checklist" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Official checklist" })).toBeTruthy();
     expect(document.activeElement).toBe(box());
     expect(screen.getByText("0 rows")).toBeTruthy();
     expect(screen.getByLabelText("Choose a file")).toBeTruthy();
@@ -424,9 +427,9 @@ describe("the copy helpers and the chip", () => {
   it("spell the contract's strings", () => {
     expect(rowCountText(1)).toBe("1 row");
     expect(rowCountText(1234)).toBe("1,234 rows");
-    expect(chipText(248)).toBe("Publisher's checklist: 248 rows");
-    expect(chipText(18, 0)).toBe("Publisher's checklist: 18 rows");
-    expect(chipText(18, 2)).toBe("Publisher's checklist: 18 rows · 2 skipped");
+    expect(chipText(248)).toBe("Official checklist: 248 rows");
+    expect(chipText(18, 0)).toBe("Official checklist: 18 rows");
+    expect(chipText(18, 2)).toBe("Official checklist: 18 rows · 2 skipped");
     expect(checklistTeamsLine(240, 248)).toBe("Teams from your checklist: 240 of 248 cards");
     expect(checklistTeamsLine(1, 1)).toBe("Teams from your checklist: 1 of 1 card");
   });
@@ -434,15 +437,15 @@ describe("the copy helpers and the chip", () => {
   it("the chip shows the count and a Remove with the contract's accessible name", () => {
     const onRemove = vi.fn();
     render(<PublishedChecklistChip rowCount={248} onRemove={onRemove} />);
-    expect(screen.getByText("Publisher's checklist: 248 rows")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
+    expect(screen.getByText("Official checklist: 248 rows")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove the official checklist" }));
     expect(onRemove).toHaveBeenCalledTimes(1);
   });
 
   it("the chip's text is a button that reopens the dialog, and says what was skipped", () => {
     const onOpen = vi.fn();
     render(<PublishedChecklistChip rowCount={18} skippedCount={2} onOpen={onOpen} onRemove={vi.fn()} />);
-    const reopen = screen.getByRole("button", { name: "Publisher's checklist: 18 rows · 2 skipped" });
+    const reopen = screen.getByRole("button", { name: "Official checklist: 18 rows · 2 skipped" });
     expect(reopen.getAttribute("aria-haspopup")).toBe("dialog");
     fireEvent.click(reopen);
     expect(onOpen).toHaveBeenCalledTimes(1);
@@ -453,13 +456,13 @@ describe("the copy helpers and the chip", () => {
   it("a disabled chip does not reopen", () => {
     const onOpen = vi.fn();
     render(<PublishedChecklistChip rowCount={3} onOpen={onOpen} onRemove={vi.fn()} disabled />);
-    fireEvent.click(screen.getByRole("button", { name: "Publisher's checklist: 3 rows" }));
+    fireEvent.click(screen.getByRole("button", { name: "Official checklist: 3 rows" }));
     expect(onOpen).not.toHaveBeenCalled();
   });
 
   it("Remove is quiet at rest and pink with its own ink under the pointer or focus", () => {
     render(<PublishedChecklistChip rowCount={3} onRemove={vi.fn()} />);
-    const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
+    const remove = screen.getByRole("button", { name: "Remove the official checklist" });
     expect(remove.className).toContain("text-ink-2");
     expect(remove.className).not.toMatch(/(^|\s)text-neon-pink-text/);
     expect(remove.className).toContain("hover:bg-neon-pink");
@@ -470,13 +473,13 @@ describe("the copy helpers and the chip", () => {
   it("a disabled chip does not remove", () => {
     const onRemove = vi.fn();
     render(<PublishedChecklistChip rowCount={3} onRemove={onRemove} disabled />);
-    fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove the official checklist" }));
     expect(onRemove).not.toHaveBeenCalled();
   });
 
   it("Remove is at least a 24px target (WCAG 2.5.8), 44px to a finger, in a one-line chip", () => {
     render(<PublishedChecklistChip rowCount={3} onRemove={vi.fn()} />);
-    const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
+    const remove = screen.getByRole("button", { name: "Remove the official checklist" });
     expect(remove.className).toContain("min-h-6");
     // 24px + 10px above and below: the target grows, the chip does not.
     expect(remove.className).toContain("after:-inset-y-2.5");
@@ -555,6 +558,144 @@ describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
       "Paste it straight off the checklist page, or pick a file. We line it up by card number and only look up teams your list leaves out. Card with no team, like a promo or a raffle card? Type “No Team” in its team spot. Leave it blank and we'll look it up.",
     );
     expect(dialog.getAttribute("aria-labelledby")).toBeTruthy();
-    expect(screen.getByRole("dialog", { name: "Publisher's checklist" })).toBe(dialog);
+    expect(screen.getByRole("dialog", { name: "Official checklist" })).toBe(dialog);
+  });
+});
+
+describe("PublishedChecklistDialog — spreadsheets and PDFs (NEO-496)", () => {
+  const FIXTURES = join(__dirname, "../../playwright/fixtures/checklists");
+  const choose = async (file: File) => {
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Choose a file"), { target: { files: [file] } });
+    });
+  };
+
+  it("offers .xlsx and .pdf in the picker", () => {
+    open();
+    expect((screen.getByLabelText("Choose a file") as HTMLInputElement).accept).toBe(
+      ".xlsx,.pdf,.csv,.tsv,.txt",
+    );
+    expect(screen.getByText(/\.xlsx, \.pdf, \.csv, \.tsv or \.txt/)).toBeTruthy();
+  });
+
+  it("reads a spreadsheet through the shared reader: its sections are the subset ticks, and the file stands in for the paste box", async () => {
+    const { onUse } = open();
+    const bytes = readFileSync(join(FIXTURES, "2026-donruss-sample.xlsx"));
+    await choose(new File([new Uint8Array(bytes)], "2026-donruss-sample.xlsx"));
+    await waitFor(() => expect(screen.getByText(/Read 2026-donruss-sample\.xlsx/)).toBeTruthy());
+    // The box gives way to the file's name.
+    expect(screen.queryByLabelText("Paste the checklist")).toBeNull();
+    expect(screen.getByText("2026-donruss-sample.xlsx")).toBeTruthy();
+    const subsets = within(screen.getByRole("group", { name: SUBSET_QUESTION }));
+    for (const name of ["Base", "Base Rated Prospects", "Bomb Squad", "Bomb Squad Red Ice"]) {
+      expect(subsets.getByRole("checkbox", { name })).toBeTruthy();
+    }
+    expect(screen.getByText(/Read as a spreadsheet/)).toBeTruthy();
+    fireEvent.click(subsets.getByRole("checkbox", { name: "Bomb Squad" }));
+    // The count Use is described by (the box is gone; the button carries it).
+    const useButton = screen.getByRole("button", { name: "Use this checklist" });
+    const countOf = () => document.getElementById(useButton.getAttribute("aria-describedby")!)!;
+    await waitFor(() => expect(countOf().textContent).toBe("3 rows. 1 line skipped."));
+    fireEvent.click(useButton);
+    const used = onUse.mock.calls[0][0];
+    expect(used.rows.map((r: { players: string[] }) => r.players[0])).toEqual([
+      "Bryce Eldridge",
+      "Ken Griffey Jr.",
+      "Roman Anthony",
+    ]);
+    expect(used.format).toBe("xlsx");
+    expect(used.text).toBe("");
+    expect(used.subsets).toEqual(["Bomb Squad"]);
+    expect(used.file.name).toBe("2026-donruss-sample.xlsx");
+  });
+
+  it("reopens on the same spreadsheet, and Paste instead brings the box back", async () => {
+    open();
+    const bytes = readFileSync(join(FIXTURES, "2026-donruss-sample.xlsx"));
+    await choose(new File([new Uint8Array(bytes)], "2026-donruss-sample.xlsx"));
+    await waitFor(() => expect(screen.getByText("2026-donruss-sample.xlsx")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Paste instead" }));
+    expect(screen.getByLabelText("Paste the checklist")).toBeTruthy();
+    expect(screen.queryByText("2026-donruss-sample.xlsx")).toBeNull();
+  });
+
+  it("reads a PDF through the PDF reader, with its page on a skipped line", async () => {
+    const readPdf = vi.fn(async () => ({
+      ok: true as const,
+      pages: 2,
+      lines: [
+        { page: 1, line: 1, cells: ["FUTURE STARS"], xs: [50] },
+        { page: 1, line: 2, cells: ["FS-1", "Jackson Holliday", "Baltimore Orioles"], xs: [50, 120, 300] },
+        { page: 2, line: 3, cells: ["Rookie"], xs: [50] },
+        { page: 2, line: 4, cells: ["RADIATING ROOKIES"], xs: [50] },
+        { page: 2, line: 5, cells: ["RR-1", "Roman Anthony", "Boston Red Sox"], xs: [50, 120, 300] },
+      ],
+    }));
+    const { onUse } = open({ readers: { readPdf } });
+    await choose(new File(["%PDF-1.7\n"], "topps.pdf"));
+    await waitFor(() => expect(screen.getByRole("group", { name: SUBSET_QUESTION })).toBeTruthy());
+    expect(readPdf).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Line 3, page 2")).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: "FUTURE STARS" }));
+    const useButton = screen.getByRole("button", { name: "Use this checklist" });
+    const countOf = () => document.getElementById(useButton.getAttribute("aria-describedby")!)!;
+    await waitFor(() => expect(countOf().textContent).toBe("1 row. 1 line skipped."));
+    fireEvent.click(useButton);
+    expect(onUse.mock.calls[0][0]).toMatchObject({
+      format: "pdf",
+      rows: [{ number: "FS-1", players: ["Jackson Holliday"], teams: ["Baltimore Orioles"] }],
+    });
+  });
+
+  it("names a workbook's sheet on a skipped line; the same row in two sheets is two lines", async () => {
+    const tab = (sheet: string, rows: string[][]) =>
+      rows.map((cells, i) => ({ row: i + 1, cells, sheet }));
+    const readXlsx = vi.fn(() => ({
+      ok: true as const,
+      sheets: ["Base", "Bomb Squad"],
+      rows: [
+        ...tab("Base", [["2026 Donruss"], ["#", "Player", "Team"], ["1", "Ken Griffey Jr.", "Seattle Mariners"]]),
+        ...tab("Bomb Squad", [["Bomb Squad"], ["#", "Player", "Team"], ["BS-1", "Aaron Judge", "New York Yankees"]]),
+      ],
+    }));
+    const duplicateKey = vi.spyOn(console, "error").mockImplementation(() => {});
+    open({ readers: { readXlsx } });
+    await choose(new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "donruss.xlsx"));
+    await waitFor(() => expect(screen.getByText("Line 1, sheet Base")).toBeTruthy());
+    expect(screen.getByText("Line 1, sheet Bomb Squad")).toBeTruthy();
+    expect(
+      duplicateKey.mock.calls.some((c) => String(c[0]).includes("same key")),
+    ).toBe(false);
+    duplicateKey.mockRestore();
+  });
+
+  it("a PDF the reader refuses is an alert in its words", async () => {
+    open({ readers: { readPdf: async () => ({ ok: false as const, reason: "password" as const }) } });
+    await choose(new File(["%PDF-1.7\n"], "locked.pdf"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/locked\.pdf is password-protected/));
+  });
+
+  it("holds one leaf to 2,000 of the ticked rows and says how many were left off", async () => {
+    const lines = ["Subset,#,Player"];
+    for (const subset of ["Alpha", "Beta"]) {
+      for (let i = 1; i <= 1500; i++) lines.push(`${subset},${i},Player ${subset} ${i}`);
+    }
+    const { onUse } = open();
+    await paste(lines.join("\n"));
+    const group = await waitFor(() => screen.getByRole("group", { name: SUBSET_QUESTION }));
+    fireEvent.click(within(group).getByRole("checkbox", { name: "Alpha" }));
+    fireEvent.click(within(group).getByRole("checkbox", { name: "Beta" }));
+    await waitFor(() => expect(screen.getByText(droppedRowsText(1000))).toBeTruthy());
+    expect(droppedRowsText(1000)).toBe("Using the first 2,000 rows; 1,000 more left off.");
+    // The status says it too, with the count (A-N5).
+    await waitFor(
+      () =>
+        expect(
+          document.querySelector<HTMLElement>("[data-checklist-count-status]")!.textContent,
+        ).toBe("2,000 rows. Using the first 2,000 rows; 1,000 more left off."),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+    expect(onUse.mock.calls[0][0].rows).toHaveLength(2000);
   });
 });

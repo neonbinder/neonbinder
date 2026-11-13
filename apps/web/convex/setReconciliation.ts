@@ -1,6 +1,6 @@
 import { action, internalQuery, mutation } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
@@ -104,6 +104,15 @@ import {
 // as an argument; the resolvability module itself never reads the environment.
 import { pausedSides } from "./marketplacePause";
 import type { Doc } from "./_generated/dataModel";
+import {
+  MAX_SECTIONS,
+  linksUnderSet,
+  newChecklistLinkWriteCache,
+  readyChecklistForSet,
+  sectionKeyOf,
+  setRowChecklistSections,
+} from "./lib/publishedChecklistSections";
+import { classifySections } from "../lib/checklists/classify-sections";
 
 /**
  * A sentinel thrown to short-circuit a side's fetch block WITHOUT its catch
@@ -245,27 +254,28 @@ function isTokenSubsetOrSuperset(a: string, b: string): boolean {
   return true;
 }
 
+/**
+ * Edit distance between two strings. Two rolling rows rather than the whole
+ * (m+1) × (n+1) table: the same answer, in O(n) memory instead of O(m·n).
+ */
 function levenshteinDistance(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    Array(n + 1).fill(0),
-  );
-
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  let prev = new Int32Array(n + 1);
+  let curr = new Int32Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
 
   for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    const ai = a[i - 1];
     for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1];
-      } else {
-        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
-      }
+      curr[j] =
+        ai === b[j - 1] ? prev[j - 1] : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
     }
+    [prev, curr] = [curr, prev];
   }
 
-  return dp[m][n];
+  return prev[n];
 }
 
 type PlatformItem = { value: string; platformValue: string };
@@ -608,6 +618,570 @@ function twinIdsOf(items: readonly PlatformItem[]): string[] {
   return [...ids];
 }
 
+// ===== NEO-496 (D7): THE SET'S CHECKLIST IN THE VARIANT SYNC =====
+
+/**
+ * Where a checklist section can land in the Reconcile dialog: an existing
+ * row under this variant type, a BSC+SportLots pair the fetch auto-matched,
+ * or one marketplace item no pair took. Marketplace values are platform ids
+ * (the dialog's own keys), read only to route the section to that line.
+ */
+export type ChecklistTarget =
+  | { kind: "row"; rowId: Id<"selectorOptions"> }
+  | { kind: "pair"; bsc: string; sportlots: string }
+  | { kind: "item"; side: "bsc" | "sportlots"; platformValue: string };
+
+const checklistTargetValidator = v.union(
+  v.object({ kind: v.literal("row"), rowId: v.id("selectorOptions") }),
+  v.object({ kind: v.literal("pair"), bsc: v.string(), sportlots: v.string() }),
+  v.object({
+    kind: v.literal("item"),
+    side: v.union(v.literal("bsc"), v.literal("sportlots")),
+    platformValue: v.string(),
+  }),
+);
+
+const sectionKindValidator = v.union(
+  v.literal("base"),
+  v.literal("base-subset"),
+  v.literal("base-child"),
+  v.literal("other"),
+);
+
+/** `fetchRawOptions`' `checklist`; see a-shapes and its `returns` note. */
+export const rawOptionsChecklistValidator = v.object({
+  checklistId: v.id("publishedChecklists"),
+  /** Stripped off a base-child's front before matching, longest first. */
+  baseSectionNames: v.array(v.string()),
+  /** Sections no row in the set links, file order. */
+  sections: v.array(
+    v.object({
+      sectionKey: v.string(),
+      name: v.string(),
+      rowCount: v.number(),
+      kind: sectionKindValidator,
+      parent: v.optional(v.string()),
+    }),
+  ),
+  /**
+   * Every row under the variant type being synced that links at least one
+   * section, with ALL its links, including a key the current checklist no
+   * longer holds (`name` is then the key). At the Base (Map Base Set) the
+   * Base row itself is included. The client echoes a row's whole key set
+   * when it saves `checklistSectionKeys` (replace semantics), so a link
+   * missing here would be dropped on a re-sync (rule 5).
+   */
+  rowLinks: v.array(
+    v.object({
+      rowId: v.id("selectorOptions"),
+      /** `rowCount` is absent for a key the current checklist no longer holds. */
+      sections: v.array(
+        v.object({ sectionKey: v.string(), name: v.string(), rowCount: v.optional(v.number()) }),
+      ),
+    }),
+  ),
+  matches: v.array(
+    v.object({
+      sectionKey: v.string(),
+      target: checklistTargetValidator,
+      confidence: v.number(),
+    }),
+  ),
+  candidates: v.array(
+    v.object({
+      sectionKey: v.string(),
+      candidates: v.array(
+        v.object({ target: checklistTargetValidator, confidence: v.number() }),
+      ),
+    }),
+  ),
+  unmatchedSectionKeys: v.array(v.string()),
+});
+export type RawOptionsChecklist = Infer<typeof rawOptionsChecklistValidator>;
+
+/** Sibling rows read under one variant type for the checklist's anchors. */
+const MAX_CHECKLIST_SIBLINGS = 1_000;
+
+/**
+ * NEO-496 (D7) — everything the variant sync needs from the set's stored
+ * checklist, in one read: the sections, which of them rows already link,
+ * the kind of the variant type being synced, the set's own names (stripped
+ * off a section's front), the Base's linked sections and this type's rows.
+ * `null` when the row is not a variant type under a set, or the set has no
+ * ready checklist.
+ */
+const variantSyncChecklistContextValidator = v.object({
+      checklistId: v.id("publishedChecklists"),
+      variantTypeId: v.id("selectorOptions"),
+      kind: v.union(v.literal("base"), v.literal("insert"), v.literal("parallel"), v.null()),
+      setNames: v.array(v.string()),
+      /**
+       * The stored sections with their number summary, so the classification
+       * is number-aware (a subset of the base, a parallel of it).
+       */
+      sections: v.array(
+        v.object({
+          sectionKey: v.string(),
+          name: v.string(),
+          rowCount: v.number(),
+          firstNumber: v.optional(v.string()),
+          lastNumber: v.optional(v.string()),
+        }),
+      ),
+      /** sectionKey -> the rows in the set that link it. */
+      links: v.array(
+        v.object({ selectorOptionId: v.id("selectorOptions"), sectionKey: v.string() }),
+      ),
+      baseRowIds: v.array(v.id("selectorOptions")),
+      siblings: v.array(
+        v.object({
+          _id: v.id("selectorOptions"),
+          value: v.string(),
+          labels: v.array(v.string()),
+          bscIds: v.array(v.string()),
+          slIds: v.array(v.string()),
+        }),
+      ),
+    });
+export type VariantSyncChecklistContext = Infer<typeof variantSyncChecklistContextValidator>;
+
+export const variantSyncChecklistContext = internalQuery({
+  args: { variantTypeId: v.id("selectorOptions") },
+  returns: v.union(v.null(), variantSyncChecklistContextValidator),
+  handler: async (ctx, args): Promise<VariantSyncChecklistContext | null> => {
+    const type = await ctx.db.get(args.variantTypeId);
+    if (!type || type.level !== "variantType" || !type.parentId) return null;
+    const set = await ctx.db.get(type.parentId);
+    if (!set || set.level !== "setName") return null;
+    const ready = await readyChecklistForSet(ctx.db, set._id);
+    if (!ready) return null;
+
+    // The set's names as a publisher prints them on a section's front:
+    // "Topps Chrome", "2026 Topps Chrome". NB values only.
+    let year: string | undefined;
+    let cursor = set.parentId;
+    for (let depth = 0; cursor && depth < 4; depth++) {
+      const node = await ctx.db.get(cursor);
+      if (!node) break;
+      if (node.level === "year") {
+        year = node.value;
+        break;
+      }
+      cursor = node.parentId;
+    }
+    const setNames = [set.value, ...(year ? [`${year} ${set.value}`] : [])];
+
+    const sections = await ctx.db
+      .query("publishedChecklistSections")
+      .withIndex("by_checklist_and_ordinal", (q) => q.eq("checklistId", ready._id))
+      .take(MAX_SECTIONS);
+    const links = await linksUnderSet(ctx.db, set._id);
+    const types = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "variantType").eq("parentId", set._id),
+      )
+      .take(MAX_VARIANT_TYPES_READ);
+    const siblings = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "insert").eq("parentId", type._id),
+      )
+      .take(MAX_CHECKLIST_SIBLINGS);
+
+    return {
+      checklistId: ready._id,
+      variantTypeId: type._id,
+      kind: variantTypeKind(type) ?? null,
+      setNames,
+      sections: sections.map((s) => ({
+        sectionKey: s.sectionKey,
+        name: s.name,
+        rowCount: s.rowCount,
+        ...(s.firstNumber !== undefined ? { firstNumber: s.firstNumber } : {}),
+        ...(s.lastNumber !== undefined ? { lastNumber: s.lastNumber } : {}),
+      })),
+      links: links.map((l) => ({ selectorOptionId: l.selectorOptionId, sectionKey: l.sectionKey })),
+      baseRowIds: types.filter((t) => variantTypeKind(t) === "base").map((t) => t._id),
+      siblings: siblings.map((row) => ({
+        _id: row._id,
+        value: row.value,
+        labels: [
+          ...Object.values(row.platformLabels?.bsc ?? {}),
+          ...Object.values(row.platformLabels?.sportlots ?? {}),
+        ].filter((label): label is string => typeof label === "string"),
+        bscIds: slotIds(row, "bsc"),
+        slIds: slotIds(row, "sportlots"),
+      })),
+    };
+  },
+});
+
+
+/**
+ * A section name or a target label folded for section matching: accents off
+ * ("Exposé" = "expose"), `normalizeForMatch`, then a plural fold on every
+ * token longer than three letters ("Ballparks" = "Ballpark", "Legends" =
+ * "Legend"). Both sides fold the same way, so "Series" against "Series"
+ * still agrees.
+ */
+function foldSectionText(s: string): string {
+  const plain = s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return normalizeForMatch(plain)
+    .split(" ")
+    .filter(Boolean)
+    .map((tok) => (tok.length > 3 && tok.endsWith("s") && !tok.endsWith("ss") ? tok.slice(0, -1) : tok))
+    .join(" ");
+}
+
+/** `folded` with the first of `prefixes` (folded, longest first) taken off its front. */
+function stripFoldedPrefix(folded: string, prefixes: readonly string[]): string {
+  for (const prefix of prefixes) {
+    if (prefix && folded.startsWith(`${prefix} `)) return folded.slice(prefix.length + 1);
+  }
+  return folded;
+}
+
+type SectionMatchInput = {
+  sectionKey: string;
+  name: string;
+  kind: "base" | "base-subset" | "base-child" | "other";
+};
+
+/**
+ * A section's candidate is offered at confidence 0.3 or more: an edit ratio
+ * of 0.7 or less. Pass 3 skips a pair only past this plus a margin, so float
+ * rounding can never drop a pair that would have been offered.
+ */
+const CANDIDATE_MAX_RATIO = 0.7;
+type TargetInput = { target: ChecklistTarget; labels: string[]; blocked?: boolean };
+
+/**
+ * NEO-496 (D7) — match a checklist's sections to the lines of a variant sync.
+ * Pure; exported for its tests.
+ *
+ * The passes and the tie rule are `computeMatches`': exact folded name, then
+ * the same words in any order, then Levenshtein ratio < 0.40 where one name's
+ * words contain the other's. A section is compared in every form it has (as
+ * printed, the set's name off its front, and for a base-child the base
+ * names off its front) against every label a target has, also with the
+ * set's name off. A section whose best target is not unique is never matched
+ * (rule 8); it keeps ranked candidates. MANY sections may match ONE target:
+ * a row links several sections ("Base Red" and "Base Rated Prospects Red"
+ * are both BSC's "Red"). A `blocked` target (a name twin) is offered, never
+ * matched.
+ */
+export function matchChecklistSections(
+  sections: readonly SectionMatchInput[],
+  targets: readonly TargetInput[],
+  options: { setNames?: readonly string[]; baseNames?: readonly string[] } = {},
+): {
+  matches: Array<{ sectionKey: string; target: ChecklistTarget; confidence: number }>;
+  candidates: Array<{ sectionKey: string; candidates: Array<{ target: ChecklistTarget; confidence: number }> }>;
+  unmatchedSectionKeys: string[];
+} {
+  const byLength = (xs: readonly string[] | undefined) =>
+    [...new Set((xs ?? []).map(foldSectionText).filter(Boolean))].sort(
+      (a, b) => b.length - a.length,
+    );
+  const setPrefixes = byLength(options.setNames);
+  const basePrefixes = byLength(options.baseNames);
+
+  const formsOf = (text: string, extra: readonly string[] = []): string[] => {
+    const folded = foldSectionText(text);
+    const forms = new Set([folded, stripFoldedPrefix(folded, setPrefixes)]);
+    if (extra.length > 0) {
+      for (const f of [...forms]) forms.add(stripFoldedPrefix(f, extra));
+    }
+    forms.delete("");
+    return [...forms];
+  };
+  const bag = (s: string) => s.split(" ").filter(Boolean).sort().join(" ");
+  const tokenSubset = (a: string, b: string) => {
+    const ta = new Set(a.split(" ").filter(Boolean));
+    const tb = new Set(b.split(" ").filter(Boolean));
+    if (ta.size === 0 || tb.size === 0) return false;
+    const [small, large] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+    for (const t of small) if (!large.has(t)) return false;
+    return true;
+  };
+
+  const targetForms = targets.map((t) => [...new Set(t.labels.flatMap((l) => formsOf(l)))]);
+  // Each target form's word bag, once, rather than once per section.
+  const targetBags = targetForms.map((tf) => tf.map(bag));
+  const matches: Array<{ sectionKey: string; target: ChecklistTarget; confidence: number }> = [];
+  const candidates: Array<{ sectionKey: string; candidates: Array<{ target: ChecklistTarget; confidence: number }> }> = [];
+  const unmatchedSectionKeys: string[] = [];
+
+  /** The one target index a pass found, "tie", or null. */
+  const unique = (hits: Set<number>): number | "tie" | null =>
+    hits.size === 0 ? null : hits.size === 1 ? [...hits][0] : "tie";
+
+  for (const section of sections) {
+    const forms = formsOf(section.name, section.kind === "base-child" ? basePrefixes : []);
+    const usable = (i: number) => targets[i].blocked !== true;
+
+    let found: { index: number; confidence: number } | "tie" | null = null;
+    // Pass 1: exact.
+    const exact = new Set<number>();
+    targetForms.forEach((tf, i) => {
+      if (tf.some((f) => forms.includes(f))) exact.add(i);
+    });
+    const e = unique(exact);
+    if (e === "tie") found = "tie";
+    else if (e !== null) found = usable(e) ? { index: e, confidence: 1 } : "tie";
+
+    // Pass 2: same words, any order.
+    if (found === null) {
+      const sectionBags = new Set(forms.map(bag));
+      const bagHits = new Set<number>();
+      targetBags.forEach((tb, i) => {
+        if (tb.some((b) => sectionBags.has(b))) bagHits.add(i);
+      });
+      const b = unique(bagHits);
+      if (b === "tie") found = "tie";
+      else if (b !== null) found = usable(b) ? { index: b, confidence: 0.95 } : "tie";
+    }
+
+    // Pass 3: near name, one name's words inside the other's. Best ratio per
+    // target over every pair of forms; a tied best is no match. Scored only
+    // when no earlier pass matched (the ratios then feed pass 3 and the
+    // unmatched section's candidates). A pair whose lengths alone put its
+    // ratio past `CANDIDATE_MAX_RATIO` is never scored: the edit distance is
+    // at least the length difference, so it could neither match (< 0.4) nor
+    // be offered (confidence ≥ 0.3), and skipping it changes no answer.
+    if (found !== null && found !== "tie") {
+      matches.push({
+        sectionKey: section.sectionKey,
+        target: targets[found.index].target,
+        confidence: found.confidence,
+      });
+      continue;
+    }
+    const scored = targetForms.map((tf, i) => {
+      let best = Infinity;
+      let guarded = false;
+      for (const f of tf) {
+        for (const s of forms) {
+          const maxLen = Math.max(f.length, s.length);
+          if (maxLen === 0) continue;
+          if (Math.abs(f.length - s.length) / maxLen > CANDIDATE_MAX_RATIO + 0.01) continue;
+          const ratio = levenshteinDistance(s, f) / maxLen;
+          if (ratio < best) {
+            best = ratio;
+            guarded = tokenSubset(s, f) || tokenSubset(bag(s), bag(f));
+          }
+        }
+      }
+      return { index: i, ratio: best, guarded };
+    });
+    if (found === null) {
+      let bestRatio = Infinity;
+      let bestIndex = -1;
+      let tied = false;
+      for (const s of scored) {
+        if (s.ratio < bestRatio) {
+          bestRatio = s.ratio;
+          bestIndex = s.index;
+          tied = false;
+        } else if (s.ratio === bestRatio) {
+          tied = true;
+        }
+      }
+      if (bestIndex !== -1 && !tied && bestRatio < 0.4 && scored[bestIndex].guarded && usable(bestIndex)) {
+        found = { index: bestIndex, confidence: 1 - bestRatio };
+      }
+    }
+
+    if (found !== null && found !== "tie") {
+      matches.push({
+        sectionKey: section.sectionKey,
+        target: targets[found.index].target,
+        confidence: found.confidence,
+      });
+      continue;
+    }
+    unmatchedSectionKeys.push(section.sectionKey);
+    candidates.push({
+      sectionKey: section.sectionKey,
+      candidates: scored
+        .map((s) => ({ target: targets[s.index].target, confidence: 1 - s.ratio }))
+        .filter((c) => c.confidence >= 0.3)
+        .sort((a, b) => b.confidence - a.confidence)
+        .slice(0, 5),
+    });
+  }
+  return { matches, candidates, unmatchedSectionKeys };
+}
+
+/**
+ * NEO-496 (D7) — the `checklist` a variant sync returns, from the context
+ * and what the marketplaces answered. Which sections are matched: under a
+ * Parallel type the base-children, under an Insert type the rest, under a
+ * kindless type both; the base section never (Map Base Set links it).
+ * Every unlinked section is listed, for "Show all".
+ *
+ * A marketplace line whose id a row under this type already holds IS that
+ * row: it joins the row's target rather than standing as a second one, so a
+ * section is never torn between a row and its own listing.
+ */
+export function buildRawOptionsChecklist(
+  context: VariantSyncChecklistContext,
+  fetched: {
+    autoMatched: readonly MatchedPair[];
+    unmatchedBsc: readonly PlatformItem[];
+    unmatchedSl: readonly PlatformItem[];
+    slStripPrefix?: string;
+    twinIds?: { bsc: readonly string[]; sportlots: readonly string[] };
+  },
+): RawOptionsChecklist {
+  // The stored number summaries go in, so a section is placed by its card
+  // numbers as well as its name ("Base Rated Prospects", 101-200 after a
+  // 1-100 Base, is a subset of the base; "Base Rated Prospects Red" its run).
+  const classification = classifySections(
+    context.sections.map((s) => ({
+      name: s.name,
+      rowCount: s.rowCount,
+      ...(s.firstNumber !== undefined ? { firstNumber: s.firstNumber } : {}),
+      ...(s.lastNumber !== undefined ? { lastNumber: s.lastNumber } : {}),
+    })),
+    { setNames: context.setNames },
+  );
+  const nameByKey = new Map(context.sections.map((s) => [s.sectionKey, s.name]));
+  const rowCountByKey = new Map(context.sections.map((s) => [s.sectionKey, s.rowCount]));
+  const linkedKeys = new Set(context.links.map((l) => l.sectionKey));
+  const baseIds = new Set(context.baseRowIds as string[]);
+  const baseLinked = context.links
+    .filter((l) => baseIds.has(l.selectorOptionId))
+    .map((l) => nameByKey.get(l.sectionKey))
+    .filter((n): n is string => n !== undefined);
+  // With nothing linked at the Base yet, the base and every subset of it:
+  // "Base Rated Prospects Red" strips to "Red", longest prefix first.
+  const baseSubsets = classification.sections
+    .filter((c) => c.kind === "base-subset")
+    .map((c) => c.name);
+  const baseSectionNames = [
+    ...new Set(
+      baseLinked.length > 0
+        ? baseLinked
+        : [...(classification.base ? [classification.base] : []), ...baseSubsets],
+    ),
+  ].sort((a, b) => b.length - a.length);
+
+  const sections = context.sections
+    .map((s, i) => ({ ...s, ...classification.sections[i], name: s.name }))
+    .filter((s) => !linkedKeys.has(s.sectionKey))
+    .map((s) => ({
+      sectionKey: s.sectionKey,
+      name: s.name,
+      rowCount: s.rowCount,
+      kind: s.kind,
+      ...(s.parent ? { parent: s.parent } : {}),
+    }));
+
+  // The rows whose links the client must echo: this type's rows, and at the
+  // Base the Base row itself (Map Base Set saves its sections on it).
+  const echoIds = new Set(context.siblings.map((r) => r._id as string));
+  if (context.kind === "base") echoIds.add(context.variantTypeId);
+  const rowLinks = new Map<
+    string,
+    Array<{ sectionKey: string; name: string; rowCount?: number }>
+  >();
+  for (const l of context.links) {
+    if (!echoIds.has(l.selectorOptionId)) continue;
+    const sections = rowLinks.get(l.selectorOptionId) ?? [];
+    // Its card count rides along so Map Base Set can show it on a ticked
+    // section too; a key the checklist no longer holds has none.
+    const rowCount = rowCountByKey.get(l.sectionKey);
+    sections.push({
+      sectionKey: l.sectionKey,
+      name: nameByKey.get(l.sectionKey) ?? l.sectionKey,
+      ...(rowCount !== undefined ? { rowCount } : {}),
+    });
+    rowLinks.set(l.selectorOptionId, sections);
+  }
+
+  // Targets: rows first, then what no row holds.
+  const rowTargets = new Map<string, TargetInput>();
+  const rowByBsc = new Map<string, string>();
+  const rowBySl = new Map<string, string>();
+  for (const row of context.siblings) {
+    rowTargets.set(row._id, {
+      target: { kind: "row", rowId: row._id },
+      labels: [row.value, ...row.labels],
+    });
+    for (const id of row.bscIds) rowByBsc.set(id, row._id);
+    for (const id of row.slIds) rowBySl.set(id, row._id);
+  }
+  const strip = (value: string) =>
+    fetched.slStripPrefix ? stripSlBasePrefix(value, fetched.slStripPrefix) : value;
+  const twins = {
+    bsc: new Set(fetched.twinIds?.bsc ?? []),
+    sportlots: new Set(fetched.twinIds?.sportlots ?? []),
+  };
+  const others: TargetInput[] = [];
+  const holdingRow = (bsc?: string, sl?: string) =>
+    (bsc !== undefined ? rowByBsc.get(bsc) : undefined) ??
+    (sl !== undefined ? rowBySl.get(sl) : undefined);
+  for (const pair of fetched.autoMatched) {
+    const labels = [pair.bsc.value, strip(pair.sl.value)];
+    const row = holdingRow(pair.bsc.platformValue, pair.sl.platformValue);
+    if (row) rowTargets.get(row)!.labels.push(...labels);
+    else
+      others.push({
+        target: { kind: "pair", bsc: pair.bsc.platformValue, sportlots: pair.sl.platformValue },
+        labels,
+      });
+  }
+  for (const item of fetched.unmatchedBsc) {
+    const row = holdingRow(item.platformValue, undefined);
+    if (row) rowTargets.get(row)!.labels.push(item.value);
+    else
+      others.push({
+        target: { kind: "item", side: "bsc", platformValue: item.platformValue },
+        labels: [item.value],
+        blocked: twins.bsc.has(item.platformValue),
+      });
+  }
+  for (const item of fetched.unmatchedSl) {
+    const row = holdingRow(undefined, item.platformValue);
+    if (row) rowTargets.get(row)!.labels.push(strip(item.value));
+    else
+      others.push({
+        target: { kind: "item", side: "sportlots", platformValue: item.platformValue },
+        labels: [strip(item.value)],
+        blocked: twins.sportlots.has(item.platformValue),
+      });
+  }
+
+  // At the Base nothing is auto-matched: Map Base Set preselects the base
+  // section and its subsets (`classifySections`) and the operator picks the
+  // rest. A base subset is the Base's, like the base: never auto-matched.
+  const eligible = sections.filter((s) =>
+    s.kind === "base" || s.kind === "base-subset" || context.kind === "base"
+      ? false
+      : context.kind === "parallel"
+        ? s.kind === "base-child"
+        : context.kind === "insert"
+          ? s.kind === "other"
+          : true,
+  );
+  const matched = matchChecklistSections(eligible, [...rowTargets.values(), ...others], {
+    setNames: context.setNames,
+    baseNames: baseSectionNames,
+  });
+  return {
+    checklistId: context.checklistId,
+    baseSectionNames,
+    sections,
+    rowLinks: [...rowLinks].map(([rowId, sections]) => ({
+      rowId: rowId as Id<"selectorOptions">,
+      sections,
+    })),
+    ...matched,
+  };
+}
+
 export const fetchRawOptions = action({
   args: {
     level: levelValidator,
@@ -694,6 +1268,17 @@ export const fetchRawOptions = action({
       bsc: v.array(v.string()),
       sportlots: v.array(v.string()),
     }),
+    /**
+     * NEO-496 (D7) — the set's stored checklist as a third source, at the
+     * Inserts/Parallels column (`level: "insert"` under a variant type) of a
+     * set with a ready checklist; absent otherwise. Present with no
+     * marketplace ids too: a checklist alone is a source. The client counts
+     * it as one (when it lists sections) and opens Reconcile on two sources,
+     * or on the checklist alone, instead of storing one marketplace
+     * directly. Sections are auto-matched here (`matchChecklistSections`);
+     * nothing is linked until the operator saves.
+     */
+    checklist: v.optional(rawOptionsChecklistValidator),
   }),
   // Explicit return type: without it, adding `slCandidates` pushed the
   // inferred type past TypeScript's inference budget and `fetchRawOptions`
@@ -721,11 +1306,19 @@ export const fetchRawOptions = action({
     skippedSides: Array<"bsc" | "sportlots">;
     pausedSides: Array<"bsc" | "sportlots">;
     twinIds: { bsc: string[]; sportlots: string[] };
+    checklist?: RawOptionsChecklist;
   }> => {
     await requireAdmin(ctx);
     if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
       throw new ConvexError("fetchRawOptions: waitKey must be 1-64 letters, digits, _ or -.");
     }
+    // NEO-496 (D7) — the set's checklist, read once (null: none in play).
+    const checklistContext =
+      args.level === "insert" && args.parentId
+        ? await ctx.runQuery(internal.setReconciliation.variantSyncChecklistContext, {
+            variantTypeId: args.parentId,
+          })
+        : null;
     // NEO-287 — read once per call. `pausedList` is derived from the chain's
     // resolution below (a side is paused only where the pause changed what
     // happens to it), hoisted so the failure return can carry it too.
@@ -828,7 +1421,17 @@ export const fetchRawOptions = action({
         );
       }
       if (skippedSides.length === 2) {
+        // NEO-496 (D7) — a checklist alone is still a source: its sections
+        // are matched against this type's own rows only.
+        const checklist = checklistContext
+          ? buildRawOptionsChecklist(checklistContext, {
+              autoMatched: [],
+              unmatchedBsc: [],
+              unmatchedSl: [],
+            })
+          : undefined;
         return {
+          ...(checklist ? { checklist } : {}),
           success: true,
           bscOptions: [],
           slOptions: [],
@@ -997,7 +1600,18 @@ export const fetchRawOptions = action({
       );
       const skipSuffix = unaskedNotice ? ` ${unaskedNotice}` : "";
 
+      const checklist = checklistContext
+        ? buildRawOptionsChecklist(checklistContext, {
+            autoMatched,
+            unmatchedBsc,
+            unmatchedSl,
+            ...(baseSlPrefix ? { slStripPrefix: baseSlPrefix } : {}),
+            twinIds,
+          })
+        : undefined;
+
       return {
+        ...(checklist ? { checklist } : {}),
         success: true,
         bscOptions,
         slOptions,
@@ -1561,6 +2175,22 @@ function wireToIds(v: string | string[] | undefined): string[] {
 export const RECONCILE_STORE_WRITE_BUDGET = 800;
 
 /**
+ * NEO-496 — the set (`setName` row) at or above `row`: itself, or up to four
+ * parents up (variant type, insert, parallel). `null` when there is none.
+ */
+async function setIdAtOrAbove(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null> } },
+  row: Doc<"selectorOptions"> | null,
+): Promise<Id<"selectorOptions"> | null> {
+  let node = row;
+  for (let depth = 0; node && depth < 5; depth++) {
+    if (node.level === "setName") return node._id;
+    node = node.parentId ? await ctx.db.get(node.parentId) : null;
+  }
+  return null;
+}
+
+/**
  * NEO-211 — additive, id-keyed store for the reconciled levels.
  *
  * Same rewrite as `storeSelectorOptions`, plus the two things only the
@@ -1612,6 +2242,18 @@ export const storeReconciledOptions = mutation({
          * namesake. See `IncomingItem.identityOnly`.
          */
         identityOnly: v.optional(v.boolean()),
+        /**
+         * NEO-496 (D7) — the publisher-checklist sections the row this line
+         * lands on uses. Absent: its links are untouched. Present: they are
+         * REPLACED with these (`[]` clears), through
+         * `setRowChecklistSections`, a no-op when unchanged (so a replay
+         * writes nothing). Section keys or names. A line with no marketplace
+         * id and no `existingId` lands on the one sibling that already links
+         * one of its sections; a section linked to any other row withholds
+         * it (`checklistKeyHeldByMany`). With `identityOnly` and no id it is
+         * a section made its own set (`IncomingItem.checklistOnly`).
+         */
+        checklistSectionKeys: v.optional(v.array(v.string())),
       }),
     ),
     /**
@@ -1734,7 +2376,7 @@ export const storeReconciledOptions = mutation({
     renameRefusedTotal: v.number(),
   }),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const userId = await requireAdmin(ctx);
     const { level, parentId, reconciledItems } = args;
 
     if (reconciledItems.length > MAX_SYNC_ITEMS) {
@@ -1768,16 +2410,73 @@ export const storeReconciledOptions = mutation({
       )
       .collect();
 
+    // NEO-496 (D7) — the set whose checklist the items' sections belong to,
+    // and which rows in it already link each section. Read only when an item
+    // carries sections.
+    const carriesSections = reconciledItems.some(
+      (item) => item.checklistSectionKeys !== undefined,
+    );
+    const checklistSetId = carriesSections
+      ? await setIdAtOrAbove(ctx, parentRowForCopyDown)
+      : null;
+    if (carriesSections && !checklistSetId) {
+      throw new ConvexError("Checklist sections can only be saved on a row inside a set.");
+    }
+    const holdersByKey = new Map<string, string[]>();
+    if (
+      checklistSetId &&
+      reconciledItems.some(
+        (item) =>
+          (item.checklistSectionKeys?.length ?? 0) > 0 &&
+          !item.existingId &&
+          wireToIds(item.platformData.bsc).length === 0 &&
+          wireToIds(item.platformData.sportlots).length === 0,
+      )
+    ) {
+      for (const link of await linksUnderSet(ctx.db, checklistSetId)) {
+        const list = holdersByKey.get(link.sectionKey) ?? [];
+        if (!list.includes(link.selectorOptionId)) list.push(link.selectorOptionId);
+        holdersByKey.set(link.sectionKey, list);
+      }
+    }
+    const siblingIdSet = new Set(existingOptions.map((row) => row._id as string));
+
     const items: IncomingItem[] = reconciledItems.map((item) => {
       const bsc = wireToIds(item.platformData.bsc)[0];
       const sportlots = wireToIds(item.platformData.sportlots)[0];
+      // NEO-496 — an id-less line with sections and no `existingId` is
+      // identified by its sections: the one sibling linking any of them is
+      // its row; a section any other row links withholds it.
+      const keys = (item.checklistSectionKeys ?? []).map(sectionKeyOf).filter(Boolean);
+      let linkedExistingId: string | undefined;
+      let presetWithhold: IncomingItem["presetWithhold"];
+      if (!bsc && !sportlots && !item.existingId && keys.length > 0) {
+        const holders = [...new Set(keys.flatMap((key) => holdersByKey.get(key) ?? []))];
+        if (holders.length === 1 && siblingIdSet.has(holders[0])) {
+          linkedExistingId = holders[0];
+        } else if (holders.length > 0) {
+          presetWithhold = {
+            reason: "checklistKeyHeldByMany",
+            rowIds: holders.filter((h) => siblingIdSet.has(h)),
+          };
+        }
+      }
+      const existingId = item.existingId ?? linkedExistingId;
       return {
         value: item.value,
         ids: {
           ...(bsc ? { bsc } : {}),
           ...(sportlots ? { sportlots } : {}),
         },
-        ...(item.existingId ? { existingId: item.existingId } : {}),
+        ...(existingId ? { existingId } : {}),
+        ...(presetWithhold ? { presetWithhold } : {}),
+        ...(item.identityOnly === true &&
+        level !== "variantType" &&
+        !bsc &&
+        !sportlots &&
+        keys.length > 0
+          ? { checklistOnly: true }
+          : {}),
         // NEO-334 — never at variantType level. `identityOnly` skips the
         // name tier, which there is what keeps a set to one Base and one row
         // per word (singular = plural); a line for a variant type always
@@ -2056,6 +2755,23 @@ export const storeReconciledOptions = mutation({
      */
     let inserts = 0;
     const willPatch = new Set<string>();
+    // NEO-496 — checklist link inserts and deletes, counted in the budget as
+    // they happen: a replay re-sends the same keys, writes nothing, and so
+    // reaches the tail like every other re-sent item.
+    let linkWrites = 0;
+    const linkCache = newChecklistLinkWriteCache();
+    const writeSectionLinks = async (
+      item: (typeof reconciledItems)[number],
+      rowId: Id<"selectorOptions">,
+    ) => {
+      if (item.checklistSectionKeys === undefined || !checklistSetId) return;
+      const written = await setRowChecklistSections(
+        ctx,
+        { rowId, setId: checklistSetId, keys: item.checklistSectionKeys, userId },
+        linkCache,
+      );
+      linkWrites += written.added + written.removed;
+    };
     /** Items this call reached. The rest are the caller's next call. */
     let itemsProcessed = 0;
     // NEO-300 — the subtree walk is one read per insert, counted at the call
@@ -2121,7 +2837,7 @@ export const storeReconciledOptions = mutation({
       // one that spent the budget rather than the one after it. Everything
       // already decided is written by the passes below and commits with this
       // transaction; the tail is untouched, not half-applied.
-      if (inserts + willPatch.size >= writeBudget) break;
+      if (inserts + willPatch.size + linkWrites >= writeBudget) break;
       itemsProcessed = i + 1;
       const item = reconciledItems[i];
       const parsed = items[i];
@@ -2143,7 +2859,8 @@ export const storeReconciledOptions = mutation({
         const sibling = plan.siblingWithholds[i];
         if (
           sibling &&
-          PLATFORM_SIDES.some((side) => parsed.ids[side] !== undefined)
+          (PLATFORM_SIDES.some((side) => parsed.ids[side] !== undefined) ||
+            (item.checklistSectionKeys?.length ?? 0) > 0)
         ) {
           withheldSiblingsAll.push({
             itemIndex: i,
@@ -2376,6 +3093,7 @@ export const storeReconciledOptions = mutation({
         if (Object.keys(pendingPatchFor(w)).length > 0) willPatch.add(row._id);
 
         linkedIds.push(row._id);
+        await writeSectionLinks(item, row._id);
         continue;
       }
 
@@ -2514,6 +3232,7 @@ export const storeReconciledOptions = mutation({
       });
       inserts++;
       linkedIds.push(id);
+      await writeSectionLinks(item, id);
     }
 
     // ── Unlink pass (NEO-211 D) ───────────────────────────────────────────
@@ -2616,7 +3335,7 @@ export const storeReconciledOptions = mutation({
     // patches, and the parent's `children` union. The reads (the sibling
     // collect, the ancestor walk, `annotateHasCards`) are the ~60 fixed
     // operations the budget already sets aside for and are not counted here.
-    const writeOps = inserts + patches;
+    const writeOps = inserts + patches + linkWrites;
     const hasMore = itemsProcessed < reconciledItems.length;
     if (hasMore) {
       // Structured, and loud: a truncated store is the one result a caller

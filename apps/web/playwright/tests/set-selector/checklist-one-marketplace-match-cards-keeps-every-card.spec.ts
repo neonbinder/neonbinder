@@ -1,8 +1,12 @@
 // Origin: .maestro/flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml (Maestro suite retired in NEO-341; see git history)
 // A set with exactly ONE marketplace attached (BSC; SportLots carries no
-// 1995 Roanoke Express ECHL base) skips the Match Cards dialog and keeps every
-// fetched card, then the committed set lists them as "BSC only" and a card
-// added by hand titles itself from the set, not from "Unknown"/"All Brands".
+// 1995 Roanoke Express ECHL base) and the publisher's checklist: BSC and the
+// checklist are two sources (NEO-496, D10/NQ1), so Match Cards opens even with one
+// marketplace; the card the checklist leaves out is BSC's alone and is kept, so
+// every fetched card is saved. The committed set lists them as "BSC only" and a
+// card added by hand titles itself from the set, not from "Unknown"/"All Brands".
+// (Renamed from checklist-one-marketplace-skips-match-dialog in NEO-496: with a
+// checklist in play the dialog is no longer skipped.)
 //
 // NEO-335 rides this fixture too (the suite's one set where every card saves
 // TEAMLESS, already committed here, and a real BSC-linked fetch + commit is the
@@ -62,7 +66,9 @@ import { bscLookupOutcome, expectAfterMarketplace } from "../../support/marketpl
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   CHECKLISTS,
+  confirmChecklistMatchCards,
   expectTeamsFromChecklist,
+  matchCardsDialog,
   usePublishersChecklist,
 } from "../../support/published-checklist";
 import {
@@ -166,7 +172,7 @@ async function expectNoTeamChipsToTheEnd(page: Page, maxCards = 40): Promise<num
 }
 
 test(
-  "Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card",
+  "Checklist — a set with exactly ONE marketplace attached and its publisher's checklist opens Match Cards, keeps the card the checklist leaves out, and saves every fetched card",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     await signIn("/set-selector");
@@ -191,7 +197,7 @@ test(
     if (!env.SL_PAUSED) {
       await expect(slCandidates.first()).toBeVisible();
     } else {
-      await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+      await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
       await expect(slCandidates).toHaveCount(0);
     }
     await expectAccessible(page, { within: picker, label: "Select Base Set picker, one marketplace offers a base" });
@@ -212,30 +218,39 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
     await syncChecklistButton(page).click();
 
-    // One live BSC round trip, and the solo path says what it kept (NEO-255).
-    const kept = page.getByText(/Kept all [0-9]+ cards? from /);
-    // A live BSC round trip (the one lookup), waited at 7 s of our own time plus however long
-    // BuySportsCards held it (NEO-487); never a flat ceiling.
-    await expectAfterMarketplace(page, kept, { platform: "BuySportsCards", what: "the checklist fetch's Kept all line" });
+    // NEO-496 (D10, NQ1): ONE marketplace plus the publisher's checklist are TWO sources, so the
+    // fetch opens Match Cards (before NEO-496 it skipped the dialog and kept every card itself).
+    // One live BSC round trip (the one lookup): 7 s of our own time plus however long BuySportsCards
+    // held it (NEO-487), never a flat ceiling.
+    const matchCards = matchCardsDialog(page);
+    await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards after the fetch" });
+    const confirmMatches = matchCards.getByRole("button", { name: "Confirm card matches", disabled: false });
+    await expectAfterMarketplace(page, confirmMatches, { platform: "BuySportsCards", what: "Confirm unlocked after the fetch" });
+    // The teams line is said while the dialog is open (once the wizard takes over, only the save repeats it).
     await expectTeamsFromChecklist(page, facts);
-    const FETCHED = Number(((await kept.textContent()) ?? "").match(/[0-9]+/)?.[0]);
-    expect(FETCHED).toBeGreaterThan(0);
-    await expect(
-      page.getByText(
-        new RegExp(`Kept all ${FETCHED} cards? from BSC\\. Nothing to match, no other marketplace attached\\.`),
-      ),
-    ).toBeVisible();
-    await expectAccessible(page, { label: "Checklist fetched through the one-marketplace path" });
+    // Every row of the file pairs with its card by number; LIVE_PLAYER's card, the one the file
+    // leaves out, is BSC's alone, and no row is left over.
+    await expect(matchCards.getByRole("heading", { name: "BSC only (1)" })).toBeVisible();
+    const keepLive = matchCards.getByRole("button", { name: new RegExp(`^Keep #\\S+ ${LIVE_PLAYER} as BSC-only$`) });
+    await expect(keepLive).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
+    await expect(matchCards.getByText(`Matched (${facts.rows})`)).toBeVisible();
+    await expectAccessible(page, { within: matchCards, label: "Match Cards, one marketplace and a publisher's checklist" });
+    // Keep it, so every fetched card saves: the file's rows plus LIVE_PLAYER's card.
+    await keepLive.click();
+    await expect(matchCards.getByRole("heading", { name: "BSC only (0)" })).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "Keeping (1)" })).toBeVisible();
+    const FETCHED = facts.rows + 1;
+    await confirmMatches.click();
+    await expect(matchCards).toBeHidden();
 
-    // No pairing dialog: straight to the entity review.
-    await expect(page.getByText(/^Match Cards/)).toBeHidden();
+    // Then the entity review, with the pairing session parked behind it.
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible({ timeout: 60_000 });
     // NEO-335 Phase 2: the sitting starts at its first step, nothing decided
     // (on a name step x is the decided count plus one; y grows, so it is left free).
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
-    await expect(page.getByText(/^Match Cards/)).toBeHidden();
-    await expect(wizard.getByRole("button", { name: "Back to Match Cards" })).toBeHidden();
+    await expect(wizard.getByRole("button", { name: "Back to Match Cards" })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, first row" });
 
     // ── STEP 6: create ONE player with ONE career team, then skip every other name ──
@@ -248,7 +263,7 @@ test(
     // (careerTeamVerdict): the set year is 1995 and the staged stint 1994-1996
     // covers it. The mechanics are checklist-wizard-career-team-commits, reused
     // step for step.
-    const team = recordedNoMatchName(env, "checklist-one-marketplace-skips-match-dialog");
+    const team = recordedNoMatchName(env, "checklist-one-marketplace-match-cards-keeps-every-card");
     const other = `RXO${env.ATTEMPT_TOKEN}T`;
     await walkToLivePlayer(page);
     // Not a "Link to <name>" preselect and not held: this spec creates the player.
@@ -532,14 +547,16 @@ test(
     // stored WITH the RXT team and arrives with none, and every skipped card is
     // stored with no player link against an incoming name, both content
     // changes, so "Skip changes" (apply nothing, keep NeonBinder's version) is
-    // the deterministic way through. No Match Cards: still one marketplace attached.
+    // the deterministic way through.
     // The same checklist again (the chip may still hold it): ONE live BSC lookup this time too.
     await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
     await syncChecklistButton(page).click();
-    // A live BSC fetch, then the diff: 7 s of our own time plus BuySportsCards' (NEO-487).
+    // A live BSC fetch: Match Cards again (two sources, NEO-496), with LIVE_PLAYER's card kept so
+    // every card comes back through (the helper keeps every BSC-only card, proves the teams line).
+    await confirmChecklistMatchCards(page, { facts, what: "the re-sync" });
+    // Then the diff: our own server, 7 s.
     const skipChanges = page.getByRole("button", { name: "Skip reviewing changes and continue" });
-    await expectAfterMarketplace(page, skipChanges, { platform: "BuySportsCards", what: "the re-sync's content review" });
-    await expect(page.getByText(/^Match Cards/)).toBeHidden();
+    await expect(skipChanges).toBeVisible();
     await skipChanges.click();
 
     // THE FEATURE: the same review, teams only. Entity resolution runs no lookups

@@ -3353,6 +3353,119 @@ describe("NEO-490: the operator's checklist links are admin-gated", () => {
 });
 
 
+describe("NEO-496: the set's publisher checklist surface is admin-gated", () => {
+  /**
+   * Four writes (start, addSections, finish, remove) and three subscribed or
+   * on-demand reads (getForSet, listSections, leafChecklistSummary). Every
+   * one calls `requireAdmin`; the reads answer a signed-out caller with
+   * nothing (a sign-out mid-session must not crash the screen) and refuse a
+   * signed-in member. The clean-up and the fetch's reads are internal.
+   */
+  async function seedSet(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Set",
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      });
+      const checklistId = await ctx.db.insert("publishedChecklists", {
+        setId,
+        status: "ready",
+        fileName: "c.csv",
+        format: "csv",
+        createdByUserId: "admin",
+        startedAt: 0,
+        lastActivityAt: 0,
+        finishedAt: 0,
+        sectionCount: 0,
+        rowCount: 0,
+        byteSize: 0,
+      });
+      return { setId, checklistId };
+    });
+  }
+
+  test("every write refuses an anonymous caller and a member, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { setId, checklistId } = await seedSet(t);
+    const calls = (who: typeof t) => [
+      () => who.mutation(api.publishedChecklists.start, { setId, fileName: "x.csv", format: "csv" }),
+      () =>
+        who.mutation(api.publishedChecklists.addSections, {
+          checklistId,
+          firstOrdinal: 0,
+          sections: [{ name: "A", rows: [{ number: "1", players: ["P"], teams: [] }] }],
+        }),
+      () => who.mutation(api.publishedChecklists.finish, { checklistId, sectionCount: 0, rowCount: 0 }),
+      () => who.mutation(api.publishedChecklists.remove, { setId }),
+    ];
+    for (const call of calls(t)) await expect(call()).rejects.toThrow(/not authenticated/i);
+    const member = t.withIdentity({ subject: "member", role: "member" }) as unknown as typeof t;
+    for (const call of calls(member)) await expect(call()).rejects.toThrow(/admin access required/i);
+    const rows = await t.run(async (ctx) => ({
+      headers: (await ctx.db.query("publishedChecklists").collect()).map((h) => h.status),
+      sections: (await ctx.db.query("publishedChecklistSections").collect()).length,
+    }));
+    expect(rows).toEqual({ headers: ["ready"], sections: 0 });
+  });
+
+  test("the reads answer a signed-out caller with nothing and refuse a member", async () => {
+    const t = convexTest(schema, modules);
+    const { setId, checklistId } = await seedSet(t);
+    expect(await t.query(api.publishedChecklists.getForSet, { setId })).toBeNull();
+    expect(
+      await t.query(api.publishedChecklists.listSections, {
+        checklistId,
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).toEqual({ page: [], isDone: true, continueCursor: "" });
+    expect(
+      await t.query(api.publishedChecklists.leafChecklistSummary, { selectorOptionId: setId }),
+    ).toBeNull();
+    const member = t.withIdentity({ subject: "member", role: "member" });
+    await expect(member.query(api.publishedChecklists.getForSet, { setId })).rejects.toThrow(
+      /admin access required/i,
+    );
+    await expect(
+      member.query(api.publishedChecklists.listSections, {
+        checklistId,
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      member.query(api.publishedChecklists.leafChecklistSummary, { selectorOptionId: setId }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+
+  test("clean-up and the fetch's reads are internal, never public", () => {
+    const src = readFileSync(join(__dirname, "publishedChecklists.ts"), "utf8");
+    for (const name of ["expireUpload", "purge", "forgetUploader"]) {
+      expect(src).toContain(`export const ${name} = internalMutation({`);
+    }
+    for (const name of ["sectionsForSet", "linksForSet", "rowsForLeaf"]) {
+      expect(src).toContain(`export const ${name} = internalQuery({`);
+    }
+    // Every public function's handler calls requireAdmin (directly, or
+    // through adminOrSignedOut for the reads) before it touches the database.
+    for (const name of ["start", "addSections", "finish", "remove"]) {
+      const begin = src.indexOf(`export const ${name} = mutation({`);
+      expect(begin, name).toBeGreaterThan(-1);
+      const body = src.slice(src.indexOf("handler: async", begin));
+      expect(body.indexOf("await requireAdmin(ctx)"), name).toBeGreaterThan(-1);
+      expect(body.indexOf("await requireAdmin(ctx)"), name).toBeLessThan(body.indexOf("ctx.db"));
+    }
+    for (const name of ["getForSet", "listSections", "leafChecklistSummary"]) {
+      const begin = src.indexOf(`export const ${name} = query({`);
+      expect(begin, name).toBeGreaterThan(-1);
+      const body = src.slice(src.indexOf("handler: async", begin));
+      expect(body.indexOf("await adminOrSignedOut(ctx)"), name).toBeGreaterThan(-1);
+      expect(body.indexOf("await adminOrSignedOut(ctx)"), name).toBeLessThan(body.indexOf("ctx.db"));
+    }
+  });
+});
+
 /**
  * NEO-500 — the Pick List (`pickList.ts`). Every function is the signed-in
  * caller's own; the owner is never an argument. `open`, `soldPhotos` and

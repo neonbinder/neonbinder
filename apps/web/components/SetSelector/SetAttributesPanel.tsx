@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useConvex, useMutation, useQuery } from "convex/react";
@@ -23,6 +23,7 @@ import {
   isBrandUnknownRow,
 } from "../../convex/selectorSyncMatch";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import { EDIT_ATTRIBUTES_LABEL } from "./control-labels";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
@@ -39,6 +40,7 @@ import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
+import PublishedChecklistPanel from "./PublishedChecklistPanel";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
   ALL_SIDES,
@@ -74,7 +76,9 @@ import {
  * Collapsible so it never pushes the card list off-screen. Collapsed shows
  * a single summary bar (breadcrumb + an "Edit attributes" toggle). Default
  * collapsed only when `defaultCollapsed` (cards present); expanded otherwise
- * so the setName-with-no-cards flow needs no extra tap.
+ * so the setName-with-no-cards flow needs no extra tap. NEO-496: the set
+ * level itself always opens by default, its official checklist first,
+ * unless the operator closed it on that set this tab session.
  *
  * None of these fields are actually required — blank is a perfectly
  * acceptable, complete answer for most of them (not every card is
@@ -138,6 +142,7 @@ import {
  * old `focus:outline-none` with only a colour change left a keyboard operator
  * a focus indicator in name only.
  */
+const HIDE_ATTRIBUTES_LABEL = "Hide attributes";
 const ATTRIBUTES_TOGGLE_CLASS =
   "text-xs py-1 rounded text-ink-3 hover:text-neon-green-text focus-outline";
 
@@ -180,6 +185,57 @@ const TEAM_LEVELS: ReadonlySet<string> = new Set([
   "parallel",
 ]);
 
+/**
+ * NEO-496 — the set level opens this panel by default (Jason, 2026-11-12):
+ * the set's official checklist upload sits at its top, and a set is where an
+ * operator goes to give it one. Every other level keeps the caller's default
+ * (collapsed in the set builder, NEO-38). An operator who closes the panel
+ * on a set keeps it closed on that set for the rest of the tab session, so
+ * Back to the set or a re-pick never reopens what they put away.
+ * `sessionStorage` can throw (private windows, blocked site data), so every
+ * touch is guarded and the set simply opens by default if it does.
+ */
+const CLOSED_SETS_KEY = "nb.setAttributesClosedSets";
+/**
+ * NEO-496 (a11y audit) — the most sets remembered as closed; the oldest
+ * close is dropped first. A long session walks a few dozen sets at most, so
+ * this only keeps the stored list from growing without end.
+ */
+export const CLOSED_SETS_CAP = 200;
+
+function readClosedSets(): string[] {
+  try {
+    const raw = window.sessionStorage.getItem(CLOSED_SETS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberSetClosed(id: string, closed: boolean) {
+  try {
+    const rest = readClosedSets().filter((other) => other !== id);
+    // Newest last, so the oldest close is the one dropped at the cap.
+    const next = closed ? [...rest, id].slice(-CLOSED_SETS_CAP) : rest;
+    window.sessionStorage.setItem(CLOSED_SETS_KEY, JSON.stringify(next));
+  } catch {
+    // Storage unavailable: the set opens by default next time.
+  }
+}
+
+/** Whether the panel starts open on this row (see `CLOSED_SETS_KEY`). */
+function opensByDefault(
+  level: string | undefined,
+  id: string,
+  defaultCollapsed: boolean | undefined,
+): boolean {
+  if (level === "setName") return !readClosedSets().includes(id);
+  return !defaultCollapsed;
+}
+
 type Level =
   | "sport"
   | "year"
@@ -206,6 +262,7 @@ export default function SetAttributesPanel({
   onDeleted,
   onMoved,
   onReshaped,
+  sources,
 }: {
   selectorOptionId: Id<"selectorOptions">;
   /** Start collapsed (cards present) so the panel doesn't push them off-screen. */
@@ -235,6 +292,16 @@ export default function SetAttributesPanel({
    * division as `onDeleted` and `onMoved`.
    */
   onReshaped?: (path: ReshapeStep[]) => void;
+  /**
+   * NEO-496 — the row's marketplace sources (the set builder's
+   * `MultiSourcePanel`), drawn inside the open panel only. Attaching a second
+   * BSC or SportLots set happens, but it is the exception (Jason, 2026-11-12),
+   * so it no longer takes its own card above the panel: it sits behind
+   * "Edit attributes" with the rest of the row's settings. The owner decides
+   * whether there is one (it has the row the cards are read from); the source
+   * panel itself decides which levels it shows on.
+   */
+  sources?: ReactNode;
 }) {
   const row = useQuery(api.selectorOptions.getSelectorOptionById, {
     id: selectorOptionId,
@@ -261,7 +328,32 @@ export default function SetAttributesPanel({
     api.brandView.setManufacturerSlViaAllBrands,
   );
 
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
+  // The row's level decides the default (NEO-496: open at the set level). The
+  // row may still be loading on the first render; the effect below settles
+  // it once the level is known, before the panel draws anything.
+  const rowLevel = row?.level;
+  /** The open body, for the toggle's `aria-controls`. */
+  const bodyId = useId();
+  const [expanded, setExpanded] = useState(() =>
+    opensByDefault(rowLevel, selectorOptionId, defaultCollapsed),
+  );
+  // Re-evaluate the default whenever the source intent flips (cards
+  // appear/disappear or the selected node changes). Without this, drilling
+  // from a card-less set into a node with cards would keep the panel
+  // expanded (pushing the list down) because state initializes once. The
+  // level is in the key too: it is unknown until the row loads (NEO-496).
+  //
+  // Settled DURING render (the previous-value pattern), not in an effect:
+  // an effect lets the first paint of a newly picked row wear the previous
+  // row's open state, so for a frame the set's open panel (NEO-496) sat on
+  // the variant picked below it, and a reader checking which toggle is
+  // showing could act on the wrong one.
+  const openKey = `${selectorOptionId}|${rowLevel ?? ""}|${defaultCollapsed ? 1 : 0}`;
+  const [openSettledFor, setOpenSettledFor] = useState(openKey);
+  if (openSettledFor !== openKey) {
+    setOpenSettledFor(openKey);
+    setExpanded(opensByDefault(rowLevel, selectorOptionId, defaultCollapsed));
+  }
   // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
   // progress line (`toast`, the polite status region) and a failure
   // (`failure`, the alert region). Raising either clears the other.
@@ -277,15 +369,6 @@ export default function SetAttributesPanel({
     },
     [],
   );
-
-  // Re-evaluate the default whenever the source intent flips (cards
-  // appear/disappear or the selected node changes). Without this, drilling
-  // from a card-less set into a node with cards would keep the panel
-  // expanded (pushing the list down) because state initializes once.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-evaluates the collapse default when the source intent flips; useState only initialises once
-    setExpanded(!defaultCollapsed);
-  }, [defaultCollapsed, selectorOptionId]);
 
   // Derive the sport from the ancestor chain so we can drop features that
   // don't apply (e.g. "League" hidden for Pokemon).
@@ -315,6 +398,12 @@ export default function SetAttributesPanel({
   if (!row || !chain) return null;
 
   const leafLevel = row.level as Level;
+  // The operator's own open or close. On a set it is remembered for the tab
+  // session (`CLOSED_SETS_KEY`); elsewhere the default is collapsed anyway.
+  const setOpen = (open: boolean) => {
+    setExpanded(open);
+    if (leafLevel === "setName") rememberSetClosed(selectorOptionId, !open);
+  };
   // NEO-334 — a variant type's title IS its kind (Jason, 2026-10-10): the
   // type titled "Base" is the set's Base. Read once for the header's tag and
   // the delete confirm.
@@ -728,29 +817,22 @@ export default function SetAttributesPanel({
             )}
           </p>
         </div>
-        {expanded ? (
-          <button
-            type="button"
-            onClick={() => setExpanded(false)}
-            onKeyDown={(e) => activateOnEnter(e, () => setExpanded(false))}
-            aria-label="Hide attributes"
-            className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
-          >
-            Hide attributes ▴
-          </button>
-        ) : (
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setExpanded(true)}
-              onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
-              aria-label="Edit attributes"
-              className={ATTRIBUTES_TOGGLE_CLASS}
-            >
-              Edit attributes ▾
-            </button>
-          </div>
-        )}
+        {/* NEO-496 (a11y audit): ONE button for both states, so toggling
+            keeps focus on it. Two elements swapped under the press and
+            dropped focus to <body>. Its name still says what a press does
+            ("Edit attributes" / "Hide attributes": specs and copy name
+            them), and `aria-expanded` says the state. */}
+        <button
+          type="button"
+          onClick={() => setOpen(!expanded)}
+          onKeyDown={(e) => activateOnEnter(e, () => setOpen(!expanded))}
+          aria-label={expanded ? HIDE_ATTRIBUTES_LABEL : EDIT_ATTRIBUTES_LABEL}
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
+        >
+          {expanded ? `${HIDE_ATTRIBUTES_LABEL} ▴` : `${EDIT_ATTRIBUTES_LABEL} ▾`}
+        </button>
       </div>
 
       {/* NEO-306: the things that can be DONE to this row, as its own row of
@@ -873,7 +955,30 @@ export default function SetAttributesPanel({
       </div>
 
       {expanded && (
-        <>
+        // The body the toggle's `aria-controls` names (NEO-496 a11y).
+        <div id={bodyId} className="space-y-3">
+          {/* NEO-496: the set's publisher checklist, one file for the whole
+              set, at the set level only. First and full width (Jason,
+              2026-11-12): the upload is what an operator opens a set to do,
+              and the panel opens itself at the set level to offer it. It is
+              a source the set's syncs read, not a fact about this row, so
+              it sits above the "Set attributes" label, not among them. */}
+          {leafLevel === "setName" && (
+            <PublishedChecklistPanel
+              setId={selectorOptionId}
+              setName={row.value}
+              setYear={ancestorYear ?? null}
+              onStatus={showToast}
+            />
+          )}
+
+          {/* NEO-496: where this row's cards come from, when it draws on
+              marketplace sets (insert, parallel, a terminal variant). Above
+              the attributes for the same reason as the checklist: a source,
+              not a fact about the row. The two never meet, since the
+              checklist lives on the set and the sources below it. */}
+          {sources}
+
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
               Set attributes
@@ -978,7 +1083,7 @@ export default function SetAttributesPanel({
               />
             ))}
           </div>
-        </>
+        </div>
       )}
     </div>
   );

@@ -77,7 +77,7 @@ test(
       // The SportLots list is already narrowed to the prefix: no manual search box.
       await expect(page.getByPlaceholder("Search SportLots sets...")).toBeHidden();
     } else {
-      await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+      await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
       await expect(picker.getByRole("option", { name: /^SportLots base candidate: / })).toHaveCount(0);
     }
     await expectAccessible(page, { within: picker, label: "Select Base Set dialog, SportLots list narrowed" });

@@ -32,7 +32,11 @@
  */
 
 import { MAX_RETURNED_IDS } from "../../convex/selectorSyncStore";
-import { ATTACH_MORE_LABEL, CUSTOM_BUTTON_LABEL } from "./control-labels";
+import {
+  ATTACH_MORE_LABEL,
+  CUSTOM_BUTTON_LABEL,
+  EDIT_ATTRIBUTES_LABEL,
+} from "./control-labels";
 
 export type SyncSide = "bsc" | "sportlots";
 
@@ -667,7 +671,8 @@ export function twinLeftIdsText(entry: TwinLeftEntry): string {
 export function twinsLeftGuidance(level: SelectorLevel | undefined): string | null {
   switch (level) {
     case "setName":
-      return `For each one, use ${ATTACH_MORE_LABEL} on its set's Base. Not a set yet? Add it with ${CUSTOM_BUTTON_LABEL}, then use ${ATTACH_MORE_LABEL} there.`;
+      // NEO-496: Attach more… sits inside the row's attributes panel now.
+      return `For each one, open ${EDIT_ATTRIBUTES_LABEL} on its set's Base and use ${ATTACH_MORE_LABEL}. Not a set yet? Add it with ${CUSTOM_BUTTON_LABEL}, then do the same there.`;
     case "insert":
     case "parallel":
       return "Run this column's Sync again and pair each one in Reconcile.";

@@ -56,4 +56,18 @@ describe("PrivacyPage", () => {
     const nav = within(screen.getByRole("navigation", { name: "Policy sections" }));
     expect(nav.getByRole("link", { name: "eBay" }).getAttribute("href")).toBe("#ebay");
   });
+
+  it("says a set checklist file stays in the browser and never reaches a marketplace", () => {
+    renderPrivacy();
+    const collect = within(screen.getByRole("region", { name: "What we collect" }));
+    collect.getByRole("heading", { level: 3, name: "Set checklists" });
+    collect.getByText(/the file itself is never uploaded/);
+    collect.getByText(/never sent to a marketplace/);
+  });
+
+  it("says a set checklist stays until it is replaced or removed, and one left half-added goes after an hour", () => {
+    renderPrivacy();
+    screen.getByText(/A set.s checklist stays until an admin replaces or removes it/);
+    screen.getByText(/one left half-added for an hour is deleted too/);
+  });
 });

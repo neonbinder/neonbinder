@@ -485,6 +485,33 @@ describe("BaseSetPicker — a paused marketplace pane (NEO-287)", () => {
     expect(document.activeElement).not.toBe(screen.getByRole("dialog"));
   });
 
+  it("a side skipped for want of a link says it wasn't asked, never that it returned nothing", () => {
+    renderPicker({
+      bscOptions: [{ value: "Some Other BSC Set", platformValue: "other" }],
+      skippedSides: ["sportlots"],
+    });
+    expect(screen.getByText(`SportLots wasn't asked: ${SET} has no SportLots link.`)).toBeTruthy();
+    expect(screen.queryByText(/^SportLots returned no base set/)).toBeNull();
+  });
+
+  it("BSC skipped with nothing to offer says it wasn't asked", () => {
+    renderPicker({
+      slOptions: [{ value: SET, platformValue: "tc" }],
+      skippedSides: ["bsc"],
+    });
+    expect(screen.getByText(`BSC wasn't asked: ${SET} has no BSC link.`)).toBeTruthy();
+  });
+
+  it("a paused side keeps its pause pane, not the wasn't-asked line", () => {
+    renderPicker({
+      bscOptions: [{ value: "Some Other BSC Set", platformValue: "other" }],
+      pausedSides: ["sportlots"],
+      skippedSides: ["sportlots"],
+    });
+    expect(screen.getByText(/^SportLots is on pause/)).toBeTruthy();
+    expect(screen.queryByText(/wasn't asked/)).toBeNull();
+  });
+
   it("no pausedSides prop at all behaves exactly as before (default [])", async () => {
     renderPicker({
       slOptions: [{ value: SET, platformValue: "tc" }],

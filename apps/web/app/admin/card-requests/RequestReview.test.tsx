@@ -110,6 +110,27 @@ describe("RequestReview", () => {
     expect(calls[1]).toEqual({ name: "collectionRequests:approveCard", args: { requestId: "r1", cardId: "k10" } });
   });
 
+  it("sizes each photo link as a card-shaped frame before the photo loads", () => {
+    // A link sized by its image (`h-48 w-auto`) is 0 px wide until the image
+    // decodes: nothing to tab onto, and axe's target-size check failed in
+    // that window. The frame's width comes from its own height and ratio.
+    answers.set(
+      "collectionRequests:review",
+      review({ privateCard: { ...review().privateCard, frontImageUrl: "https://x.test/f.jpg", backImageUrl: "https://x.test/b.jpg" } }),
+    );
+    show();
+    for (const side of ["Front", "Back"]) {
+      const link = screen.getByRole("link", { name: `(opens in a new tab) ${side} of the card` });
+      const frame = link.className.split(/\s+/);
+      expect(frame).toEqual(expect.arrayContaining(["block", "aspect-[5/7]", "h-48"]));
+      expect(frame).not.toContain("w-auto");
+      const photo = link.querySelector("img")!;
+      // The photo fills the frame and letterboxes rather than crops.
+      expect(photo.className.split(/\s+/)).toEqual(expect.arrayContaining(["h-full", "w-full", "object-contain"]));
+      expect(photo.className.split(/\s+/)).not.toContain("w-auto");
+    }
+  });
+
   it("sends a typed checklist to the set builder, and declines", async () => {
     answers.set(
       "collectionRequests:review",

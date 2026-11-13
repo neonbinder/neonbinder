@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/topps-chrome-marketplace-read.yaml (Maestro suite retired in NEO-341; see git history)
-// Read-only: never saves, never edits. Expands the attributes panel only if it
-// is collapsed (opening it is a view toggle, not a write).
+// Read-only: never saves, never edits. The set level opens the attributes
+// panel by itself (NEO-496); it is expanded only if it is collapsed (opening
+// it is a view toggle, not a write).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet, setBuilderReady } from "../../support/set-builder";
 

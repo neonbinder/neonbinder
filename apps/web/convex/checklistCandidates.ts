@@ -9,6 +9,8 @@ import {
   cardPlatformWireDataValidator,
   cardTeamLookupValidator,
   checklistConflictValidator,
+  checklistPairRevertValidator,
+  checklistPairedRowValidator,
 } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
 // NEO-251 security review: the same two bounds the write path enforces, applied
@@ -74,7 +76,32 @@ const bucketValidator = v.union(
   v.literal("matched"),
   v.literal("bscOnly"),
   v.literal("slOnly"),
+  // NEO-496 — a publisher checklist row no marketplace card matched. Its
+  // `platformData` is `{}`; Keep makes a card from the row.
+  v.literal("checklistOnly"),
 );
+
+/**
+ * NEO-496 — how a card paired with a publisher-checklist row (Match Cards'
+ * badge). `confidence` is set for a near-name pair only; `checklistNumber`
+ * for a name pair with a numbered row (shown beside the card's own number,
+ * never a conflict). Mirrors the schema field.
+ */
+export const checklistLinkValidator = v.object({
+  via: v.union(
+    v.literal("number"),
+    v.literal("caseFolded"),
+    v.literal("prefixStripped"),
+    v.literal("player"),
+    v.literal("playerName"),
+    v.literal("playerFuzzy"),
+  ),
+  confidence: v.optional(v.number()),
+  checklistNumber: v.optional(v.string()),
+  /** The paired row and the card before it, for Match Cards' Unlink. */
+  row: v.optional(checklistPairedRowValidator),
+  revert: v.optional(checklistPairRevertValidator),
+});
 
 /**
  * NEO-335 — how a card's fetch-time BSC team lookup ended. See the field's
@@ -132,6 +159,8 @@ const candidateInputValidator = v.object({
   // outcomes are still written by `resolveCandidateTeams`.
   teamLookup: v.optional(teamLookupValidator),
   bucket: bucketValidator,
+  // NEO-496 — see `checklistLinkValidator`.
+  checklistLink: v.optional(checklistLinkValidator),
   confidence: v.optional(v.number()),
   /**
    * NEO-330 / NEO-341 — this card is waiting on a BSC team lookup the action
@@ -1007,6 +1036,8 @@ export const getReadyCandidates = query({
         // says otherwise" step reads it.
         checklistConflict: v.optional(checklistConflictValidator),
         bucket: bucketValidator,
+        // NEO-496 — how the card paired with the publisher checklist.
+        checklistLink: v.optional(checklistLinkValidator),
         confidence: v.optional(v.number()),
         stem: v.string(),
         teamResolved: v.boolean(),
@@ -1065,6 +1096,7 @@ export const getReadyCandidates = query({
         playersConflict: r.playersConflict,
         checklistConflict: r.checklistConflict,
         bucket: r.bucket,
+        checklistLink: r.checklistLink,
         confidence: r.confidence,
         stem: r.stem,
         // Lets the row show "resolving team…" rather than an empty cell that

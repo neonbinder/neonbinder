@@ -338,6 +338,25 @@ vi.mock("./EntityReviewWizard", () => ({
 }));
 
 const mockFetchChecklist = vi.fn();
+/**
+ * NEO-496 — the server always reports the run's `sources`: the marketplace
+ * sides it fetched (attached, minus paused) plus "checklist" when a checklist
+ * was in play. Most fixtures here predate the field, so a result without one
+ * gets the value the server would send for that fixture; a fixture that sets
+ * `sources` itself is passed through untouched.
+ */
+const fetchWithSources = async (args: { publishedChecklist?: unknown }) => {
+  const result = await mockFetchChecklist(args);
+  if (!result || typeof result !== "object" || "sources" in result || !result.success) {
+    return result;
+  }
+  const paused = new Set<string>(result.pausedSides ?? []);
+  const sides = ((result.attachedSides ?? []) as string[]).filter((s) => !paused.has(s));
+  return {
+    ...result,
+    sources: [...sides, ...(args.publishedChecklist ? ["checklist"] : [])],
+  };
+};
 const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
 const mockDiffChecklist = vi.fn();
@@ -450,7 +469,7 @@ vi.mock("convex/react", () => ({
     return vi.fn();
   },
   useAction: (ref: string) => {
-    if (ref === "fetchCardChecklist") return mockFetchChecklist;
+    if (ref === "fetchCardChecklist") return fetchWithSources;
     if (ref === "resolveChecklistEntities") return mockResolveEntities;
     // NEO-189: commitCardChecklist became an ACTION when the commit was
     // chunked server-side. Same call shape, different hook.
@@ -1656,7 +1675,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     ];
 
     async function addChecklist(text = PASTE) {
-      fireEvent.click(screen.getByRole("button", { name: "Add the publisher's checklist" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add the official checklist" }));
       const box = await screen.findByLabelText("Paste the checklist");
       await act(async () => {
         fireEvent.change(box, { target: { value: text } });
@@ -1687,37 +1706,37 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
     it("the button opens the dialog, and Cancel closes it with no chip", async () => {
       renderChecklist();
-      fireEvent.click(screen.getByRole("button", { name: "Add the publisher's checklist" }));
-      expect(await screen.findByRole("dialog", { name: "Publisher's checklist" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Add the official checklist" }));
+      expect(await screen.findByRole("dialog", { name: "Official checklist" })).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-      expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
+      expect(screen.queryByText(/Official checklist: /)).toBeNull();
     });
 
     it("accepting shows the chip with the row count, and Remove clears it", async () => {
       renderChecklist();
       await addChecklist();
       expect(screen.queryByRole("dialog")).toBeNull();
-      expect(screen.getByText("Publisher's checklist: 2 rows")).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
-      expect(screen.queryByText(/Publisher's checklist: /)).toBeNull();
+      expect(screen.getByText("Official checklist: 2 rows")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Remove the official checklist" }));
+      expect(screen.queryByText(/Official checklist: /)).toBeNull();
     });
 
     it("while a checklist is attached the chip is its handle: no add button, focus on Remove, and Remove brings the button back focused (NEO-482)", async () => {
       renderChecklist();
       await addChecklist();
-      expect(screen.queryByRole("button", { name: "Add the publisher's checklist" })).toBeNull();
-      const remove = screen.getByRole("button", { name: "Remove the publisher's checklist" });
+      expect(screen.queryByRole("button", { name: "Add the official checklist" })).toBeNull();
+      const remove = screen.getByRole("button", { name: "Remove the official checklist" });
       await waitFor(() => expect(document.activeElement).toBe(remove));
       fireEvent.click(remove);
-      const add = await screen.findByRole("button", { name: "Add the publisher's checklist" });
+      const add = await screen.findByRole("button", { name: "Add the official checklist" });
       await waitFor(() => expect(document.activeElement).toBe(add));
     });
 
     it("the chip reopens the dialog on what was pasted; Use replaces the rows and focus comes back to the chip", async () => {
       const { rerender } = renderChecklist();
       await addChecklist();
-      const chip = screen.getByRole("button", { name: "Publisher's checklist: 2 rows" });
+      const chip = screen.getByRole("button", { name: "Official checklist: 2 rows" });
       fireEvent.click(chip);
       const box = (await screen.findByLabelText("Paste the checklist")) as HTMLTextAreaElement;
       expect(box.value).toBe(PASTE);
@@ -1729,7 +1748,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
       });
-      const reopened = screen.getByRole("button", { name: "Publisher's checklist: 1 row" });
+      const reopened = screen.getByRole("button", { name: "Official checklist: 1 row" });
       await waitFor(() => expect(document.activeElement).toBe(reopened));
       await syncWith(rerender, arrivedBatch);
       expect(mockFetchChecklist.mock.calls[0][0].publishedChecklist).toEqual({ rows: [ROWS[0]] });
@@ -1739,7 +1758,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       renderChecklist();
       await addChecklist(`${PASTE}\nBase Set`);
       expect(
-        screen.getByRole("button", { name: "Publisher's checklist: 2 rows · 1 skipped" }),
+        screen.getByRole("button", { name: "Official checklist: 2 rows · 1 skipped" }),
       ).toBeTruthy();
     });
 
@@ -1758,18 +1777,37 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     it("a sync with no checklist (or after Remove) sends no publishedChecklist", async () => {
       const { rerender } = renderChecklist();
       await addChecklist();
-      fireEvent.click(screen.getByRole("button", { name: "Remove the publisher's checklist" }));
+      fireEvent.click(screen.getByRole("button", { name: "Remove the official checklist" }));
       await syncWith(rerender, arrivedBatch);
       expect(mockFetchChecklist.mock.calls[0][0]).not.toHaveProperty("publishedChecklist");
       expect(mockFetchChecklist.mock.calls[0][0].waitKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
     });
 
+    /**
+     * NEO-496 — the server paired both cards with a checklist row by number
+     * and took their teams from it, so each carries the row's link.
+     */
+    const linkedCandidates = slCandidates.map((card) => ({
+      ...card,
+      teamLookup: "checklist" as const,
+      checklistLink: { via: "number" as const },
+    }));
+    const linkedBatch = { ...arrivedBatch, cards: linkedCandidates };
+
+    /** NEO-496 — a checklist makes two sources: Match Cards opens; confirm it. */
+    async function confirmMatchCards() {
+      await screen.findByText(/Match Cards/);
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      });
+    }
+
     it("renders 'Teams from your checklist: N of M cards' from checklistTeams while the wizard is open", async () => {
       // The line rides on the sync banner, read here where the run stops: on
-      // a card the wizard has to settle. (The auto-commit case is below.)
+      // a card the wizard has to settle. (The no-question case is below.)
       const conflictBatch = {
-        ...arrivedBatch,
-        cards: slCandidates.map((card, i) =>
+        ...linkedBatch,
+        cards: linkedCandidates.map((card, i) =>
           i === 0
             ? { ...card, checklistConflict: { teams: { marketplace: [], checklist: ["Reds"] } } }
             : card,
@@ -1778,16 +1816,18 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       const { rerender } = renderChecklist();
       await addChecklist();
       await syncWith(rerender, conflictBatch, { checklistTeams: { matched: 1, total: 2 } });
+      await confirmMatchCards();
       await screen.findByText("Wizard opened teams-only");
       expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards");
     });
 
     it("keeps 'Teams from your checklist: N of M cards' on the saved line when the run commits with no question", async () => {
-      // No disagreement, no unknown names: the run commits straight away and
+      // No disagreement, no unknown names: Confirm commits straight away and
       // "Saved N cards." replaces the sync line — the checklist line rides on.
       const { rerender } = renderChecklist();
       await addChecklist();
-      await syncWith(rerender, arrivedBatch, { checklistTeams: { matched: 2, total: 2 } });
+      await syncWith(rerender, linkedBatch, { checklistTeams: { matched: 2, total: 2 } });
+      await confirmMatchCards();
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
       expect(liveRegionText()).toContain("Teams from your checklist: 2 of 2 cards");
@@ -1795,74 +1835,120 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     });
 
     /**
-     * NEO-490 — the checklist as a source in Match Cards. A one-marketplace set
-     * opens the dialog in solo mode only when the fetch says the operator is
-     * needed; otherwise it still keeps every card and commits with no dialog.
+     * NEO-496 — the checklist is a full source. One marketplace plus a
+     * checklist is two sources, so Match Cards opens, even when every card
+     * lines up; a checklist alone is one source and is kept whole.
      */
-    describe("NEO-490: checklist routing", () => {
-      const matchSummary = (over: Record<string, unknown> = {}) => ({
-        needsOperator: true,
-        byNumber: 0,
-        byPlayerName: 0,
-        unusedRowIndices: [0, 1],
-        leftoverCardKeys: ["sl-1", "sl-2"],
-        ...over,
+    describe("NEO-496: checklist routing", () => {
+      /** A checklist row no card paired, as the fetch streams it. */
+      const rowCandidate = (n: string, player: string, id = `row-${n}`) => ({
+        _id: id,
+        cardNumber: n,
+        cardName: player,
+        players: [player],
+        teams: ["Solo Team"],
+        teamLookup: "checklist" as const,
+        bucket: "checklistOnly" as const,
+        platformData: {},
       });
+      const withRows = {
+        ...arrivedBatch,
+        ready: 4,
+        total: 4,
+        cards: [...slCandidates, rowCandidate("1", "Solo One"), rowCandidate("2", "Solo Two")],
+      };
 
-      it("a one-marketplace set whose checklist needs the operator opens Match Cards in solo mode, and commits nothing yet", async () => {
+      it("a one-marketplace set with a checklist opens Match Cards with Keep on both sources' leftovers, and commits nothing yet", async () => {
         const { rerender } = renderChecklist();
         await addChecklist();
-        await syncWith(rerender, arrivedBatch, { checklistMatch: matchSummary() });
+        await syncWith(rerender, withRows, { candidateCount: 4 });
 
         expect(await screen.findByText(/Match Cards/)).toBeTruthy();
-        expect(screen.getByRole("list", { name: "Leftover checklist rows" })).toBeTruthy();
-        expect(screen.getByLabelText("Select #1 Solo One · Solo Team")).toBeTruthy();
-        // Solo: every SportLots card is saved, so there is nothing to keep.
-        expect(screen.queryByLabelText(/^Keep /)).toBeNull();
-        expect(screen.getByText(/Every card here gets saved/)).toBeTruthy();
+        expect(screen.getByRole("heading", { name: "Checklist only (2)" })).toBeTruthy();
+        expect(screen.queryByRole("heading", { name: /^BSC only/ })).toBeNull();
+        expect(screen.getByLabelText("Keep #1 Solo One as SportLots-only")).toBeTruthy();
+        expect(
+          screen.getByLabelText("Keep #1 Solo One · Solo Team as checklist-only"),
+        ).toBeTruthy();
         expect(mockCommitChecklist).not.toHaveBeenCalled();
         expect(mockResolveEntities).not.toHaveBeenCalled();
       });
 
-      it("without needsOperator the same one-marketplace set still keeps every card and commits with no dialog", async () => {
+      it("every card on the checklist still opens Match Cards; Confirm saves them all", async () => {
         const { rerender } = renderChecklist();
         await addChecklist();
-        await syncWith(rerender, arrivedBatch, {
-          checklistMatch: matchSummary({
-            needsOperator: false,
-            byNumber: 2,
-            unusedRowIndices: [],
-            leftoverCardKeys: [],
-          }),
-        });
+        await syncWith(rerender, linkedBatch);
 
+        await confirmMatchCards();
         await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-        expect(screen.queryByText(/Match Cards/)).toBeNull();
-        expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(2);
+        const saved = mockCommitChecklist.mock.calls[0][0].cards;
+        expect(saved).toHaveLength(2);
+        // The wire-only link never reaches the strict commit validator.
+        expect(saved[0]).not.toHaveProperty("checklistLink");
       });
 
-      it("needsOperator with no checklist sent opens nothing: there are no rows to line up", async () => {
+      it("a stored checklist the client could not see is learned from the fetch, and opens Match Cards", async () => {
+        // Nothing pasted: the client predicted one source, the server says two.
         const { rerender } = renderChecklist();
-        await syncWith(rerender, arrivedBatch, { checklistMatch: matchSummary() });
+        await syncWith(rerender, linkedBatch, { sources: ["sportlots", "checklist"] });
+        expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+      });
+
+      it("no checklist: a one-marketplace set still keeps every card and commits with no dialog", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, arrivedBatch);
         await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
         expect(screen.queryByText(/Match Cards/)).toBeNull();
       });
 
-      it("Confirm asks the server about the hand links, saves every card, and recounts the teams line from the answers", async () => {
+      it("a checklist alone (no marketplace attached) keeps every row as a card and goes straight on", async () => {
+        state.ancestorChain = [
+          { _id: SPORT_ID, level: "sport", value: "Baseball", platformData: {} },
+          { _id: SET_ID, level: "setName", value: "Test Set", platformData: {} },
+          { _id: VARIANT_ID, level: "variantType", value: "Base", platformData: {} },
+        ];
+        const rowsOnly = {
+          ...arrivedBatch,
+          cards: [rowCandidate("1", "Solo One"), rowCandidate("2", "Solo Two")],
+        };
+        // Held open so the kept line is read while it stands for the commit.
+        let finishCommit: (value: unknown) => void = () => {};
+        mockCommitChecklist.mockImplementation(
+          () => new Promise((resolve) => (finishCommit = resolve)),
+        );
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, rowsOnly, { attachedSides: [] });
+
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText(/Match Cards/)).toBeNull();
+        const saved = mockCommitChecklist.mock.calls[0][0].cards;
+        expect(saved.map((c: { cardNumber: string }) => c.cardNumber)).toEqual(["1", "2"]);
+        expect(saved[0]).toMatchObject({ platformData: {}, teamLookup: "checklist" });
+        expect(saved[0]).not.toHaveProperty("checklistRowId");
+        expect(liveRegionText()).toContain(
+          "Kept all 2 cards from your checklist. Nothing to match, no marketplace attached.",
+        );
+        await act(async () => finishCommit({ count: 2 }));
+      });
+
+      it("Confirm asks the server about the hand links, saves the linked and kept cards, and recounts the teams line from the answers", async () => {
         mockApplyChecklistPairs.mockResolvedValue([
           { teams: ["Solo Team"], teamLookup: "checklist" },
         ]);
         const { rerender } = renderChecklist();
         await addChecklist();
         // The fetch counted none from the checklist; one link will make it one.
-        await syncWith(rerender, arrivedBatch, {
-          checklistMatch: matchSummary(),
+        await syncWith(rerender, withRows, {
+          candidateCount: 4,
           checklistTeams: { matched: 0, total: 2 },
         });
         await screen.findByText(/Match Cards/);
 
         fireEvent.click(screen.getByLabelText("Select #1 Solo One · Solo Team"));
         fireEvent.click(screen.getByLabelText("Link selected checklist row to #1 Solo One"));
+        fireEvent.click(screen.getByLabelText("Keep #2 Solo Two as SportLots-only"));
         await act(async () => {
           fireEvent.click(screen.getByLabelText("Confirm card matches"));
         });
@@ -1877,7 +1963,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
           players: ["Solo One"],
           teams: ["Solo Team"],
         });
-        // The unlinked row was dropped; both marketplace cards were saved.
+        // The row nobody kept was dropped; the linked and the kept card saved.
         expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(2);
         await waitFor(() =>
           expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards"),
@@ -1885,10 +1971,10 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         expect(liveRegionText()).not.toContain("Teams from your checklist: 0 of 2 cards");
       });
 
-      it("the teams line is left as the fetch counted it when the checklist column was not in play", async () => {
-        // Two marketplaces, a checklist that needed no one: the dialog opens
-        // for the usual pairing, and what is saved is not a recount of
-        // anything the operator linked. A recount here would read 0 of 1.
+      it("the teams line is left as the fetch counted it when the checklist was not a source", async () => {
+        // Two marketplaces, and the server reports no checklist source: the
+        // dialog opens for the usual pairing, and nothing is recounted. A
+        // recount here would read 0 of 1.
         state.ancestorChain = twoSidedChain();
         state.liveCandidates = {
           batchId: "batch-490",
@@ -1908,13 +1994,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
             message: "1 matched, 0 BSC-only, 0 SL-only",
             candidateCount: 1,
             attachedSides: ["bsc", "sportlots"],
+            sources: ["bsc", "sportlots"],
             checklistTeams: { matched: 1, total: 1 },
-            checklistMatch: matchSummary({
-              needsOperator: false,
-              byNumber: 1,
-              unusedRowIndices: [],
-              leftoverCardKeys: [],
-            }),
           });
         });
         expect(screen.queryByRole("list", { name: "Leftover checklist rows" })).toBeNull();
@@ -1932,7 +2013,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         mockApplyChecklistPairs.mockRejectedValue(new Error("server down"));
         const { rerender } = renderChecklist();
         await addChecklist();
-        await syncWith(rerender, arrivedBatch, { checklistMatch: matchSummary() });
+        await syncWith(rerender, withRows, { candidateCount: 4 });
         await screen.findByText(/Match Cards/);
 
         fireEvent.click(screen.getByLabelText("Select #1 Solo One · Solo Team"));
@@ -1944,6 +2025,60 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         expect(await screen.findByText(/your checklist links didn't stick/)).toBeTruthy();
         expect(mockCommitChecklist).not.toHaveBeenCalled();
         expect(screen.getByText(/Match Cards/)).toBeTruthy();
+      });
+
+      it("the saved line counts the cards whose team came from the checklist: a repeated number's card, asked of the marketplace and kept, is saved but not counted (D2)", async () => {
+        // The NEO-478 spec's shape: 17 cards the server paired by number, card
+        // #6 whose number is on two rows (so it paired with neither and its
+        // team was asked of the marketplace), and those two rows left over.
+        const paired = Array.from({ length: 18 }, (_, i) => String(i + 1))
+          .filter((n) => n !== "6")
+          .map((n) => ({
+            cardNumber: n,
+            cardName: `Player ${n}`,
+            teams: ["Solo Team"],
+            teamLookup: "checklist" as const,
+            checklistLink: { via: "number" as const },
+            bucket: "slOnly" as const,
+            platformData: { sportlots: { ref: `sl-${n}` } },
+          }));
+        const six = {
+          cardNumber: "6",
+          cardName: "Player 6",
+          teams: ["Marketplace Team"],
+          teamLookup: "answered" as const,
+          bucket: "slOnly" as const,
+          platformData: { sportlots: { ref: "sl-6" } },
+        };
+        const batch = {
+          ...arrivedBatch,
+          ready: 20,
+          total: 20,
+          cards: [
+            ...paired,
+            six,
+            rowCandidate("6", "Player 6", "row-6a"),
+            rowCandidate("6", "Player 8", "row-6b"),
+          ],
+        };
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, batch, {
+          candidateCount: 20,
+          checklistTeams: { matched: 17, total: 18 },
+        });
+        await screen.findByText(/Match Cards/);
+        fireEvent.click(screen.getByLabelText("Keep all SportLots-only cards"));
+        await act(async () => {
+          fireEvent.click(screen.getByLabelText("Confirm card matches"));
+        });
+
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        // The rows nobody kept are dropped: 18 cards saved, #6 among them.
+        expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(18);
+        await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
+        expect(liveRegionText()).toContain("Teams from your checklist: 17 of 18 cards");
+        expect(liveRegionText()).not.toContain("18 of 18");
       });
     });
 
@@ -5943,7 +6078,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     mockGetParallelsForBuild.mockResolvedValue({
       truncated: false,
       parallels: [
-        { _id: "parallel-a", value: "Anime Gold", sides: { bsc: true, sportlots: false }, hasCards: false },
+        { _id: "parallel-a", value: "Anime Gold", owned: { bsc: true, sportlots: false }, sides: { bsc: true, sportlots: false }, hasCards: false },
       ],
     });
     mockResolveEntities.mockResolvedValue({ unknownPlayers: [], unknownTeams: [], batchId: undefined });
@@ -6022,7 +6157,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     };
   }
 
-  it("NEO-487: a single build's wait line stands down while a run of parallels shows its own — one line, never two", async () => {
+  it("NEO-487: a single build's wait line stays while another insert's run goes elsewhere — one line, never two (NEO-496)", async () => {
     state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
     // An empty parallel: its button builds at once, no rebuild confirm.
     state.cards = [];
@@ -6049,8 +6184,9 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         timeout: 3000,
       });
       // A run of another insert's parallels starts while that build is still
-      // in flight (the operator saved the insert, then came back here). Its
-      // panel carries the run's own wait line; the build's line stands down.
+      // in flight (the operator saved the insert, then came back here).
+      // NEO-496: that run's ledger belongs to its insert, not this row, so it
+      // is not drawn here, and this row's own wait line stays the one line.
       const running = hostedRunner({
         startedFrom: "some-other-insert" as unknown as Id<"selectorOptions">,
         sourceId: "some-other-insert" as unknown as Id<"selectorOptions">,
@@ -6069,9 +6205,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
         timeout: 3000,
       });
-      // And it is the panel's line, not the build's.
+      // And it is the build's line: no ledger for the other insert's run.
       const line = screen.getByText("Waiting on BuySportsCards…");
-      expect(line.closest("section")?.textContent ?? "").toContain("Other Insert");
+      expect(line.closest("section")?.textContent ?? "").not.toContain("Other Insert");
+      expect(document.getElementById(PARALLEL_BUILD_HEADING_ID)).toBeNull();
     } finally {
       state.marketplaceWait = undefined;
     }
@@ -6128,6 +6265,64 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     const addCard = screen.getByLabelText("Open add card form");
     expect(addCard.getAttribute("aria-disabled")).toBe("true");
     expect(addCard.getAttribute("aria-describedby")).toBe(parallelLineId(VARIANT_ID));
+    // NEO-496: the line it is described by is on screen, in the run's ledger.
+    expect(document.getElementById(parallelLineId(VARIANT_ID))).not.toBeNull();
+  });
+
+  /**
+   * NEO-496 (Jason, 2026-11-12) — the ledger belongs to the row whose save
+   * started it: on that row, and on one of its parallels only while the run
+   * holds it. A finished run is not drawn on its parallels, and no run is
+   * drawn on an unrelated row.
+   */
+  describe("the ledger shows only on its own row (NEO-496)", () => {
+    const PARALLEL_ID = "parallel-row-9" as unknown as Id<"selectorOptions">;
+    const runOf = (phase: "running" | "finished") => ({
+      startedFrom: VARIANT_ID,
+      sourceId: VARIANT_ID,
+      sourceValue: "Anime",
+      sourceKind: "insert" as const,
+      entries: [
+        {
+          id: PARALLEL_ID,
+          value: "Anime Kanji",
+          line: phase === "running" ? { kind: "waiting" as const } : { kind: "failed" as const, message: "BSC had no cards" },
+        },
+      ],
+      truncated: false,
+      phase,
+      atIndex: 0,
+      announcement: "",
+    });
+    const at = (variantId: Id<"selectorOptions">, phase: "running" | "finished") => (
+      <CardChecklist
+        variantId={variantId}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelRun={hostedRunner(runOf(phase) as never)}
+      />
+    );
+    const ledger = () => document.getElementById(PARALLEL_BUILD_HEADING_ID);
+
+    it("a finished run is on the row it started from", () => {
+      render(at(VARIANT_ID, "finished"));
+      expect(ledger()).not.toBeNull();
+    });
+
+    it("a finished run is not carried onto one of its parallels", () => {
+      render(at(PARALLEL_ID, "finished"));
+      expect(ledger()).toBeNull();
+    });
+
+    it("a running run is on its parallel while it holds that row", () => {
+      render(at(PARALLEL_ID, "running"));
+      expect(ledger()).not.toBeNull();
+    });
+
+    it("a running run is not drawn on an unrelated row", () => {
+      render(at("unrelated-row" as unknown as Id<"selectorOptions">, "running"));
+      expect(ledger()).toBeNull();
+    });
   });
 });
 
@@ -6174,6 +6369,61 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     renderChecklist();
     await driveZeroCandidateCommit();
     expect(mockGetParallelsForBuild).not.toHaveBeenCalled();
+  });
+
+  it("NEO-496: \"Saved N cards.\" goes the moment another row is picked, and does not come back", async () => {
+    mockGetParallelsForBuild.mockResolvedValue({ parallels: [], truncated: false });
+    const { rerender } = renderInsertRow();
+    await driveZeroCandidateCommit();
+    await waitFor(() => expect(screen.getByText(/^Saved 2 cards\./)).toBeTruthy());
+
+    const OTHER_ID = "variant-2" as unknown as Id<"selectorOptions">;
+    const at = (variantId: Id<"selectorOptions">) => (
+      <CardChecklist
+        variantId={variantId}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "insert" }}
+      />
+    );
+    await act(async () => {
+      rerender(at(OTHER_ID));
+    });
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
+    // The new row is on screen, with its own Sync.
+    expect(screen.getByLabelText("Sync card checklist")).toBeTruthy();
+
+    await act(async () => {
+      rerender(at(VARIANT_ID));
+    });
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
+  });
+
+  it("NEO-496: a parallels list that fails after the operator moved on says nothing on the new row", async () => {
+    let failList!: (error: Error) => void;
+    mockGetParallelsForBuild.mockImplementation(
+      () => new Promise((_resolve, reject) => (failList = reject)),
+    );
+    const { rerender } = renderInsertRow();
+    await driveZeroCandidateCommit();
+    await waitFor(() => expect(mockGetParallelsForBuild).toHaveBeenCalled());
+
+    const OTHER_ID = "variant-2" as unknown as Id<"selectorOptions">;
+    await act(async () => {
+      rerender(
+        <CardChecklist
+          variantId={OTHER_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelBuild={{ role: "insert" }}
+        />,
+      );
+    });
+    await act(async () => {
+      failList(new Error("list unreadable"));
+    });
+    expect(screen.queryByText(/Parallels not built/)).toBeNull();
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
   });
 });
 

@@ -42,6 +42,13 @@ const SL_COMBINED: PlatformItem = {
 
 type InitialData = Parameters<typeof ReconciliationModal>[0]["initialData"];
 
+/**
+ * The header's "N ready, M pending". Its "M pending" is a button inside the
+ * line (it jumps to Pending), so the line is matched on its whole text.
+ */
+const subtitle = (text: string) =>
+  screen.getByText((_, el) => el?.tagName === "P" && el.textContent === text);
+
 function renderModal(initialData: InitialData, extra?: { showMetadata?: boolean }) {
   const onConfirm = vi.fn().mockResolvedValue(undefined);
   render(
@@ -590,8 +597,11 @@ describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
       slCandidates: [],
     });
 
-    expect(screen.getByText("0 ready, 1 pending")).toBeTruthy();
+    expect(subtitle("0 ready, 1 pending")).toBeTruthy();
     expect(screen.getByText(/SportLots \(1\)/)).toBeTruthy();
+    // The pending count jumps down to the Pending heading and lands focus there.
+    fireEvent.click(screen.getByRole("button", { name: "1 pending, go to Pending" }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pending (1)" }));
     expect(
       screen.getByRole("button", { name: "Make its own set: Anime Gold" }),
     ).toBeTruthy();
@@ -813,7 +823,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
 
     fireEvent.click(screen.getByLabelText(`Remove ${BSC_BLUE.value} from Blue`));
 
-    expect(screen.getByText("1 ready, 1 pending")).toBeTruthy();
+    expect(subtitle("1 ready, 1 pending")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE.value}` }),
     ).toBeTruthy();
@@ -892,7 +902,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
       { value: "Blue Wave", platformData: { sportlots: ["sl-blue"] } },
     ]);
 
-    expect(screen.getByText("2 ready, 1 pending")).toBeTruthy();
+    expect(subtitle("2 ready, 1 pending")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE.value}` }),
     ).toBeTruthy();
@@ -911,7 +921,7 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
       { displayName: "Blue Wave", bsc: BSC_BLUE_WAVE, sl: SL_BLUE, confidence: 0.7 },
     ]);
 
-    expect(screen.getByText("1 ready, 1 pending")).toBeTruthy();
+    expect(subtitle("1 ready, 1 pending")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE_WAVE.value}` }),
     ).toBeTruthy();
@@ -997,7 +1007,7 @@ describe("ReconciliationModal — caller-held ids stay out of Ready (NEO-312)", 
     const { onConfirm } = renderPairs({ usedSlPlatformValues: ["sl-blue"] });
 
     // Gold is the only Ready set; Blue's BSC half is an ordinary loose item.
-    expect(screen.getByText("1 ready, 1 pending")).toBeTruthy();
+    expect(subtitle("1 ready, 1 pending")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE.value}` }),
     ).toBeTruthy();
@@ -1015,7 +1025,7 @@ describe("ReconciliationModal — caller-held ids stay out of Ready (NEO-312)", 
   test("the reverse: a held BSC half keeps the pair out, its SportLots half goes to Pending", () => {
     renderPairs({ usedBscPlatformValues: ["bsc-blue"] });
 
-    expect(screen.getByText("1 ready, 1 pending")).toBeTruthy();
+    expect(subtitle("1 ready, 1 pending")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: `Make its own set: ${SL_BLUE.value}` }),
     ).toBeTruthy();
@@ -1090,5 +1100,79 @@ describe("ReconciliationModal — mouse drag activation", () => {
       fireEvent.mouseMove(document, { clientX: 16, clientY: 10 });
     });
     expect(draggedRow.style.opacity).toBe("0.4");
+  });
+});
+
+describe("ReconciliationModal — the subtitle's pending count jumps to the work", () => {
+  /** A phone (below sm): the Pending columns stack, BSC first. */
+  function onAPhone() {
+    return vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches: query === "(max-width: 39.99rem)",
+          media: query,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+  }
+
+  test("side by side it lands on the Pending heading, even over an empty first column", () => {
+    renderModal({ autoMatched: [], unmatchedBsc: [], unmatchedSl: [SL_COMBINED], slCandidates: [] });
+    fireEvent.click(screen.getByRole("button", { name: "1 pending, go to Pending" }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Pending (1)" }));
+  });
+
+  test("side by side it also brings the first pending row up from under the footer", () => {
+    const scrolled: Array<{ el: Element; opts: unknown }> = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: Element, opts?: unknown) {
+      scrolled.push({ el: this, opts });
+    } as typeof HTMLElement.prototype.scrollIntoView;
+    try {
+      renderModal(allPending());
+      fireEvent.click(screen.getByRole("button", { name: "3 pending, go to Pending" }));
+      const heading = screen.getByRole("heading", { name: "Pending (3)" });
+      // Focus stays on the heading; the heading goes up, then the first row in.
+      expect(document.activeElement).toBe(heading);
+      expect(scrolled[0]?.el).toBe(heading);
+      const firstRow = screen.getAllByRole("button", { name: /^Make its own set: / })[0];
+      expect(scrolled[1]).toEqual({
+        el: firstRow,
+        opts: expect.objectContaining({ block: "nearest" }),
+      });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  });
+
+  test("on a phone it skips the empty BSC column and lands on SportLots", () => {
+    const media = onAPhone();
+    try {
+      renderModal({ autoMatched: [], unmatchedBsc: [], unmatchedSl: [SL_COMBINED], slCandidates: [] });
+      fireEvent.click(screen.getByRole("button", { name: "1 pending, go to Pending" }));
+      expect(document.activeElement?.textContent).toMatch(/^SportLots \(1\)/);
+      // A real heading under Pending's h3, so the landing is announced as one.
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { level: 4, name: /^SportLots \(1\)/ }),
+      );
+    } finally {
+      media.mockRestore();
+    }
+  });
+
+  test("on a phone with work in the first column it lands on that column", () => {
+    const media = onAPhone();
+    try {
+      renderModal(allPending());
+      fireEvent.click(screen.getByRole("button", { name: "3 pending, go to Pending" }));
+      expect(document.activeElement?.textContent).toMatch(/^BSC \(2\)/);
+    } finally {
+      media.mockRestore();
+    }
   });
 });

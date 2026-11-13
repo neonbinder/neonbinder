@@ -1,5 +1,5 @@
 /**
- * NEO-490 — what one publisher-checklist row does to the card it is paired
+ * NEO-490 — what one official-checklist row does to the card it is paired
  * with. Pure: no Convex, no DOM.
  *
  * Two callers, and they must never disagree: `fetchCardChecklist` step 3c

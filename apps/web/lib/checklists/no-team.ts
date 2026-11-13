@@ -1,5 +1,5 @@
 /**
- * "No Team" in a publisher checklist (NEO-489).
+ * "No Team" in an official checklist (NEO-489).
  *
  * A checklist's team cell may say exactly "No Team" (any case, any spacing).
  * That is a data claim: the card shows no team. It is not a team name, so it
@@ -22,7 +22,7 @@
  */
 
 /** Skip reason for a row whose team cell(s) say "No Team" and name a team. */
-export const NO_TEAM_AND_A_TEAM = "Says No Team and names a team — pick one.";
+export const NO_TEAM_AND_A_TEAM = 'Says "No Team" and names a team. Fix one in the file.';
 
 /** True when `text` is exactly "No Team", ignoring case and spacing. */
 export function isNoTeamText(text: string): boolean {

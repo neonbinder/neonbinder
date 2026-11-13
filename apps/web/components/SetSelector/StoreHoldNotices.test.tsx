@@ -27,6 +27,7 @@ import type { SiblingWithholdReason } from "../../convex/selectorSyncMatch";
 import {
   ATTACH_MORE_LABEL,
   CUSTOM_BUTTON_LABEL,
+  EDIT_ATTRIBUTES_LABEL,
   MULTI_SOURCE_HEADING,
 } from "./control-labels";
 
@@ -160,7 +161,7 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
       "Hold up: 1 not added. This set is too big to check new links automatically.",
     ).closest('[role="status"]') as HTMLElement;
     expect(live.textContent).toContain(
-      "You can still add it by hand: pick its row, or make one with + Custom, then use Attach more… under Multi-source sets.",
+      "You can still add it by hand: pick its row, or make one with + Custom, then open Edit attributes and use Attach more… under Multi-source sets.",
     );
     // Nothing clashes, so the clash fix is not offered. And no retry: past
     // the set bound a retry hits the same bound (security audit N2).
@@ -189,7 +190,7 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
       '[role="status"]',
     ) as HTMLElement;
     expect(live.textContent).toContain("Delete or ungroup the extra row, then sync again.");
-    expect(live.textContent).toContain("You can still add it by hand: pick its row, or make one with + Custom, then use Attach more… under Multi-source sets.");
+    expect(live.textContent).toContain("You can still add it by hand: pick its row, or make one with + Custom, then open Edit attributes and use Attach more… under Multi-source sets.");
   });
 
   test("clashes alone keep the clash summary and fix, wherever the holder is", () => {
@@ -299,6 +300,10 @@ describe("StoreHoldNotices — the by-hand fix names real controls (NEO-312)", (
     expect(UNCHECKED_FIX).toContain(CUSTOM_BUTTON_LABEL);
     expect(UNCHECKED_FIX).toContain(ATTACH_MORE_LABEL);
     expect(UNCHECKED_FIX).toContain(MULTI_SOURCE_HEADING);
+    // NEO-496: the sources panel is inside the attributes panel, so the line
+    // names the toggle that opens it first.
+    expect(UNCHECKED_FIX).toContain(EDIT_ATTRIBUTES_LABEL);
+    expect(EDIT_ATTRIBUTES_LABEL).toBe("Edit attributes");
     // And the labels are the ones the operator sees today, byte for byte.
     expect([CUSTOM_BUTTON_LABEL, ATTACH_MORE_LABEL, MULTI_SOURCE_HEADING]).toEqual([
       "+ Custom",
@@ -422,7 +427,8 @@ describe("StoreHoldNotices — lines withheld against the parent's own rows (NEO
       "Anime",
       "Anime",
     ]);
-    expect(items[1].textContent).toContain(SIBLING_REASON_LINE.split);
+    // No set named: the line closes with a full stop, not a dangling colon.
+    expect(items[1].textContent).toContain(SIBLING_REASON_LINE.split.replace(/:$/, "."));
     expect(within(items[1]).queryAllByRole("listitem")).toHaveLength(0);
   });
 
@@ -476,6 +482,8 @@ describe("StoreHoldNotices — lines withheld against the parent's own rows (NEO
     ["idOnManySiblings", "link"],
     ["idsPointAtDifferentRows", "split"],
     ["nameSharedInBatch", "name"],
+    ["nameTakenBySibling", "sectionName"],
+    ["checklistKeyHeldByMany", "section"],
   ])("%s is the %s kind", (reason, family) => {
     expect(siblingFamily(reason)).toBe(family);
   });
@@ -573,5 +581,58 @@ describe("StoreHoldNotices — title edits the store refused (NEO-325)", () => {
     expect(refusedRenameSummary(1)).toMatch(/saved/);
     expect(refusedRenameSummary(3)).toMatch(/saved/);
     expect(refusedRenameSummary(1)).not.toBe(refusedRenameSummary(3));
+  });
+});
+
+describe("StoreHoldNotices — checklist sections held back (NEO-496)", () => {
+  const renderSiblings = (siblings: SiblingHold[]) =>
+    render(
+      <StoreHoldNotices
+        holds={{
+          withheld: [],
+          withheldTotal: 0,
+          subtreeWalkSkipped: false,
+          siblings,
+          siblingsTotal: siblings.length,
+        }}
+      />,
+    );
+
+  test("a section whose name a set has, and a section another set uses: each says why and what to do", () => {
+    renderSiblings([
+      {
+        label: "Radiating Rookies",
+        reason: "nameTakenBySibling",
+        rows: [{ id: "r1", value: "Radiating Rookies" }],
+      },
+      { label: "Expose", reason: "checklistKeyHeldByMany", rows: [] },
+    ]);
+
+    const live = screen.getByText(siblingHoldSummary(2)).closest('[role="status"]') as HTMLElement;
+    expect(live.textContent).toContain(SIBLING_FIX.sectionName);
+    expect(live.textContent).toContain(SIBLING_FIX.section);
+    expect(live.textContent).not.toContain(SIBLING_FIX.name);
+    const list = screen.getByRole("list", { name: siblingHoldSummary(2) });
+    const items = within(list).getAllByRole("listitem").filter((li) => li.parentElement === list);
+    expect(items[0].textContent).toContain(SIBLING_REASON_LINE.sectionName);
+    expect(within(items[0]).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
+      "Radiating Rookies",
+    ]);
+    // The set using it is under another type: no set named, a full stop.
+    expect(items[1].textContent).toContain("Its checklist section is already on another set.");
+  });
+
+  test("the section fixes use the dialog's own words and no internal ones", () => {
+    expect(SIBLING_FIX.section).toContain("Remove");
+    // S10: Reconcile's own verb is "map" ("already mapped", "Remove this
+    // mapping"), never "pair".
+    expect(SIBLING_FIX.sectionName).toBe(
+      "Name taken? Sync again and map the section to the set that already has that name.",
+    );
+    expect(SIBLING_FIX.twice).toContain("map just one to that set");
+    for (const text of Object.values(SIBLING_FIX)) expect(text).not.toMatch(/\bpair\b/);
+    for (const text of [SIBLING_FIX.section, SIBLING_FIX.sectionName, SIBLING_REASON_LINE.section]) {
+      expect(text).not.toMatch(/\bkey\b|commit|checklistKey|sibling|withheld/i);
+    }
   });
 });

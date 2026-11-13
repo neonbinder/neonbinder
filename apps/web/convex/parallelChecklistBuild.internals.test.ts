@@ -15,8 +15,18 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  BLOCKED_IDS_UNREACHABLE,
   BLOCKED_SCANS,
+  BLOCKED_TOO_MANY_BSC_SETS,
+  BLOCKED_TOO_MANY_SL_SETS,
+  BLOCKED_UNLINKED_OVER_LINKED_CARDS,
   REVIEW_ACTIVE_WINDOW_MS,
+  blockedAllPaused,
+  blockedIdsUnreachable,
+  blockedSidePaused,
+  oldLinksBlockReason,
+  sidePlanBlockReason,
+  type SidePlanForBlocks,
 } from "./parallelChecklistBuild";
 import { insertTestCard } from "../lib/testing/card-row";
 
@@ -495,5 +505,79 @@ describe("insertParallelCardsPage — NEO-345 carried fields", () => {
     const [copy] = await cardsOn(t, parallel);
     expect(copy.teamCheckDoneAt).toBe(1_690_000_000_000);
     expect(copy.teamCheckOutcome).toBe("gaveUp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-496 — the block rules the list query and the build share. Pure.
+// ---------------------------------------------------------------------------
+
+describe("sidePlanBlockReason / oldLinksBlockReason (NEO-496)", () => {
+  const none = { bsc: false, sportlots: false };
+  const plan = (over: Partial<SidePlanForBlocks> = {}): SidePlanForBlocks => ({
+    owned: { bsc: true, sportlots: true },
+    fetch: { bsc: true, sportlots: true },
+    paused: none,
+    unreachableRow: {},
+    slOverCap: false,
+    bscOverCap: false,
+    ...over,
+  });
+
+  test("a reachable plan with no old links is not blocked", () => {
+    expect(sidePlanBlockReason(plan())).toBeUndefined();
+    expect(oldLinksBlockReason(plan(), { bsc: true, sportlots: true })).toBeUndefined();
+  });
+
+  test("no ids on either side is an unlinked copy, never refused on the plan (rule 6)", () => {
+    const unlinked = plan({ owned: none, fetch: none });
+    expect(sidePlanBlockReason(unlinked)).toBeUndefined();
+    expect(oldLinksBlockReason(unlinked, none)).toBeUndefined();
+    expect(oldLinksBlockReason(unlinked, { bsc: false, sportlots: true })).toBe(
+      BLOCKED_UNLINKED_OVER_LINKED_CARDS,
+    );
+  });
+
+  test("owned but unreachable: names the row when known, the fallback when not", () => {
+    expect(
+      sidePlanBlockReason(
+        plan({ owned: { bsc: true, sportlots: false }, fetch: none, unreachableRow: { bsc: "2024" } }),
+      ),
+    ).toBe(blockedIdsUnreachable("2024", "bsc"));
+    expect(sidePlanBlockReason(plan({ fetch: none }))).toBe(BLOCKED_IDS_UNREACHABLE);
+  });
+
+  test("paused owned sides win over out-of-reach ones", () => {
+    expect(
+      sidePlanBlockReason(
+        plan({ fetch: none, paused: { bsc: false, sportlots: true }, unreachableRow: { bsc: "2024" } }),
+      ),
+    ).toBe(blockedAllPaused(["sportlots"]));
+  });
+
+  test("over-cap links are refused", () => {
+    expect(sidePlanBlockReason(plan({ slOverCap: true }))).toBe(BLOCKED_TOO_MANY_SL_SETS);
+    expect(sidePlanBlockReason(plan({ bscOverCap: true }))).toBe(BLOCKED_TOO_MANY_BSC_SETS);
+  });
+
+  test("Security 1: old links on an owned side the build can't ask", () => {
+    const slOut = plan({ fetch: { bsc: true, sportlots: false } });
+    expect(oldLinksBlockReason(slOut, { bsc: true, sportlots: false })).toBeUndefined();
+    expect(oldLinksBlockReason(slOut, { bsc: false, sportlots: true })).toBe(
+      blockedIdsUnreachable(undefined, "sportlots"),
+    );
+    expect(
+      oldLinksBlockReason(
+        plan({ fetch: { bsc: true, sportlots: false }, paused: { bsc: false, sportlots: true } }),
+        { bsc: false, sportlots: true },
+      ),
+    ).toBe(blockedSidePaused("sportlots"));
+    // A side it doesn't own: its old links are legacy, removed by the build.
+    expect(
+      oldLinksBlockReason(
+        plan({ owned: { bsc: true, sportlots: false }, fetch: { bsc: true, sportlots: false } }),
+        { bsc: false, sportlots: true },
+      ),
+    ).toBeUndefined();
   });
 });

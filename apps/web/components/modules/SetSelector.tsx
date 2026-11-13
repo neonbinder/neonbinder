@@ -88,10 +88,12 @@ import VariantForm from "../SetSelector/VariantForm";
 // (auto re-subscribe + Retry) so a column never hangs forever on "Loading…".
 import ResilientEntityColumn from "../SetSelector/ResilientEntityColumn";
 import CardChecklist from "../SetSelector/CardChecklist";
-import ParallelBuildPanel, {
+import {
   buildButtonLabel,
   useHostedParallelBuildRun,
   type ParallelBuildRole,
+  type ParallelBuildRunner,
+  type ParallelRun,
 } from "../SetSelector/ParallelBuildPanel";
 import BaseMappingForm from "../SetSelector/BaseMappingForm";
 import BaseParallelsBuildSection, {
@@ -939,6 +941,8 @@ export default function SetSelector() {
   // so extending to shallower levels does not reintroduce that failure
   // mode. Verified against the exact regression scenario (util-drill-to-
   // custom.yaml / custom-entry-survives-resync.yaml) before shipping this.
+  // NEO-496: the set level is the exception and opens by default (its
+  // official checklist first); see the comment at the panel below.
   //
   // NEO-237: the All Brands VIEW is not a row, so with the view open and
   // nothing picked beneath it the deepest ROW is the year.
@@ -1050,7 +1054,37 @@ export default function SetSelector() {
    * of them, so the run does too; the checklist is handed the runner, and
    * whenever no checklist is open this component shows the panel itself.
    */
-  const parallelRun = useHostedParallelBuildRun();
+  const hostedParallelRun = useHostedParallelBuildRun();
+  /**
+   * NEO-496 (Jason, 2026-11-12) — a finished run is part of the save that
+   * started it: once the operator picks any other row, its ledger is gone and
+   * does not come back. Recorded the render the selection leaves the row it
+   * started from (the previous-render pattern: a state write during render,
+   * guarded so it settles at once), and the run is handed on as null from
+   * then on. A run still going is never retired: the server work carries on,
+   * and its ledger (Stop included) is there again on its own row. Nor is one
+   * the set builder was left in mid-run (`left`): the operator never saw it
+   * end, so it waits on its own row for them.
+   */
+  const [retiredRun, setRetiredRun] = useState<ParallelRun | null>(null);
+  const hostedRun = hostedParallelRun.run;
+  if (
+    hostedRun &&
+    hostedRun !== retiredRun &&
+    hostedRun.phase !== "running" &&
+    hostedRun.phase !== "stopping" &&
+    hostedRun.phase !== "left" &&
+    deepestSelectedId !== hostedRun.startedFrom
+  ) {
+    setRetiredRun(hostedRun);
+  }
+  const parallelRun: ParallelBuildRunner = useMemo(
+    () =>
+      hostedRun && hostedRun === retiredRun
+        ? { ...hostedParallelRun, run: null }
+        : hostedParallelRun,
+    [hostedParallelRun, hostedRun, retiredRun],
+  );
 
   /**
    * NEO-321 — the base set's parallels and their source (Base), listed from
@@ -1750,13 +1784,6 @@ export default function SetSelector() {
         />
       )}
 
-      {/* NEO-6: multi-source attach panel for the active variant row.
-          Renders for variantType (when Base/terminal), insert, and
-          parallel rows once they have a reconciliation primary mapped. */}
-      {cardChecklistId && (
-        <MultiSourcePanel selectorOptionId={cardChecklistId} />
-      )}
-
       {/* NEO-38/NEO-71-74: set ATTRIBUTES editor. Mounts at the DEEPEST
           selected node at ANY level (sport → parallel) so it follows the
           selection down and never vanishes when a variant (e.g. "Base") is
@@ -1769,7 +1796,11 @@ export default function SetSelector() {
           Football → 2026 pre-warm). Expansion only ever happens via an
           explicit "Edit attributes" tap, never automatically during a
           drill, so the collapsed bar rendering at every level does not
-          reintroduce that failure mode. */}
+          reintroduce that failure mode. NEO-496 (Jason, 2026-11-12): the
+          one exception is the SET level, which opens by default with its
+          official checklist first. The panel sits below the column row, so
+          it pushes the cards down, never the next column; an operator's
+          close on a set holds for the tab session. */}
       {deepestSelectedId && (
         <SetAttributesPanel
           selectorOptionId={deepestSelectedId as Id<"selectorOptions">}
@@ -1777,6 +1808,16 @@ export default function SetSelector() {
           onDeleted={handleRowDeleted}
           onMoved={handleSetMoved}
           onReshaped={handleRowReshaped}
+          // NEO-6: multi-source attach panel for the active variant row
+          // (variantType when Base/terminal, insert, parallel). NEO-496: it
+          // lives inside the attributes panel's open body, hidden by
+          // default, because a second source is the exception. The row
+          // with cards is always the deepest one, so it is the panel's row.
+          sources={
+            cardChecklistId ? (
+              <MultiSourcePanel selectorOptionId={cardChecklistId} />
+            ) : undefined
+          }
         />
       )}
 
@@ -1795,14 +1836,6 @@ export default function SetSelector() {
           parallelRun={parallelRun}
           parallelPanelElsewhere={baseSectionShowsRun}
         />
-      )}
-
-      {/* NEO-312 — no checklist is open to show the run (the operator moved
-          above the insert level mid-run, or came back after leaving), so the
-          panel stands in the checklist's place: Stop stays in reach and the
-          result stays readable. */}
-      {!cardChecklistId && parallelRun.run && !baseSectionShowsRun && (
-        <ParallelBuildPanel run={parallelRun.run} onStop={parallelRun.stop} />
       )}
 
       {/* Parallel-grouping modal — mounted at the page root so it overlays

@@ -112,6 +112,10 @@ On success it prints the per-table counts:
   "playerAliasesDeleted": 41,
   "playerSportsDeleted": 4,
   "playersDeleted": 288,
+  "publishedChecklistChunksDeleted": 31,
+  "publishedChecklistLinksDeleted": 18,
+  "publishedChecklistSectionsDeleted": 56,
+  "publishedChecklistsDeleted": 2,
   "selectorOptionsDeleted": 9134,
   "selectorSyncStatusDeleted": 14,
   "slSetReviewsDeleted": 2,
@@ -139,6 +143,14 @@ cards like `cardPlayerLinksDeleted`.
 `selectorSyncStatusDeleted` is the per-column sync notices ("SportLots could
 not be reached…"), drained in both scopes before the selector rows they name,
 so a reused deployment does not show the last run's sync failures.
+
+NEO-496: the four `publishedChecklist*Deleted` counts are the sets' publisher
+checklists: the rows' section links, then the row chunks, the sections and the
+checklist headers, in that order and all before the selector rows they name,
+in both scopes (none is a reference-seed table). A chunk holds up to 256 KiB
+of rows, so its batch takes 24 chunks rather than the usual 500 rows; a large
+checklist adds a few passes, never a refusal. A purge the app scheduled for a
+checklist the reset already drained finds nothing and stops.
 
 `"complete": false` means the time budget ran out first — the counts are real,
 but rows remain; run it again until it reports `true`.

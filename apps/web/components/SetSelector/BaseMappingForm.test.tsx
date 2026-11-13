@@ -284,6 +284,24 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("hands the fetch's skipped sides to the picker: an unasked SportLots says so", async () => {
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [{ value: "2024 Topps Chrome", platformValue: "topps-chrome" }],
+      slOptions: [],
+      errors: [],
+      skippedSides: ["sportlots"],
+      pausedSides: [],
+    });
+
+    renderForm();
+
+    await waitForPickerLoaded();
+    expect(
+      screen.getByText("SportLots wasn't asked: 2024 Topps Chrome has no SportLots link."),
+    ).toBeTruthy();
+  });
+
   it("keeps the picker OPEN with the BSC candidate when SL has no options, and writes nothing until Confirm (NEO-219)", async () => {
     // Before NEO-219 this branch closed the picker and stored bscOptions[0]
     // with no UI at all, so the set a Base row ended up linked to was one the
@@ -407,7 +425,7 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     await waitFor(() => {
       expect(
         screen.getByText(
-          "Nothing to link yet — this set isn't on a marketplace. Attach one from Attach more… when it is.",
+          "Nothing to link yet — this set isn't on a marketplace. Attach one with Attach more… under Edit attributes when it is.",
         ),
       ).toBeTruthy();
     });

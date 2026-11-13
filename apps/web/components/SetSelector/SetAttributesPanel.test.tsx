@@ -112,6 +112,14 @@ vi.mock("../../convex/_generated/api", () => ({
     autographFormat: {
       setAutographFormat: "autographFormat.setAutographFormat",
     },
+    // NEO-496 — the set's checklist panel, mounted at the set level.
+    publishedChecklists: {
+      getForSet: "publishedChecklists.getForSet",
+      start: "publishedChecklists.start",
+      addSections: "publishedChecklists.addSections",
+      finish: "publishedChecklists.finish",
+      remove: "publishedChecklists.remove",
+    },
     // NEO-306 — "Make insert of…", asking the server at render.
     setInsertConversion: {
       getMakeInsertEligibility: "sic.getMakeInsertEligibility",
@@ -282,6 +290,7 @@ vi.mock("./TeamPicker", () => ({
 // ---------------------------------------------------------------------------
 
 import SetAttributesPanel, {
+  CLOSED_SETS_CAP,
   SET_TEAM_PICKER_LABELS,
   teamCascadeConfirmCopy,
   teamClearConfirmCopy,
@@ -292,6 +301,13 @@ import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
 
 /** The set row's picker trigger — see SET_TEAM_PICKER_LABELS. */
 const PICK = SET_TEAM_PICKER_LABELS.trigger;
+
+// NEO-496 — a set the operator closes stays closed for the tab session, held in
+// `sessionStorage`; happy-dom keeps it across this file's tests, so each test
+// starts with none remembered.
+afterEach(() => {
+  window.sessionStorage.clear();
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -3159,7 +3175,8 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
   });
 
   it("shows the team on the COLLAPSED bar as its short name in livery, and not while expanded", () => {
-    currentRow = makeRow({ level: "setName", teamIds: ["team-bulls"] });
+    // An insert: the set level opens itself (NEO-496), so the bar is read below it.
+    currentRow = makeRow({ level: "insert", teamIds: ["team-bulls"] });
     currentTeamRows = [BULLS];
 
     const { unmount } = render(
@@ -3189,7 +3206,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
 
   it("falls back to the secondary colour when the primary fails contrast, and to muted when both do", () => {
     currentRow = makeRow({
-      level: "setName",
+      level: "insert",
       teamIds: ["team-knights", "team-muted"],
     });
     currentTeamRows = [
@@ -3213,7 +3230,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
   it("judges the livery against the light panel in light mode (NEO-356)", () => {
     document.documentElement.dataset.theme = "light";
     try {
-      currentRow = makeRow({ level: "setName", teamIds: ["team-muted"] });
+      currentRow = makeRow({ level: "insert", teamIds: ["team-muted"] });
       currentTeamRows = [
         { _id: "team-muted", name: "Shadows", colors: { primary: "#111111" } },
       ];
@@ -3559,7 +3576,7 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
   );
 
   it("Edit attributes and Hide attributes keep their text, and wear the one focus ring", () => {
-    currentRow = makeRow({ level: "setName" });
+    currentRow = makeRow({ level: "insert" });
     render(
       <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={true} />,
     );
@@ -3575,7 +3592,7 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
   });
 
   it("Enter on Edit attributes / Hide attributes toggles the panel, once (maestro's synthetic Enter)", () => {
-    currentRow = makeRow({ level: "setName" });
+    currentRow = makeRow({ level: "insert" });
     render(
       <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={true} />,
     );
@@ -3592,7 +3609,7 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
   });
 
   it("Space on the attributes toggle is left to the browser's own click", () => {
-    currentRow = makeRow({ level: "setName" });
+    currentRow = makeRow({ level: "insert" });
     render(
       <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={true} />,
     );
@@ -3864,4 +3881,243 @@ describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => 
       expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
     },
   );
+});
+
+/**
+ * NEO-496 (Jason, 2026-11-12) — the set level opens the panel by default,
+ * the official checklist first. Every other level keeps the caller's default
+ * (collapsed in the set builder, NEO-38), and an operator's close on a set
+ * holds for the tab session.
+ */
+describe("SetAttributesPanel — opens itself at the set level, checklist first (NEO-496)", () => {
+  const OTHER_SET_ID = "selector-option-id-2" as unknown as typeof SELECTOR_OPTION_ID;
+  const collapsedPanel = (id = SELECTOR_OPTION_ID) => (
+    <SetAttributesPanel selectorOptionId={id} defaultCollapsed />
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("opens on a set even when the caller asks for collapsed, with the official checklist first", () => {
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    render(collapsedPanel());
+
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit attributes" })).toBeNull();
+    const checklist = screen.getByRole("region", { name: "Official checklist" });
+    // Above every attribute: before the "Set attributes" label and the first
+    // attribute field in document order.
+    for (const later of [
+      screen.getByText("Set attributes"),
+      screen.getByLabelText("Value for Release Date"),
+    ]) {
+      expect(
+        checklist.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+    // Under the panel's own heading, so the outline reads h3 then h4.
+    const heading = screen.getByRole("heading", { name: /Attributes for 2024 Topps Chrome/ });
+    expect(
+      heading.compareDocumentPosition(checklist) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it.each(["sport", "year", "manufacturer", "variantType", "insert", "parallel"])(
+    "keeps the caller's collapsed default at %s, with no checklist",
+    (level) => {
+      currentRow = makeRow({ level, value: "Whatever" });
+      render(collapsedPanel());
+      expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Hide attributes" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Official checklist" })).toBeNull();
+    },
+  );
+
+  it("opens once a still-loading row turns out to be a set", () => {
+    currentRow = undefined;
+    const { rerender } = render(collapsedPanel());
+    expect(screen.queryByRole("region", { name: "Set attributes panel" })).toBeNull();
+
+    currentRow = makeRow({ level: "setName" });
+    rerender(collapsedPanel());
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Official checklist" })).toBeTruthy();
+  });
+
+  it("an operator's close on a set holds for the session; other sets still open, and Edit attributes forgets it", () => {
+    currentRow = makeRow({ level: "setName" });
+    const first = render(collapsedPanel());
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    first.unmount();
+
+    // Back to the same set (a fresh mount): still closed.
+    const again = render(collapsedPanel());
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    again.unmount();
+
+    // A different set opens as usual.
+    const other = render(collapsedPanel(OTHER_SET_ID));
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+    other.unmount();
+
+    // Opening it again by hand clears the memory: the next visit opens.
+    const reopen = render(collapsedPanel());
+    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
+    reopen.unmount();
+    render(collapsedPanel());
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+  });
+
+  it("the close holds when the selection moves away and back without a remount", () => {
+    currentRow = makeRow({ level: "setName" });
+    const { rerender } = render(collapsedPanel());
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+
+    currentRow = makeRow({ level: "variantType", value: "Base" });
+    rerender(collapsedPanel(OTHER_SET_ID));
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+
+    currentRow = makeRow({ level: "setName" });
+    rerender(collapsedPanel());
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+  });
+
+  it("a close below the set level is not remembered, and never closes the set", () => {
+    currentRow = makeRow({ level: "insert", value: "Blue" });
+    const { unmount } = render(collapsedPanel(OTHER_SET_ID));
+    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+    unmount();
+    expect(window.sessionStorage.length).toBe(0);
+
+    currentRow = makeRow({ level: "setName" });
+    render(collapsedPanel());
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+  });
+
+  it("with storage blocked, a set still opens by default and the toggle still works", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    currentRow = makeRow({ level: "setName" });
+    render(collapsedPanel());
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-496 (Jason, 2026-11-12) — the row's marketplace sources ("Multi-source
+ * sets") live inside the panel's open body: hidden while it is collapsed,
+ * which it is by default below the set level, and above the attributes when
+ * it is open.
+ */
+describe("SetAttributesPanel — the sources sit inside the open panel (NEO-496)", () => {
+  const SOURCES = (
+    <section aria-label="Stand-in sources">
+      <h4>Multi-source sets</h4>
+    </section>
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+  });
+
+  it("is hidden while the panel is collapsed, and shown once it is opened", () => {
+    currentRow = makeRow({ level: "insert", value: "Anime" });
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed sources={SOURCES} />,
+    );
+    expect(screen.queryByRole("heading", { name: "Multi-source sets" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
+    expect(screen.getByRole("heading", { name: "Multi-source sets" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+    expect(screen.queryByRole("heading", { name: "Multi-source sets" })).toBeNull();
+  });
+
+  it("sits above the attributes, inside the panel's region", () => {
+    currentRow = makeRow({ level: "parallel", value: "Anime Kanji" });
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} sources={SOURCES} />,
+    );
+    const region = screen.getByRole("region", { name: "Set attributes panel" });
+    const sources = within(region).getByRole("region", { name: "Stand-in sources" });
+    expect(
+      sources.compareDocumentPosition(within(region).getByText("Set attributes")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("draws nothing extra when the owner has no sources to show", () => {
+    currentRow = makeRow({ level: "insert", value: "Anime" });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
+    expect(screen.queryByRole("heading", { name: "Multi-source sets" })).toBeNull();
+    expect(screen.getByText("Set attributes")).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-496 (a11y audit) — one toggle for both states, so focus stays on it,
+ * with `aria-expanded` and `aria-controls` naming the open body; and the
+ * remembered closes are capped.
+ */
+describe("SetAttributesPanel — the attributes toggle keeps focus (NEO-496 a11y)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+  });
+
+  it("stays the focused element across open and close, saying its state", () => {
+    currentRow = makeRow({ level: "insert", value: "Anime" });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    const toggle = screen.getByRole("button", { name: "Edit attributes" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    toggle.focus();
+
+    fireEvent.click(toggle);
+    expect(document.activeElement).toBe(toggle);
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBe(toggle);
+    expect(toggle.textContent).toBe("Hide attributes ▴");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const body = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(body).not.toBeNull();
+    expect(within(body as HTMLElement).getByText("Set attributes")).toBeTruthy();
+
+    // Enter (the driver's synthetic key) closes it again, on the same element.
+    fireEvent.keyDown(toggle, { key: "Enter" });
+    expect(document.activeElement).toBe(toggle);
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBe(toggle);
+    expect(toggle.textContent).toBe("Edit attributes ▾");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps at most CLOSED_SETS_CAP closed sets, dropping the oldest", () => {
+    const key = "nb.setAttributesClosedSets";
+    const old = Array.from({ length: CLOSED_SETS_CAP }, (_, i) => `set-${i}`);
+    window.sessionStorage.setItem(key, JSON.stringify(old));
+    currentRow = makeRow({ level: "setName" });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+
+    const stored = JSON.parse(window.sessionStorage.getItem(key) ?? "[]") as string[];
+    expect(stored).toHaveLength(CLOSED_SETS_CAP);
+    expect(stored[stored.length - 1]).toBe(String(SELECTOR_OPTION_ID));
+    expect(stored.includes("set-0")).toBe(false);
+    expect(stored[0]).toBe("set-1");
+  });
 });

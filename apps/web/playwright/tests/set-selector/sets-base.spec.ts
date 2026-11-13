@@ -49,7 +49,7 @@ test(
       await expect(picker.getByText(/BSC base/).first()).toBeVisible();
       // "Loading…" becomes "Confirm Base Set" once the BSC round trip lands.
       await expect(confirm).toBeVisible({ timeout: 45_000 });
-      await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+      await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
       await expect(bsc.first()).toBeVisible();
       await expect(sl).toHaveCount(0);
       await expectAccessible(page, { within: picker, label: "Select Base Set dialog (SportLots paused)" });

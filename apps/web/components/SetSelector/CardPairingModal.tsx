@@ -55,13 +55,21 @@ import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict"
 // NEO-490 — the publisher's checklist as a third source: the name pairing the
 // server uses (so a suggestion here is the server's own rule), the merge of
 // the server's per-link answers, and the dialog's one-line row text.
-import { pairByPlayerName } from "@/lib/checklists/match-published-checklist";
+import { isNoNumber } from "@/lib/checklists/match-published-checklist";
 import {
   applyChecklistAnswers,
   buildChecklistPairRequests,
+  committable,
+  pairedRowCard,
+  pairedRowOf,
+  revertServerChecklistPair,
+  unlinkableServerPair,
+  UNLINKED_ROW_ID_PREFIX,
   type ChecklistLinkRow,
   type ChecklistPairAnswer,
   type ChecklistPairRequest,
+  type ServerPairedRow,
+  type ServerPairRevert,
 } from "./checklist-match-apply";
 import { checklistRowLine } from "./PublishedChecklistDialog";
 
@@ -207,6 +215,34 @@ export type PairingCard = {
    * card that saves with no team. A listing claim, never a team.
    */
   rawTeamName?: string;
+  /**
+   * NEO-496 — WIRE-ONLY: the server paired this card with a publisher
+   * checklist row (`checklistCandidates.checklistLink`). Drives the
+   * "On checklist" chip: `confidence` (a near-name pair) shows as a %, and
+   * `checklistNumber` (a name pair whose numbers differ) is the row's number,
+   * shown beside the card's own. Never a conflict. Stripped at Confirm
+   * (`committable`): the commit's validators are strict.
+   */
+  checklistLink?: {
+    via: "number" | "caseFolded" | "prefixStripped" | "player" | "playerName" | "playerFuzzy";
+    confidence?: number;
+    checklistNumber?: string;
+    /**
+     * The row the server paired (`checklistPairedRowValidator`) and the card
+     * as it was before the row touched it (`checklistPairRevertValidator`).
+     * Both present → the pair can be undone here (Unlink); a pair from before
+     * they existed carries neither and offers no Unlink.
+     */
+    row?: ServerPairedRow;
+    revert?: ServerPairRevert;
+  };
+  /**
+   * NEO-496 — WIRE-ONLY: the streamed candidate's id on a checklist-only row
+   * (a publisher checklist row no marketplace card paired). It has no
+   * marketplace ref, so this is how `ABSORB` tells a re-delivered row from a
+   * new one. Stripped at Confirm.
+   */
+  checklistRowId?: string;
 };
 
 /**
@@ -357,6 +393,11 @@ type PairingInitialData = {
   autoMatched: IncomingPair[];
   unmatchedBsc: PairingCard[];
   unmatchedSl: PairingCard[];
+  /**
+   * NEO-496 — publisher checklist rows no marketplace card paired
+   * (`checklistOnly` candidates). Optional: a fetch with no checklist has none.
+   */
+  checklistOnly?: PairingCard[];
 };
 
 type MatchedPair = {
@@ -450,42 +491,39 @@ type State = {
    */
   streamSettled: boolean;
   /**
-   * NEO-490 — a one-marketplace set whose checklist needs the operator. Every
-   * card from this side is kept from the moment it arrives (seed and ABSORB),
-   * and the dialog offers no Keep, Keep all or Remove: a fetched marketplace
-   * card is never discarded on this path. Fixed for the instance's life.
-   */
-  soloSide?: "bsc" | "sl";
-  /**
-   * NEO-490 — the publisher's checklist, once the fetch has said it needs the
-   * operator (`SET_CHECKLIST`). The FULL row array the fetch was sent, so a
-   * row index means the same row here and on the server; only
-   * `checklistUnused` are listed. Null while there is no checklist question.
+   * NEO-490 / NEO-496 — the publisher's checklist rows no card paired, as the
+   * dialog lists them: one per `checklistOnly` candidate, in arrival order
+   * (append-only, so a row index never moves). Null while the checklist is not
+   * a source of this fetch. `[]` when it is, and every row found its card.
    */
   checklistRows: ChecklistLinkRow[] | null;
-  /** Indexes into `checklistRows` the server paired with no card. */
+  /**
+   * NEO-496 — the candidate behind each row, index for index with
+   * `checklistRows`. A kept row is committed as this card (number, players and
+   * teams from the row, no marketplace link).
+   */
+  checklistCards: PairingCard[];
+  /** Every row index, ascending: the rows the server paired with no card. */
   checklistUnused: number[];
   /**
-   * `candidateKey`s of the cards the server paired with no row. A card is a
-   * link target when any of its refs is here (a pair's BSC or SportLots half).
+   * NEO-496 — rows the operator kept as cards of their own (Keep / Keep all),
+   * in keep order. A kept row cannot be linked; Remove puts it back.
    */
-  checklistLeftoverKeys: Set<string>;
+  checklistKept: number[];
   /**
    * The operator's links: card `candidateKey` → row index. A linked card is
    * always saved (matched, or on a keep shelf): linking an unmatched card
    * keeps it, and Remove drops the link.
    */
   checklistLinks: Map<string, number>;
-  /** Has `SEED_CHECKLIST` run? It runs once, after the stream settles. */
-  checklistSeeded: boolean;
-  /** The links `SEED_CHECKLIST` made, so the discard count sees what changed. */
-  checklistSeedLinks: Map<string, number>;
   /**
-   * Cards this screen kept on the operator's behalf (solo mode's whole side,
-   * and unmatched cards a suggestion linked). Not counted as the operator's
-   * keeps in the discard confirm.
+   * NEO-496 — how many server pairings the operator undid on a card that
+   * stayed where it was (a BSC + SportLots pair, a card on a keep shelf or
+   * in a column). Those leave no other trace for the discard count; a
+   * one-marketplace card that leaves Matched for the keep shelf is already
+   * counted by `countPairingEdits`.
    */
-  autoKeptKeys: Set<string>;
+  checklistServerUnlinks: number;
 };
 
 type Action =
@@ -562,34 +600,31 @@ type Action =
       autoMatched: MatchedPair[]; // already through `seedMatched`
       unmatchedBsc: PairingCard[];
       unmatchedSl: PairingCard[];
+      /** NEO-496 — publisher checklist rows no card paired (`checklistOnly`). */
+      checklistOnly: PairingCard[];
       /** NEO-341 — the parent has seen this fetch end; see `State.streamSettled`. */
       settled: boolean;
     }
   /**
-   * NEO-490 — the fetch says the checklist needs the operator. Idempotent: the
-   * first one wins, so a re-render passing the same prop changes nothing and
-   * a late arrival (two marketplaces: the column joins an open dialog) lands
-   * once.
+   * NEO-496 — the checklist is a source of this fetch. Idempotent: lists the
+   * (possibly empty) checklist column if it is not listed yet.
    */
-  | {
-      type: "SET_CHECKLIST";
-      rows: ChecklistLinkRow[];
-      unusedRowIndices: number[];
-      leftoverCardKeys: string[];
-    }
-  /**
-   * NEO-490 (J3) — pre-link the unique name pairs among the leftovers, once,
-   * after the stream settles. `suggestions` when the caller has them;
-   * otherwise `pairByPlayerName` over what is on screen.
-   */
-  | {
-      type: "SEED_CHECKLIST";
-      suggestions?: Array<{ cardKey: string; rowIndex: number }>;
-    }
+  | { type: "CHECKLIST_SOURCE" }
+  /** NEO-496 — keep one checklist row as a card of its own. */
+  | { type: "KEEP_CHECKLIST"; rowIndex: number }
+  /** NEO-496 — keep every row still listed (not linked, not kept). */
+  | { type: "KEEP_ALL_CHECKLIST" }
+  /** NEO-496 — a kept row goes back to the list; unkept rows are dropped. */
+  | { type: "UNKEEP_CHECKLIST"; rowIndex: number }
   /** NEO-490 — link a checklist row to a card; an unmatched card is kept. */
   | { type: "LINK_CHECKLIST"; rowIndex: number; cardKey: string }
   /** NEO-490 — drop a card's checklist link; the row is listed again. */
-  | { type: "UNLINK_CHECKLIST"; cardKey: string };
+  | { type: "UNLINK_CHECKLIST"; cardKey: string }
+  /**
+   * NEO-496 — undo the SERVER's pairing of a card with a checklist row: the
+   * card gets back what it had before the row, and the row is listed again.
+   */
+  | { type: "UNLINK_SERVER_CHECKLIST"; cardKey: string };
 
 /**
  * NEO-195 — stable identity for a candidate across streamed updates.
@@ -670,10 +705,9 @@ function parseDragId(
 }
 
 /**
- * NEO-490 — a checklist row is dragged as `ck:<rowIndex>`, and a solo-mode
- * card row is dropped on as `card:<candidateKey>`. Neither prefix is a
- * `DragSide`, so `parseDragId` reads both as "not a BSC/SportLots row" and
- * the card-to-card link path never sees them.
+ * NEO-490 — a checklist row is dragged as `ck:<rowIndex>`. The prefix is not a
+ * `DragSide`, so `parseDragId` reads it as "not a BSC/SportLots row" and the
+ * card-to-card link path never sees it.
  */
 function checklistDragId(rowIndex: number): string {
   return `ck:${rowIndex}`;
@@ -685,13 +719,8 @@ function parseChecklistDragId(id: string): number | undefined {
   return Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
-function cardDropId(key: string): string {
-  return `card:${key}`;
-}
-
-/** The card key a checklist row may be dropped on: a column row or a solo card. */
+/** The card key a checklist row may be dropped on: a column row. */
 function checklistDropKey(id: string): string | undefined {
-  if (id.startsWith("card:")) return id.slice(5);
   return parseDragId(id)?.key;
 }
 
@@ -777,6 +806,8 @@ function PairableRow({
   return (
     <li
       ref={setRef}
+      // A-N3: the handle a Keep re-queries to move focus to the next row.
+      data-pair-row={`${side}:${cardKey}`}
       {...listeners}
       className={`flex items-center gap-2 rounded cursor-grab active:cursor-grabbing ${
         isDragging ? "opacity-40" : ""
@@ -823,42 +854,6 @@ function ChecklistRowItem({
       className={`flex items-center gap-2 rounded ${
         linked ? "" : "cursor-grab active:cursor-grabbing"
       } ${isDragging ? "opacity-40" : ""}`}
-    >
-      {children}
-    </li>
-  );
-}
-
-/**
- * NEO-490 — a card in solo mode's one column: a drop target for a checklist
- * row, and nothing else (every card here is already saved).
- */
-function ChecklistCardTarget({
-  cardKey,
-  accepts,
-  children,
-}: {
-  cardKey: string;
-  accepts: boolean;
-  children: React.ReactNode;
-}) {
-  const { setNodeRef, isOver, active } = useDroppable({
-    id: cardDropId(cardKey),
-    disabled: !accepts,
-  });
-  const highlight =
-    accepts &&
-    isOver &&
-    typeof active?.id === "string" &&
-    parseChecklistDragId(active.id) !== undefined;
-  return (
-    <li
-      ref={setNodeRef}
-      className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm text-ink-2 ${
-        highlight
-          ? "bg-pick-blue border-pick-blue-rule ring-2 ring-selection"
-          : "bg-row border-row-rule"
-      }`}
     >
       {children}
     </li>
@@ -1103,53 +1098,104 @@ function seedMatched(incoming: IncomingPair[]): MatchedPair[] {
  */
 function seedState({
   initialData,
-  soloSide,
+  checklistSource,
 }: {
   initialData: PairingInitialData;
-  soloSide?: "bsc" | "sl";
+  /** NEO-496 — the checklist is a source of this fetch (`sources`). */
+  checklistSource: boolean;
 }): State {
   // NEO-199: `seedMatched`, not the raw array — an auto-matched pair the
   // marketplaces name differently has to arrive already flagged, on the very
   // first paint. That is the common path; waiting for the operator to
   // hand-link something before the guard exists is the defect.
-  const matched = seedMatched(initialData.autoMatched);
-  // NEO-490: solo mode keeps every single from the first paint. Both sides,
-  // not just `soloSide`: the other side should be empty on this path, and if
-  // it ever is not, a card with no column to show it in must still be saved.
-  const keptBsc = soloSide ? initialData.unmatchedBsc : [];
-  const keptSl = soloSide ? initialData.unmatchedSl : [];
+  // NEO-496: a one-marketplace card the server paired with a checklist row is
+  // on two sources, so it is matched too.
+  const bscSplit = splitChecklistMatched(initialData.unmatchedBsc);
+  const slSplit = splitChecklistMatched(initialData.unmatchedSl);
+  const matched = [
+    ...seedMatched(initialData.autoMatched),
+    ...bscSplit.matched,
+    ...slSplit.matched,
+  ];
+  const checklistCards = initialData.checklistOnly ?? [];
+  const checklistInPlay =
+    checklistSource ||
+    checklistCards.length > 0 ||
+    matched.some((m) => m.card.checklistLink !== undefined);
   // NEO-195: `ordered` on the seed too — the first paint is otherwise in
   // whatever order the fetch produced, which for a streamed batch is arrival
   // order, not card order.
   return ordered({
     matched,
-    unmatchedBsc: soloSide ? [] : initialData.unmatchedBsc,
-    unmatchedSl: soloSide ? [] : initialData.unmatchedSl,
-    keptBsc,
-    keptSl,
+    unmatchedBsc: bscSplit.unmatched,
+    unmatchedSl: slSplit.unmatched,
+    keptBsc: [],
+    keptSl: [],
     seedMatchedKeys: new Set(matched.map((m) => candidateKey(m.card))),
     // NEO-341: only an ABSORB may say so — see `State.streamSettled`.
     streamSettled: false,
-    ...(soloSide ? { soloSide } : {}),
-    checklistRows: null,
-    checklistUnused: [],
-    checklistLeftoverKeys: new Set(),
+    checklistRows: checklistInPlay ? checklistCards.map(checklistRowOf) : null,
+    checklistCards,
+    checklistUnused: checklistCards.map((_, i) => i),
+    checklistKept: [],
     checklistLinks: new Map(),
-    checklistSeeded: false,
-    checklistSeedLinks: new Map(),
-    autoKeptKeys: new Set([...keptBsc, ...keptSl].map(candidateKey)),
+    checklistServerUnlinks: 0,
   });
 }
 
 /**
+ * NEO-496 — one-marketplace cards the server paired with a publisher
+ * checklist row are MATCHED (the card is on two sources, as a BSC + SportLots
+ * pair is), not singles waiting on a Keep. They join the Matched list with
+ * full confidence; the "On checklist" chip carries the name match's %.
+ */
+function splitChecklistMatched(cards: readonly PairingCard[]): {
+  matched: MatchedPair[];
+  unmatched: PairingCard[];
+} {
+  const matched: MatchedPair[] = [];
+  const unmatched: PairingCard[] = [];
+  for (const c of cards) {
+    if (c.checklistLink) matched.push({ card: c, confidence: 1 });
+    else unmatched.push(c);
+  }
+  return { matched, unmatched };
+}
+
+/**
+ * NEO-496 — a `checklistOnly` candidate as the checklist row it came from:
+ * the row's number as printed, its players, and its teams (already resolved
+ * by the server). A blank or "NNO" number is a no-number row; a row whose
+ * team the checklist answered with nothing is its "No Team" claim (NEO-489).
+ */
+export function checklistRowOf(card: PairingCard): ChecklistLinkRow {
+  const teams = card.teams ?? [];
+  return {
+    number: card.cardNumber,
+    players: card.players ?? [],
+    teams,
+    ...(isNoNumber(card.cardNumber) ? { noNumber: true as const } : {}),
+    ...(card.teamLookup === "checklist" && teams.length === 0
+      ? { noTeam: true as const }
+      : {}),
+  };
+}
+
+/**
+ * NEO-496 — how a re-delivered checklist row is recognised: the candidate's
+ * id, else (a caller that does not send one) its number and name.
+ */
+function checklistRowKey(card: PairingCard): string {
+  return card.checklistRowId ?? `#${card.cardNumber}\u0000${card.cardName}`;
+}
+
+/**
  * NEO-490 — the marketplace refs a card answers to as a checklist link
- * target: its BSC ref and its SportLots ref. A merged pair answers to both
- * halves, so a leftover named by either half makes the pair a link target.
+ * target: its BSC ref and its SportLots ref.
  *
- * Refs only. The server's `leftoverCardKeys` name a card by its BSC ref, else
- * its SportLots ref, and leave out a card with neither; `candidateKey`'s
- * `#number` fallback is NOT a target, because a card number is not unique
- * (product invariant 7) and "#17" could name two cards at once.
+ * Refs only. `candidateKey`'s `#number` fallback is NOT a target, because a
+ * card number is not unique (product invariant 7) and "#17" could name two
+ * cards at once.
  */
 function cardRefs(c: PairingCard): string[] {
   const refs: string[] = [];
@@ -1158,36 +1204,51 @@ function cardRefs(c: PairingCard): string[] {
   return refs;
 }
 
-/** NEO-490 — may a checklist row be linked to this card? */
+/**
+ * NEO-490 / NEO-496 — may a checklist row be linked to this card? A
+ * marketplace card the server paired with no row: one with a ref and no
+ * `checklistLink` of its own.
+ */
 function isChecklistTarget(state: State, c: PairingCard): boolean {
   if (!state.checklistRows) return false;
-  return cardRefs(c).some((ref) => state.checklistLeftoverKeys.has(ref));
+  return cardRefs(c).length > 0 && c.checklistLink === undefined;
 }
 
-/** NEO-490 — the rows not yet linked to any card, in file order. */
+/**
+ * NEO-496 — a matched row that holds BOTH marketplace halves. Anything else
+ * in the Matched list is one marketplace's card the server paired with a
+ * checklist row.
+ */
+function isMarketplacePair(c: PairingCard): boolean {
+  return !!c.platformData.bsc && !!c.platformData.sportlots;
+}
+
+/** NEO-490 — the rows linked to a card. */
 function linkedRowSet(state: State): Set<number> {
   return new Set(state.checklistLinks.values());
 }
 
 /**
- * NEO-490 — one link, applied. Shared by `LINK_CHECKLIST` and the seed so a
- * suggestion and a hand link are the same operation. Returns `state` when
- * the link is not possible (unknown row or card, row already linked, card
- * not a leftover).
+ * NEO-496 — the rows still listed for a decision: neither linked to a card
+ * nor kept. What Keep all keeps, and what the column heading counts.
+ */
+function openChecklistRows(state: State): number[] {
+  const linked = linkedRowSet(state);
+  const kept = new Set(state.checklistKept);
+  return state.checklistUnused.filter((i) => !linked.has(i) && !kept.has(i));
+}
+
+/**
+ * NEO-490 — one link, applied. Returns `state` when the link is not possible
+ * (unknown row or card, row already linked or kept, card not a target).
  *
  * An unmatched card is moved onto its side's keep shelf: a linked card is a
- * card the operator has said is real, so it is always saved. `auto` marks a
- * keep this screen made for them (a suggestion), which the discard count
- * does not charge to the operator.
+ * card the operator has said is real, so it is always saved.
  */
-function linkChecklist(
-  state: State,
-  rowIndex: number,
-  cardKey: string,
-  auto: boolean,
-): State {
+function linkChecklist(state: State, rowIndex: number, cardKey: string): State {
   if (!state.checklistRows) return state;
   if (!state.checklistUnused.includes(rowIndex)) return state;
+  if (state.checklistKept.includes(rowIndex)) return state;
   for (const row of state.checklistLinks.values()) {
     // A row links to one card. Moving it means unlinking it first.
     if (row === rowIndex) return state;
@@ -1209,14 +1270,9 @@ function linkChecklist(
   if (!card || !isChecklistTarget(state, card)) return state;
   const checklistLinks = new Map(state.checklistLinks);
   checklistLinks.set(cardKey, rowIndex);
-  const autoKeptKeys =
-    auto && (bi !== -1 || si !== -1)
-      ? new Set([...state.autoKeptKeys, cardKey])
-      : state.autoKeptKeys;
   return {
     ...state,
     checklistLinks,
-    autoKeptKeys,
     ...(bi !== -1
       ? {
           unmatchedBsc: state.unmatchedBsc.filter((_, i) => i !== bi),
@@ -1233,18 +1289,94 @@ function linkChecklist(
 }
 
 /**
- * NEO-490 — how many checklist decisions a discard would throw away: links
- * the operator made or moved, and suggested links they took off.
+ * NEO-490 / NEO-496 — how many checklist decisions a discard would throw
+ * away: every link and every kept row is the operator's own.
  */
-function checklistLinkEdits(state: State): number {
-  let edits = 0;
-  for (const [key, row] of state.checklistLinks) {
-    if (state.checklistSeedLinks.get(key) !== row) edits += 1;
+function checklistEdits(state: State): number {
+  return (
+    state.checklistLinks.size + state.checklistKept.length + state.checklistServerUnlinks
+  );
+}
+
+/**
+ * NEO-496 — undo the server's pairing of one card with a checklist row.
+ * Returns `state` when there is nothing to undo (unknown card, no pairing,
+ * or a pairing stored before it carried its row and revert).
+ *
+ * The card gets back what it had before the row (`revertServerChecklistPair`)
+ * and the row joins the checklist column as the card it would have been on
+ * its own, so it can be kept, or linked to this card or another. Where the
+ * card goes:
+ *
+ *  - a BSC + SportLots pair stays matched: the two marketplaces still pair.
+ *    The players are left alone when the marketplaces disagree about them:
+ *    the row never touched a roster that existed, and the operator may have
+ *    picked one already.
+ *  - a one-marketplace card was matched only because of the row. It moves to
+ *    its side's keep shelf, still saved: an Unlink says the row is wrong, not
+ *    that the card is (the shelf's Remove drops it).
+ *  - a card already on a shelf or in a column stays there.
+ */
+function unlinkServerChecklist(state: State, cardKey: string): State {
+  if (!state.checklistRows) return state;
+  const rowIndex = state.checklistCards.length;
+  const listRow = (card: PairingCard) => {
+    if (!unlinkableServerPair(card)) return null;
+    const row = card.checklistLink.row;
+    return {
+      checklistCards: [
+        ...state.checklistCards,
+        pairedRowCard(row, `${UNLINKED_ROW_ID_PREFIX}${cardKey}`),
+      ],
+      checklistRows: [...(state.checklistRows ?? []), pairedRowOf(row)],
+      checklistUnused: [...state.checklistUnused, rowIndex],
+    };
+  };
+
+  const mi = state.matched.findIndex((m) => candidateKey(m.card) === cardKey);
+  if (mi !== -1) {
+    const pair = state.matched[mi];
+    const reverted = revertServerChecklistPair(pair.card);
+    const rows = listRow(pair.card);
+    if (!reverted || !rows) return state;
+    if (isMarketplacePair(pair.card)) {
+      const card: PairingCard = pair.playersConflict
+        ? { ...reverted, ...(pair.card.players ? { players: pair.card.players } : {}) }
+        : reverted;
+      return {
+        ...state,
+        ...rows,
+        matched: state.matched.map((m, i) => (i === mi ? { ...m, card } : m)),
+        checklistServerUnlinks: state.checklistServerUnlinks + 1,
+      };
+    }
+    const toBsc = !!pair.card.platformData.bsc;
+    return {
+      ...state,
+      ...rows,
+      matched: state.matched.filter((_, i) => i !== mi),
+      ...(toBsc
+        ? { keptBsc: [...state.keptBsc, reverted] }
+        : { keptSl: [...state.keptSl, reverted] }),
+    };
   }
-  for (const key of state.checklistSeedLinks.keys()) {
-    if (!state.checklistLinks.has(key)) edits += 1;
+
+  const lists = ["keptBsc", "keptSl", "unmatchedBsc", "unmatchedSl"] as const;
+  for (const name of lists) {
+    const list = state[name];
+    const i = list.findIndex((c) => candidateKey(c) === cardKey);
+    if (i === -1) continue;
+    const reverted = revertServerChecklistPair(list[i]);
+    const rows = listRow(list[i]);
+    if (!reverted || !rows) return state;
+    return {
+      ...state,
+      ...rows,
+      [name]: list.map((c, j) => (j === i ? reverted : c)),
+      checklistServerUnlinks: state.checklistServerUnlinks + 1,
+    };
   }
-  return edits;
+  return state;
 }
 
 /** Merge a BSC-side and SL-side candidate into the single NB card they describe. */
@@ -1290,6 +1422,11 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
     // about (the commit refuses it, but only after the wizard has closed).
     ...((bsc.checklistConflict ?? sl.checklistConflict)
       ? { checklistConflict: bsc.checklistConflict ?? sl.checklistConflict }
+      : {}),
+    // NEO-496: the server's checklist pairing is about the card too, and
+    // rides on the half that carried it (the BSC half, after an Unlink).
+    ...((bsc.checklistLink ?? sl.checklistLink)
+      ? { checklistLink: bsc.checklistLink ?? sl.checklistLink }
       : {}),
     platformData: {
       ...(bsc.platformData.bsc ? { bsc: bsc.platformData.bsc } : {}),
@@ -1379,9 +1516,23 @@ function baseReducer(state: State, action: Action): State {
         return !seen.has(candidateKey(c));
       };
 
-      const newMatched = action.autoMatched.filter((m) => isNew(m.card));
-      const newBsc = action.unmatchedBsc.filter(isNew);
-      const newSl = action.unmatchedSl.filter(isNew);
+      // NEO-496: a single the server paired with a checklist row is matched
+      // (see `splitChecklistMatched`).
+      const bscSplit = splitChecklistMatched(action.unmatchedBsc.filter(isNew));
+      const slSplit = splitChecklistMatched(action.unmatchedSl.filter(isNew));
+      const newMatched = [
+        ...action.autoMatched.filter((m) => isNew(m.card)),
+        ...bscSplit.matched,
+        ...slSplit.matched,
+      ];
+      const newBsc = bscSplit.unmatched;
+      const newSl = slSplit.unmatched;
+      // NEO-496: checklist rows have no ref; a re-delivered one is known by
+      // its candidate id.
+      const seenRows = new Set(state.checklistCards.map(checklistRowKey));
+      const newRows = action.checklistOnly.filter(
+        (c) => !seenRows.has(checklistRowKey(c)),
+      );
 
       // Every incoming row, reachable by either of its refs — a pair the
       // operator linked by hand carries both, and the enrichment that resolved
@@ -1408,6 +1559,10 @@ function baseReducer(state: State, action: Action): State {
           (bscRef ? incomingByRef.get(bscRef) : undefined) ??
           (slRef ? incomingByRef.get(slRef) : undefined);
         if (!fresh?.teams?.length) return c;
+        // NEO-496: the stream still carries the server's checklist pairing,
+        // so a card the operator unlinked would take the row's team straight
+        // back. That team is the row's, not a lookup's: never adopted.
+        if (fresh.teamLookup === "checklist" && !c.checklistLink) return c;
         enriched = true;
         return { ...c, teams: fresh.teams };
       };
@@ -1430,27 +1585,35 @@ function baseReducer(state: State, action: Action): State {
         !newMatched.length &&
         !newBsc.length &&
         !newSl.length &&
+        !newRows.length &&
         !enriched &&
         streamSettled === state.streamSettled
       ) {
         return state;
       }
 
-      // NEO-490: solo mode keeps every single as it arrives — never a column
-      // (see `seedState` for why both sides).
-      const solo = !!state.soloSide;
-      const soloNew = solo ? [...newBsc, ...newSl] : [];
+      const checklistCards = newRows.length
+        ? [...state.checklistCards, ...newRows]
+        : state.checklistCards;
+      const checklistInPlay =
+        state.checklistRows !== null ||
+        newRows.length > 0 ||
+        newMatched.some((m) => m.card.checklistLink !== undefined);
       return {
         ...state,
         streamSettled,
         matched: [...matched, ...newMatched],
-        unmatchedBsc: solo ? unmatchedBsc : [...unmatchedBsc, ...newBsc],
-        unmatchedSl: solo ? unmatchedSl : [...unmatchedSl, ...newSl],
-        keptBsc: solo ? [...keptBsc, ...newBsc] : keptBsc,
-        keptSl: solo ? [...keptSl, ...newSl] : keptSl,
-        autoKeptKeys: soloNew.length
-          ? new Set([...state.autoKeptKeys, ...soloNew.map(candidateKey)])
-          : state.autoKeptKeys,
+        unmatchedBsc: [...unmatchedBsc, ...newBsc],
+        unmatchedSl: [...unmatchedSl, ...newSl],
+        keptBsc,
+        keptSl,
+        checklistCards,
+        checklistRows: checklistInPlay
+          ? [...(state.checklistRows ?? []), ...newRows.map(checklistRowOf)]
+          : null,
+        checklistUnused: newRows.length
+          ? checklistCards.map((_, i) => i)
+          : state.checklistUnused,
         // NEO-220: a pair that streams in already matched is as much "the
         // server's work" as one in the seed, so unlinking it later is as much
         // an edit. Only the genuinely NEW rows are added — a pair the operator
@@ -1498,6 +1661,11 @@ function baseReducer(state: State, action: Action): State {
     case "UNLINK": {
       const pair = state.matched[action.index];
       if (!pair) return state;
+      // NEO-496: a card on one marketplace and the checklist has no second
+      // marketplace half to split off (the dialog offers no marketplace
+      // Unlink); its checklist chip's own Unlink undoes the row instead
+      // (`UNLINK_SERVER_CHECKLIST`).
+      if (!isMarketplacePair(pair.card)) return state;
       // Split the merged card back into its two sides so either can be
       // re-paired or kept independently.
       const bscSide: PairingCard = {
@@ -1527,43 +1695,45 @@ function baseReducer(state: State, action: Action): State {
           : {},
         unmatched: "sl",
       };
+      // NEO-496: the server's checklist pairing stays on the BSC half (below),
+      // so the SportLots half must not keep what the row put on the card: it
+      // gets the card as it was before the row, when the link says what that
+      // was (a pair stored before it did keeps the old behaviour).
+      const slBase =
+        pair.card.checklistLink && revertServerChecklistPair(pair.card);
+      const slPlayers =
+        pair.playersConflict?.sportlots ?? (slBase ? slBase.players : pair.card.players);
       const slSide: PairingCard = {
-        ...pair.card,
+        ...(slBase || pair.card),
         cardName: pair.nameConflict?.sportlots ?? pair.card.cardName,
-        players: pair.playersConflict?.sportlots ?? pair.card.players,
+        players: slPlayers,
         platformData: pair.card.platformData.sportlots
           ? { sportlots: pair.card.platformData.sportlots }
           : {},
         unmatched: "bsc",
       };
+      if (slBase && slSide.players === undefined) delete slSide.players;
       // NEO-490: a checklist link on the pair stays on the half it is keyed
       // by — the pair's `candidateKey`, which is its BSC ref — and that half
       // is KEPT, because a linked card is always saved. The SportLots half
       // goes back to its column as before.
+      // NEO-496: the server's own checklist pairing does the same: it stays
+      // on the BSC half, which is kept, and leaves the SportLots half.
       const pairKey = candidateKey(pair.card);
-      const linkStays =
-        state.checklistLinks.has(pairKey) &&
-        !!pair.card.platformData.bsc &&
-        candidateKey(bscSide) === pairKey;
-      // Solo mode has no columns to send a half back to: both halves are
-      // kept, so an unlink there can never lose a fetched card.
-      const solo = !!state.soloSide;
       const hasBsc = !!pair.card.platformData.bsc;
       const hasSl = !!pair.card.platformData.sportlots;
+      const linkStays =
+        hasBsc &&
+        ((state.checklistLinks.has(pairKey) && candidateKey(bscSide) === pairKey) ||
+          pair.card.checklistLink !== undefined);
+      if (pair.card.checklistLink) delete slSide.checklistLink;
       return {
         ...state,
         matched: state.matched.filter((_, i) => i !== action.index),
         unmatchedBsc:
-          hasBsc && !linkStays && !solo
-            ? [...state.unmatchedBsc, bscSide]
-            : state.unmatchedBsc,
-        keptBsc:
-          hasBsc && (linkStays || solo)
-            ? [...state.keptBsc, bscSide]
-            : state.keptBsc,
-        unmatchedSl:
-          hasSl && !solo ? [...state.unmatchedSl, slSide] : state.unmatchedSl,
-        keptSl: hasSl && solo ? [...state.keptSl, slSide] : state.keptSl,
+          hasBsc && !linkStays ? [...state.unmatchedBsc, bscSide] : state.unmatchedBsc,
+        keptBsc: hasBsc && linkStays ? [...state.keptBsc, bscSide] : state.keptBsc,
+        unmatchedSl: hasSl ? [...state.unmatchedSl, slSide] : state.unmatchedSl,
         ...(state.checklistLinks.has(pairKey) && !linkStays
           ? {
               checklistLinks: new Map(
@@ -1846,8 +2016,6 @@ function baseReducer(state: State, action: Action): State {
       };
     }
     case "KEEP_ALL": {
-      // NEO-490: solo mode has nothing unkept on its side to keep.
-      if (state.soloSide) return state;
       // A set that simply is not on the other marketplace produces an entire
       // column of legitimate unmatched cards — hundreds, for a parallel set.
       // Keeping those one tap at a time is not a workflow anyone would use,
@@ -1869,30 +2037,19 @@ function baseReducer(state: State, action: Action): State {
       };
     }
     case "UNKEEP": {
-      // NEO-490: solo mode never lets a fetched card go.
-      if (state.soloSide) return state;
       const from = action.side === "bsc" ? state.keptBsc : state.keptSl;
       const idx = from.findIndex((c) => candidateKey(c) === action.key);
       if (idx === -1) return state;
       const card = from[idx];
       // NEO-490: a card that goes back to its column is no longer saved, so
       // its checklist link goes with it and the row is listed again.
-      const checklist = {
-        ...(state.checklistLinks.has(action.key)
-          ? {
-              checklistLinks: new Map(
-                [...state.checklistLinks].filter(([k]) => k !== action.key),
-              ),
-            }
-          : {}),
-        ...(state.autoKeptKeys.has(action.key)
-          ? {
-              autoKeptKeys: new Set(
-                [...state.autoKeptKeys].filter((k) => k !== action.key),
-              ),
-            }
-          : {}),
-      };
+      const checklist = state.checklistLinks.has(action.key)
+        ? {
+            checklistLinks: new Map(
+              [...state.checklistLinks].filter(([k]) => k !== action.key),
+            ),
+          }
+        : {};
       if (action.side === "bsc") {
         return {
           ...state,
@@ -1908,59 +2065,30 @@ function baseReducer(state: State, action: Action): State {
         ...checklist,
       };
     }
-    case "SET_CHECKLIST": {
+    case "CHECKLIST_SOURCE":
       if (state.checklistRows) return state;
-      const rowCount = action.rows.length;
       return {
         ...state,
-        checklistRows: action.rows,
-        checklistUnused: [...new Set(action.unusedRowIndices)]
-          .filter((i) => Number.isInteger(i) && i >= 0 && i < rowCount)
-          .sort((a, b) => a - b),
-        checklistLeftoverKeys: new Set(action.leftoverCardKeys),
+        checklistRows: state.checklistCards.map(checklistRowOf),
       };
-    }
-    case "SEED_CHECKLIST": {
-      if (!state.checklistRows || state.checklistSeeded) return state;
-      let next: State = state;
-      let pairs = action.suggestions;
-      if (!pairs) {
-        // Every leftover card on screen with no link yet, and every unused
-        // row with no link yet: the same exactly-one-each-side name rule the
-        // server uses, so a tie stays unlinked for the operator.
-        const cards = [
-          ...state.matched.map((m) => m.card),
-          ...state.keptBsc,
-          ...state.keptSl,
-          ...state.unmatchedBsc,
-          ...state.unmatchedSl,
-        ].filter(
-          (c) =>
-            isChecklistTarget(state, c) &&
-            !state.checklistLinks.has(candidateKey(c)),
-        );
-        const taken = linkedRowSet(state);
-        const rows = state.checklistUnused.filter((i) => !taken.has(i));
-        pairs = pairByPlayerName(
-          cards,
-          rows.map((i) => state.checklistRows![i]),
-        ).map((p) => ({
-          cardKey: candidateKey(cards[p.cardIndex]),
-          rowIndex: rows[p.rowIndex],
-        }));
-      }
-      for (const p of pairs) {
-        if (next.checklistLinks.has(p.cardKey)) continue;
-        next = linkChecklist(next, p.rowIndex, p.cardKey, true);
-      }
-      return {
-        ...next,
-        checklistSeeded: true,
-        checklistSeedLinks: new Map(next.checklistLinks),
-      };
-    }
     case "LINK_CHECKLIST":
-      return linkChecklist(state, action.rowIndex, action.cardKey, false);
+      return linkChecklist(state, action.rowIndex, action.cardKey);
+    case "KEEP_CHECKLIST": {
+      if (!openChecklistRows(state).includes(action.rowIndex)) return state;
+      return { ...state, checklistKept: [...state.checklistKept, action.rowIndex] };
+    }
+    case "KEEP_ALL_CHECKLIST": {
+      const open = openChecklistRows(state);
+      if (open.length === 0) return state;
+      return { ...state, checklistKept: [...state.checklistKept, ...open] };
+    }
+    case "UNKEEP_CHECKLIST": {
+      if (!state.checklistKept.includes(action.rowIndex)) return state;
+      return {
+        ...state,
+        checklistKept: state.checklistKept.filter((i) => i !== action.rowIndex),
+      };
+    }
     case "UNLINK_CHECKLIST": {
       if (!state.checklistLinks.has(action.cardKey)) return state;
       return {
@@ -1970,6 +2098,8 @@ function baseReducer(state: State, action: Action): State {
         ),
       };
     }
+    case "UNLINK_SERVER_CHECKLIST":
+      return unlinkServerChecklist(state, action.cardKey);
     default:
       return state;
   }
@@ -2268,39 +2398,127 @@ export const CHECKLIST_LINKS_FAILED =
 /** Where `CHECKLIST_LINKS_FAILED` shows; Confirm is described by it. */
 const CHECKLIST_ERROR_ID = "pairing-checklist-error";
 
-/**
- * NEO-490 — the solo-mode subtitle. It names no marketplace: what the
- * operator is told is about their cards and their checklist, whichever
- * marketplace the cards came from.
- */
-export function soloChecklistSubtitle(): string {
-  return "Line up each card with its checklist row. Every card here gets saved — checklist rows left unlinked don't.";
-}
-
-/** NEO-490 — added under the usual subtitle when the checklist column shows. */
+/** NEO-490 / NEO-496 — added under the usual subtitle when the checklist is a source. */
 export const CHECKLIST_COLUMN_SUBTITLE =
-  "Got your checklist in the mix too — link each row to its card. A card with a row gets saved; rows left unlinked don't.";
+  "Your checklist's in the mix too. Link a leftover row to its card, or keep it as a card of its own. Rows left in the list don't get saved.";
+
+/** NEO-496 — the usual subtitle, when a checklist row can be kept too. */
+export const CHECKLIST_SOURCES_SUBTITLE =
+  "No cards save until you confirm. Anything left below gets tossed. Keep it to save it.";
+
+/** NEO-496 — every card lined up across the sources, the checklist among them. */
+export const CHECKLIST_ALL_LINED_UP =
+  "Every card lines up across your sources. Review and confirm — no cards are saved until you do.";
 
 /** NEO-490 — the checklist's own gesture, said on screen like the card one. */
 export const CHECKLIST_LINK_HINT =
   "Pick a checklist row, then hit Link on its card (or drag the row onto it).";
 
 /**
- * NEO-490 — "14 cards already matched to your checklist — they're saved
- * too". The cards the server paired are not listed, so this says they are
- * not lost.
+ * NEO-496 — the checklist column's heading, in the same words as
+ * "BSC only (N)": the rows on the checklist alone, still waiting on a link
+ * or a Keep.
  */
-export function alreadyMatchedText(n: number): string {
-  return n === 1
-    ? "1 card already matched to your checklist — it's saved too"
-    : `${n.toLocaleString("en-US")} cards already matched to your checklist — they're saved too`;
+export function checklistColumnHeading(open: number): string {
+  return `Checklist only (${open.toLocaleString("en-US")})`;
 }
 
-/** NEO-490 — the checklist column's heading. */
-export function checklistColumnHeading(unlinked: number): string {
-  return unlinked === 0
-    ? "Your checklist (all linked!)"
-    : `Your checklist (${unlinked.toLocaleString("en-US")} to link)`;
+/** NEO-496 — the checklist column when every row found its card. */
+export const CHECKLIST_ALL_FOUND = "Every checklist row found its card.";
+
+/**
+ * NEO-496 — the server's checklist pairing, as a card's chip: "On checklist"
+ * for a number match, "Checklist: #FS-3" when the card paired by name and the
+ * row prints another number (the card keeps its own; this is not a
+ * conflict), and the % for a near-name pair, like a fuzzy BSC/SportLots link.
+ */
+export function serverChecklistChipText(link: NonNullable<PairingCard["checklistLink"]>): {
+  label: string;
+  percent: string | null;
+} {
+  const number = link.checklistNumber?.trim();
+  return {
+    label: number ? `Checklist: #${number}` : "On checklist",
+    percent:
+      link.confidence !== undefined && link.confidence < 1
+        ? `${Math.round(link.confidence * 100)}%`
+        : null,
+  };
+}
+
+/**
+ * N2 — a checklist chip's tooltip: the number the checklist prints for the
+ * card, or (no number) that the card is on the checklist.
+ */
+export function checklistNumberTitle(printed: string | undefined): string {
+  return printed
+    ? `Your checklist prints this card as #${printed}`
+    : "This card is on your checklist";
+}
+
+/**
+ * Keep and Keep all, on every column: NeonButton's green outline, the same
+ * button Reconcile's "Keep all" is (green: a kept card goes on to be saved).
+ * 28px keeps a row one line on a desk; 44px on a phone.
+ */
+const KEEP_BUTTON = "min-h-[28px] shrink-0 whitespace-nowrap max-sm:min-h-11";
+
+/**
+ * The Unlink inside a checklist chip. A solid underline: the dotted one is
+ * reserved for a name you can edit (the Matched rows' name choice).
+ */
+const CHIP_UNLINK =
+  "min-h-6 rounded-r border-l border-pick-teal-rule px-1.5 font-semibold underline underline-offset-2 hover:text-ink focus-outline";
+
+/**
+ * A pick radio's own mark: a ring, filled when picked. The picked fill and
+ * `selection-edge` alone are colour (and in dark the edge is clear), so the
+ * mark says "picked" by shape too (WCAG 1.4.1). Drawn in the button's own
+ * ink; the state itself is `aria-checked`.
+ */
+function RadioMark({ checked }: { checked: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="mr-2 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-current align-middle"
+    >
+      {checked && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+    </span>
+  );
+}
+
+/**
+ * The chip, with (NEO-496) the same Unlink inside it a hand link's chip has
+ * when the server's pair can be undone (`unlink`).
+ */
+function serverChecklistChip(
+  link: NonNullable<PairingCard["checklistLink"]>,
+  unlinkButton?: React.ReactNode,
+) {
+  const { label: text, percent } = serverChecklistChipText(link);
+  return (
+    <span className="inline-flex shrink-0 items-stretch rounded border border-pick-teal-rule bg-pick-teal text-xs text-pick-teal-ink">
+      <span
+        className="flex items-center px-1.5 py-0.5"
+        title={checklistNumberTitle(link.checklistNumber?.trim() || undefined)}
+      >
+        {text}
+      </span>
+      {percent && (
+        // A3: the percent alone says nothing to a screen reader; the hidden
+        // words say what it measures. `relative` keeps the sr-only text
+        // inside the chip.
+        <span
+          className="relative flex items-center border-l border-pick-teal-rule px-1.5 py-0.5 font-semibold"
+          title="How close the names are"
+        >
+          <span className="sr-only">Name match </span>
+          {percent}
+        </span>
+      )}
+      {unlinkButton}
+    </span>
+  );
 }
 
 /**
@@ -2318,11 +2536,45 @@ export function checklistLinkedAnnouncement(
 ): string {
   const left =
     rowsLeft === 0
-      ? "Every checklist row is linked."
+      ? "Every checklist row is linked or kept."
       : `${plural(rowsLeft, "row")} left to link.`;
   return `Linked checklist row ${rowNumber} to ${cardLabel}. ${left}`;
 }
 export const CHECKLIST_UNLINKED = "Unlinked.";
+/**
+ * A-N1 — said when the operator's own Unlink drops a checklist link: which
+ * card it left, and that the row can be picked again.
+ */
+export function checklistUnlinkedAnnouncement(cardLabel: string | undefined): string {
+  return cardLabel
+    ? `Unlinked from ${cardLabel}. Checklist row's back on the list.`
+    : `${CHECKLIST_UNLINKED} Checklist row's back on the list.`;
+}
+
+/** A-N3 — the card after `card` in `list`, else the one before; by key. */
+function neighbourOf(list: readonly PairingCard[], card: PairingCard): PairingCard | undefined {
+  const key = candidateKey(card);
+  const at = list.findIndex((c) => candidateKey(c) === key);
+  if (at < 0) return undefined;
+  return list[at + 1] ?? list[at - 1];
+}
+
+/**
+ * A-N4 — where an arrow, Home or End moves a roving radio group of `count`
+ * radios from index `at` (-1: none focused), wrapping at both ends; null for
+ * any other key.
+ */
+export function radioStep(key: string, at: number, count: number): number | null {
+  if (count === 0) return null;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  if (key === "ArrowDown" || key === "ArrowRight") return at < 0 ? 0 : (at + 1) % count;
+  if (key === "ArrowUp" || key === "ArrowLeft") {
+    return at < 0 ? count - 1 : (at - 1 + count) % count;
+  }
+  return null;
+}
+
 /** A marketplace Unlink or Remove took a checklist link with it. */
 export function checklistLinkDroppedAnnouncement(rowNumber: string): string {
   return `Checklist row ${rowNumber} unlinked too.`;
@@ -2350,31 +2602,17 @@ export default function CardPairingModal({
   teamsLateNotice,
   restoreFocusRef,
   waitingSlot,
-  soloSide,
-  checklist,
+  sources,
   resolveChecklistPairs,
 }: {
   /**
-   * NEO-490 — a one-marketplace set opened only because its checklist needs
-   * the operator. Every card from this side is saved; the dialog shows no
-   * Keep controls and no second marketplace's column. Read once, at mount.
+   * NEO-496 — the sources this fetch draws cards from (`fetchCardChecklist`'s
+   * `sources`, or the caller's prediction until it returns). A marketplace
+   * column shows when its side is a source (or holds a card); the checklist
+   * column shows when the checklist is one. Omitted: both marketplace
+   * columns, and a checklist column only once checklist rows arrive.
    */
-  soloSide?: "bsc" | "sl";
-  /**
-   * NEO-490 — the publisher's checklist rows the server could not pair, as a
-   * third source. `rows` is the whole checklist the fetch was sent (row
-   * indexes are the server's); only `unusedRowIndices` are listed, and only
-   * cards named in `leftoverCardKeys` are link targets. `alreadyMatched`
-   * counts the cards the server paired itself. May arrive after the dialog
-   * opens (two marketplaces); the column joins then.
-   */
-  checklist?: {
-    rows: ChecklistLinkRow[];
-    unusedRowIndices: number[];
-    leftoverCardKeys: string[];
-    alreadyMatched: number;
-    suggestions?: Array<{ cardKey: string; rowIndex: number }>;
-  };
+  sources?: readonly ("bsc" | "sportlots" | "checklist")[];
   /**
    * NEO-490 — asks the server what each link means for its card (teams,
    * conflicts, filled players). Called at Confirm when any link exists; the
@@ -2446,7 +2684,7 @@ export default function CardPairingModal({
 }) {
   const [state, dispatch] = useReducer(
     reducer,
-    { initialData, soloSide },
+    { initialData, checklistSource: sources?.includes("checklist") === true },
     seedState,
   );
   const [selectedBsc, setSelectedBsc] = useState<string | null>(null);
@@ -2570,8 +2808,11 @@ export default function CardPairingModal({
   // With nothing unmatched there are no columns, and a collapsed dialog shows
   // three empty sections and a "▶ Matched (220)" the operator has to expand to
   // see anything at all.
+  // NEO-496: read from the seeded state, not `initialData` — a card the
+  // checklist paired is in Matched, not a leftover. Leftover checklist rows
+  // do not collapse it: the matched pairs are the rows' link targets.
   const [matchedCollapsed, setMatchedCollapsed] = useState(
-    initialData.unmatchedBsc.length > 0 || initialData.unmatchedSl.length > 0,
+    () => state.unmatchedBsc.length > 0 || state.unmatchedSl.length > 0,
   );
   const [confirming, setConfirming] = useState(false);
   /**
@@ -2595,20 +2836,17 @@ export default function CardPairingModal({
       autoMatched: seedMatched(initialData.autoMatched),
       unmatchedBsc: initialData.unmatchedBsc,
       unmatchedSl: initialData.unmatchedSl,
+      checklistOnly: initialData.checklistOnly ?? [],
       settled: streamSettled === true,
     });
   }, [initialData, streamSettled]);
-  // NEO-490: the checklist joins when the fetch says it needs the operator —
-  // at mount on the solo path, possibly later with two marketplaces.
+  // NEO-496: the checklist column joins when the fetch says the checklist is
+  // a source, which may be after the dialog opened (the caller learns it
+  // from the fetch's own `sources`).
+  const checklistIsSource = sources?.includes("checklist") === true;
   useEffect(() => {
-    if (!checklist) return;
-    dispatch({
-      type: "SET_CHECKLIST",
-      rows: checklist.rows,
-      unusedRowIndices: checklist.unusedRowIndices,
-      leftoverCardKeys: checklist.leftoverCardKeys,
-    });
-  }, [checklist]);
+    if (checklistIsSource) dispatch({ type: "CHECKLIST_SOURCE" });
+  }, [checklistIsSource]);
   /**
    * NEO-195 / NEO-341 — Confirm is blocked while the fetch runs AND until the
    * reducer holds the end of its team lookups. Everything that used to read
@@ -2617,61 +2855,43 @@ export default function CardPairingModal({
   const confirmBlocked =
     isStreaming === true ||
     (streamSettled !== undefined && !state.streamSettled);
-  // NEO-490 (J3): once every card is in, pre-link the unique name pairs. Not
-  // before: a card still streaming could turn a unique name into a tie.
-  const checklistReady = state.checklistRows !== null;
-  const checklistSeeded = state.checklistSeeded;
-  const suggestions = checklist?.suggestions;
-  useEffect(() => {
-    if (confirmBlocked || !checklistReady || checklistSeeded) return;
-    dispatch({
-      type: "SEED_CHECKLIST",
-      ...(suggestions ? { suggestions } : {}),
-    });
-  }, [confirmBlocked, checklistReady, checklistSeeded, suggestions]);
   /**
    * NEO-490 a11y (S1) — say what happened to a checklist link, read off the
    * reducer's own answer rather than the click, so a refused drop says
    * nothing and a link taken away by something else is still heard:
    *
    *   added    — "Linked checklist row 17 to #SIG-ML Mike Lowell. 11 rows
-   *              left to link." (not for the one-time seed: those links are
-   *              on screen to read, and fourteen at once is noise)
+   *              left to link."
    *   removed  — "Unlinked." for the row's own Unlink; "Checklist row 17
    *              unlinked too." when a marketplace Unlink or Remove took it
    */
   const prevLinksRef = useRef(state.checklistLinks);
-  const prevSeededRef = useRef(state.checklistSeeded);
   useEffect(() => {
     const prev = prevLinksRef.current;
     const next = state.checklistLinks;
-    const wasSeeded = prevSeededRef.current;
     prevLinksRef.current = next;
-    prevSeededRef.current = state.checklistSeeded;
     const rows = state.checklistRows;
     if (prev === next || !rows) return;
     const messages: string[] = [];
-    if (wasSeeded || !state.checklistSeeded) {
-      const linkedRows = new Set(next.values());
-      const left = state.checklistUnused.filter((i) => !linkedRows.has(i)).length;
-      const cards = [
-        ...state.matched.map((m) => m.card),
-        ...state.keptBsc,
-        ...state.keptSl,
-      ];
-      for (const [key, rowIndex] of next) {
-        if (prev.get(key) === rowIndex) continue;
-        const card = cards.find((c) => candidateKey(c) === key);
-        const row = rows[rowIndex];
-        if (!card || !row) continue;
-        messages.push(checklistLinkedAnnouncement(row.number, label(card), left));
-      }
+    const left = openChecklistRows(state).length;
+    const cards = [
+      ...state.matched.map((m) => m.card),
+      ...state.keptBsc,
+      ...state.keptSl,
+    ];
+    for (const [key, rowIndex] of next) {
+      if (prev.get(key) === rowIndex) continue;
+      const card = cards.find((c) => candidateKey(c) === key);
+      const row = rows[rowIndex];
+      if (!card || !row) continue;
+      messages.push(checklistLinkedAnnouncement(row.number, label(card), left));
     }
     for (const [key, rowIndex] of prev) {
       if (next.has(key)) continue;
       if (explicitUnlinkRef.current === key) {
         explicitUnlinkRef.current = null;
-        messages.push(CHECKLIST_UNLINKED);
+        const card = cards.find((c) => candidateKey(c) === key);
+        messages.push(checklistUnlinkedAnnouncement(card ? label(card) : undefined));
         continue;
       }
       const row = rows[rowIndex];
@@ -2682,11 +2902,13 @@ export default function CardPairingModal({
   // Everything paired and nothing set aside: the columns and keep shelf have
   // nothing to show and only add noise. Derived from CURRENT state, not the
   // initial snapshot, so unlinking a pair brings the columns straight back.
+  // NEO-496: a checklist row, listed or kept, is something to look at too.
   const nothingToReconcile =
     state.unmatchedBsc.length === 0 &&
     state.unmatchedSl.length === 0 &&
     state.keptBsc.length === 0 &&
-    state.keptSl.length === 0;
+    state.keptSl.length === 0 &&
+    state.checklistCards.length === 0;
   // NEO-189: how many merged rows the marketplaces disagree about the name on.
   // Surfaced on the section header too, because the Matched list is COLLAPSED
   // by default whenever there is unmatched work — which is exactly the state
@@ -2938,6 +3160,49 @@ export default function CardPairingModal({
       (target ?? checklistFilterRef.current)?.focus();
     });
   }, []);
+  /**
+   * A-N2 — an Unlink puts a row back on the list; a filter that would hide
+   * it is cleared first, so focus (`focusChecklistRow`) lands on the row the
+   * operator just freed rather than on the filter.
+   */
+  const revealChecklistRow = useCallback(
+    (line: string) => {
+      if (checklistFilter !== "" && !line.toLowerCase().includes(checklistFilter.toLowerCase())) {
+        setChecklistFilter("");
+      }
+    },
+    [checklistFilter],
+  );
+  /**
+   * A-N3 — after a Keep takes a row out of its column, focus the next row's
+   * primary control (its Select, or the first enabled control when that one
+   * is disabled), else the previous row's, else the column's filter. `rowAttr`
+   * is the row handle (`data-pair-row`, `data-checklist-row`) and `neighbour`
+   * its value, re-queried after the render.
+   */
+  /** A-N4 — focus the radio `key` names inside its group, now. */
+  const focusPickRadio = useCallback((group: HTMLElement, key: string) => {
+    Array.from(group.querySelectorAll<HTMLElement>("[data-pick-radio]"))
+      .find((el) => el.getAttribute("data-pick-radio") === key)
+      ?.focus();
+  }, []);
+  const focusRowAfterRemoval = useCallback(
+    (rowAttr: string, neighbour: string | null, fallback: HTMLElement | null) => {
+      requestAnimationFrame(() => {
+        const row =
+          neighbour === null
+            ? undefined
+            : Array.from(
+                dialogRef.current?.querySelectorAll<HTMLElement>(`[${rowAttr}]`) ?? [],
+              ).find((el) => el.getAttribute(rowAttr) === neighbour);
+        const target =
+          row?.querySelector<HTMLElement>("[data-row-primary]:not(:disabled)") ??
+          row?.querySelector<HTMLElement>("button:not(:disabled)");
+        (target ?? fallback)?.focus();
+      });
+    },
+    [],
+  );
   const performChecklistLink = useCallback(
     (rowIndex: number, cardKey: string) => {
       dispatch({ type: "LINK_CHECKLIST", rowIndex, cardKey });
@@ -3107,6 +3372,17 @@ export default function CardPairingModal({
           cards = applyChecklistAnswers(cards, answers, candidateKey);
         }
       }
+      // NEO-496: the checklist rows the operator kept, as cards of their own,
+      // after every marketplace card (so `conflictsByIndex` still addresses
+      // the matched pairs at the front). Unkept rows are dropped. Then the
+      // wire-only fields come off every card.
+      cards = [
+        ...cards,
+        ...state.checklistKept.flatMap((i) => {
+          const row = state.checklistCards[i];
+          return row ? [row] : [];
+        }),
+      ].map(committable);
       setChecklistError(null);
       await onConfirm({ cards, conflictsByIndex });
     } finally {
@@ -3123,21 +3399,9 @@ export default function CardPairingModal({
    * `pairing-session-edits.ts` for what does and does not count.
    */
   const pendingEdits = useMemo(() => {
-    // NEO-490: a keep this screen made for the operator (solo mode's whole
-    // side, or a suggested link) is not their work; their checklist links,
-    // and the suggestions they took off, are.
-    const auto = state.autoKeptKeys;
-    const own = (c: PairingCard) => !auto.has(candidateKey(c));
-    return (
-      countPairingEdits(
-        {
-          ...state,
-          keptBsc: auto.size ? state.keptBsc.filter(own) : state.keptBsc,
-          keptSl: auto.size ? state.keptSl.filter(own) : state.keptSl,
-        },
-        candidateKey,
-      ) + checklistLinkEdits(state)
-    );
+    // NEO-490 / NEO-496: the operator's checklist links and kept rows are
+    // their work too.
+    return countPairingEdits(state, candidateKey) + checklistEdits(state);
   }, [state]);
 
   /**
@@ -3247,11 +3511,12 @@ export default function CardPairingModal({
   if (!isOpen) return null;
 
   const totalToSave =
-    state.matched.length + state.keptBsc.length + state.keptSl.length;
+    state.matched.length +
+    state.keptBsc.length +
+    state.keptSl.length +
+    state.checklistKept.length;
 
-  // ── NEO-490: the publisher's checklist as a third source ─────────────────
-  const solo = state.soloSide;
-  const soloMarketplace = solo === "sl" ? "SportLots" : "BuySportsCards";
+  // ── NEO-490 / NEO-496: the publisher's checklist as a source ─────────────
   const checklistRows = state.checklistRows;
   const checklistActive = checklistRows !== null;
   /** Row index → the card it is linked to. */
@@ -3268,9 +3533,10 @@ export default function CardPairingModal({
   ]) {
     cardLabels.set(candidateKey(c), label(c));
   }
-  const unlinkedRowCount = state.checklistUnused.filter(
-    (i) => !rowToCard.has(i),
-  ).length;
+  /** NEO-496 — rows kept as cards of their own; not listed in the column. */
+  const keptRowSet = new Set(state.checklistKept);
+  /** Rows still waiting on a link or a Keep: the column heading's count. */
+  const openRowCount = openChecklistRows(state).length;
   /** S3: how many listed rows read exactly alike, by their printed line. */
   const rowLineCounts = new Map<string, number>();
   if (checklistRows) {
@@ -3281,17 +3547,40 @@ export default function CardPairingModal({
   }
   const checklistNeedle = checklistFilter.toLowerCase();
   const visibleRows = checklistRows
-    ? state.checklistUnused.filter((i) =>
-        checklistRowLine(checklistRows[i]).toLowerCase().includes(checklistNeedle),
+    ? state.checklistUnused.filter(
+        (i) =>
+          !keptRowSet.has(i) &&
+          checklistRowLine(checklistRows[i]).toLowerCase().includes(checklistNeedle),
       )
     : [];
+  /** S3 for a row: its printed line, with its place when another reads alike. */
+  const rowName = (rowIndex: number): string => {
+    const line = checklistRows ? checklistRowLine(checklistRows[rowIndex]) : "";
+    return (rowLineCounts.get(line) ?? 0) > 1
+      ? `${line}, row ${rowIndex + 1} of ${checklistRows?.length ?? 0}`
+      : line;
+  };
   /** The picked row, while it is still a row that can be linked. */
   const activeRow =
     selectedRow !== null &&
     !rowToCard.has(selectedRow) &&
+    !keptRowSet.has(selectedRow) &&
     state.checklistUnused.includes(selectedRow)
       ? selectedRow
       : null;
+  /**
+   * A-N4 — the roving radio groups' one Tab stop each: the picked card or
+   * row while it is listed, else the first one listed.
+   */
+  const pickableRows = visibleRows.filter((i) => !rowToCard.has(i));
+  const checklistTabStop =
+    activeRow !== null && pickableRows.includes(activeRow) ? activeRow : (pickableRows[0] ?? null);
+  const bscTabStop =
+    selectedBsc !== null && visibleBsc.some((c) => candidateKey(c) === selectedBsc)
+      ? selectedBsc
+      : visibleBsc[0]
+        ? candidateKey(visibleBsc[0])
+        : null;
   /**
    * "Checklist #1" on a linked card, with the card's own Unlink inside the
    * chip: the operator looking at the card can drop its row without hunting
@@ -3301,22 +3590,66 @@ export default function CardPairingModal({
    * a marketplace "Unlink <card label>" or the row's "Unlink checklist row
    * … from <card label>"; specs match those by prefix and by substring.
    */
-  const checklistChip = (cardKey: string) => {
+  /**
+   * NEO-496 — the server's pairing as a chip. When the pair carries its row
+   * and what the card was before it, the chip holds an Unlink named like a
+   * hand link's ("Unlink card … from checklist row …"): the card gets its
+   * own values back and the row is listed again, picked up by focus. A pair
+   * stored before that data existed shows the chip alone.
+   */
+  const serverChip = (card: PairingCard) => {
+    const link = card.checklistLink;
+    if (!link) return null;
+    if (!unlinkableServerPair(card)) return serverChecklistChip(link);
+    const cardKey = candidateKey(card);
+    // The row joins the end of the list (see `unlinkServerChecklist`).
+    const rowIndex = state.checklistCards.length;
+    return serverChecklistChip(
+      link,
+      <button
+        type="button"
+        className={CHIP_UNLINK}
+        onClick={() => {
+          dispatch({ type: "UNLINK_SERVER_CHECKLIST", cardKey });
+          announceChecklist(checklistUnlinkedAnnouncement(label(card)));
+          revealChecklistRow(checklistRowLine(pairedRowOf(card.checklistLink.row)));
+          focusChecklistRow(rowIndex);
+        }}
+        aria-label={`Unlink card ${label(card)} from checklist row ${checklistRowLine(
+          pairedRowOf(card.checklistLink.row),
+        )}`}
+      >
+        Unlink
+      </button>,
+    );
+  };
+  const checklistChip = (card: PairingCard) => {
+    // NEO-496: the server's own pairing reads the same way.
+    if (card.checklistLink) return serverChip(card);
+    const cardKey = candidateKey(card);
     const rowIndex = state.checklistLinks.get(cardKey);
     const row = rowIndex === undefined ? undefined : checklistRows?.[rowIndex];
     if (rowIndex === undefined || !row) return null;
     const cardLabel = cardLabels.get(cardKey) ?? "this card";
     return (
       <span className="inline-flex shrink-0 items-stretch rounded border border-pick-teal-rule bg-pick-teal text-xs text-pick-teal-ink">
-        <span className="flex items-center px-1.5 py-0.5" title="Number on your checklist">
-          Checklist {row.noNumber ? row.number : `#${row.number}`}
+        <span
+          className="flex items-center px-1.5 py-0.5"
+          title={
+            row.noNumber
+              ? "Your checklist prints this card with no number"
+              : checklistNumberTitle(row.number)
+          }
+        >
+          Checklist: {row.noNumber ? row.number : `#${row.number}`}
         </span>
         <button
           type="button"
-          className="min-h-6 rounded-r border-l border-pick-teal-rule px-1.5 font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
+          className={CHIP_UNLINK}
           onClick={() => {
             explicitUnlinkRef.current = cardKey;
             dispatch({ type: "UNLINK_CHECKLIST", cardKey });
+            revealChecklistRow(checklistRowLine(row));
             focusChecklistRow(rowIndex);
           }}
           aria-label={`Unlink card ${cardLabel} from checklist row ${checklistRowLine(row)}`}
@@ -3345,22 +3678,29 @@ export default function CardPairingModal({
       </NeonButton>
     );
   };
-  const soloCards = solo
-    ? [...state.keptBsc, ...state.keptSl].filter((c) =>
-        isChecklistTarget(state, c),
-      )
-    : [];
-  const soloNeedle = (solo === "sl" ? slFilter : bscFilter).toLowerCase();
-  const visibleSoloCards = soloCards.filter((c) =>
-    label(c).toLowerCase().includes(soloNeedle),
-  );
-  const showMarketplaceColumns = !solo && !nothingToReconcile;
-  const showColumns = showMarketplaceColumns || checklistActive || !!solo;
-  const alreadyMatched = checklist?.alreadyMatched ?? 0;
-  // Two marketplace columns, solo's one card column, the checklist column.
-  // Three stack to two at tablet width and to one on a phone.
+  // NEO-496: which columns show. A marketplace column shows when its side is
+  // a source of this fetch, or when it holds a card anyway (never hide a
+  // card the operator could lose); without `sources`, both show as before.
+  const showAnyColumn = !nothingToReconcile;
+  const showBscColumn =
+    showAnyColumn &&
+    (!sources ||
+      sources.includes("bsc") ||
+      state.unmatchedBsc.length > 0 ||
+      state.keptBsc.length > 0);
+  const showSlColumn =
+    showAnyColumn &&
+    (!sources ||
+      sources.includes("sportlots") ||
+      state.unmatchedSl.length > 0 ||
+      state.keptSl.length > 0);
+  const showChecklistColumn = showAnyColumn && checklistActive;
+  // Up to three columns: BSC, SportLots, the checklist. Three stack to two at
+  // tablet width and to one on a phone.
   const columnCount =
-    (showMarketplaceColumns ? 2 : 0) + (solo ? 1 : 0) + (checklistActive ? 1 : 0);
+    (showBscColumn ? 1 : 0) + (showSlColumn ? 1 : 0) + (showChecklistColumn ? 1 : 0);
+  const keptTotal =
+    state.keptBsc.length + state.keptSl.length + state.checklistKept.length;
 
   return createPortal(
     <Theme>
@@ -3422,13 +3762,15 @@ export default function CardPairingModal({
               Match Cards{setLabel ? ` — ${setLabel}` : ""}
             </h2>
             <p className="text-xs text-ink-3 mt-1">
-              {solo
-                ? soloChecklistSubtitle()
-                : nothingToReconcile
-                  ? "Every card paired across both marketplaces. Review and confirm — no cards are saved until you do."
+              {nothingToReconcile
+                ? checklistActive
+                  ? CHECKLIST_ALL_LINED_UP
+                  : "Every card paired across both marketplaces. Review and confirm — no cards are saved until you do."
+                : checklistActive
+                  ? CHECKLIST_SOURCES_SUBTITLE
                   : "No cards are saved until you confirm. Anything left in a column below is discarded — keep a card to save it as single-marketplace."}
             </p>
-            {checklistActive && !solo && (
+            {checklistActive && !nothingToReconcile && (
               <p className="text-xs text-ink-3 mt-1">{CHECKLIST_COLUMN_SUBTITLE}</p>
             )}
             {/* NEO-195: cards arrive as they become reviewable, so say so.
@@ -3487,8 +3829,6 @@ export default function CardPairingModal({
 
               Opaque and flush with the dialog body (`bg-gray-900`), so at
               rest it reads as the section heading it always was. */}
-          {/* NEO-490: solo mode has no pairs, so no Matched section. */}
-          {!(solo && state.matched.length === 0) && (
           <div className="flex-none px-4 pt-4 bg-raised-deep border-b border-rule-strong/60">
             <button
               type="button"
@@ -3540,7 +3880,6 @@ export default function CardPairingModal({
               )}
             </button>
           </div>
-          )}
           {/* NEO-490 (S2) — the row in hand. The checklist column comes
               last in the DOM (and, on a phone, below every card), while the
               Link buttons sit on the cards above it; without this the
@@ -3562,7 +3901,7 @@ export default function CardPairingModal({
               </p>
               <button
                 type="button"
-                className="min-h-8 shrink-0 rounded px-2 py-0.5 text-xs font-semibold underline decoration-dotted underline-offset-2 hover:text-ink"
+                className="min-h-8 shrink-0 rounded px-2 py-0.5 text-xs font-semibold underline underline-offset-2 hover:text-ink focus-outline"
                 onClick={() => {
                   const rowIndex = activeRow;
                   setSelectedRow(null);
@@ -3818,13 +4157,16 @@ export default function CardPairingModal({
                               {Math.round(m.confidence * 100)}%
                             </span>
                           )}
-                          {checklistChip(rowKey)}
+                          {checklistChip(m.card)}
                         </span>
                         <span className="flex shrink-0 items-center gap-1">
                           {checklistLinkButton(m.card)}
+                          {/* NEO-496: a card on one marketplace and the
+                              checklist has no marketplace half to split off. */}
+                          {isMarketplacePair(m.card) && (
                           <button
                             type="button"
-                            className="rounded text-xs text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink px-2 py-1.5"
+                            className="rounded text-xs text-ink-2 underline underline-offset-2 hover:bg-neon-pink hover:text-on-neon-pink hover:no-underline px-2 py-1.5 focus-outline"
                             onClick={() => {
                               dispatch({ type: "UNLINK", index: i });
                               refocus(matchedToggleRef.current);
@@ -3833,6 +4175,7 @@ export default function CardPairingModal({
                           >
                             Unlink
                           </button>
+                          )}
                         </span>
                       </div>
                       {/* NEO-189: the marketplaces name this card differently.
@@ -4111,7 +4454,7 @@ export default function CardPairingModal({
                 Two headers reading "(0)" over two dead filter inputs is not
                 information; it just buries the matched list the operator
                 actually came to review. */}
-            {showColumns && (
+            {showAnyColumn && (
             <DndContext
               sensors={sensors}
               // NEO-300 — not bare `pointerWithin`, which finds nothing for a
@@ -4135,7 +4478,7 @@ export default function CardPairingModal({
                   do. One lonely unmatched card is exactly when an operator is
                   most likely to be stuck, and the sentence still describes the
                   screen — the columns are what "the other column" means. */}
-              {showMarketplaceColumns &&
+              {showBscColumn && showSlColumn &&
                 (state.unmatchedBsc.length > 0 ||
                 state.unmatchedSl.length > 0) && (
                 <p className="text-xs text-ink-3 mb-2">
@@ -4147,13 +4490,8 @@ export default function CardPairingModal({
                   the card one above it. The button path is the keyboard
                   path; drops land on a card in a column (the Matched list
                   and the keep shelf take the Link button). */}
-              {checklistActive && (
+              {showChecklistColumn && openRowCount > 0 && (
                 <p className="text-xs text-ink-3 mb-2">{CHECKLIST_LINK_HINT}</p>
-              )}
-              {checklistActive && alreadyMatched > 0 && (
-                <p className="text-xs text-ink-2 mb-2">
-                  {alreadyMatchedText(alreadyMatched)}
-                </p>
               )}
               <div
                 className={
@@ -4164,16 +4502,18 @@ export default function CardPairingModal({
                       : "grid grid-cols-1 gap-4"
                 }
               >
-              {showMarketplaceColumns && (
-              <>
+              {showBscColumn && (
               <section>
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-sm font-semibold text-ink-2">
                     BSC only ({state.unmatchedBsc.length})
                   </h3>
-                  <button
+                  <NeonButton
                     type="button"
-                    className="text-xs text-ink-3 hover:text-neon-blue-text disabled:opacity-40 px-2 py-1.5"
+                    variant="primary"
+                    outline
+                    size="1"
+                    className={KEEP_BUTTON}
                     disabled={state.unmatchedBsc.length === 0}
                     onClick={() => {
                       dispatch({ type: "KEEP_ALL", side: "bsc" });
@@ -4182,7 +4522,7 @@ export default function CardPairingModal({
                     aria-label="Keep all BSC-only cards"
                   >
                     Keep all
-                  </button>
+                  </NeonButton>
                 </div>
                 <Input
                   bare
@@ -4205,6 +4545,28 @@ export default function CardPairingModal({
                   placeholder="Filter BSC cards"
                   aria-label="Filter BSC cards"
                 />
+                {/* A-N4: picking a BSC card is one-of-N, so the picks are
+                    a roving radio group (one Tab stop; arrows, Home and End
+                    move the pick), like the Matched rows' name choice. A
+                    click on the picked card still drops the pick. */}
+                <div
+                  role="radiogroup"
+                  aria-label="Pick a BSC card to link"
+                  onKeyDown={(e) => {
+                    const target = e.target as HTMLElement;
+                    if (target.getAttribute("role") !== "radio") return;
+                    const keys = visibleBsc.map(candidateKey);
+                    const next = radioStep(
+                      e.key,
+                      keys.indexOf(target.getAttribute("data-pick-radio") ?? ""),
+                      keys.length,
+                    );
+                    if (next === null) return;
+                    e.preventDefault();
+                    setSelectedBsc(keys[next]);
+                    focusPickRadio(e.currentTarget, keys[next]);
+                  }}
+                >
                 <ul className="flex flex-col gap-1 mt-2">
                   {visibleBsc.map((c) => (
                     <PairableRow
@@ -4215,7 +4577,11 @@ export default function CardPairingModal({
                     >
                       <button
                         type="button"
-                        className={`flex-1 text-left text-sm rounded border px-2 py-1 ${
+                        role="radio"
+                        data-pick-radio={candidateKey(c)}
+                        data-row-primary=""
+                        tabIndex={bscTabStop === candidateKey(c) ? 0 : -1}
+                        className={`flex-1 text-left text-sm rounded border px-2 py-1 focus-outline ${
                           selectedBsc === candidateKey(c)
                             ? "bg-pick-blue border-pick-blue-rule text-pick-blue-ink selection-edge"
                             : "bg-row border-row-rule text-ink-2 hover:bg-row-hover"
@@ -4226,44 +4592,61 @@ export default function CardPairingModal({
                           )
                         }
                         // Selection was conveyed by background colour alone.
-                        aria-pressed={selectedBsc === candidateKey(c)}
+                        aria-checked={selectedBsc === candidateKey(c)}
                         aria-label={
                           selectedBsc === candidateKey(c)
                             ? `${label(c)}, selected. Press to deselect.`
                             : `Select BSC card ${label(c)}`
                         }
                       >
+                        <RadioMark checked={selectedBsc === candidateKey(c)} />
                         {label(c)}
                       </button>
+                      {serverChip(c)}
                       {checklistLinkButton(c)}
-                      <button
+                      <NeonButton
                         type="button"
-                        className="text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
+                        variant="primary"
+                        outline
+                        size="1"
+                        className={KEEP_BUTTON}
                         onClick={() => {
+                          const neighbour = neighbourOf(visibleBsc, c);
                           dispatch({
                             type: "KEEP",
                             side: "bsc",
                             key: candidateKey(c),
                           });
-                          refocus(bscFilterRef.current);
+                          // A-N3: on to the next card, not back to the top.
+                          focusRowAfterRemoval(
+                            "data-pair-row",
+                            neighbour ? `bsc:${candidateKey(neighbour)}` : null,
+                            bscFilterRef.current,
+                          );
                         }}
                         aria-label={`Keep ${label(c)} as BSC-only`}
                       >
                         Keep
-                      </button>
+                      </NeonButton>
                     </PairableRow>
                   ))}
                 </ul>
+                </div>
               </section>
+              )}
 
+              {showSlColumn && (
               <section>
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-sm font-semibold text-ink-2">
                     SportLots only ({state.unmatchedSl.length})
                   </h3>
-                  <button
+                  <NeonButton
                     type="button"
-                    className="text-xs text-ink-3 hover:text-neon-blue-text disabled:opacity-40 px-2 py-1.5"
+                    variant="primary"
+                    outline
+                    size="1"
+                    className={KEEP_BUTTON}
                     disabled={state.unmatchedSl.length === 0}
                     onClick={() => {
                       dispatch({ type: "KEEP_ALL", side: "sl" });
@@ -4272,7 +4655,7 @@ export default function CardPairingModal({
                     aria-label="Keep all SportLots-only cards"
                   >
                     Keep all
-                  </button>
+                  </NeonButton>
                 </div>
                 <Input
                   bare
@@ -4302,7 +4685,8 @@ export default function CardPairingModal({
                       <button
                         type="button"
                         disabled={!selectedBsc}
-                        className="flex-1 text-left text-sm rounded border border-row-rule px-2 py-1 bg-row text-ink-2 enabled:hover:bg-row-hover disabled:opacity-60"
+                        data-row-primary=""
+                        className="flex-1 text-left text-sm rounded border border-row-rule px-2 py-1 bg-row text-ink-2 enabled:hover:bg-row-hover disabled:opacity-60 focus-outline"
                         onClick={() => {
                           if (!selectedBsc) return;
                           // Same operation the drag path performs — including
@@ -4315,84 +4699,71 @@ export default function CardPairingModal({
                       >
                         {label(c)}
                       </button>
+                      {serverChip(c)}
                       {checklistLinkButton(c)}
-                      <button
+                      <NeonButton
                         type="button"
-                        className="text-xs text-ink-3 hover:text-neon-blue-text px-2 py-1.5"
+                        variant="primary"
+                        outline
+                        size="1"
+                        className={KEEP_BUTTON}
                         onClick={() => {
+                          const neighbour = neighbourOf(visibleSl, c);
                           dispatch({
                             type: "KEEP",
                             side: "sl",
                             key: candidateKey(c),
                           });
-                          refocus(slFilterRef.current);
+                          // A-N3: the next card's Link, or its Keep while no
+                          // BSC card is picked (Link is disabled then).
+                          focusRowAfterRemoval(
+                            "data-pair-row",
+                            neighbour ? `sl:${candidateKey(neighbour)}` : null,
+                            slFilterRef.current,
+                          );
                         }}
                         aria-label={`Keep ${label(c)} as SportLots-only`}
                       >
                         Keep
-                      </button>
+                      </NeonButton>
                     </PairableRow>
                   ))}
                 </ul>
               </section>
-              </>
               )}
 
-              {/* NEO-490 — solo mode's one column: every card from the one
-                  marketplace this set has, already saved. Only the cards the
-                  server could not pair are listed; the rest are the "already
-                  matched" line above. No Keep, no Remove. */}
-              {solo && (
+              {/* NEO-490 / NEO-496 — the publisher's checklist: the rows no
+                  marketplace card paired, a source like the two marketplace
+                  columns. A row is linked to its card, or kept as a card of
+                  its own (Keep / Keep all, onto the keep shelf). Linked rows
+                  stay listed, saying which card they went to, so a link can
+                  be read and undone. A row left here is dropped at Confirm. */}
+              {showChecklistColumn && checklistRows && (
                 <section>
-                  <h3 className="text-sm font-semibold text-ink-2 mb-2">
-                    {soloMarketplace} cards ({soloCards.length})
-                  </h3>
-                  <Input
-                    bare
-                    ref={solo === "sl" ? slFilterRef : bscFilterRef}
-                    className={`${(solo === "sl" ? slFieldClass : bscFieldClass)()} w-full px-3 py-1.5 text-base sm:text-sm`}
-                    type="text"
-                    value={solo === "sl" ? slFilter : bscFilter}
-                    onChange={(e) =>
-                      (solo === "sl" ? setSlFilter : setBscFilter)(e.target.value)
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key !== "Escape") return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                      (solo === "sl" ? setSlFilter : setBscFilter)("");
-                    }}
-                    placeholder={solo === "sl" ? "Filter SportLots cards" : "Filter BSC cards"}
-                    aria-label={solo === "sl" ? "Filter SportLots cards" : "Filter BSC cards"}
-                  />
-                  <ul className="flex flex-col gap-1 mt-2">
-                    {visibleSoloCards.map((c) => {
-                      const key = candidateKey(c);
-                      return (
-                        <ChecklistCardTarget
-                          key={key}
-                          cardKey={key}
-                          accepts={!state.checklistLinks.has(key)}
-                        >
-                          <span className="min-w-0 flex-1">{label(c)}</span>
-                          {checklistChip(key)}
-                          {checklistLinkButton(c)}
-                        </ChecklistCardTarget>
-                      );
-                    })}
-                  </ul>
-                </section>
-              )}
-
-              {/* NEO-490 — the publisher's checklist: the rows nobody paired.
-                  Linked rows stay listed, saying which card they went to, so
-                  the operator can read every suggestion at a glance and undo
-                  any of them. A row left unlinked is dropped at Confirm. */}
-              {checklistActive && checklistRows && (
-                <section>
-                  <h3 className="text-sm font-semibold text-ink-2 mb-2">
-                    {checklistColumnHeading(unlinkedRowCount)}
-                  </h3>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-ink-2">
+                      {checklistColumnHeading(openRowCount)}
+                    </h3>
+                    <NeonButton
+                      type="button"
+                      variant="primary"
+                      outline
+                      size="1"
+                      className={KEEP_BUTTON}
+                      disabled={openRowCount === 0}
+                      onClick={() => {
+                        dispatch({ type: "KEEP_ALL_CHECKLIST" });
+                        setSelectedRow(null);
+                        refocus(checklistFilterRef.current);
+                      }}
+                      aria-label="Keep all checklist-only cards"
+                    >
+                      Keep all
+                    </NeonButton>
+                  </div>
+                  {state.checklistCards.length === 0 && (
+                    <p className="text-xs text-ink-3 mb-2">{CHECKLIST_ALL_FOUND}</p>
+                  )}
                   <Input
                     bare
                     ref={checklistFilterRef}
@@ -4434,6 +4805,31 @@ export default function CardPairingModal({
                       query for one would otherwise find both). "Leftover":
                       these are the rows the server could not pair, linked
                       or not — a linked row stays listed. */}
+                  {/* A-N4: picking a row is one-of-N, a roving radio group
+                      as in the BSC column. Linked rows hold an Unlink and
+                      no radio; arrows step over them. */}
+                  <div
+                    role="radiogroup"
+                    aria-label="Pick a checklist row to link"
+                    onKeyDown={(e) => {
+                      const target = e.target as HTMLElement;
+                      if (target.getAttribute("role") !== "radio") return;
+                      const keys = pickableRows.map(String);
+                      const next = radioStep(
+                        e.key,
+                        keys.indexOf(target.getAttribute("data-pick-radio") ?? ""),
+                        keys.length,
+                      );
+                      if (next === null) return;
+                      e.preventDefault();
+                      const rowIndex = pickableRows[next];
+                      setSelectedRow(rowIndex);
+                      announceChecklist(
+                        checklistSelectedAnnouncement(checklistRows[rowIndex].number),
+                      );
+                      focusPickRadio(e.currentTarget, keys[next]);
+                    }}
+                  >
                   <ul aria-label="Leftover checklist rows" className="flex flex-col gap-1 mt-2">
                     {visibleRows.map((rowIndex) => {
                       const row = checklistRows[rowIndex];
@@ -4442,10 +4838,7 @@ export default function CardPairingModal({
                       // S3: two rows reading the same would give two
                       // controls one name; the file position tells them
                       // apart.
-                      const named =
-                        (rowLineCounts.get(line) ?? 0) > 1
-                          ? `${line}, row ${rowIndex + 1} of ${checklistRows.length}`
-                          : line;
+                      const named = rowName(rowIndex);
                       if (linkedTo !== undefined) {
                         const cardLabel = cardLabels.get(linkedTo) ?? "a card";
                         return (
@@ -4465,7 +4858,7 @@ export default function CardPairingModal({
                               </span>
                               <button
                                 type="button"
-                                className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink"
+                                className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-ink-2 underline underline-offset-2 hover:bg-neon-pink hover:text-on-neon-pink hover:no-underline focus-outline"
                                 onClick={() => {
                                   explicitUnlinkRef.current = linkedTo;
                                   dispatch({ type: "UNLINK_CHECKLIST", cardKey: linkedTo });
@@ -4484,7 +4877,11 @@ export default function CardPairingModal({
                         <ChecklistRowItem key={rowIndex} rowIndex={rowIndex} linked={false}>
                           <button
                             type="button"
-                            className={`min-w-0 flex-1 text-left text-sm rounded border px-2 py-1 ${
+                            role="radio"
+                            data-pick-radio={String(rowIndex)}
+                            data-row-primary=""
+                            tabIndex={checklistTabStop === rowIndex ? 0 : -1}
+                            className={`min-w-0 flex-1 text-left text-sm rounded border px-2 py-1 focus-outline ${
                               picked
                                 ? "bg-pick-teal border-pick-teal-rule text-pick-teal-ink selection-edge"
                                 : "bg-row border-row-rule text-ink-2 hover:bg-row-hover"
@@ -4498,15 +4895,39 @@ export default function CardPairingModal({
                               setSelectedRow(rowIndex);
                               announceChecklist(checklistSelectedAnnouncement(row.number));
                             }}
-                            aria-pressed={picked}
+                            aria-checked={picked}
                             aria-label={`Select ${named}`}
                           >
+                            <RadioMark checked={picked} />
                             {line}
                           </button>
+                          <NeonButton
+                            type="button"
+                            variant="primary"
+                            outline
+                            size="1"
+                            className={KEEP_BUTTON}
+                            onClick={() => {
+                              const at = visibleRows.indexOf(rowIndex);
+                              const neighbour = visibleRows[at + 1] ?? visibleRows[at - 1];
+                              if (picked) setSelectedRow(null);
+                              dispatch({ type: "KEEP_CHECKLIST", rowIndex });
+                              // A-N3: on to the next row, not back to the filter.
+                              focusRowAfterRemoval(
+                                "data-checklist-row",
+                                neighbour === undefined ? null : String(neighbour),
+                                checklistFilterRef.current,
+                              );
+                            }}
+                            aria-label={`Keep ${named} as checklist-only`}
+                          >
+                            Keep
+                          </NeonButton>
                         </ChecklistRowItem>
                       );
                     })}
                   </ul>
+                  </div>
                 </section>
               )}
               </div>
@@ -4527,12 +4948,12 @@ export default function CardPairingModal({
                 alongside the columns: with nothing unmatched there is nothing
                 that could be kept, so "Nothing kept — every unmatched card
                 above will be discarded" describes cards that do not exist. */}
-            {showMarketplaceColumns && (
+            {showAnyColumn && (
             <section className="border-t border-rule-strong pt-3">
               <h3 className="text-sm font-semibold text-ink-2 mb-2">
-                Keeping ({state.keptBsc.length + state.keptSl.length})
+                Keeping ({keptTotal})
               </h3>
-              {state.keptBsc.length + state.keptSl.length === 0 ? (
+              {keptTotal === 0 ? (
                 <p className="text-xs text-ink-3 italic">
                   Nothing kept — every unmatched card above will be discarded.
                 </p>
@@ -4545,7 +4966,7 @@ export default function CardPairingModal({
                     >
                       <span className="flex min-w-0 flex-wrap items-center gap-2">
                         <span>BSC: {label(c)}</span>
-                        {checklistChip(candidateKey(c))}
+                        {checklistChip(c)}
                       </span>
                       <span className="flex shrink-0 items-center gap-1">
                         {checklistLinkButton(c)}
@@ -4574,7 +4995,7 @@ export default function CardPairingModal({
                     >
                       <span className="flex min-w-0 flex-wrap items-center gap-2">
                         <span>SL: {label(c)}</span>
-                        {checklistChip(candidateKey(c))}
+                        {checklistChip(c)}
                       </span>
                       <span className="flex shrink-0 items-center gap-1">
                         {checklistLinkButton(c)}
@@ -4594,6 +5015,29 @@ export default function CardPairingModal({
                           Remove
                         </button>
                       </span>
+                    </li>
+                  ))}
+                  {/* NEO-496 — checklist rows kept as cards of their own. */}
+                  {checklistRows &&
+                    state.checklistKept.map((rowIndex) => (
+                    <li
+                      key={`kc-${rowIndex}`}
+                      className="flex flex-wrap items-center justify-between gap-x-2 text-sm text-ink-2"
+                    >
+                      <span className="min-w-0">
+                        Checklist: {checklistRowLine(checklistRows[rowIndex])}
+                      </span>
+                      <button
+                        type="button"
+                        className="shrink-0 text-xs text-ink-3 hover:text-neon-pink-text px-2 py-1.5 focus-outline"
+                        onClick={() => {
+                          dispatch({ type: "UNKEEP_CHECKLIST", rowIndex });
+                          refocus(checklistFilterRef.current);
+                        }}
+                        aria-label={`Remove checklist row ${rowName(rowIndex)} from save list`}
+                      >
+                        Remove
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -4629,7 +5073,7 @@ export default function CardPairingModal({
             </div>
             <div className="flex gap-2">
               <NeonButton
-                variant="secondary"
+                variant="negative"
                 size="2"
                 onClick={requestClose}
                 // Specific, matching every other dialog in this directory —

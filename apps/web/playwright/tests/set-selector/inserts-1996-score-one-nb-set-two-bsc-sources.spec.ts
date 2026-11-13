@@ -1,7 +1,15 @@
 // Origin: .maestro/flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of the 1996 Score Dugout Collection Artists Proofs insert; fresh-only.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { columnOption, columnSearch, drillToSet, pick, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import {
+  columnOption,
+  columnSearch,
+  drillToSet,
+  openAttributesPanel,
+  pick,
+  setBuilderReady,
+  syncChecklistButton,
+} from "../../support/set-builder";
 import {
   advanceToSave,
   answerPlayerAsNew,
@@ -84,6 +92,8 @@ test(
     await expect(page.getByText(/Artist's Proofs Series [12]/)).toBeHidden();
     await columnOption(page, "Inserts", MERGED).click();
 
+    // NEO-496: the sources live inside the attributes panel, closed below the set.
+    await openAttributesPanel(page);
     const multiSource = page.getByRole("heading", { name: "Multi-source sets" });
     await expect(multiSource).toBeVisible();
     await expect(page.getByText(SERIES_1).first()).toBeVisible();
@@ -308,6 +318,7 @@ test(
     await columnOption(page, "Inserts", renamed).click();
 
     // ── 8. Both BSC sources are still attached; detaching one asks first ──
+    await openAttributesPanel(page);
     await expect(multiSource).toBeVisible();
     await expect(page.getByText(/Dugout Collection Artist.s Proofs Series 1/).first()).toBeVisible();
     await expect(page.getByText(/Dugout Collection Artist.s Proofs Series 2/).first()).toBeVisible();

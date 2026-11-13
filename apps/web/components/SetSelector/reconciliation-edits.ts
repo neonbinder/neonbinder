@@ -22,8 +22,9 @@
  *  - A set that exists now and did not before (promote).
  *  - A set that existed and no longer does (disband).
  *  - A surviving set whose NB title changed (rename).
- *  - Each marketplace id attached to, or detached from, a surviving set —
- *    counted per id, because that is the granularity the operator works at.
+ *  - Each item attached to, or detached from, a surviving set, from any
+ *    source (a marketplace id; NEO-496, a checklist section) — counted per
+ *    id, because that is the granularity the operator works at.
  *  - A surviving set whose metadata changed.
  *
  * Sets are matched by `key`, the reducer's monotonic session-local id: `title`
@@ -33,12 +34,24 @@
 
 export type ReconciliationEditItem = { platformValue: string };
 
+type LinkList = ReadonlyArray<ReconciliationEditItem>;
+
+/**
+ * A set as the count reads it: its key, title and metadata, plus one list of
+ * linked items per source, each under that source's name (`bsc`, `sportlots`,
+ * …). NEO-496: every array-valued field IS a source's links, so a new source
+ * is counted without this file learning its name. The dialog hands its Ready
+ * sets over as `{ key, title, metadata, ...set.links }`.
+ */
 export type ReconciliationEditSet = {
   key: string;
   title: string;
-  bsc: ReadonlyArray<ReconciliationEditItem>;
-  sl: ReadonlyArray<ReconciliationEditItem>;
   metadata?: Record<string, unknown>;
+  readonly [source: string]:
+    | LinkList
+    | string
+    | Record<string, unknown>
+    | undefined;
 };
 
 export type ReconciliationEditState = {
@@ -74,6 +87,29 @@ function idDelta(
   return delta;
 }
 
+/** A set's link lists, by source: its array-valued fields. */
+function linkLists(set: ReconciliationEditSet): Map<string, LinkList> {
+  const lists = new Map<string, LinkList>();
+  for (const [source, value] of Object.entries(set)) {
+    if (Array.isArray(value)) lists.set(source, value as LinkList);
+  }
+  return lists;
+}
+
+/** Ids attached plus ids detached, over every source either side links. */
+function linkDelta(
+  before: ReconciliationEditSet,
+  after: ReconciliationEditSet,
+): number {
+  const beforeLists = linkLists(before);
+  const afterLists = linkLists(after);
+  let delta = 0;
+  for (const source of new Set([...beforeLists.keys(), ...afterLists.keys()])) {
+    delta += idDelta(beforeLists.get(source) ?? [], afterLists.get(source) ?? []);
+  }
+  return delta;
+}
+
 /** How many operator decisions this session would throw away. */
 export function countReconciliationEdits(
   initial: ReconciliationEditState,
@@ -90,8 +126,7 @@ export function countReconciliationEdits(
     }
     before.delete(set.key);
     if (seeded.title !== set.title) edits += 1;
-    edits += idDelta(seeded.bsc, set.bsc);
-    edits += idDelta(seeded.sl, set.sl);
+    edits += linkDelta(seeded, set);
     if (metadataFingerprint(seeded.metadata) !== metadataFingerprint(set.metadata)) {
       edits += 1;
     }

@@ -511,6 +511,11 @@ describe("MissingTeamFixer — the team check's outcome (NEO-345)", () => {
     expect(outcomeHeading(undefined, true)).toBeNull();
   });
 
+  it("a checklist that skips the team calls it the official checklist (NEO-496)", () => {
+    expect(outcomeHeading("checklist", false)).toMatch(/^The official checklist skips the team/);
+    expect(outcomeHeading("checklist", false)).not.toMatch(/publisher/i);
+  });
+
   it("gave up says so whether or not a stale hint is on the row", () => {
     expect(outcomeHeading("gaveUp", true)).toBe(GAVE_UP);
   });

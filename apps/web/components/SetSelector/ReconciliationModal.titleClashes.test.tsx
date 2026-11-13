@@ -450,6 +450,24 @@ describe("ReconciliationModal — keyboard, focus and the row's own clash line (
     expect(new Set(ids).size).toBe(2);
   });
 
+  test("the clash line sits after the name and before the row's controls in the DOM (NEO-496 a11y)", () => {
+    renderModal();
+    promoteBothTwins();
+    for (const input of titleInputs()) {
+      const row = input.parentElement as HTMLElement;
+      const lineId = input.getAttribute("aria-describedby")!.split(" ")[0];
+      const line = document.getElementById(lineId) as HTMLElement;
+      const remove = Array.from(row.children).find((el) =>
+        (el.getAttribute("aria-label") ?? "").startsWith("Remove set "),
+      ) as HTMLElement;
+      const kids = Array.from(row.children);
+      expect(kids.indexOf(input)).toBeLessThan(kids.indexOf(line));
+      expect(kids.indexOf(line)).toBeLessThan(kids.indexOf(remove));
+      // Side by side it drops below the name's line, where it always sat.
+      expect(line.className).toContain("sm:order-3");
+    }
+  });
+
   test("a row that does not clash has no clash line and no describedby", () => {
     renderModal();
     makeOwnSet("Anime (#111)");

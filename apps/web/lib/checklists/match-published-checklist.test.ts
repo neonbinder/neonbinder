@@ -104,13 +104,14 @@ describe("matchPublishedChecklist: the letter-prefix fallback", () => {
 });
 
 describe("matchPublishedChecklist: disagreements and fills", () => {
-  test("the same player under a different number pairs by player name when no number pairs (NEO-490)", () => {
+  test("the same player under a different number pairs by player name, carrying the row's number (NEO-490, NEO-496)", () => {
     const r = matchPublishedChecklist(
       [card("10", ["Rhett Lowder"])],
       [row("60", ["Rhett Lowder"])],
     );
     expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([[0, 0, "playerName"]]);
-    expect(r.fallback).toBe("playerName");
+    expect(r.matches[0].checklistNumber).toBe("60");
+    expect(r.matches[0].conflict).toBeUndefined();
     expect(r.unmatchedCardIndices).toEqual([]);
     expect(r.misreads).toEqual([]);
   });
@@ -250,16 +251,18 @@ describe("matchPublishedChecklist: the misreads list is capped", () => {
   });
 
   test("under the cap, the list is every pair and the count is its length", () => {
+    // NEO-496: "B Two" is one card and one row, so it pairs by name and is no
+    // misread; "A One" is on two rows, so it stays a misread on both.
     const r = matchPublishedChecklist(
       [card("1", ["A One"]), card("2", ["B Two"])],
       [row("10", ["A One"]), row("11", ["A One"]), row("20", ["B Two"])],
     );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([[1, 2, "playerName"]]);
     expect(r.misreads).toEqual([
       { cardIndex: 0, rowIndex: 0 },
       { cardIndex: 0, rowIndex: 1 },
-      { cardIndex: 1, rowIndex: 2 },
     ]);
-    expect(r.misreadCount).toBe(3);
+    expect(r.misreadCount).toBe(2);
   });
 
   test("an unmatched card past the cap still counts", () => {
@@ -468,25 +471,28 @@ describe("matchPublishedChecklist: NEO-489 a No Team row", () => {
   });
 });
 
-describe("matchPublishedChecklist: NEO-490 player-name fallback", () => {
+describe("matchPublishedChecklist: NEO-496 leftovers pair by exact player names", () => {
   const sigCards = (n: number) =>
     Array.from({ length: n }, (_, i) => card(`SIG-${i + 1}A`, [`Player ${i + 1}`]));
   const numberedRows = (n: number) =>
     Array.from({ length: n }, (_, i) => row(String(i + 1), [`Player ${i + 1}`]));
 
-  test("SIG-xx cards against rows 1..N with equal counts all pair by player name", () => {
+  test("SIG-xx cards against rows 1..N all pair by player name, each carrying its row's number", () => {
     const r = matchPublishedChecklist(sigCards(14), numberedRows(14));
-    expect(r.fallback).toBe("playerName");
     expect(r.matches).toHaveLength(14);
     expect(r.matches.every((m) => m.via === "playerName")).toBe(true);
     expect(r.matches.map((m) => [m.cardIndex, m.rowIndex])).toEqual(
       Array.from({ length: 14 }, (_, i) => [i, i]),
     );
+    expect(r.matches.map((m) => m.checklistNumber)).toEqual(
+      Array.from({ length: 14 }, (_, i) => String(i + 1)),
+    );
+    expect(r.matches.every((m) => m.confidence === undefined)).toBe(true);
     expect(r.needsOperator).toBe(false);
     expect(r.unusedRowIndices).toEqual([]);
   });
 
-  test("a name pair never produces a conflict about the card number", () => {
+  test("a name pair never produces a conflict about the card number (NEO-490 A3)", () => {
     const r = matchPublishedChecklist(sigCards(2), numberedRows(2));
     expect(r.matches.every((m) => m.conflict === undefined)).toBe(true);
   });
@@ -499,7 +505,6 @@ describe("matchPublishedChecklist: NEO-490 player-name fallback", () => {
     expect(r.matches).toEqual([]);
     expect(r.unmatchedCardIndices).toEqual([0, 1]);
     expect(r.unusedRowIndices).toEqual([0, 1]);
-    expect(r.fallback).toBe("playerName");
     expect(r.needsOperator).toBe(true);
   });
 
@@ -512,7 +517,7 @@ describe("matchPublishedChecklist: NEO-490 player-name fallback", () => {
     expect(r.needsOperator).toBe(true);
   });
 
-  test("equal counts with one card and one row left over need the operator", () => {
+  test("one card and one row left over need the operator", () => {
     const r = matchPublishedChecklist(
       [card("SIG-A", ["A One"]), card("SIG-B", ["B Two"])],
       [row("1", ["A One"]), row("2", ["Someone Else"])],
@@ -523,52 +528,41 @@ describe("matchPublishedChecklist: NEO-490 player-name fallback", () => {
     expect(r.needsOperator).toBe(true);
   });
 
-  test("a count mismatch makes no matches, falls back to the operator and suggests the name pairs", () => {
+  test("different counts no longer hold the name pairs back (was NEO-490's equal-count gate)", () => {
     const r = matchPublishedChecklist(sigCards(3), numberedRows(2));
-    expect(r.fallback).toBe("operator");
-    expect(r.matches).toEqual([]);
-    expect(r.needsOperator).toBe(true);
-    expect(r.unmatchedCardIndices).toEqual([0, 1, 2]);
-    expect(r.suggestions).toEqual([
-      { cardIndex: 0, rowIndex: 0 },
-      { cardIndex: 1, rowIndex: 1 },
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "playerName"],
+      [1, 1, "playerName"],
     ]);
-    expect(r.unusedRowIndices).toEqual([0, 1]);
+    expect(r.unmatchedCardIndices).toEqual([2]);
+    expect(r.unusedRowIndices).toEqual([]);
+    expect(r.needsOperator).toBe(false);
   });
 
-  test("suggestions are exactly what pairByPlayerName returns on the numbered cards and rows", () => {
-    const cards = [card("SIG-A", ["A One"]), card("SIG-B", ["B Two"]), card("SIG-C", ["C Three"])];
-    const rows = [row("1", ["C Three"]), row("2", ["A One"])];
-    const r = matchPublishedChecklist(cards, rows);
-    expect(r.suggestions).toEqual(pairByPlayerName(cards, rows));
-    expect(r.suggestions).toEqual([
-      { cardIndex: 0, rowIndex: 1 },
-      { cardIndex: 2, rowIndex: 0 },
-    ]);
-  });
-
-  test("any number match means no fallback", () => {
+  test("a number pair no longer stops the name pass for what is left (was NEO-490's no-number-paired gate)", () => {
     const r = matchPublishedChecklist(
       [card("1", ["A One"]), card("SIG-B", ["B Two"])],
       [row("1", ["A One"]), row("2", ["B Two"])],
     );
-    expect(r.fallback).toBe("none");
+    expect(r.matches.map((m) => [m.cardIndex, m.via])).toEqual([
+      [0, "number"],
+      [1, "playerName"],
+    ]);
+    expect(r.matches[0].checklistNumber).toBeUndefined();
+    expect(r.matches[1].checklistNumber).toBe("2");
     expect(r.needsOperator).toBe(false);
-    expect(r.matches.map((m) => [m.cardIndex, m.via])).toEqual([[0, "number"]]);
-    expect(r.unmatchedCardIndices).toEqual([1]);
-    expect(r.suggestions).toEqual([]);
   });
 
-  test("a prefix-stripped pair also counts as a number match", () => {
+  test("numbers outrank names: a row a number took is never offered to a name", () => {
     const r = matchPublishedChecklist(
-      [card("BCP-12", ["A One"]), card("SIG-B", ["B Two"])],
-      [row("12", ["A One"]), row("2", ["B Two"])],
+      [card("BCP-12", ["A One"]), card("SIG-B", ["A One"])],
+      [row("12", ["A One"])],
     );
-    expect(r.fallback).toBe("none");
-    expect(r.matches.map((m) => m.via)).toEqual(["prefixStripped"]);
+    expect(r.matches.map((m) => [m.cardIndex, m.via])).toEqual([[0, "prefixStripped"]]);
+    expect(r.unmatchedCardIndices).toEqual([1]);
   });
 
-  test("an all-NNO checklist is unchanged: pairs by player as before, no fallback", () => {
+  test("an all-NNO checklist is unchanged: pairs by player as before", () => {
     const r = matchPublishedChecklist(
       [card("NNO", ["Chris Potter"]), card("NNO", ["Jon Larson"])],
       [
@@ -576,17 +570,19 @@ describe("matchPublishedChecklist: NEO-490 player-name fallback", () => {
         { number: "NNO", players: ["Jon Larson"], teams: [], noNumber: true },
       ],
     );
-    expect(r.fallback).toBe("none");
     expect(r.needsOperator).toBe(false);
     expect(r.matches.map((m) => m.via)).toEqual(["player", "player"]);
+    expect(r.matches.every((m) => m.checklistNumber === undefined)).toBe(true);
   });
 
-  test("numbered cards with only NNO rows never reach the fallback", () => {
+  test("a numbered card never pairs with an NNO row by name, exact or near", () => {
     const r = matchPublishedChecklist(
-      [card("12", ["Chris Potter"])],
-      [{ number: "NNO", players: ["Chris Potter"], teams: [], noNumber: true }],
+      [card("12", ["Chris Potter"]), card("13", ["Shohei Ohtani"])],
+      [
+        { number: "NNO", players: ["Chris Potter"], teams: [], noNumber: true },
+        { number: "NNO", players: ["Shohei Otani"], teams: [], noNumber: true },
+      ],
     );
-    expect(r.fallback).toBe("none");
     expect(r.matches).toEqual([]);
   });
 
@@ -598,13 +594,17 @@ describe("matchPublishedChecklist: NEO-490 player-name fallback", () => {
     expect(r.matches.map((m) => m.via)).toEqual(["playerName"]);
   });
 
-  test("a card sharing only one of two players does not pair", () => {
+  test("a card sharing only its first player pairs by that player, and the roster difference is a conflict", () => {
     const r = matchPublishedChecklist(
       [card("SIG-A", ["Pete Alonso", "Juan Soto"])],
       [row("1", ["Pete Alonso"])],
     );
-    expect(r.matches).toEqual([]);
-    expect(r.needsOperator).toBe(true);
+    expect(r.matches.map((m) => [m.via, m.confidence])).toEqual([["playerFuzzy", 1]]);
+    expect(r.matches[0].conflict?.players).toEqual({
+      marketplace: ["Pete Alonso", "Juan Soto"],
+      checklist: ["Pete Alonso"],
+    });
+    expect(r.needsOperator).toBe(false);
   });
 
   test("Bobby Witt Jr. equals Bobby Witt Jr", () => {
@@ -641,7 +641,71 @@ describe("matchPublishedChecklist: NEO-490 player-name fallback", () => {
   });
 });
 
-describe("matchPublishedChecklist: NEO-489 No Team × NEO-490 player-name fallback", () => {
+describe("matchPublishedChecklist: NEO-496 leftovers pair by a near first player (≥ 0.92)", () => {
+  test("a misspelled name on another number pairs, with its score and the row's number", () => {
+    const r = matchPublishedChecklist(
+      [card("FS-3", ["Shohei Ohtani"])],
+      [row("3a", ["Shohei Otani"])],
+    );
+    expect(r.matches).toHaveLength(1);
+    expect(r.matches[0]).toMatchObject({ via: "playerFuzzy", checklistNumber: "3a" });
+    expect(r.matches[0].confidence).toBeGreaterThanOrEqual(0.92);
+    expect(r.matches[0].confidence).toBeLessThan(1);
+    // The spelling differs; the players comparison reports it for the operator.
+    expect(r.matches[0].conflict?.players).toBeDefined();
+  });
+
+  test("below 0.92 nothing pairs (a nickname is not a slip)", () => {
+    const r = matchPublishedChecklist(
+      [card("FS-3", ["Mike Trout"])],
+      [row("30", ["Michael Trout"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.needsOperator).toBe(true);
+  });
+
+  test("two rows equally near leave the card unmatched", () => {
+    const r = matchPublishedChecklist(
+      [card("FS-3", ["Shohei Ohtani"])],
+      [row("30", ["Shohei Otani"]), row("40", ["Shohei Otani"])],
+    );
+    expect(r.matches).toEqual([]);
+  });
+
+  test("a player with two leftover cards pairs neither with one near row", () => {
+    const r = matchPublishedChecklist(
+      [card("FS-3", ["Shohei Ohtani"]), card("FS-4", ["Shohei Ohtani"])],
+      [row("9", ["Shohei Otani"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+  });
+
+  test("an exact name wins over a near one", () => {
+    const r = matchPublishedChecklist(
+      [card("FS-3", ["Shohei Ohtani"])],
+      [row("30", ["Shohei Otani"]), row("40", ["Shohei Ohtani"])],
+    );
+    expect(r.matches.map((m) => [m.rowIndex, m.via])).toEqual([[1, "playerName"]]);
+    expect(r.unusedRowIndices).toEqual([0]);
+  });
+
+  test("no-number cards and NNO rows pair by a near name too, with no row number", () => {
+    const r = matchPublishedChecklist(
+      [card("NNO", ["Shohei Ohtani"])],
+      [{ number: "NNO", players: ["Shohei Otani"], teams: [], noNumber: true }],
+    );
+    expect(r.matches.map((m) => m.via)).toEqual(["playerFuzzy"]);
+    expect(r.matches[0].checklistNumber).toBeUndefined();
+  });
+
+  test("a card or row with no players takes part in nothing", () => {
+    const r = matchPublishedChecklist([card("FS-3")], [row("3a")]);
+    expect(r.matches).toEqual([]);
+  });
+});
+
+describe("matchPublishedChecklist: NEO-489 No Team × NEO-496 name pairs", () => {
   const noTeamRow = (number: string, players: string[] = []) => ({
     number,
     players,
@@ -654,7 +718,6 @@ describe("matchPublishedChecklist: NEO-489 No Team × NEO-490 player-name fallba
       [card("SIG-A", ["A One"], ["Boston Red Sox"]), card("SIG-B", ["B Two"])],
       [noTeamRow("1", ["A One"]), noTeamRow("2", ["B Two"])],
     );
-    expect(r.fallback).toBe("playerName");
     expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
       [0, 0, "playerName"],
       [1, 1, "playerName"],
@@ -673,26 +736,182 @@ describe("matchPublishedChecklist: NEO-489 No Team × NEO-490 player-name fallba
     expect(r.matches[0].conflict?.teams).toEqual({ marketplace: ["Boston Red Sox"], checklist: [] });
   });
 
-  test("a case-folded number pair counts as a number pair, so the name fallback never runs", () => {
+  test("a case-folded number pair counts as a number pair; the rest still pair by name", () => {
     const r = matchPublishedChecklist(
       [card("PPR-DLa", ["Derrek Lee"]), card("SIG-B", ["B Two"])],
       [noTeamRow("ppr-dla", ["Derrek Lee"]), noTeamRow("2", ["B Two"])],
     );
-    expect(r.fallback).toBe("none");
-    expect(r.matches.map((m) => [m.cardIndex, m.via])).toEqual([[0, "caseFolded"]]);
-    expect(r.unmatchedCardIndices).toEqual([1]);
+    expect(r.matches.map((m) => [m.cardIndex, m.via])).toEqual([
+      [0, "caseFolded"],
+      [1, "playerName"],
+    ]);
+    expect(r.unmatchedCardIndices).toEqual([]);
   });
 
-  test("case-only twin numbers pair nothing, so the name fallback pairs them under the exactly-one guard", () => {
-    // Cards "x1a" and "X1A" against one row "X1a": no number pair (the folded
-    // key names two cards), counts differ, so nothing is applied and the
-    // unique name pair is only a suggestion.
+  test("case-only twin numbers pair nothing by number, and the name does not rescue the tie (rule 8)", () => {
+    // Cards "x1a" and "X1A" against one row "X1a": the folded key names two
+    // cards, so no number pair, and the row bearing that number sits the name
+    // passes out even though "A One" is one card and one row.
     const r = matchPublishedChecklist(
       [card("x1a", ["A One"]), card("X1A", ["B Two"])],
       [noTeamRow("X1a", ["A One"])],
     );
-    expect(r.fallback).toBe("operator");
     expect(r.matches).toEqual([]);
-    expect(r.suggestions).toEqual([{ cardIndex: 0, rowIndex: 0 }]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+    expect(r.unusedRowIndices).toEqual([0]);
+  });
+});
+
+describe("matchPublishedChecklist: D2 a number repeated on the checklist pins nothing down", () => {
+  test("repeated number, distinct players: the card pairs with neither row, by number or by name", () => {
+    // The E2E's card #6: two "#6" rows, different players, and the card's own player on one of them.
+    const r = matchPublishedChecklist(
+      [card("5", ["Five"]), card("6", ["Six Player"]), card("7", ["Seven"])],
+      [row("5", ["Five"]), row("6", ["Six Player"], ["Invented"]), row("6", ["Eight Player"], ["Invented"]), row("7", ["Seven"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "number"],
+      [2, 3, "number"],
+    ]);
+    expect(r.unmatchedCardIndices).toEqual([1]);
+    // Both rows bearing the number are left for the operator.
+    expect(r.unusedRowIndices).toEqual([1, 2]);
+    expect(r.needsOperator).toBe(true);
+    // The row at the card's own number is no misread.
+    expect(r.misreadCount).toBe(0);
+  });
+
+  test("repeated number, the same player on both rows: the card stays unmatched", () => {
+    const r = matchPublishedChecklist(
+      [card("6", ["Six Player"])],
+      [row("6", ["Six Player"], ["Team A"]), row("6", ["Six Player"], ["Team B"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0]);
+    expect(r.unusedRowIndices).toEqual([0, 1]);
+  });
+
+  test("repeated number, one card's player on exactly one row: nothing pairs, exact or near", () => {
+    // Exact name on one row.
+    const exact = matchPublishedChecklist(
+      [card("6", ["Six Player"]), card("SIG-X", ["Other Person"])],
+      [row("6", ["Six Player"]), row("6", ["Other Person"])],
+    );
+    expect(exact.matches).toEqual([]);
+    expect(exact.unmatchedCardIndices).toEqual([0, 1]);
+    expect(exact.unusedRowIndices).toEqual([0, 1]);
+    // A near spelling on one row.
+    const near = matchPublishedChecklist(
+      [card("6", ["Shohei Ohtani"])],
+      [row("6", ["Shohei Otani"]), row("6", ["Someone Else"])],
+    );
+    expect(near.matches).toEqual([]);
+    expect(near.unmatchedCardIndices).toEqual([0]);
+  });
+
+  test("a card whose number folds onto a repeated number sits the name passes out too", () => {
+    const r = matchPublishedChecklist(
+      [card("1a", ["A One"])],
+      [row("1A", ["A One"]), row("1A", ["B Two"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0]);
+  });
+
+  test("non-repeated numbers are unaffected: their number and name pairs stand beside a repeated one", () => {
+    const r = matchPublishedChecklist(
+      [card("1", ["A One"]), card("SIG-B", ["B Two"]), card("6", ["Six Player"])],
+      [row("1", ["A One"]), row("2", ["B Two"]), row("6", ["Six Player"]), row("6", ["Eight Player"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "number"],
+      [1, 1, "playerName"],
+    ]);
+    expect(r.unmatchedCardIndices).toEqual([2]);
+    expect(r.unusedRowIndices).toEqual([2, 3]);
+  });
+
+  test("NNO rows are not numbered, so two of them for different players still pair by player", () => {
+    const nno = (players: string[]) => ({ number: "NNO", players, teams: [] as string[], noNumber: true });
+    const r = matchPublishedChecklist(
+      [card("NNO", ["A One"]), card("", ["B Two"])],
+      [nno(["A One"]), nno(["B Two"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "player"],
+      [1, 1, "player"],
+    ]);
+  });
+});
+
+describe("matchPublishedChecklist: rule 8 a number the marketplace lists twice pins nothing down", () => {
+  test("two cards share a number, one row names one card's player: nothing pairs, exact or near", () => {
+    const exact = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["B Two"])],
+      [row("5", ["A One"])],
+    );
+    expect(exact.matches).toEqual([]);
+    expect(exact.unmatchedCardIndices).toEqual([0, 1]);
+    expect(exact.unusedRowIndices).toEqual([0]);
+    expect(exact.needsOperator).toBe(true);
+    const near = matchPublishedChecklist(
+      [card("5", ["Shohei Ohtani"]), card("5", ["B Two"])],
+      [row("5", ["Shohei Otani"])],
+    );
+    expect(near.matches).toEqual([]);
+  });
+
+  test("the repeated cards sit the name passes out entirely: a row at another number does not take them", () => {
+    const r = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["B Two"])],
+      [row("50", ["A One"]), row("51", ["B Two"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+    expect(r.unusedRowIndices).toEqual([0, 1]);
+  });
+
+  test("a row bearing the repeated number sits out too: a card at another number does not take it", () => {
+    const r = matchPublishedChecklist(
+      [card("5", ["X Ray"]), card("5", ["Y Zed"]), card("SIG-A", ["A One"])],
+      [row("5", ["A One"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1, 2]);
+    expect(r.unusedRowIndices).toEqual([0]);
+  });
+
+  test("the same player on both repeated cards: still nothing pairs", () => {
+    const r = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["A One"])],
+      [row("5", ["A One"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+  });
+
+  test("unrepeated numbers beside a repeated one pair as before, by number and by name", () => {
+    const r = matchPublishedChecklist(
+      [card("5", ["A One"]), card("5", ["B Two"]), card("1", ["C Three"]), card("SIG-D", ["D Four"])],
+      [row("5", ["A One"]), row("1", ["C Three"]), row("2", ["D Four"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [2, 1, "number"],
+      [3, 2, "playerName"],
+    ]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+    expect(r.unusedRowIndices).toEqual([0]);
+  });
+
+  test("two no-number cards are not a repeated number: NNO pairing is unchanged", () => {
+    const nno = (players: string[]) => ({ number: "NNO", players, teams: [] as string[], noNumber: true });
+    const r = matchPublishedChecklist(
+      [card("NNO", ["A One"]), card("NNO", ["B Two"])],
+      [nno(["A One"]), nno(["B Two"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "player"],
+      [1, 1, "player"],
+    ]);
   });
 });

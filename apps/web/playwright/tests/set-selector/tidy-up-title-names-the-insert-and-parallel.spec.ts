@@ -16,7 +16,8 @@
 // (Set)" heading used to run off a phone's right edge and widen the page, so
 // a tap on "Create variant type" landed on the page instead. The drill stops
 // at the set once to prove that heading now wraps inside the viewport, clear
-// of "Edit attributes", before it goes on to the Insert type.
+// of the panel's toggle, before it goes on to the Insert type. NEO-496: the
+// set's panel opens by itself, so the toggle reads "Hide attributes" here.
 // (It lives here, not in the attention-walker spec, because a long set name
 // also cuts every auto-generated listing title short, which adds a second
 // attention reason to each card and would change that spec's counts.)
@@ -84,13 +85,16 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
     // NEO-499: the set open on its own, its attributes heading wrapped inside
-    // the viewport and clear of the panel's toggle.
+    // the viewport and clear of the panel's toggle. NEO-496: a set opens its
+    // panel by default (a fresh tab remembers no close), so the one toggle
+    // reads "Hide attributes", with the panel open beneath it.
     await drillToCustom(page, { sport: customSport(env), year, manufacturer: "Topps", set: SET });
     const setHeading = page.getByRole("heading", { name: `Attributes for ${SET} (Set)`, exact: true });
-    const editAttributes = page.getByRole("button", { name: "Edit attributes", exact: true });
+    const attributesToggle = page.getByRole("button", { name: "Hide attributes", exact: true });
     await expect(setHeading).toBeVisible();
-    await expect(editAttributes).toBeVisible();
-    await expectClearAndInside(page, setHeading, editAttributes, "the set's Attributes heading and Edit attributes");
+    await expect(attributesToggle).toBeVisible();
+    await expect(attributesToggle).toHaveAttribute("aria-expanded", "true");
+    await expectClearAndInside(page, setHeading, attributesToggle, "the set's Attributes heading and Hide attributes");
 
     // An insert, and a parallel moved under it with Group Parallels.
     await drillToCustomSet(page, env, { set: SET, variantType: "Insert" });

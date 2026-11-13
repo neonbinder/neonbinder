@@ -41,7 +41,7 @@ import {
 } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
 import { bscLookupOutcome } from "../../support/marketplace-wait";
-import { CHECKLISTS, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
 
 const INSERT = "Prospect Dual Autographs";
@@ -134,37 +134,26 @@ test(
     // row is left out of the file on purpose; the fixture is fixtures/checklists/2025-bowman-draft-insert-
     // prospect-dual-autographs.csv.) Fourteen live lookups in a burst met a BSC 429 here (every one of
     // them), so the card the spec is about was never answered.
-    await usePublishersChecklist(page, CHECKLISTS.prospectDualAutographs2025);
+    const facts = await usePublishersChecklist(page, CHECKLISTS.prospectDualAutographs2025);
     await syncChecklistButton(page).click();
 
-    // Legitimate shapes: a SportLots set paired with the insert opens "Match
-    // Cards"; one source takes the one-marketplace path ("Kept all N cards
-    // from BSC"), and with every name known (the catalogue) that path commits
-    // at once, the commit's "Saved N cards" REPLACING the Kept-all line (the
-    // checklist holds one notice). "Saved" is accepted as the same fetch's
-    // later state: the checklist was empty a step ago, so it can only be this
-    // fetch's. A fetch that lost the BSC side would carry no BSC team values,
-    // and STEP 6's row read fails it by name. BSC's per-card team lookup (the
-    // code NEO-333 changed) runs INSIDE this fetch: live round trip.
-    const matchCards = page.getByText(/Match Cards/).first();
-    const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
+    // opens with SportLots paused or live (before NEO-496 a paused fetch took the
+    // one-marketplace path). BSC's per-card team lookup (the code NEO-333 changed) runs
+    // INSIDE this fetch, before Confirm unlocks: a live round trip. PDA-WW, the card this
+    // spec reads, is the row the file leaves out, so it is BSC-only here and MUST be kept;
+    // the helper keeps every BSC-only card, proves the teams line and confirms. A fetch that
+    // lost the BSC side would carry no BSC team values, and STEP 6's row read fails it by name.
+    const matchCards = matchCardsDialog(page);
+    await expect(matchCards).toBeVisible({ timeout: CHECKLIST_FETCH });
+    await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible({
+      timeout: CHECKLIST_FETCH,
+    });
+    await expect(matchCards.getByRole("heading", { name: `Match Cards — ${INSERT}` })).toBeVisible();
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog (Prospect Dual Autographs)" });
+    await confirmChecklistMatchCards(page, { facts, what: "the Prospect Dual Autographs fetch" });
+    // With every name known (the catalogue) the commit goes straight through: "Saved N cards".
     const saved = page.getByText(/Saved [1-9][0-9]* cards?/);
-    await expect(matchCards.or(kept).or(saved).first()).toBeVisible({ timeout: CHECKLIST_FETCH });
-    // NEO-287: paused, nothing was asked of SportLots, so the pairing dialog is the bug.
-    if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-    if (await matchCards.isVisible()) {
-      // The dialog OPENING is not the fetch FINISHING: Confirm reads
-      // "Loading…" and is inert until the action resolves.
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
-      await expect(page.getByText(new RegExp(`Match Cards — ${INSERT}`))).toBeVisible();
-      await expectAccessible(page, {
-        within: page.getByRole("dialog", { name: /^Match Cards/ }),
-        label: "Match Cards dialog (Prospect Dual Autographs)",
-      });
-      await confirm.click();
-      await expect(page.getByText(/Match Cards/)).toBeHidden();
-    }
 
     // ── STEP 5: claim (a): no team step is a comma-joined name ──
     // TWO LEGITIMATE SHAPES, and the gate names both (R2): "Saved N cards" (the

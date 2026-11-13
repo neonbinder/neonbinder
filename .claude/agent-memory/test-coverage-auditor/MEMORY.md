@@ -16,3 +16,4 @@
 - [Websocket-faked query masks transitions](websocket-faked-query-masks-transitions.md) — faked Convex value proves the stored state only; hides "syncing" and own-action branches (alert, focus return)
 - [Measured-wait helper](measured-wait-helper-untested-and-narrower-than-flat-timeout.md) — flat live timeout swapped for announced-wait credit: helper untested, narrower than the flat ceiling, 429 UI never forced live
 - [Optimistic write, spec waits out the race](optimistic-write-spec-waits-out-the-race.md) — second-tab wait before reload hides lost-on-refresh; ask for pending/beforeunload unit test + no-wait reload
+- [Inverted skip path loses its live proof](inverted-skip-path-loses-its-live-proof.md) — a rule flip rewrites the skip specs; the unchanged case survives only as an .or(); grep removed sentences

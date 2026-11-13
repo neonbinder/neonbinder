@@ -460,6 +460,22 @@ export type IncomingItem = {
    * rule exactly.
    */
   identityOnly?: boolean;
+  /**
+   * NEO-496 (D7) — an `identityOnly` line that carries a publisher-checklist
+   * section and NO marketplace id: a section the operator made its own set.
+   * It is inserted (identityOnly alone withholds an id-less line as
+   * `noIdToAttach`) unless a sibling already has its name
+   * (`nameTakenBySibling`) or another line in the batch does
+   * (`nameSharedInBatch`): an id-less row is told apart from its namesake
+   * by nothing, so two would be one name twice. Ignored on a line with an id.
+   */
+  checklistOnly?: boolean;
+  /**
+   * NEO-496 — a withhold the CALLER decided before planning (the store's
+   * checklist-link identity check: the line's section is linked to two or
+   * more rows). The item is withheld with this reason and claims nothing.
+   */
+  presetWithhold?: { reason: SiblingWithholdReason; rowIds: string[] };
 };
 
 export type MatchOutcome<TId extends string = string> =
@@ -556,7 +572,11 @@ export type SiblingWithholdReason =
   | "nameLinkedToOtherSet"
   | "nameClaimedTwice"
   | "nameSharedInBatch"
-  | "rowClaimedInBatch";
+  | "rowClaimedInBatch"
+  // NEO-496 — an id-less checklist line whose name a sibling already has.
+  | "nameTakenBySibling"
+  // NEO-496 — the line's checklist section is linked to two or more rows.
+  | "checklistKeyHeldByMany";
 
 export type SiblingWithhold<TId extends string = string> = {
   reason: SiblingWithholdReason;
@@ -976,6 +996,17 @@ export function planSelectorSync<TId extends string>(args: {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
 
+    if (item.presetWithhold) {
+      const reason = `withheld by the caller: ${item.presetWithhold.reason}`;
+      ambiguities.push({ item: item.value, reason });
+      outcomes[i] = { kind: "withheld", reason };
+      siblingWithholds[i] = {
+        reason: item.presetWithhold.reason,
+        rowIds: item.presetWithhold.rowIds as TId[],
+      };
+      continue;
+    }
+
     if (item.existingId) {
       const row = byRowId.get(item.existingId);
       if (row) {
@@ -1112,8 +1143,15 @@ export function planSelectorSync<TId extends string>(args: {
    * as `noIdToAttach` anyway, so the id-carrying count stays the rule there.
    */
   const allValues: string[] = [];
+  /**
+   * NEO-496 — every item reaching this pass, identityOnly included, by name:
+   * the twin count for an id-less checklist line, which no id tells apart.
+   */
+  const reachingByKey = new Map<string, number>();
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
+    const reachingKey = selectorValueKey(items[i].value);
+    reachingByKey.set(reachingKey, (reachingByKey.get(reachingKey) ?? 0) + 1);
     if (items[i].identityOnly) continue;
     allValues.push(items[i].value);
     if (!PLATFORM_SIDES.some((s) => items[i].ids[s])) continue;
@@ -1153,9 +1191,25 @@ export function planSelectorSync<TId extends string>(args: {
       // it into its same-named namesake. A pass-1 problem still withholds
       // it; an id-less line has nothing to be a row for.
       if (!withheld && sidesCarried.length === 0) {
-        withheld = "identity-only item carries no marketplace id";
-        sibling = { reason: "noIdToAttach", rowIds: [] };
-        ambiguities.push({ item: item.value, reason: withheld });
+        if (item.checklistOnly) {
+          // NEO-496 — a checklist section made its own set: inserted unless
+          // its name is already a sibling's or another line's. Exact name
+          // only (the store's own fold), as the insert would collide on it.
+          const namesakes = byKey.get(selectorValueKey(item.value)) ?? [];
+          if (namesakes.length > 0) {
+            withheld = "id-less checklist line names an existing row";
+            sibling = { reason: "nameTakenBySibling", rowIds: namesakes.map((r) => r._id) };
+            ambiguities.push({ item: item.value, reason: withheld });
+          } else if ((reachingByKey.get(selectorValueKey(item.value)) ?? 0) > 1) {
+            withheld = "id-less checklist line shares its name with another line";
+            sibling = { reason: "nameSharedInBatch", rowIds: [] };
+            ambiguities.push({ item: item.value, reason: withheld });
+          }
+        } else {
+          withheld = "identity-only item carries no marketplace id";
+          sibling = { reason: "noIdToAttach", rowIds: [] };
+          ambiguities.push({ item: item.value, reason: withheld });
+        }
       }
       outcomes[i] = withheld ? { kind: "withheld", reason: withheld } : { kind: "insert" };
       if (withheld) siblingWithholds[i] = sibling;

@@ -439,7 +439,7 @@ describe("CardPairingModal — variation names are shown", () => {
     // Scoped to the select button — the text also appears as the button's own
     // content, and the Keep control carries it too.
     expect(
-      screen.getByRole("button", {
+      screen.getByRole("radio", {
         name: "Select BSC card #13b Mookie Betts · Pointing Up",
       }),
     ).toBeTruthy();

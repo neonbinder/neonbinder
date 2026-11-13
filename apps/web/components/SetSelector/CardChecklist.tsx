@@ -111,14 +111,14 @@ import PublishedChecklistDialog, {
   type PublishedChecklist,
 } from "./PublishedChecklistDialog";
 // NEO-490 — the operator's checklist links in Match Cards: the question the
-// server is asked about them, and the count the "Teams from your checklist"
-// line is rebuilt from once they are answered.
+// server is asked about them.
 import {
-  countChecklistTeams,
-  type ChecklistLinkRow,
   type ChecklistPairAnswer,
   type ChecklistPairRequest,
 } from "./checklist-match-apply";
+// NEO-496 — the "Teams from your checklist" line, rebuilt from the confirmed
+// cards with the definition the fetch's own line uses.
+import { tallyChecklistTeams } from "@/lib/checklists/checklist-teams-tally";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import {
@@ -369,8 +369,12 @@ export const entityConfirmationMessage = (
  * the commit; the marketplace is named with the same `SIDE_LABEL` vocabulary
  * the rest of this UI uses ("BSC", "SportLots").
  */
+/** NEO-496 — a source a card fetch draws from (`fetchCardChecklist`'s `sources`). */
+type FetchSource = "bsc" | "sportlots" | "checklist";
+
 export const soloKeptMessage = (
-  side: SyncSide,
+  /** NEO-496 — "checklist": the run's one source was a publisher checklist. */
+  side: SyncSide | "checklist",
   count: number,
   /**
    * NEO-287 — attached sides this run did not ask because the operator
@@ -379,10 +383,14 @@ export const soloKeptMessage = (
    */
   pausedAttached: readonly SyncSide[] = [],
 ): string =>
-  `Kept all ${count} ${count === 1 ? "card" : "cards"} from ${SIDE_LABEL[side]}. ` +
+  `Kept all ${count} ${count === 1 ? "card" : "cards"} from ${
+    side === "checklist" ? "your checklist" : SIDE_LABEL[side]
+  }. ` +
   (pausedAttached.length > 0
     ? `Nothing to match — ${pausedSyncMessage(pausedAttached)}`
-    : `Nothing to match, no other marketplace attached.`);
+    : side === "checklist"
+      ? `Nothing to match, no marketplace attached.`
+      : `Nothing to match, no other marketplace attached.`);
 
 /**
  * NEO-255 — the fetch is streaming and no dialog is going to open, so this
@@ -998,11 +1006,43 @@ export default function CardChecklist({
     [],
   );
   const [noticeDetailOpen, setNoticeDetailOpen] = useState(false);
+  /**
+   * NEO-255 — the variant the operator is looking at NOW, for the same
+   * staleness check one field up.
+   *
+   * A run is abandoned when the operator moves to another variant, and the
+   * generation counter cannot say so on its own: `variantId` is a PROP, so
+   * nothing in an event handler bumps the counter when it changes, and the
+   * reset effect that clears the rest of the per-variant state is not allowed
+   * to (`react-hooks/immutability` — a ref mutated inside an effect may not be
+   * mutated anywhere else, and this one is, from `handleSync` and the pairing
+   * dialog's Cancel).
+   *
+   * It matters most on the one-marketplace path, which is the one that commits
+   * without an operator: `awaitStreamedBatch` polls a subscription keyed on the
+   * CURRENT variant while `handlePairingConfirm` writes to the `variantId` the
+   * run captured. Switch variants mid-await and those are two different sets —
+   * one variant's cards committed onto another. Read through a ref because the
+   * check runs inside an async closure holding its own render's values, which
+   * is exactly where a prop read would be stale.
+   */
+  const currentVariantIdRef = useRef(variantId);
+  useEffect(() => {
+    currentVariantIdRef.current = variantId;
+  }, [variantId]);
+  /**
+   * NEO-496 (Jason, 2026-11-12) — the notice belongs to the row it was said
+   * on. A run that ends after the operator has picked another row (a fetch
+   * with no dialog, a commit, the parallel build's plan) says nothing on the
+   * row they moved to: `variantId` here is the render that started it, and
+   * the ref is the row on screen now. Clearing always goes through.
+   */
   const setSyncMessage = useCallback(
     (text: string | null, tone: "status" | "error" = "status") => {
+      if (text !== null && currentVariantIdRef.current !== variantId) return;
       setSyncNotice(text === null ? null : { text, tone });
     },
-    [setSyncNotice],
+    [setSyncNotice, variantId],
   );
   /** NEO-358 — a row's delete or unlink the server refused, said here. */
   const onRowDeleteFailed = useCallback(
@@ -1166,25 +1206,13 @@ export default function CardChecklist({
    */
   const [pairingInstance, setPairingInstance] = useState(0);
   /**
-   * NEO-490 — the publisher's checklist rows the fetch could not pair, handed
-   * to Match Cards as a third source. Set only when the fetch says the
-   * operator is needed (`checklistMatch.needsOperator`); null otherwise, so
-   * the dialog shows no checklist column. Holds the rows SENT to this fetch,
-   * so a row index means the same row in the dialog and on the server even if
-   * the operator swaps the file while the dialog is open.
+   * NEO-496 (D10) — the sources this run draws cards from: the marketplace
+   * sides it fetches, plus "checklist" when a publisher checklist is in play.
+   * Predicted before the fetch (a pasted checklist is known; a stored one is
+   * learned from the fetch's own `sources`), then replaced by the server's
+   * answer. Match Cards reads it to choose its columns. Null between runs.
    */
-  const [pairingChecklist, setPairingChecklist] = useState<{
-    rows: ChecklistLinkRow[];
-    unusedRowIndices: number[];
-    leftoverCardKeys: string[];
-    alreadyMatched: number;
-  } | null>(null);
-  /**
-   * NEO-490 — a one-marketplace set opened in Match Cards only for its
-   * checklist: every card from this side is saved and the dialog offers no
-   * Keep controls. Null for every other session.
-   */
-  const [pairingSoloSide, setPairingSoloSide] = useState<"bsc" | "sl" | null>(
+  const [pairingSources, setPairingSources] = useState<FetchSource[] | null>(
     null,
   );
   /**
@@ -1233,7 +1261,7 @@ export default function CardChecklist({
   /** The button that opened the dialog, so focus goes back to it (or to the chip's Remove). */
   const publishedOpenerRef = useRef<HTMLButtonElement>(null);
   /**
-   * The chip's Remove. Using a checklist takes "Add the publisher's
+   * The chip's Remove. Using a checklist takes "Add the official
    * checklist" away (the chip is the handle while one is attached), so focus
    * lands here instead of on a button that is gone.
    */
@@ -1360,7 +1388,12 @@ export default function CardChecklist({
     // NEO-203: a diff computed against one variant's rows is meaningless
     // against another's.
     setPendingReview(null);
-  }, [variantId]);
+    // NEO-496 (Jason, 2026-11-12): "Saved N cards." and every other notice
+    // in this section go the moment another row is picked.
+    setSyncNotice(null);
+    setNoticeDetailOpen(false);
+    setBuildWaitKey(null);
+  }, [variantId, setSyncNotice]);
 
   // Virtuoso scroll handle + a one-shot flag so when the user adds a card
   // via the form, the just-added row is scrolled into view. New cards sort
@@ -1431,30 +1464,6 @@ export default function CardChecklist({
   // A ref, not state: the check runs inside an async closure that captured its
   // own render's values, which is exactly where a state read would be stale.
   const syncGenerationRef = useRef(0);
-  /**
-   * NEO-255 — the variant the operator is looking at NOW, for the same
-   * staleness check one field up.
-   *
-   * A run is abandoned when the operator moves to another variant, and the
-   * generation counter cannot say so on its own: `variantId` is a PROP, so
-   * nothing in an event handler bumps the counter when it changes, and the
-   * reset effect that clears the rest of the per-variant state is not allowed
-   * to (`react-hooks/immutability` — a ref mutated inside an effect may not be
-   * mutated anywhere else, and this one is, from `handleSync` and the pairing
-   * dialog's Cancel).
-   *
-   * It matters most on the one-marketplace path, which is the one that commits
-   * without an operator: `awaitStreamedBatch` polls a subscription keyed on the
-   * CURRENT variant while `handlePairingConfirm` writes to the `variantId` the
-   * run captured. Switch variants mid-await and those are two different sets —
-   * one variant's cards committed onto another. Read through a ref because the
-   * check runs inside an async closure holding its own render's values, which
-   * is exactly where a prop read would be stale.
-   */
-  const currentVariantIdRef = useRef(variantId);
-  useEffect(() => {
-    currentVariantIdRef.current = variantId;
-  }, [variantId]);
 
   /**
    * NEO-221 — end the pairing session for good and bin what it was reviewing.
@@ -1673,11 +1682,8 @@ export default function CardChecklist({
     soloKeptRef.current = null;
     teamsLateRef.current = false;
     checklistTeamsRef.current = null;
-    // NEO-490: a new run asks its own checklist question, if any.
-    setPairingChecklist(null);
-    setPairingSoloSide(null);
-    // The rows this run sends, kept for the dialog's checklist column.
-    const sentChecklistRows = activePublished?.rows ?? null;
+    // NEO-496: a new run counts its own sources.
+    setPairingSources(null);
     // NEO-96: the sport row every downstream step keys on. It used to ride
     // back on the fetch action's return; the client walks the same ancestor
     // chain for its own pickers, so reading it here removes a third copy of
@@ -1719,7 +1725,21 @@ export default function CardChecklist({
     const expectedSides = attachedSidesOf(ancestorChain ?? []).filter(
       (side) => !pausedNow.has(side),
     );
-    const expectSolo = expectedSides.length <= 1;
+    /**
+     * NEO-496 (D10) — the publisher's checklist is a source too: a marketplace
+     * plus a checklist is two, so Match Cards opens (NQ1). A pasted one is
+     * known now; a stored one (the set's checklist, linked to this row) only
+     * from the fetch's own `sources`, so a one-marketplace run that turns out
+     * to have one opens the dialog when the fetch returns.
+     */
+    const expectedSources: FetchSource[] = [
+      ...expectedSides,
+      ...(activePublished && activePublished.rows.length > 0
+        ? (["checklist"] as const)
+        : []),
+    ];
+    const expectSolo = expectedSources.length <= 1;
+    setPairingSources(expectedSources);
     // Which batch, if any, the subscription is showing right now — the
     // auto-keep path needs to see it MOVE before it trusts a count. Captured
     // before the call, because `startCandidateBatch` replaces it.
@@ -1782,21 +1802,12 @@ export default function CardChecklist({
         await discardCandidates({ selectorOptionId: variantId });
         return;
       }
-      // NEO-490 — the checklist left rows and cards the server could not pair
-      // with certainty. They go to Match Cards as a third source, for the
-      // operator to link by hand. A two-marketplace dialog is already open;
-      // the column joins it.
-      const checklistMatch = result.checklistMatch;
-      const checklistNeedsOperator =
-        checklistMatch?.needsOperator === true && sentChecklistRows !== null;
-      if (checklistNeedsOperator && checklistMatch && sentChecklistRows) {
-        setPairingChecklist({
-          rows: sentChecklistRows,
-          unusedRowIndices: checklistMatch.unusedRowIndices,
-          leftoverCardKeys: checklistMatch.leftoverCardKeys,
-          alreadyMatched: checklistMatch.byNumber + checklistMatch.byPlayerName,
-        });
-      }
+      // NEO-496 (D10) — the server's own count of this run's sources: the
+      // marketplace sides it fetched, plus the checklist when one was in play
+      // (pasted, or this row's sections of the set's stored checklist). Its
+      // rows no card paired arrive as checklist-only candidates.
+      const serverSources = result.sources;
+      setPairingSources(serverSources);
       if (result.candidateCount === 0) {
         // A custom subtree has no marketplace cards at all, so there is
         // nothing to pair. Showing an empty pairing dialog would be a step
@@ -1852,7 +1863,11 @@ export default function CardChecklist({
       const agreed =
         expectedSides.length === serverSides.length &&
         expectedSides.every((side, i) => side === serverSides[i]);
-      if (expectSolo && agreed && serverSides.length === 1) {
+      // NEO-496: one SOURCE, not one marketplace: a checklist alone (no
+      // marketplace ids) is kept whole the same way, and a marketplace plus a
+      // checklist is two and goes to the dialog. The marketplace sides must
+      // still agree with the client's guess, as before.
+      if (expectSolo && agreed && serverSources.length === 1) {
         const streamed = await awaitStreamedBatch(
           fence,
           previousBatchId,
@@ -1906,19 +1921,6 @@ export default function CardChecklist({
           setSyncMessage(withTeamsLine(result.message));
           return;
         }
-        /**
-         * NEO-490 — the checklist needs the operator. Open Match Cards in
-         * solo mode: every card this side fetched is saved (no Keep controls,
-         * nothing to discard), and the checklist rows are the only thing to
-         * line up. Without a checklist question this path still auto-keeps.
-         */
-        if (checklistNeedsOperator) {
-          setSoloFetch(null);
-          setPairingSoloSide(serverSides[0] === "sportlots" ? "sl" : "bsc");
-          setPairingPhase("review");
-          setSyncMessage(withTeamsLine(result.message));
-          return;
-        }
         const cards = candidatesToPairingCards(live.cards);
         setSoloFetch(null);
         // Remembered so the wizard's "N names need a look before this saves."
@@ -1926,7 +1928,11 @@ export default function CardChecklist({
         // line is the only place the operator (and the E2E flow) learns how
         // many cards the fetch kept, and the wizard opens within a second.
         soloKeptRef.current = withTeamsLine(
-          soloKeptMessage(serverSides[0], cards.length, pausedAttached),
+          soloKeptMessage(
+            serverSides[0] ?? "checklist",
+            cards.length,
+            pausedAttached,
+          ),
         );
         setSyncMessage(
           [soloKeptRef.current, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]
@@ -2799,19 +2805,19 @@ export default function CardChecklist({
       result,
     }: ParallelBuildReport) => {
       // The build may land after the operator has moved to another checklist
-      // (this component is reused across the move). The notice names the
-      // parallel either way; only the parallel's OWN checklist reads a
-      // landed build as routine status, and gets the focus park.
-      const here = currentVariantIdRef.current === parallelId;
+      // (this component is reused across the move). NEO-496: then it says
+      // nothing here, since this section only speaks about the row on
+      // screen; the parallel's own checklist shows its cards when visited.
+      if (currentVariantIdRef.current !== parallelId) return;
       const parallelResult =
         committed && result ? { result, sourceValue } : undefined;
       setSyncNotice({
         text,
-        tone: committed && here ? "status" : tone,
+        tone: committed ? "status" : tone,
         parallelResult,
       });
       setNoticeDetailOpen(false);
-      if (here) parallelParkRef.current = true;
+      parallelParkRef.current = true;
     },
     [setSyncNotice],
   );
@@ -3212,6 +3218,11 @@ export default function CardChecklist({
       unmatchedSl: liveCandidates.cards
         .filter((c) => c.bucket === "slOnly")
         .map(toCard),
+      // NEO-496 — publisher checklist rows no card paired: a source of their
+      // own in the dialog, kept or dropped like a one-marketplace card.
+      checklistOnly: liveCandidates.cards
+        .filter((c) => c.bucket === "checklistOnly")
+        .map(toCard),
     };
   }, [pairingPhase, liveCandidates]);
 
@@ -3259,14 +3270,20 @@ export default function CardChecklist({
   };
 
   /**
-   * NEO-312 — the insert run, as it bears on the checklist on screen. The run
-   * is shown on its insert and on any of its parallels, and anywhere at all
-   * while it is still building (so Stop is never out of reach); a finished
-   * run is not carried onto an unrelated checklist.
+   * NEO-312 — the insert run, as it bears on the checklist on screen.
+   * NEO-496 (Jason, 2026-11-12): the ledger is part of the save that started
+   * it, so it shows on the row that save was on (`startedFrom`) and nowhere
+   * else, except on one of its parallels while the run still holds that
+   * row's controls (they are described by its line in the ledger). Picking
+   * any other row leaves it behind: the run carries on, a running one is
+   * there again (Stop included) back on its row, and a finished one the
+   * set builder retires once the operator has moved on (`runShownOn`).
    */
   const run = buildRun;
   const showParallelPanel =
-    !!run && !parallelPanelElsewhere && (parallelRun.active || runTouchesThis);
+    !!run &&
+    !parallelPanelElsewhere &&
+    (variantId === run.startedFrom || heldByRun);
   // While the source's parallels are building, neither the source's Sync (a
   // new save would start a second run over a checklist being copied, or
   // change the Base mid-copy) nor a parallel's own build button (a second
@@ -3312,7 +3329,7 @@ export default function CardChecklist({
       />
     ) : null;
   /**
-   * NEO-478 — "Add the publisher's checklist", beside Sync wherever Sync is.
+   * NEO-478 — "Add the official checklist", beside Sync wherever Sync is.
    * Purple (tertiary): a supporting input to the sync, not the sync itself.
    * Not while a checklist is attached: the chip says so, and its Remove
    * brings this back.
@@ -3329,7 +3346,7 @@ export default function CardChecklist({
       disabled={busy}
       aria-haspopup="dialog"
     >
-      Add the publisher&apos;s checklist
+      Add the official checklist
     </NeonButton>
   );
   const fetchLabel = syncing
@@ -3666,11 +3683,16 @@ export default function CardChecklist({
             parallel can still be in flight when the operator saves an
             insert and a run of parallels starts. That run's panel (here or
             in the Base section) carries its own wait line, so this one
-            stands down while a run is going: one wait line on the page,
-            never two copies of the sentence. */}
+            stands down while that panel is on screen: one wait line on the
+            page, never two copies of the sentence. NEO-496: the run's panel
+            shows only on its own rows now, so on any other row this line
+            stays, and it is cleared with the rest when the row changes. */}
         <WaitingOnMarketplaceRun
           runKey={buildWaitKey}
-          active={buildWaitKey !== null && !parallelRun.active}
+          active={
+            buildWaitKey !== null &&
+            !(parallelRun.active && (showParallelPanel || parallelPanelElsewhere))
+          }
           marketplace="BuySportsCards"
           className="mb-3"
         />
@@ -4153,19 +4175,18 @@ export default function CardChecklist({
             ) {
               teamsLateRef.current = false;
             }
-            // NEO-490 — the operator linked checklist rows in this dialog, so
-            // the fetch's own count no longer describes what is being saved:
-            // count the confirmed cards that took their team from the list.
-            if (pairingChecklist) {
-              checklistTeamsRef.current = checklistTeamsLine(
-                countChecklistTeams(result.cards),
-                result.cards.length,
-              );
+            // NEO-490 / NEO-496 — the operator linked and kept checklist rows
+            // in this dialog, so the fetch's own count no longer describes
+            // what is being saved: recount over the confirmed cards, with the
+            // fetch's own definition (a card counts when its team came from
+            // the checklist; a kept checklist-only row is a card now).
+            if (pairingSources?.includes("checklist")) {
+              const tally = tallyChecklistTeams(result.cards);
+              checklistTeamsRef.current = checklistTeamsLine(tally.matched, tally.total);
             }
             return handlePairingConfirm(result);
           }}
-          soloSide={pairingSoloSide ?? undefined}
-          checklist={pairingChecklist ?? undefined}
+          sources={pairingSources ?? undefined}
           resolveChecklistPairs={resolveChecklistPairs}
           setLabel={variantRow?.value}
           // a11y: see syncButtonRef's own comment — "Back to matching" reopens
@@ -4207,7 +4228,7 @@ export default function CardChecklist({
           onUse={(checklist) => {
             setPublishedChecklist({ variantId, checklist });
             setPublishedDialogOpen(false);
-            // Opened from "Add the publisher's checklist": that button goes
+            // Opened from "Add the official checklist": that button goes
             // with the dialog (the chip replaces it), so the dialog's own
             // restore has nothing to land on and Remove takes it. Opened
             // from the chip, the chip stays and the restore lands on it.
