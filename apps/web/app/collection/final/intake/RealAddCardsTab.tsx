@@ -13,6 +13,7 @@ import {
   type Ref,
   type RefObject,
 } from "react";
+import { flushSync } from "react-dom";
 import { useSearchParams } from "react-router";
 import { useAuth } from "@clerk/clerk-react";
 import { useAction, useMutation, useQuery } from "convex/react";
@@ -120,6 +121,7 @@ import {
   heldIntakeKey,
   holdFiles,
   readHeld,
+  releaseForNewRun,
   removeHeld,
   retryHeld,
   sayHeld,
@@ -401,9 +403,18 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
   const say = (text: string) => sayHeld(heldKey, text);
 
   const job = useQuery(api.placeholderPipeline.getPlaceholderJob, run ? { jobId: run.jobId } : "skip");
+  /**
+   * NEO-529 — a session the server has just refused photos into because it
+   * stopped collecting. Known here a moment before the job row says so, and that
+   * moment matters: the held photos must not go up into it again. The ref is the
+   * same fact for `sendPile`, which runs outside render.
+   */
+  const [closedJobId, setClosedJobId] = useState<string | null>(null);
+  const closedJobs = useRef(new Set<string>());
   // Still loading the run's job reads as collecting, so the drop zone and the
   // scanner code don't blink out while a just-started run catches up.
-  const collecting = !run || job === undefined || job?.status === "collecting";
+  const collecting =
+    !run || (run.jobId !== closedJobId && (job === undefined || job?.status === "collecting"));
   // NEO-459 — the collector closed this run, here or from anywhere else (the
   // scanner app's `d`). The idle sweep's close is not this: nobody said "done".
   const closedByUser = job?.streamClosedBy === "user";
@@ -442,7 +453,12 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     api.placeholderPipeline.listPlaceholderImages,
     run && noticeNeedsPhotos ? { jobId: run.jobId } : "skip",
   );
-  const notice = collecting || (noticeNeedsPhotos && noticePhotos === undefined) ? null : runNotice(job, noticePhotos);
+  // `job === undefined` is spelled out: a run known closed (NEO-529) is past
+  // collecting before its job row has loaded, and a missing row is a different line.
+  const notice =
+    collecting || job === undefined || (noticeNeedsPhotos && noticePhotos === undefined)
+      ? null
+      : runNotice(job, noticePhotos);
 
   // NEO-370, NEO-452 — the gate, on what the run (or the setup) will give its cards.
   const shownDefaults: RunDefaults = run?.defaults ?? defaults;
@@ -472,7 +488,15 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
    * presses anything, so "don't know yet" has to mean "wait".
    */
   const ready =
-    !loading && lock.loaded && lock.ready && targetHome !== null && (run ? job?.status === "collecting" : true);
+    !loading &&
+    lock.loaded &&
+    lock.ready &&
+    targetHome !== null &&
+    // NEO-529 — with no run open, photos a closed session left behind wait for
+    // New run (`held.waitForNewRun`, kept in the store so a remount can't send
+    // them). A fast refusal can even arrive before the closed run's `?run=` lands,
+    // and "no run" must not read as "start one" then either.
+    (run ? job?.status === "collecting" && run.jobId !== closedJobId : !held.waitForNewRun);
   /**
    * What can change the server's answer to a send; a failure isn't retried until
    * this moves. Only those fields: every refused start spends the shared hourly job
@@ -579,6 +603,7 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
   const focusDropzone = useRef<null | "leaving" | "arrived">(null);
   const startNewRun = () => {
     say("");
+    releaseForNewRun(heldKey);
     focusDropzone.current = "leaving";
     openRun(null);
   };
@@ -636,7 +661,7 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
   };
 
   /** Answers what the status line should say, and whether the files are up. */
-  const sendPile = async (pile: File[]): Promise<{ sent: boolean; note: string }> => {
+  const sendPile = async (pile: File[]): Promise<SendOutcome> => {
     const isZip = classifyIntake(pile).kind === "zip";
     // A zip's counts are the archive's, not its photos: the job row speaks for it now.
     const sentWords = (out: { kind: "zip" | "images"; uploaded: number; failed: number; total: number }) =>
@@ -658,21 +683,33 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     const ordered = isZip ? pile : inNaturalOrder(pile);
     // NEO-529 — the run's session stopped collecting during the send (finished
     // from another tab or the scanner, or swept), so the server refused the rest.
-    // Said by name, never as "N failed". When some landed the pile goes, or a
-    // retry would send those twice; when none did it stays, for after a new run.
-    const sentOrClosed = (out: { kind: "zip" | "images"; uploaded: number; failed: number; total: number; batchClosed?: true }) =>
-      !out.batchClosed
-        ? { sent: true, note: sentWords(out) }
-        : out.uploaded > 0
-          ? {
-              sent: true,
-              note: `This run was finished while your photos were going up. ${out.uploaded} of ${out.total} got in. Start a new run for the other ${out.failed}.`,
-            }
-          : { sent: false, note: "This run was finished before your photos got in. Start a new run, then send them again." };
+    // The run's own line already says it is all in, so this line carries only
+    // the tally. The photos that never went in stay held: they wait in the tray
+    // and go up by themselves once a new run is open, never into this one.
+    const sentOrClosed = (
+      out: { kind: "zip" | "images"; uploaded: number; failed: number; total: number; batchClosed?: true; closedAt?: number },
+      jobId: string,
+    ): SendOutcome => {
+      if (!out.batchClosed) return { sent: true, note: sentWords(out) };
+      // Recorded the moment the refusal is known, before anything renders.
+      closedJobs.current.add(jobId);
+      const keep = ordered.slice(out.closedAt ?? 0);
+      const note =
+        out.uploaded === 0 && keep.length === out.total
+          ? out.total === 1
+            ? "Your photo didn't get in. It's waiting."
+            : "None of your photos got in. They're waiting."
+          : `${out.uploaded} of ${out.total} got in. ${keep.length} ${keep.length === 1 ? "is" : "are"} waiting.`;
+      return { sent: true, note, keep, closedJobId: jobId };
+    };
     const open = latest.current.run;
     if (open) {
+      // Known closed already (the job row can lag the refusal): hold them for a new run.
+      if (closedJobs.current.has(open.jobId)) {
+        return { sent: true, note: `${pileWords(pile)} waiting.`, keep: pile, closedJobId: open.jobId };
+      }
       const out = await upload(ordered, { source: "web", jobId: open.jobId });
-      return out.ok ? sentOrClosed(out) : refused(out);
+      return out.ok ? sentOrClosed(out, open.jobId) : refused(out);
     }
     if (isZip) {
       // A zip starts its own job, so it can't go after the run.
@@ -698,7 +735,7 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
       throw error;
     }
     const out = await upload(ordered, { source: "web", jobId: session.jobId });
-    return out.ok ? sentOrClosed(out) : refused(out);
+    return out.ok ? sentOrClosed(out, session.jobId) : refused(out);
   };
 
   const sendHeld = useEffectEvent(async () => {
@@ -715,13 +752,27 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
     }
     setLocalPhotos(added);
     say(classifyIntake(pile).kind === "zip" ? "Sending your zip…" : "Sending your photos…");
-    let outcome: { sent: boolean; note: string };
+    let outcome: SendOutcome;
     try {
       outcome = await sendPile(pile);
     } catch (error) {
       outcome = { sent: false, note: writeErrorMessage(error) };
     }
-    finishSend(heldKey, pile, outcome.sent ? null : latest.current.config);
+    const closedId = outcome.closedJobId;
+    if (closedId) {
+      closedJobs.current.add(closedId);
+      // Committed before the held pile changes below, so the render that sees the
+      // photos still waiting already reads the run as closed and can't send them.
+      flushSync(() => setClosedJobId(closedId));
+    }
+    const keep = outcome.keep ?? [];
+    finishSend(
+      heldKey,
+      keep.length > 0 ? pile.filter((file) => !keep.includes(file)) : pile,
+      outcome.sent ? null : latest.current.config,
+      // Kept from a closed session: they wait for New run, in the store.
+      keep.length > 0,
+    );
     say(outcome.note);
   });
   useEffect(() => {
@@ -785,9 +836,14 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
   const noteParam = useRef(runParam);
   useEffect(() => {
     if (noteParam.current === runParam) return;
+    const from = noteParam.current;
     noteParam.current = runParam;
     if (handover.current?.runId === runParam) return;
     handover.current = null;
+    // NEO-529 — first arrival at the run this screen just started is not leaving
+    // anywhere. A send that ended before the address landed (a session closed
+    // under a fast upload) has already said how it went, about this run.
+    if (from === null && runParam !== null && runParam === lastStarted.current) return;
     if (!readHeld(heldKey).sending) sayHeld(heldKey, "");
   }, [heldKey, runParam]);
   // A send that finishes after this still says so, once, on the way back.
@@ -928,7 +984,9 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
         {shownDefaults.grading ? `, ${shownDefaults.grading.grader}` : ""}
         {homeKind === "box" && shownDefaults.minPriceCents !== undefined ? `, $${centsText(shownDefaults.minPriceCents)}` : ""}
       </NeonButton>
-      {run && (
+      {/* Also with no run open, for photos a closed session left behind: they
+          wait for this press (NEO-529), even after the screen remounted. */}
+      {(run || held.waitForNewRun) && (
         <NeonButton variant="secondary" outline className="ml-auto" onClick={startNewRun}>
           New run
         </NeonButton>
@@ -988,7 +1046,9 @@ function AddCardsScreen({ heldKey }: { heldKey: string }) {
       ? ""
       : jobClosed
         ? `${pileWords(waiting)} waiting. This run's all in, so start a new run.`
-        : !loading && lock.needsSet
+        : !run && held.waitForNewRun
+          ? `${pileWords(waiting)} waiting. Press New run to send ${waiting.length === 1 ? "it" : "them"}.`
+          : !loading && lock.needsSet
           ? `${pileWords(waiting)} waiting. Pick a set and they're off.`
           : lock.setHasNoCards
             ? "That set has no cards to match against yet. Pick another one."
@@ -1144,7 +1204,18 @@ function centsText(cents: number | undefined): string {
   return cents === undefined ? "" : (cents / 100).toFixed(2);
 }
 
+/** How a send went, for the status line and the held pile. */
+type SendOutcome = {
+  sent: boolean;
+  note: string;
+  /** NEO-529 — photos that never went in because the run closed: they stay held. */
+  keep?: readonly File[];
+  /** NEO-529 — the session that refused them, so nothing is sent into it again. */
+  closedJobId?: string;
+};
+
 /** "2 photos" or, for the one zip a pile can hold, "1 zip". */
+
 function pileWords(files: readonly File[]): string {
   if (classifyIntake([...files]).kind === "zip") return "1 zip";
   return files.length === 1 ? "1 photo" : `${files.length} photos`;

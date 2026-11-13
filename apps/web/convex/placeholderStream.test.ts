@@ -372,6 +372,27 @@ describe("allocateStreamEntry", () => {
     expect(await getImages(t, jobId)).toHaveLength(0);
   });
 
+  test.each(["processing", "pairing"] as const)(
+    "NEO-529: a %s job owned by someone else answers 'not found', never the not-collecting code or its status",
+    async (status) => {
+      // The ownership check must run BEFORE the status check, or the coded
+      // refusal becomes an oracle for whether another user's job exists and
+      // what state it is in. Seeded closed on purpose: a collecting victim
+      // would pass even with the checks in the wrong order.
+      const t = convexTest(schema, modules);
+      await seedJob(t, "job-victim", { mode: "stream", status });
+      const error = await allocate(t, "job-victim", "x.jpg", USER_B.subject).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(error).not.toBeNull();
+      expect(isBatchNotCollecting(error)).toBe(false);
+      expect((error as Error).message).toMatch(/job not found/i);
+      expect((error as { data?: { status?: unknown } }).data?.status).toBeUndefined();
+      expect(await getImages(t, "job-victim")).toHaveLength(0);
+    },
+  );
+
   test("refuses a zip job", async () => {
     const t = convexTest(schema, modules);
     await seedJob(t, "job-zip", { mode: "zip", status: "processing" });
@@ -537,6 +558,23 @@ describe("confirmPlaceholderImageUpload", () => {
     await expect(confirm(t, "job-nope", 0, USER_B)).rejects.toThrow(/job not found/i);
     expect(enqueueCalls).toHaveLength(0);
   });
+
+  test.each(["processing", "pairing"] as const)(
+    "NEO-529: a confirm into someone else's %s job answers 'not found', never the not-collecting code or its status",
+    async (status) => {
+      const t = convexTest(schema, modules);
+      await seedJob(t, "job-victim", { mode: "stream", status });
+      const error = await confirm(t, "job-victim", 0, USER_B).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(error).not.toBeNull();
+      expect(isBatchNotCollecting(error)).toBe(false);
+      expect((error as Error).message).toMatch(/job not found/i);
+      expect((error as { data?: { status?: unknown } }).data?.status).toBeUndefined();
+      expect(enqueueCalls).toHaveLength(0);
+    },
+  );
 
   test("throws when unauthenticated", async () => {
     const t = convexTest(schema, modules);

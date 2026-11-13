@@ -67,11 +67,25 @@ export interface HeldIntake {
    * can still say it. The screen clears it on leaving, and when the run changes.
    */
   note: string;
+  /**
+   * NEO-529 — these are photos a session closed on before they got in. They go
+   * up only after the collector presses New run (`releaseForNewRun`), never into
+   * a new session by themselves, so a remount with no run open can't send them.
+   * Absent on any other pile, which goes up as soon as the screen is ready.
+   */
+  waitForNewRun?: true;
 }
 
 const NOTHING: HeldIntake = { files: [], setup: null, sending: false, failedConfig: null, note: "" };
 
 const store = new Map<string, HeldIntake>();
+
+/** `entry` with `waitForNewRun` set or gone; never present as false. */
+function withWait(entry: HeldIntake, wait: boolean): HeldIntake {
+  const next = { ...entry };
+  delete next.waitForNewRun;
+  return wait ? { ...next, waitForNewRun: true } : next;
+}
 const listeners = new Set<() => void>();
 /** The key prefix of whoever is signed in, once `keepHeldFor` has said. */
 let ownerPrefix: string | null = null;
@@ -160,7 +174,7 @@ export function updateHeldSetup(key: string, setup: HeldSetup): void {
 
 /** Forget the held files (the tray's Remove photos, or a shelf that loaded empty). */
 export function removeHeld(key: string): void {
-  write(key, (current) => ({ ...current, files: [], setup: null, failedConfig: null, note: "" }));
+  write(key, (current) => withWait({ ...current, files: [], setup: null, failedConfig: null, note: "" }, false));
 }
 
 /** Claim the pile for a send. Null when there is nothing to send or a send already has it. */
@@ -175,13 +189,30 @@ export function beginSend(key: string): readonly File[] | null {
  * The send is over. `failedConfig` null: those files are up, and leave the pile.
  * Otherwise they stay in the tray, and won't go again until the setup moves off
  * this value or the collector asks.
+ *
+ * `waitForNewRun`: the files left behind are ones a closed session refused, so
+ * they wait for New run (NEO-529). A pile already waiting keeps waiting.
  */
-export function finishSend(key: string, sent: readonly File[], failedConfig: string | null): void {
+export function finishSend(
+  key: string,
+  sent: readonly File[],
+  failedConfig: string | null,
+  waitForNewRun = false,
+): void {
   write(key, (current) => {
     if (failedConfig !== null) return { ...current, sending: false, failedConfig };
     const files = current.files.filter((file) => !sent.includes(file));
-    return { ...current, sending: false, files, setup: files.length > 0 ? current.setup : null, failedConfig: null };
+    return withWait(
+      { ...current, sending: false, files, setup: files.length > 0 ? current.setup : null, failedConfig: null },
+      files.length > 0 && (waitForNewRun || current.waitForNewRun === true),
+    );
   });
+}
+
+/** New run: photos a closed session left behind may go up into the next one. */
+export function releaseForNewRun(key: string): void {
+  if (!readHeld(key).waitForNewRun) return;
+  write(key, (current) => withWait(current, false));
 }
 
 /** Try again: clear the failure so the pile goes up next time the screen is ready. */

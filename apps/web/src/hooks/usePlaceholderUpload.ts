@@ -47,6 +47,8 @@ export type UploadOutcome =
        * reporting "N failed".
        */
       batchClosed?: true;
+      /** With `batchClosed`: `files.slice(closedAt)` never went in (in the order handed over). */
+      closedAt?: number;
     }
   | {
       ok: false;
@@ -221,7 +223,9 @@ export function usePlaceholderUpload(): PlaceholderUpload {
           uploaded: result.uploaded,
           failed: result.failed,
           total: files.length,
-          ...(result.batchClosed ? { batchClosed: true as const } : {}),
+          ...(result.batchClosed
+            ? { batchClosed: true as const, closedAt: result.closedAt ?? 0 }
+            : {}),
         };
       } finally {
         setUploading(false);

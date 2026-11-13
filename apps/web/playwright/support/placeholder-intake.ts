@@ -31,7 +31,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page, TestInfo } from "@playwright/test";
-import { expect, expectAccessible, LAUNCH_GATE } from "./fixtures";
+import { expect, expectAccessible } from "./fixtures";
 import { intakeDropzone } from "./collection";
 
 /** Drop to "Uploaded N of N images." Approved 18 s, see the header. */
@@ -157,27 +157,43 @@ export async function finishPlaceholderBatch(page: Page, pairs = 3): Promise<voi
 
 /**
  * A spec's `afterEach` tidy (R7): do not leave the batch the spec started
- * running, so the next spec on the worker does not meet the cap. It reopens
- * the run the spec's own page is on, on a SECOND page of the same signed-in
- * context, so the failure screenshot and `error-context.md` still show what
- * was on screen when the spec went red. It waits for the run to settle into
- * one of its two states (the "Discard this batch" button, or a finished or
- * stopped heading) and discards only in the first; a spec that finished its
- * batch has nothing to discard and only looks. A page with no run in its URL
- * started none that this can name, and the next `startPlaceholderBatch`
- * recovers from the cap itself. A tidy failure never masks the body's: when the
- * body failed it goes on the test's annotations, otherwise it is thrown.
+ * running, so the next spec on the worker does not meet the cap. It works on a
+ * SECOND page of the same signed-in context, so the failure screenshot and
+ * `error-context.md` still show what was on screen when the spec went red.
+ *
+ * Default: it reopens the run the spec's own page is on (`?jobId=` from its
+ * URL), waits for the run to settle into one of its two states (the "Discard
+ * this batch" button, or a finished or stopped heading) and discards only in the
+ * first; a spec that finished its batch has nothing to discard and only looks. A
+ * page with no run in its URL started none that this can name, and the next
+ * `startPlaceholderBatch` recovers from the cap itself.
+ *
+ * `{ all: true }` is for a spec that starts runs on more than one page: it
+ * discards every row of "Recent runs" that reads "running" instead.
+ *
+ * A tidy failure never masks the body's: when the body failed it goes on the
+ * test's annotations, otherwise it is thrown.
  */
-export async function discardIfStillOpen(page: Page, testInfo: TestInfo): Promise<void> {
+export async function discardIfStillOpen(
+  page: Page,
+  testInfo: TestInfo,
+  opts: { all?: boolean } = {},
+): Promise<void> {
   const jobId = new URL(page.url()).searchParams.get("jobId");
-  if (!jobId) return;
+  if (!jobId && !opts.all) return;
   const bodyFailed = testInfo.status !== testInfo.expectedStatus;
   const tidy = await page.context().newPage();
   try {
+    if (opts.all) {
+      await tidy.goto("/print/placeholders");
+      await expect(tidy.getByRole("heading", { name: "Upload your cards" })).toBeVisible();
+      await discardRunningBatches(tidy);
+      return;
+    }
     await tidy.goto(`/print/placeholders?jobId=${jobId}`);
     const discard = tidy.getByRole("button", { name: "Discard this batch" });
     const finished = tidy.getByRole("heading", { name: /^(Your cards are ready|This batch stopped)$/ });
-    await expect(discard.or(finished)).toBeVisible({ timeout: LAUNCH_GATE });
+    await expect(discard.or(finished)).toBeVisible();
     if (await discard.isVisible()) await discardOpenBatch(tidy);
   } catch (error) {
     if (!bodyFailed) throw error;

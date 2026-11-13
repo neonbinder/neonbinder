@@ -78,9 +78,12 @@ export interface UploadRunResult {
   failed: number;
   /**
    * Present only when the session stopped collecting during the run. Every file
-   * from the refused one on is counted in `failed`; the ones before it landed.
+   * from the refused one on is counted in `failed`; the ones before it landed
+   * (bar any that failed on their own).
    */
   batchClosed?: true;
+  /** With `batchClosed`: the position of the refused file, so `files.slice(closedAt)` never went in. */
+  closedAt?: number;
 }
 
 /**
@@ -176,7 +179,7 @@ export async function runPlaceholderUpload(
             error: "batch closed",
           });
         }
-        return { uploaded, failed, batchClosed: true };
+        return { uploaded, failed, batchClosed: true, closedAt: position };
       }
       failed += 1;
       deps.onProgress({

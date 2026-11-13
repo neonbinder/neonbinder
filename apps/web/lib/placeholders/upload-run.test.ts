@@ -174,7 +174,7 @@ describe("runPlaceholderUpload", () => {
         deps,
       );
 
-      expect(result).toEqual({ uploaded: 1, failed: 2, batchClosed: true });
+      expect(result).toEqual({ uploaded: 1, failed: 2, batchClosed: true, closedAt: 1 });
       // No allocation is attempted after the refusal: it would be refused too.
       expect(deps.createUploadUrl).toHaveBeenCalledTimes(2);
       expect(
@@ -194,7 +194,7 @@ describe("runPlaceholderUpload", () => {
 
       const result = await runPlaceholderUpload("job-1", [fakeFile("a.jpg"), fakeFile("b.jpg")], deps);
 
-      expect(result).toEqual({ uploaded: 0, failed: 2, batchClosed: true });
+      expect(result).toEqual({ uploaded: 0, failed: 2, batchClosed: true, closedAt: 0 });
       expect(deps.createUploadUrl).toHaveBeenCalledTimes(1);
     });
 

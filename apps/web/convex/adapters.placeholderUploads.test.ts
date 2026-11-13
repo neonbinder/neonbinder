@@ -454,6 +454,32 @@ describe("createPlaceholderImageUploadUrl", () => {
 
     expect(policyCalls).toHaveLength(0);
   });
+
+  test("NEO-529: someone else's closed session answers 'Job not found', never the not-collecting code or its status", async () => {
+    // Seeded closed on purpose: the owner finishes it, then another user asks.
+    // If the status check ran before the ownership check this would answer with
+    // the coded refusal, telling a stranger the job exists and is closed.
+    const t = convexTest(schema, modules);
+    const jobId = await openStream(t);
+    await t
+      .withIdentity(USER_IDENTITY)
+      .mutation(api.placeholderStream.closePlaceholderStream, { jobId });
+    await drainScheduled(t);
+
+    const error = await t
+      .withIdentity(OTHER_USER_IDENTITY)
+      .action(api.adapters.placeholderUploads.createPlaceholderImageUploadUrl, {
+        jobId,
+        contentType: "image/jpeg",
+      })
+      .then(() => null, (e: unknown) => e);
+
+    expect(error).not.toBeNull();
+    expect(isBatchNotCollecting(error)).toBe(false);
+    expect((error as Error).message).toMatch(/job not found/i);
+    expect((error as { data?: { status?: unknown } }).data?.status).toBeUndefined();
+    expect(policyCalls).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
