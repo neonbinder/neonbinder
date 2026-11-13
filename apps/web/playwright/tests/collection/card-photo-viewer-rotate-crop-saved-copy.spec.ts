@@ -34,7 +34,7 @@
 // preview and "Touching it up…" showing) get 7 s. The only longer wait is the
 // new file landing, EDIT_LANDS (support/photo-viewer.ts, Jason 2026-11-10).
 import { escapeRe } from "../../support/cards";
-import { drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, ordinaryBaseRows, photoFile, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { EDIT_LANDED, EDIT_LANDS, STORED_MODE, photoViewer, servedPhotoSize } from "../../support/photo-viewer";
 
@@ -205,6 +205,9 @@ test(
       await expect(form).toBeHidden();
       await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+      // The list empties optimistically; "Removed ..." is the server's answer. Wait for it
+      // before the drawer closes, and only then count the copy as gone.
+      await confirmRemoved(drawer);
       copyLeft = false;
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();
@@ -219,6 +222,8 @@ test(
           await again.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
           await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
           await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+          // Leaving before the server answers could drop the Remove; wait for its notice.
+          await confirmRemoved(drawer);
         } catch (e) {
           test.info().annotations.push({ type: "cleanup", description: `copy of ${short} left behind: ${String(e).slice(0, 200)}` });
         }
