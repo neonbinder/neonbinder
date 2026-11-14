@@ -6,7 +6,7 @@ import { dashCard, getDashboard, type DashboardData, type DashCard } from "../fa
  * one demo-only extra, so the Want List highlight has something to show: a
  * scan in the hopper whose best guess is a Want List card (Deion Sanders,
  * 1996 Playoff Contenders #13), waiting on a yes. It came in with "Show
- * pickups", so that upload counts one more scan.
+ * pickups", so that run counts one more scan waiting on a yes.
  *
  * The card is one the demo's catalog holds and the collector does not own
  * yet, so its panel agrees: on the Want List, no copy. No pull matches the
@@ -28,8 +28,9 @@ function withWantMatches(data: DashboardData): DashboardData {
     ...data.intake,
     total: data.intake.total + 1,
     needsYou: data.intake.needsYou + 1,
-    uploads: data.intake.uploads.map((u) => (u.id === "upload-show" ? { ...u, scans: u.scans + 1 } : u)),
-    preview: [{ id: "scan-want", guess: scan }, ...data.intake.preview],
+    uploads: data.intake.uploads.map((u) =>
+      u.id === "upload-show" ? { ...u, needsYou: u.needsYou + 1, guesses: [scan, ...u.guesses] } : u,
+    ),
   };
   return { ...data, intake };
 }

@@ -123,6 +123,21 @@ describe("light palette contrast (NEO-356 spec)", () => {
   });
 });
 
+describe("the divider (rule), both modes", () => {
+  // A divider is quiet, not a control: it has no 3:1 bar. It must still show on every ground it is
+  // drawn on (dark's old rule was the graphite card's own tone, 1.00:1, so a divider in a raised panel
+  // vanished), and stay a step under rule-strong, the card and panel edge.
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: rule shows on surface, raised and raised-deep, and is quieter than rule-strong on each`, () => {
+      for (const bg of ["surface", "raised", "raised-deep"] as TokenRole[]) {
+        const rule = contrastRatio(tokenHex("rule", mode), tokenHex(bg, mode));
+        const strong = contrastRatio(tokenHex("rule-strong", mode), tokenHex(bg, mode));
+        expect({ bg, shows: rule >= 1.2, quieter: rule < strong }).toEqual({ bg, shows: true, quieter: true });
+      }
+    });
+  }
+});
+
 const PICK_HUES = ["pink", "blue", "green", "purple", "orange", "teal", "amber", "red", "emerald"] as const;
 
 describe("hued picks and badges, both modes", () => {

@@ -122,8 +122,8 @@ describe("the demo dashboard agrees with the demo store", () => {
   });
 
   it("guesses in the hopper only at cards the collector does not own yet", () => {
-    for (const scan of data.intake.preview) {
-      if (scan.guess) expect(copiesOf(scan.guess.id), scan.guess.title).toHaveLength(0);
-    }
+    const guesses = data.intake.uploads.flatMap((u) => u.guesses);
+    expect(guesses.length).toBeGreaterThan(0);
+    for (const guess of guesses) expect(copiesOf(guess.id), guess.title).toHaveLength(0);
   });
 });

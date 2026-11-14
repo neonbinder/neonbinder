@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router";
 import type { DashboardData } from "../fake-data";
 import { BlockHeading, count } from "./bits";
-import Hopper from "./Hopper";
+import Hopper, { hopperShows } from "./Hopper";
 import Boards, { boardItems } from "./Boards";
 import CouldFit from "./CouldFit";
 import { ClosedCover, EmptyCover } from "./Cover";
@@ -29,8 +29,9 @@ import "./combined.css";
  *      status: cards waiting for the next sync, and sets whose latest sync
  *      failed or held cards back (none of either: not drawn).
  *   2. The top band: a lead section with a side column beside it.
- *      - Side: In the Hopper (any scans in intake), then Needs a Look (a
- *        problem order, or a box with cards not listed).
+ *      - Side: In the Hopper (any scans in intake, or a run sorted this
+ *        week), then Needs a Look (a problem order, or a box with cards
+ *        not listed).
  *      - Lead, by one rule: an order waiting to ship puts Out the Door first
  *        (the boards follow the band); otherwise On the Bubble, the set
  *        boards, leads (Out the Door's "all shipped" line follows it).
@@ -194,7 +195,7 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
       <Boards items={boards} wanted={wanted} justCompleted={data.justCompleted} onOpenBinder={openBinder} />
     ) : null;
   const ship = data.sales ? <OutTheDoor sales={data.sales} /> : null;
-  const hopper = data.intake.total > 0 ? <Hopper intake={data.intake} wanted={wanted} /> : null;
+  const hopper = hopperShows(data.intake) ? <Hopper intake={data.intake} wanted={wanted} /> : null;
   const look = needsALook(data) ? <NeedsALook data={data} /> : null;
   const closest = boards[0] ? { label: boards[0].label, need: boards[0].need } : null;
 

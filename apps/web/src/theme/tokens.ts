@@ -228,7 +228,7 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     sheet: "oklch(12.9% 0.042 264.695)",
     field: "oklch(20.8% 0.042 265.755)",
     hover: "oklch(27.8% 0.033 256.848)",
-    rule: "oklch(27.9% 0.041 260.031)",
+    rule: "oklch(34% 0.042 258.5)",
     "rule-strong": "oklch(37.2% 0.044 257.287)",
     "field-rule": "oklch(37.2% 0.044 257.287)",
     control: "oklch(55.4% 0.046 257.417)",

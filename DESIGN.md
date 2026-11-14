@@ -16,7 +16,7 @@ colors:
   dark-sheet: "#020618"
   dark-field: "#0F172B"
   dark-hover: "#1E2939"
-  dark-rule: "#1D293D"
+  dark-rule: "#2A394E"
   dark-rule-strong: "#314158"
   dark-control: "#62748E"
   dark-ink: "#FFFFFF"
@@ -177,7 +177,7 @@ Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as t
 | `sheet` | big sheets and dialogs | #020618 (slate-950) | #FFFFFF |
 | `field` | input wells | #0F172B (slate-900) | #FFFFFF |
 | `hover` | a row on the page under the pointer | #1E2939 | #F0F2F9 |
-| `rule` | dividers, the header rule | #1D293D | #DDE0EA |
+| `rule` | dividers, the header rule: decorative separators only (a boundary that identifies a control uses `control` or `field-rule`). Visible on `surface`, `raised` and `raised-deep` in both modes, and quieter than `rule-strong` on each | #2A394E | #DDE0EA |
 | `rule-strong` | card and panel edges | #314158 | #BCB9CF |
 | `field-rule` | a text field's edge (3:1) | #314158 | #757090 |
 | `control` | a control's boundary: checkbox, radio, chip, a field on a card (3:1) | #62748E | #757090 |
@@ -253,9 +253,10 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 - **Title** (700, 1.25rem): section and card headings. `text-xl` is the most-used heading size.
 - **Body** (400, 0.875rem): the working size. `text-sm` is the most-used class in the app.
 - **Label** (400, 0.75rem): metadata, badges, helper text. Field labels are `text-sm` in `ink-2`.
+- **Numeral** (Neon, `text-4xl` up to `text-7xl`): a stat's number, lit in its hue with a glow in dark (`cb-numeral cb-glow` on the dashboard, `mc-percent` on the collection scoreboards). Its words lock up beside it as two lines on its baseline, sized to fill the figure's height (`cb-numeral-words`: `text-sm` beside `text-4xl`, `text-base` beside `text-5xl`, 600, `ink`), or sit centred beneath it in a narrow block. Never one small line at the numeral's foot a word-space away: it reads as a caption that has drifted off.
 
 ### Named Rules
-**The One Sign Rule.** The Neon face is the wordmark. It is never used for headings, buttons or body copy.
+**The One Sign Rule.** The Neon face is the wordmark, and the one other place it lights up is a stat's numeral. It is never used for headings, buttons or body copy.
 
 **The Four Weights Rule.** Lexend runs at 400 (body), 500 (labels, tabs), 600 (card and section titles) and 700 (page headings, numbers). Nothing lighter than 400, nothing heavier than 700. Headings wrap balanced and prose wraps `pretty` by default.
 

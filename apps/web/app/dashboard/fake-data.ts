@@ -540,80 +540,72 @@ const WANTS: WantCard[] = STORE.wants.map((w) => ({
   forBinder: w.binderId ? (CONTAINERS.get(w.binderId)?.name ?? null) : null,
 }));
 
-/** One uploaded scan still in intake. */
-export interface IntakeScan {
-  id: string;
-  /**
-   * The best match so far, waiting for the collector to confirm; null when
-   * the scan has not been identified yet (draw an `EmptySleeve`, not a card).
-   */
-  guess: DashCard | null;
-}
-
-/** One upload still in intake, and where to finish it. */
+/** One run with scans still in intake, and where to finish it. */
 export interface IntakeUpload {
   id: string;
   /** "Garage shoebox"; signed in, the name of the binder or box it is going to. */
   name: string;
-  scans: number;
-  done: number;
+  /** Open scans with a best guess, waiting on the collector's yes. */
+  needsYou: number;
+  /** Open scans nothing has identified yet. */
+  unidentified: number;
   /** Where the run is finished: Collection for a binder's, Inventory for a box's. */
   side: "collection" | "inventory";
   /** The Add cards tab on that screen, opened on this run. */
   href: string;
-  /** "Last scan 3:42 PM", "Last scan yesterday": two runs into one binder read apart by it. */
+  /** "Last scan 3:42 PM", "Last scan yesterday": shown only when another open run has the same name. */
   lastScan: string;
+  /** A few of its best guesses, for thumbnails. */
+  guesses: DashCard[];
 }
 
-/** Scans uploaded and not yet in a binder. */
+/** Scans uploaded and not yet in a binder or box, and the runs sorted lately. */
 export interface IntakeInProgress {
-  /** Every scan still in intake (waiting + needsYou). */
+  /** Every scan still in intake (needsYou + unidentified). */
   total: number;
-  /** Not identified yet. */
-  waiting: number;
   /** Matched, waiting on the collector to say yes. */
   needsYou: number;
-  /** The uploads they came from: "Garage shoebox, 24 scans, 6 done". */
+  /** Not identified yet. */
+  unidentified: number;
+  /** The runs with scans still open, newest activity first. */
   uploads: IntakeUpload[];
-  /** A few scans for thumbnails: the needs-you ones first, then the waiting. */
-  preview: IntakeScan[];
+  /** Runs sorted (every scan saved or set aside) in the last 7 days. */
+  sortedThisWeek: number;
 }
 
-/** The guesses are catalog cards the demo collector does not own. */
+/**
+ * The guesses are catalog cards the demo collector does not own. The demo's
+ * runs are pretend, so each opens the demo's Add cards tab on its side. The
+ * runs' open scans add up to `total`. The /demo page adds one Want List scan
+ * to "Show pickups" (demo/fixture.ts), so there it reads "1 needs your yes".
+ */
 const INTAKE: IntakeInProgress = {
   total: 20,
-  waiting: 18,
   needsYou: 2,
-  // The demo's runs are pretend, so each opens the demo's Add cards tab on its side.
-  // The runs' scans not yet done add up to `total` (24 - 6 + 2 = 20). The /demo
-  // page adds one Want List scan to "Show pickups" (demo/fixture.ts), so there it
-  // reads "0 of 3 scans": both numbers are right.
+  unidentified: 18,
   uploads: [
     {
       id: "upload-shoebox",
       name: "Garage shoebox",
-      scans: 24,
-      done: 6,
+      needsYou: 2,
+      unidentified: 16,
       side: "collection",
       href: "/demo/collection?tab=add",
       lastScan: "Last scan 9:14 AM",
+      guesses: [pick(SET.udHockey, "Legends", 4), pick(SET.score, "Gridiron Heritage", 3)],
     },
     {
       id: "upload-show",
       name: "Show pickups",
-      scans: 2,
-      done: 0,
+      needsYou: 0,
+      unidentified: 2,
       side: "inventory",
       href: "/demo/inventory?side=inventory&tab=add",
       lastScan: "Last scan yesterday",
+      guesses: [],
     },
   ],
-  preview: [
-    { id: "scan-1", guess: pick(SET.udHockey, "Legends", 4) },
-    { id: "scan-2", guess: pick(SET.score, "Gridiron Heritage", 3) },
-    { id: "scan-3", guess: null },
-    { id: "scan-4", guess: null },
-  ],
+  sortedThisWeek: 3,
 };
 
 /** A box (inventory for sale) holding cards not listed anywhere yet. */

@@ -14,6 +14,24 @@
   letter-spacing: 0.02em;
 }
 
+/*
+ * A numeral's words, set beside it as one stat: two short lines as tall as the
+ * figure and on its baseline, so number and words lock up like a scoreboard
+ * line. One small line at the numeral's foot, a word-space away, reads as a
+ * caption that has drifted off. Size the words to the numeral: text-sm beside
+ * text-4xl, text-base beside text-5xl, so two lines fill its figure height.
+ * Inline-block, never flex, so the sentence stays one run of text ("6 runs
+ * sorted this week"); give the span role="presentation" or Chrome exposes the
+ * block as a group of its own between the number and its words.
+ */
+.cb-numeral-words {
+  display: inline-block;
+  max-width: 7em;
+  line-height: 1.1;
+  text-wrap: balance;
+  vertical-align: baseline;
+}
+
 /* Lit on black; on paper a glow is a smudge, so light keeps the flat colour. */
 [data-theme="dark"] .cb-glow {
   text-shadow: 0 0 12px color-mix(in oklab, currentColor 55%, transparent), 0 0 2px currentColor;

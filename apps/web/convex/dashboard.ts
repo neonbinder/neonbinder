@@ -34,9 +34,10 @@
  * - `couldFit` (read once, one smart binder per call): the cards the
  *   collector holds in another binder that the binder's rule takes in, at
  *   most `COULD_FIT_CARDS`, from its stored fits' `held` mark.
- * - `intake` (read once): what is still in intake across the collector's
- *   recent runs, counted from their match rows, each run with the side its
- *   home is on (a binder's run finishes on Collection, a box's on Inventory).
+ * - `intake` (read once): the collector's recent runs with scans still open,
+ *   counted from their match rows, each with the side its home is on (a
+ *   binder's run finishes on Collection, a box's on Inventory), and how many
+ *   runs were sorted this week.
  * - `newSets` (read once, a few entries): the catalog's newest checklist
  *   uploads, grouped by set, the same for everyone (New on NeonBinder).
  * - `sales` (read once): whether the account sells (the sales section shows), and
@@ -100,15 +101,16 @@ export const COULD_FIT_CHECKS = 60;
 const LINES_PER_CARD = 200;
 /** Recent intake runs `intake` looks at, newest activity first (`intakeRuns.listMyIntakeRuns`'s cap). */
 export const INTAKE_RUNS = 20;
-/** A run finished this long ago still shows its upload; an unfinished one always does. */
+/** A run finished within this long counts as sorted this week. */
 export const INTAKE_RECENT_MS = 7 * 86_400_000;
 /** Match rows read from one run (`intakeRuns.INTAKE_SETTLE_SCAN`). */
 export const INTAKE_RUN_ROWS = 1000;
 /** Match rows `intake` reads across every run. */
 export const INTAKE_READ_BUDGET = 5000;
-/** Scans named in the hopper's preview: best guesses, then ones with no guess. */
+/** Best guesses one run shows as thumbnails. */
 export const INTAKE_PREVIEW_GUESSES = 3;
-export const INTAKE_PREVIEW_UNKNOWN = 4;
+/** Best guesses `intake` returns across every run (each is a card to hydrate). */
+export const INTAKE_PREVIEW_CARDS = 9;
 /** Orders `sales` looks through, newest first. */
 export const SALES_SCAN = 100;
 /** Orders still to ship `sales` returns, newest first. */
@@ -377,8 +379,6 @@ export interface IntakeRunTally {
   unidentified: number;
   /** The first open scans with a guess, in scan order, at most `INTAKE_PREVIEW_GUESSES`. */
   guesses: Array<{ id: string; cardId: string }>;
-  /** The first open scans without one, in scan order, at most `INTAKE_PREVIEW_UNKNOWN`. */
-  unknown: string[];
 }
 
 /**
@@ -390,7 +390,7 @@ export interface IntakeRunTally {
  */
 export function intakeRunTally(rows: readonly IntakeRowFacts[]): IntakeRunTally {
   const ordered = [...rows].sort((a, b) => a.frontIndex - b.frontIndex);
-  const out: IntakeRunTally = { scans: rows.length, done: 0, needsYou: 0, unidentified: 0, guesses: [], unknown: [] };
+  const out: IntakeRunTally = { scans: rows.length, done: 0, needsYou: 0, unidentified: 0, guesses: [] };
   for (const row of ordered) {
     if (row.savedAt !== undefined || row.setAside === true) {
       out.done += 1;
@@ -399,19 +399,14 @@ export function intakeRunTally(rows: readonly IntakeRowFacts[]): IntakeRunTally 
       if (out.guesses.length < INTAKE_PREVIEW_GUESSES) out.guesses.push({ id: row._id, cardId: row.cardId });
     } else {
       out.unidentified += 1;
-      if (out.unknown.length < INTAKE_PREVIEW_UNKNOWN) out.unknown.push(row._id);
     }
   }
   return out;
 }
 
-/**
- * Does the run show in the hopper? While any scan is still open, always;
- * a finished one only when it was active within `INTAKE_RECENT_MS`.
- */
-export function intakeRunShows(tally: Pick<IntakeRunTally, "scans" | "done">, lastActivityAt: number, now: number): boolean {
-  if (tally.scans === 0) return false;
-  return tally.done < tally.scans || now - lastActivityAt <= INTAKE_RECENT_MS;
+/** A run with scans and none of them open: sorted. An empty run is not. */
+export function intakeRunSorted(tally: Pick<IntakeRunTally, "scans" | "done">): boolean {
+  return tally.scans > 0 && tally.done >= tally.scans;
 }
 
 type SaleItemFacts = Pick<Doc<"marketplaceSales">["items"][number], "cardId" | "quantity" | "problem" | "shortBy">;
@@ -985,35 +980,42 @@ export const couldFit = query({
 });
 
 /**
- * What is still in intake: the caller's `INTAKE_RUNS` most recently active
- * runs, each counted from its match rows (`intakeRunTally`), and the runs
- * the hopper lists (`intakeRunShows`). Read once on mount.
+ * The hopper: the caller's `INTAKE_RUNS` most recently active runs, each
+ * counted from its match rows (`intakeRunTally`). Every run with a scan still
+ * open is returned, with its counts and a few best guesses; a sorted run is
+ * only counted (`intakeRunSorted`), and only when its last activity is
+ * within `INTAKE_RECENT_MS` (sorted this week). Read once on mount.
  *
  * Bounded: at most `INTAKE_RUN_ROWS` match rows per run and
  * `INTAKE_READ_BUDGET` across them, one home read per run. `truncated`: a
  * run held more rows than were read, or the budget ran out, so the counts
- * are a floor. Photos still being processed have no match row yet and are
- * not counted.
+ * are a floor. Sorted this week counts only the runs read.
+ * Photos still being processed have no match row yet and are not counted.
  */
 export const intake = query({
   args: {},
   returns: v.object({
     needsYou: v.number(),
     unidentified: v.number(),
+    /** Runs with a scan still open, newest activity first. */
     runs: v.array(
       v.object({
         runId: v.id("intakeRuns"),
         homeName: v.string(),
         /** Where the run's cards are going, so the hopper links to the screen that finishes it. */
         side: sideValidator,
-        scans: v.number(),
-        done: v.number(),
-        /** The run's last scan or decision: two runs into one binder read apart by it. */
+        /** Open scans with a best guess, waiting on a yes. */
+        needsYou: v.number(),
+        /** Open scans nothing identified yet. */
+        unidentified: v.number(),
+        /** The run's last scan or decision: two runs into one home read apart by it. */
         lastActivityAt: v.number(),
+        /** Its first best guesses, for thumbnails (`INTAKE_PREVIEW_GUESSES`, `INTAKE_PREVIEW_CARDS` across runs). */
+        guesses: v.array(v.id("cardChecklist")),
       }),
     ),
-    guesses: v.array(v.object({ id: v.id("intakeMatches"), cardId: v.id("cardChecklist") })),
-    unknown: v.array(v.id("intakeMatches")),
+    /** Sorted runs whose last activity is within `INTAKE_RECENT_MS`. */
+    sortedThisWeek: v.number(),
     truncated: v.boolean(),
   }),
   handler: async (ctx) => {
@@ -1027,12 +1029,20 @@ export const intake = query({
     const out = {
       needsYou: 0,
       unidentified: 0,
-      runs: [] as Array<{ runId: Id<"intakeRuns">; homeName: string; side: Side; scans: number; done: number; lastActivityAt: number }>,
-      guesses: [] as Array<{ id: Id<"intakeMatches">; cardId: Id<"cardChecklist"> }>,
-      unknown: [] as Array<Id<"intakeMatches">>,
+      runs: [] as Array<{
+        runId: Id<"intakeRuns">;
+        homeName: string;
+        side: Side;
+        needsYou: number;
+        unidentified: number;
+        lastActivityAt: number;
+        guesses: Array<Id<"cardChecklist">>;
+      }>,
+      sortedThisWeek: 0,
       truncated: false,
     };
     let budget = INTAKE_READ_BUDGET;
+    let previews = INTAKE_PREVIEW_CARDS;
     for (const run of runs) {
       if (budget <= 0) {
         out.truncated = true;
@@ -1049,25 +1059,24 @@ export const intake = query({
       budget -= rows.length;
       if (rows.length > cap) out.truncated = true;
       const tally = intakeRunTally(rows.slice(0, cap));
-      if (!intakeRunShows(tally, run.lastActivityAt, now)) continue;
+      if (tally.scans === 0) continue;
+      if (intakeRunSorted(tally)) {
+        if (now - run.lastActivityAt <= INTAKE_RECENT_MS) out.sortedThisWeek += 1;
+        continue;
+      }
       out.needsYou += tally.needsYou;
       out.unidentified += tally.unidentified;
+      const guesses = tally.guesses.slice(0, previews).map((g) => g.cardId as Id<"cardChecklist">);
+      previews -= guesses.length;
       out.runs.push({
         runId: run._id,
         homeName: home.name,
         side: sideOfContainer(home),
-        scans: tally.scans,
-        done: tally.done,
+        needsYou: tally.needsYou,
+        unidentified: tally.unidentified,
         lastActivityAt: run.lastActivityAt,
+        guesses,
       });
-      for (const g of tally.guesses) {
-        if (out.guesses.length < INTAKE_PREVIEW_GUESSES) {
-          out.guesses.push({ id: g.id as Id<"intakeMatches">, cardId: g.cardId as Id<"cardChecklist"> });
-        }
-      }
-      for (const u of tally.unknown) {
-        if (out.unknown.length < INTAKE_PREVIEW_UNKNOWN) out.unknown.push(u as Id<"intakeMatches">);
-      }
     }
     return out;
   },

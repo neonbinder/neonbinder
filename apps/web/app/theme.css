@@ -37,7 +37,11 @@
   --hover: oklch(27.8% 0.033 256.848); /* was hover:bg-gray-800 */
 
   /* Lines. */
-  --rule: oklch(27.9% 0.041 260.031); /* dividers, the header rule: was slate-800 */
+  /* Dividers, the header rule. Lighter than slate-800 (27.9%), which was the
+   * graphite card's own tone, so a divider inside a raised panel vanished:
+   * now one step above every ground it sits on (surface, raised, raised-deep)
+   * and still quieter than rule-strong on each. */
+  --rule: oklch(34% 0.042 258.5); /* decorative separators only; a boundary that identifies a control uses --control / --field-rule */
   --rule-strong: oklch(37.2% 0.044 257.287); /* card and panel borders: was slate-700 / gray-700 */
   --field-rule: oklch(37.2% 0.044 257.287); /* a text field's border: was slate-700 */
   /* A control's boundary (checkbox, radio, a field on a card): needs 3:1
@@ -284,7 +288,7 @@
   --field: #ffffff;
   --hover: #f0f2f9;
 
-  --rule: #dde0ea;
+  --rule: #dde0ea; /* decorative separators only; a boundary that identifies a control uses --control / --field-rule */
   --rule-strong: #bcb9cf;
   --field-rule: #757090; /* a field's edge needs 3:1 (SC 1.4.11) */
   --control: #757090;

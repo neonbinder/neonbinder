@@ -183,7 +183,13 @@ export function useCouldFit(binderIds: readonly string[] | null): Map<string, Co
   );
 }
 
-const NO_INTAKE_RAW: IntakeRaw = { needsYou: 0, unidentified: 0, runs: [], guesses: [], unknown: [], truncated: false };
+const NO_INTAKE_RAW: IntakeRaw = {
+  needsYou: 0,
+  unidentified: 0,
+  runs: [],
+  sortedThisWeek: 0,
+  truncated: false,
+};
 
 /** What is still in intake, read once on mount. */
 export function useIntakeRaw(): IntakeRaw | undefined {

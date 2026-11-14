@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { Link, useLocation } from "react-router";
 import { ArchiveBoxIcon, CheckCircleIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import type { DashboardData, SaleLine, SaleProblem, SalesData, UnshippedSale } from "../fake-data";
 import { daysAgoLabel, isLate, MARKETPLACES } from "../dash-labels";
@@ -16,6 +17,10 @@ import { PanelLink } from "./panelLink";
  * Every card an order names opens its card panel over the dashboard
  * (`./panelLink`), as stock for sale: its title on the order, each line when
  * the order is opened, and the card an oversold line names.
+ *
+ * With orders to ship, Out the Door also links to Inventory's Pick List, where
+ * they are pulled. An account that sells has that tab (NEO-500: signed in, it
+ * sits beside Sales, which every seller has; the demo shows its fixture's).
  */
 
 /** An order's card, by its full listing title: opens the card's panel. */
@@ -39,7 +44,19 @@ function lookItems(data: DashboardData): number {
 
 // ------------------------------------------------------------- Out the Door
 
+/**
+ * Inventory's Pick List, as the page itself writes it, so the link lands
+ * with no rewrite (and no extra history step): signed in, `/inventory?tab=pick`
+ * (the route is the side); in the demo, `side=inventory` first, then the tab,
+ * as the demo's own tab links build it (`mode.tsx`, `useSideTarget`).
+ */
+export function pickListHref(pathname: string): string {
+  return pathname.startsWith("/demo") ? "/demo/inventory?side=inventory&tab=pick" : "/inventory?tab=pick";
+}
+
+
 export function OutTheDoor({ sales }: { sales: SalesData }) {
+  const { pathname } = useLocation();
   const orders = sales.unshipped;
 
   if (orders.length === 0) {
@@ -65,10 +82,19 @@ export function OutTheDoor({ sales }: { sales: SalesData }) {
         <h2 id="cb-ship-heading" tabIndex={-1} className="rounded-sm text-2xl font-bold text-ink focus-outline">
           Out the Door
         </h2>
-        <p className="text-sm text-ink-2">
-          {count(orders.length, "order")}, {count(cards, "card")}. Oldest first
-          {late > 0 ? `, ${late} waiting 2 days or more.` : "."}
-        </p>
+        <div className="flex flex-col gap-0.5 sm:items-end">
+          <p className="text-sm text-ink-2">
+            {count(orders.length, "order")}, {count(cards, "card")}. Oldest first
+            {late > 0 ? `, ${late} waiting 2 days or more.` : "."}
+          </p>
+          <Link
+            to={pickListHref(pathname)}
+            className="inline-flex min-h-9 items-center gap-1 rounded-sm text-sm font-semibold text-neon-blue-text underline decoration-neon-blue-text/50 underline-offset-2 hover:decoration-current focus-outline max-sm:min-h-11"
+          >
+            Pull them on the Pick List
+            <span aria-hidden="true">→</span>
+          </Link>
+        </div>
       </div>
       <ol className="divide-y-2 divide-dashed divide-rule">
         {orders.map((order) => (

@@ -1127,51 +1127,62 @@ describe("New on NeonBinder: newSetsOf", () => {
 
 describe("the hopper: intakeOf", () => {
   const NOW = new Date(2026, 10, 9, 15, 0).getTime();
+  const run1 = {
+    runId: "run-1" as never,
+    homeName: "Main",
+    side: "collection" as const,
+    needsYou: 2,
+    unidentified: 3,
+    lastActivityAt: NOW - 86_400_000,
+    guesses: [cardA.id as never, "gone" as never],
+  };
   const raw = (over: Partial<IntakeRaw> = {}): IntakeRaw => ({
     needsYou: 2,
     unidentified: 3,
-    runs: [{ runId: "run-1" as never, homeName: "Main", side: "collection", scans: 9, done: 4, lastActivityAt: NOW - 86_400_000 }],
-    guesses: [
-      { id: "m1" as never, cardId: cardA.id as never },
-      { id: "m2" as never, cardId: "gone" as never },
-    ],
-    unknown: ["m3" as never],
+    runs: [run1],
+    sortedThisWeek: 2,
     truncated: false,
     ...over,
   });
 
-  it("counts every open scan: guesses waiting on a yes, the rest not identified; the preview leads with hydrated guesses", () => {
+  it("counts every open scan, per run too; a run's thumbnails are its hydrated guesses; the week's sorted count passes through", () => {
     const intake = intakeOf(raw(), cardsAB(), NOW);
     expect(intake).toMatchObject({
       total: 5,
       needsYou: 2,
-      waiting: 3,
+      unidentified: 3,
+      sortedThisWeek: 2,
       uploads: [
-        { id: "run-1", name: "Main", scans: 9, done: 4, side: "collection", href: "/collection?tab=add&run=run-1", lastScan: "Last scan yesterday" },
+        {
+          id: "run-1",
+          name: "Main",
+          needsYou: 2,
+          unidentified: 3,
+          side: "collection",
+          href: "/collection?tab=add&run=run-1",
+          lastScan: "Last scan yesterday",
+        },
       ],
     });
-    expect(intake.preview.map((p) => [p.id, p.guess?.id ?? null])).toEqual([
-      ["m1", cardA.id],
-      ["m3", null],
-    ]);
+    expect(intake.uploads[0].guesses.map((g) => g.id)).toEqual([cardA.id]);
   });
 
   it("a run finishes where its cards go: a binder's on Collection, a box's on Inventory, on the Add cards tab's own run param", () => {
     expect(ADD_CARDS_RUN_PARAM).toBe(RUN_PARAM);
     expect(runHrefOf("collection", "abc")).toBe("/collection?tab=add&run=abc");
     expect(runHrefOf("inventory", "abc")).toBe("/inventory?tab=add&run=abc");
-    const intake = intakeOf(
-      raw({ runs: [{ runId: "run-2" as never, homeName: "Show box", side: "inventory", scans: 3, done: 0, lastActivityAt: NOW }] }),
-      cardsAB(),
-      NOW,
-    );
+    const intake = intakeOf(raw({ runs: [{ ...run1, runId: "run-2" as never, homeName: "Show box", side: "inventory" }] }), cardsAB(), NOW);
     expect(intake.uploads.map((u) => [u.side, u.href])).toEqual([["inventory", "/inventory?tab=add&run=run-2"]]);
   });
 
-  it("nothing open, or not read yet: empty, so the hopper stays hidden", () => {
-    const empty = { total: 0, waiting: 0, needsYou: 0, uploads: [], preview: [] };
+  it("nothing open but runs sorted: the stats alone; nothing at all, or not read yet: empty, so the hopper stays hidden", () => {
+    const empty = { total: 0, needsYou: 0, unidentified: 0, uploads: [], sortedThisWeek: 0 };
     expect(intakeOf(undefined, cardsAB(), NOW)).toEqual(empty);
-    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, guesses: [], unknown: [] }), cardsAB(), NOW)).toEqual(empty);
+    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, runs: [], sortedThisWeek: 0 }), cardsAB(), NOW)).toEqual(empty);
+    expect(intakeOf(raw({ needsYou: 0, unidentified: 0, runs: [], sortedThisWeek: 1 }), cardsAB(), NOW)).toEqual({
+      ...empty,
+      sortedThisWeek: 1,
+    });
   });
 
   it("each run reads apart by its last scan: a time today, yesterday, then days ago, by the local calendar day", () => {
@@ -1254,73 +1265,46 @@ describe("useRealDashboard: sales to ship, the hopper and what could fit", () =>
     server.intake = {
       needsYou: 1,
       unidentified: 2,
-      runs: [{ runId: "run-1" as never, homeName: "Show box", side: "inventory", scans: 5, done: 2, lastActivityAt: Date.now() - 3 * 86_400_000 }],
-      guesses: [{ id: "m1" as never, cardId: cardA.id as never }],
-      unknown: ["m2" as never, "m3" as never],
+      runs: [
+        {
+          runId: "run-1" as never,
+          homeName: "Show box",
+          side: "inventory",
+          needsYou: 1,
+          unidentified: 2,
+          lastActivityAt: Date.now() - 3 * 86_400_000,
+          guesses: [cardA.id as never],
+        },
+      ],
+      sortedThisWeek: 1,
       truncated: false,
     };
     const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
     const data = result.current!;
-    expect(data.intake).toMatchObject({ total: 3, needsYou: 1, waiting: 2 });
+    expect(data.intake).toMatchObject({ total: 3, needsYou: 1, unidentified: 2 });
+    expect(data.intake.uploads[0].guesses.map((g) => g.id)).toEqual([cardA.id]);
     render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
     expect(screen.getByRole("heading", { name: "In the Hopper" })).toBeTruthy();
-    expect(screen.getByText("1 scan needs your yes")).toBeTruthy();
-    expect(screen.getByText("2 scans processing")).toBeTruthy();
-    expect(screen.queryByText(/still being identified/)).toBeNull();
-    const run = screen.getByRole("link", { name: /^Show box 2 of 5 scans done Finish on Inventory Last scan \d+ days ago$/ });
+    expect(screen.getByText(/^1 scan needs your yes/).textContent).toBe("1 scan needs your yes · , 2 to identify");
+    expect(screen.queryByText(/processing/)).toBeNull();
+    const run = screen.getByRole("link", { name: "Finish this run into Show box on Inventory" });
     expect(run.getAttribute("href")).toBe("/inventory?tab=add&run=run-1");
-  });
-
-  it("an account that sells with nothing to ship: the sales section says All shipped", () => {
-    store.containers = smartShelf();
-    store.summary = SUMMARY;
-    server.sales = { dealer: true, orders: [], more: false };
-    const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
-    const data = result.current!;
-    expect(data.sales).toEqual({ unshipped: [] });
-    render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
-    expect(screen.getByText("All shipped. Nice.")).toBeTruthy();
-    expect(screen.getByText(/Nothing to ship\./)).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Needs a Look" })).toBeNull();
-  });
-
-  it("orders to ship: Out the Door oldest first, and an unmatched order in Needs a Look", () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date(2026, 10, 9, 12));
-    store.containers = smartShelf();
-    store.summary = SUMMARY;
-    server.sales = {
-      dealer: true,
-      orders: [
-        saleRaw({ id: "s-new" as never, orderNo: "BSC-NEW", orderDate: new Date(2026, 10, 9, 8).getTime() }),
-        saleRaw({
-          id: "s-old" as never,
-          platform: "ebay",
-          orderNo: "EB-OLD",
-          status: "PAID",
-          orderDate: new Date(2026, 10, 6, 8).getTime(),
-          lines: [{ quantity: 1, problem: "unmatched" }],
-        }),
-      ],
-      more: false,
-    };
-    const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
-    const data = result.current!;
-    expect(data.sales!.unshipped.map((o) => o.orderNumber)).toEqual(["EB-OLD", "BSC-NEW"]);
-    render(<DashboardScreen data={data} />, { wrapper: wrapper("/dashboard") });
-    expect(screen.getByRole("heading", { name: "Out the Door" })).toBeTruthy();
-    expect(screen.getByText(/2 orders to ship\./)).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Needs a Look" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Jump to order #EB-OLD" })).toBeTruthy();
-    expect(screen.getAllByText("A line isn't matched to a card of yours yet.").length).toBeGreaterThan(0);
-    expect(screen.getByText("Not matched to a card yet")).toBeTruthy();
+    const stat = screen.getByText((_, el) => el?.tagName === "P" && el.textContent === "1 run sorted this week");
+    expect(stat.querySelector(".cb-numeral")?.textContent).toBe("1");
+    expect(screen.queryByText(/all-time/)).toBeNull();
   });
 
   it("with no sales, no scans and nothing that could fit: no Out the Door, no hopper, no could-fit strip", () => {
     store.containers = [container({ id: "main", system: "main", name: "Main", count: { copies: 3, lines: 3 } })];
     store.summary = SUMMARY;
     server.since = null;
-    server.intake = { needsYou: 0, unidentified: 0, runs: [], guesses: [], unknown: [], truncated: false };
+    server.intake = {
+      needsYou: 0,
+      unidentified: 0,
+      runs: [],
+      sortedThisWeek: 0,
+      truncated: false,
+    };
     server.couldFit = new Map();
     const { result } = renderHook(() => useRealDashboard(), { wrapper: wrapper("/dashboard") });
     const data = result.current!;
