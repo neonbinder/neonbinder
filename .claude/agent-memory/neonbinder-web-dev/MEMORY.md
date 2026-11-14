@@ -217,3 +217,4 @@
 - [Device preference store](reference_device_preference_store.md) — per-device setting shared by page + layout: one useSyncExternalStore module, storage try/catch, test reset in afterEach
 - [Segmented switch is a radiogroup](reference_segmented_switch_is_a_radiogroup.md) — one-of-two pill = roving radiogroup; reserve the check slot; padded track keeps focus ring off the cyan fill
 - [Agent shell Node is not the apps/web pin](reference_agent_shell_node_is_not_the_apps_web_pin.md) — prepend nvm's $(cat .nvmrc) bin in the same call as each gate; print node --version
+- [New table naming a variant has six pins](reference_new_table_naming_a_variant_has_six_pins.md) — wipe graph, reset batch + exact count pin, cli.mjs list, test reset, api.d.ts, auth registry

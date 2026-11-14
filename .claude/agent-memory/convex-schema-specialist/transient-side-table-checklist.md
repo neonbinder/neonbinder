@@ -51,3 +51,15 @@ lists all five in its migration steps. Related: [[staging-tables-scope-per-opera
 - `apps/web/scripts/reference-seed/cli.mjs` `SELECTOR_DEPENDANT_TABLES`: any table that holds a `selectorOptions` id belongs here (`cli.test.mjs` checks it), so a reference-seed load knows what it would orphan.
 - **Per-user tables** (keyed on the Clerk subject, e.g. collector copies) also join `resetMyTestState` in `convex/testing.ts`, not only the global drain. Keep them out of `REFERENCE_SEED_TABLES`.
 See [[per-card-derived-state-hook-points]].
+
+**Cheaper wiring for a per-owner side table (NEO-536 plan, 2026-11-13).**
+A new table in an existing feature's family can join that family's existing
+reset batch (e.g. add it to `resetMarketplaceListingBatch`'s table loop) and
+fold its per-user count into an existing summed key in `resetMyTestState`
+(`marketplaceListing`). No new count key means none of the `toEqual` count
+blocks change. It still needs the wipe-graph entry, the
+`SELECTOR_DEPENDANT_TABLES` entry, and a seeded row in the
+`exceptReferenceSeed` DEPENDANTS test, so the drain is actually proven.
+A table that SNAPSHOTS a shared union (`listingProblemReasonValidator`,
+`listingPlatformValidator`) pins that union. Narrowing the union later
+means clearing or mapping those rows first.
