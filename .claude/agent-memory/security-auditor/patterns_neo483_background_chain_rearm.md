@@ -25,3 +25,11 @@ that the leeway fallback is never armed when it is set. A new-service +
 old-Convex deploy window re-serves the refused token during a profile stall.
 
 Related: [[patterns-neo370-scheduled-marketplace-poll]], [[patterns-neo411-retry-generation-and-dispatcher]].
+
+**Delta lesson: a cooldown with a "user action skips it" door needs its own
+floor.** The fix let the public `syncVariant` press restart an ENDED chain
+with no minimum interval, placed before the per-variant resync throttle. With
+a one-read terminal end (`noSellerProfile`) a scripted press loop drives about
+one upstream read per tick latency. Audit every `userAction: true` call site
+that a public mutation reaches. It needs a row-level floor on chain starts,
+not the per-variant throttle, which a user with many variants sidesteps.

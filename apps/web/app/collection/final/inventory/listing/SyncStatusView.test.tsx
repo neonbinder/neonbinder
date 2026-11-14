@@ -156,12 +156,13 @@ describe("the Sync status screen", () => {
     }
   });
 
-  it("awaiting the seller account: the admin's read-only copy speaks about the collector", () => {
-    draw({ platforms: [bsc({ awaitingSellerSince: T })] }, { readOnly: true });
+  it("awaiting the seller account: the admin's read-only copy speaks about the collector", async () => {
+    const { view, rerender } = draw({ platforms: [bsc({ awaitingSellerSince: T })] }, { readOnly: true });
     const part = section("Running now");
     expect(within(part).getByText(awaitingSellerLine("bsc", true))).toBeTruthy();
     expect(awaitingSellerLine("bsc", true)).not.toBe(awaitingSellerLine("bsc"));
     expect(within(part).queryByText(awaitingSellerLine("bsc"))).toBeNull();
+    await expectAccessibleInBothModes(view.container, { label: "Sync status, awaiting seller account (read-only)", rerender });
   });
 
   it("awaiting the seller account: a run going now wins, with no waiting line", () => {
@@ -252,11 +253,15 @@ describe("the Sync status screen", () => {
         });
       });
 
-      it(`${c.stall}: the admin's read-only line speaks about the collector`, () => {
-        draw({ platforms: [bsc({ sellerAccountStalled: c.stall })] }, { readOnly: true });
+      it(`${c.stall}: the admin's read-only line speaks about the collector`, async () => {
+        const { view, rerender } = draw({ platforms: [bsc({ sellerAccountStalled: c.stall })] }, { readOnly: true });
         const part = section("Running now");
         expect(within(part).getByText(c.admin)).toBeTruthy();
         expect(within(part).queryByText(c.collector)).toBeNull();
+        await expectAccessibleInBothModes(view.container, {
+          label: `Sync status, seller account ${c.stall} (read-only)`,
+          rerender,
+        });
       });
     }
 

@@ -729,7 +729,10 @@ export const syncVariant = mutation({
 
 /**
  * NEO-483 — a Sync press on BuySportsCards with no seller account stored
- * starts the background read now, past an ended chain's cooldown. Gated as a
+ * starts the background read now, past an ended chain's 6 h cooldown but not
+ * inside its per-row floor (`BSC_SELLER_ID_FETCH_USER_RETRY_MS`: 60 s after
+ * `gaveUp` or `stopped`, 5 min after `noSellerProfile`), so a press loop
+ * reads BSC at most that often. Gated as a
  * drain claim is (`listingDrain.claimDrain`): a sign-in that is missing or
  * needs renewing reads nothing (that has its own line and its own fix).
  */
@@ -1165,18 +1168,22 @@ type SellerAccountWait = Pick<PlatformStatus, "awaitingSellerSince" | "sellerAcc
  *   - RUNNING (`endedAt` unset): `awaitingSellerSince` = the chain's
  *     `startedAt`. A chain past its stale age still reads as running until a
  *     claim replaces it; the new chain is a new wait and counts afresh.
- *   - ENDED (`endedAt` set): `sellerAccountStalled` = its `endReason`. An
- *     ended chain with no reason reads as `gaveUp`, the reason that promises
- *     nothing about BSC's answer.
+ *   - ENDED (`endedAt` set) `gaveUp` or `noSellerProfile`:
+ *     `sellerAccountStalled` = its `endReason`. An ended chain with no reason
+ *     reads as `gaveUp`, the reason that promises nothing about BSC's answer.
+ *   - ENDED `stopped` (a pause, a sign-out, no token, the owner stopped
+ *     listing): neither, as with no chain. The stop was not BSC's answer
+ *     about the seller account, so it is no stall; the next claim, save,
+ *     sign-in or Sync press after the 60 s floor resumes the read.
  *   - No chain: neither. Nothing is asking BSC at that moment (a listing
- *     that predates the read, or a chain cleared by a pause or a sign-out),
- *     so there is no wait to count. Counting from `listingSince` instead
+ *     that predates the read), so there is no wait to count. Counting from `listingSince` instead
  *     would jump back the moment the next drain claim, save, sign-in or Sync
  *     press arms a chain; staying silent until then is the stable choice.
  */
 function sellerAccountWait(chain: Doc<"marketplaceListingStates">["sellerIdFetch"]): SellerAccountWait {
   if (chain === undefined) return {};
   if (chain.endedAt === undefined) return { awaitingSellerSince: chain.startedAt };
+  if (chain.endReason === "stopped") return {};
   return { sellerAccountStalled: chain.endReason ?? "gaveUp" };
 }
 

@@ -2571,7 +2571,7 @@ describe("NEO-483 — tokenRefused and the seller-account read", () => {
 
       expect(result).toEqual({
         success: true,
-        message: "Signed in to BuySportsCards. Couldn't confirm your store name right now; test again in a few minutes.",
+        message: "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; test again in a few minutes.",
       });
       expect((await listingRow(t))?.sellerIdFetch).toEqual(ended);
       expect(await pendingTicks(t)).toEqual([]);
@@ -2579,11 +2579,11 @@ describe("NEO-483 — tokenRefused and the seller-account read", () => {
     });
 
     test.each(["gaveUp", "noSellerProfile"] as const)(
-      "%s, then the collector saves the BSC sign-in (saveCredentials): a new chain, first read in 30 s",
+      "%s, then the collector saves the BSC sign-in past its floor (saveCredentials): a new chain, first read in 30 s",
       async (reason) => {
         const t = convexTest(schema, modules);
         await listingOwner(t);
-        await endChain(t, reason);
+        await endChain(t, reason, 10 * 60_000);
         const logins = stubLogins({ success: true, message: "ok" });
         const before = Date.now();
 
@@ -2615,7 +2615,7 @@ describe("NEO-483 — tokenRefused and the seller-account read", () => {
       vi.stubEnv("TESTING_RESET_SECRET", "test-secret");
       const t = convexTest(schema, modules);
       await listingOwner(t);
-      await endChain(t);
+      await endChain(t, "gaveUp", 2 * 60_000);
       stubLogins({ success: true, message: "ok" });
 
       const result = await t.action(internal.credentials.storeTestCredentials, {
@@ -2638,7 +2638,7 @@ describe("NEO-483 — tokenRefused and the seller-account read", () => {
     test("a save that turns listing back on (a stopped row with an ended chain) arms a new chain", async () => {
       const t = convexTest(schema, modules);
       await listingOwner(t);
-      await endChain(t);
+      await endChain(t, "gaveUp", 2 * 60_000);
       // The owner had stopped listing: no stamp, the ended chain still on the row.
       await t.run(async (ctx) => {
         const row = (await ctx.db.query("marketplaceListingStates").collect()).find((r) => r.ownerId === USER_A)!;
@@ -2657,6 +2657,24 @@ describe("NEO-483 — tokenRefused and the seller-account read", () => {
       expect(row?.sellerIdFetch?.token).not.toBe("ended-1");
       expect(row?.sellerIdFetch?.endedAt).toBeUndefined();
       expect(await pendingTicks(t)).toHaveLength(1);
+      await cancelScheduled(t);
+    });
+
+    test("noSellerProfile, then a save inside its 5 min floor: no new chain", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      const ended = await endChain(t, "noSellerProfile", 4 * 60_000);
+      stubLogins({ success: true, message: "ok" });
+
+      const result = await t.withIdentity({ subject: USER_A }).action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+
+      expect(result.success).toBe(true);
+      expect((await listingRow(t))?.sellerIdFetch).toEqual(ended);
+      expect(await pendingTicks(t)).toEqual([]);
       await cancelScheduled(t);
     });
 
@@ -2710,7 +2728,7 @@ describe("NEO-483 — tokenRefused and the seller-account read", () => {
 
       expect(result).toEqual({
         success: true,
-        message: "Signed in to BuySportsCards. Couldn't confirm your store name right now; we'll keep checking.",
+        message: "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; we'll keep checking.",
       });
       expect(await pendingTicks(t)).toHaveLength(1);
       await cancelScheduled(t);
@@ -2725,7 +2743,7 @@ describe("NEO-483 — tokenRefused and the seller-account read", () => {
 
       expect(result.success).toBe(true);
       expect(result.message).toBe(
-        "Signed in to BuySportsCards. Couldn't confirm your store name right now; test again in a few minutes.",
+        "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; test again in a few minutes.",
       );
       expect(result.message).not.toMatch(/authenticated successfully/);
       expect(result.details).toBeUndefined();

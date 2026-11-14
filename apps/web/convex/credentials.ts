@@ -1853,8 +1853,8 @@ function bscUnconfirmedSuccessMessage(
 ): string {
   const checking = sellerFetch === "started" || sellerFetch === "inFlight";
   return checking
-    ? "Signed in to BuySportsCards. Couldn't confirm your store name right now; we'll keep checking."
-    : "Signed in to BuySportsCards. Couldn't confirm your store name right now; test again in a few minutes.";
+    ? "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; we'll keep checking."
+    : "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; test again in a few minutes.";
 }
 
 /**

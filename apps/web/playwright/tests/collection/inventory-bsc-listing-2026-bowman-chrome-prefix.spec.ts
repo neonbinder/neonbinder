@@ -74,6 +74,7 @@ import {
   quantityField,
   queueSettled,
   syncRun,
+  walkForCleanup,
 } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -353,6 +354,7 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
 test.afterEach(async ({ context, isMobile }, testInfo) => {
   const failed = testInfo.status !== testInfo.expectedStatus;
   const clean = await context.newPage();
+  let cleanupFailure: unknown;
   try {
     try {
       if (failed && written.started && written.box) {
@@ -375,10 +377,14 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         await clean.goto("/inventory?tab=sync");
         const zeroing = syncStatus(clean);
         const zeroingRun = syncRun(zeroing.platform, SET_LABEL, BSC);
-        const zeroed = zeroing.row.getByText(/^0 listed/);
-        await expect(zeroingRun.underWay(zeroed)).toBeVisible();
-        await followRunToEnd(zeroing.platform, zeroingRun, undefined, bscReadCeiling, BSC);
-        await expect(zeroed).toBeVisible();
+        // The zeroing run is walked to rest with the press's queued cards as the
+        // evidence (`queueSettled`), the seller-account claim wait covered (BSC passed),
+        // so a run held for the seller account does not fail the hook on a flat 7 s gate.
+        // A walk that stalls is tried again, and the hook rethrows what it could not do.
+        cleanupFailure = await walkForCleanup(async () => {
+          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL), bscReadCeiling, BSC);
+          await expect(zeroing.row.getByText(/^0 listed/)).toBeVisible();
+        });
       }
     } finally {
       try {
@@ -393,6 +399,9 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
       } finally {
         // The body already stopped listing on a pass; otherwise it stops here.
         if (!written.stopped) await stopListing(clean, written.removed);
+        if (cleanupFailure) {
+          throw new Error(`The hook's zeros may not have reached ${BSC}: ${String(cleanupFailure)}`);
+        }
       }
     }
   } finally {

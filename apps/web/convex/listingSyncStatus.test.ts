@@ -536,7 +536,7 @@ describe("awaitingSellerSince and sellerAccountStalled (NEO-483)", () => {
   /** A chain under way, started at `startedAt`. */
   const running = (startedAt: number) => ({ sellerIdFetch: { token: "secret-chain-token", startedAt } });
   /** A chain that stopped at `endedAt` for `endReason`. */
-  const ended = (endReason: "gaveUp" | "noSellerProfile" | undefined, startedAt = 4242, endedAt = 9999) => ({
+  const ended = (endReason: "gaveUp" | "noSellerProfile" | "stopped" | undefined, startedAt = 4242, endedAt = 9999) => ({
     sellerIdFetch: {
       token: "secret-chain-token",
       startedAt,
@@ -598,6 +598,18 @@ describe("awaitingSellerSince and sellerAccountStalled (NEO-483)", () => {
       expect(JSON.stringify(got)).not.toContain("secret-chain-token");
     },
   );
+
+  test("a chain that ended stopped (a pause, a sign-out, no token): neither, it is no stall", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, { listingStartedAt: 777, ...ended("stopped") });
+
+    const got = await bsc(s);
+
+    expect(got).not.toHaveProperty("awaitingSellerSince");
+    expect(got).not.toHaveProperty("sellerAccountStalled");
+    expect(JSON.stringify(got)).not.toContain("secret-chain-token");
+  });
 
   test("an ended chain with no reason on it reads as gaveUp", async () => {
     const s = await setup();

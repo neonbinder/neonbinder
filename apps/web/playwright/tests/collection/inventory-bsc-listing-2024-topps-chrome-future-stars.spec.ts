@@ -923,6 +923,7 @@ test(
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const refresh = syncRun(platform, SET_LABEL, BSC);
+    // No marketplace passed: a later press in this spec, the first run has landed, so the seller account is already stored and no claim is held for it.
     await followRunToRest(platform, refresh, queueSettled(platform, SET_LABEL), bscReadCeiling);
     // Positives first (R2): the run's folded ledger and its result line.
     await expect(refresh.last).toBeVisible();

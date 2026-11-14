@@ -3,7 +3,7 @@
 // test, clear, then a rejected sign-in with fake creds (nothing saved: the
 // sign-in form is still showing), re-connect real creds, test, clear.
 import type { Page } from "@playwright/test";
-import { BSC_TEST_SUCCESS } from "../../support/credentials";
+import { expectBscTestSuccess } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const SEED_BUDGET = 90_000; // seed-credentials performs a real marketplace sign-in
@@ -26,12 +26,13 @@ async function selectSite(page: Page, label: string): Promise<void> {
   await expect(page.getByRole("heading", { name: `${label} Credentials` })).toBeVisible();
 }
 
-async function testStoredSession(page: Page, label: string, success: RegExp): Promise<void> {
+async function testStoredSession(page: Page, label: string, success: RegExp | "bsc"): Promise<void> {
   await expect(page.getByText(`Connected to ${label}`)).toBeVisible();
   const testButton = page.getByRole("button", { name: "Test Credentials" });
   await expect(testButton).toBeVisible({ timeout: LIVE });
   await testButton.click();
-  await expect(page.getByText(success)).toBeVisible({ timeout: LIVE });
+  if (success === "bsc") await expectBscTestSuccess(page, LIVE);
+  else await expect(page.getByText(success)).toBeVisible({ timeout: LIVE });
   await expectAccessible(page, { label: `Profile, ${label} credentials, tested` });
 }
 
@@ -73,7 +74,7 @@ test(
     // ---- BuySportsCards ----
     const bsc = "BuySportsCards";
     await seedAndOpen(page, "buysportscards", bsc);
-    await testStoredSession(page, bsc, BSC_TEST_SUCCESS);
+    await testStoredSession(page, bsc, "bsc");
     await clearConnection(page, bsc);
 
     await failedSignIn(
@@ -86,7 +87,7 @@ test(
 
     // Recover: re-connect real creds and prove the session works.
     await seedAndOpen(page, "buysportscards", bsc);
-    await testStoredSession(page, bsc, BSC_TEST_SUCCESS);
+    await testStoredSession(page, bsc, "bsc");
 
     // A fresh load still shows the connection; clear it for good.
     await page.goto("/profile/credentials");

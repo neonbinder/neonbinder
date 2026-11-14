@@ -5341,18 +5341,20 @@ export default defineSchema({
      * RUNNING while `endedAt` is unset: older than
      * `BSC_SELLER_ID_FETCH_STALE_MS` it reads as stale and a new chain
      * replaces it. ENDED once `endedAt` is set, with `endReason`: "gaveUp"
-     * (every read failed) or "noSellerProfile" (BSC answered with no seller
-     * profile). An ended chain is kept, so nothing but a user action re-arms
-     * it until `BSC_SELLER_ID_FETCH_COOLDOWN_MS` has passed. Cleared when the
-     * account lands, or when a RUNNING chain's tick finds the owner no longer
-     * listing, BSC paused, or the owner signed out. Holds no marketplace value.
+     * (every read failed), "noSellerProfile" (BSC answered with no seller
+     * profile) or "stopped" (a tick found the owner no longer listing, BSC
+     * paused, the owner signed out, or no token). An ended chain is kept so
+     * renewals and drain claims wait `BSC_SELLER_ID_FETCH_COOLDOWN_MS` (only
+     * the 60 s floor after "stopped") and even a user action waits
+     * `BSC_SELLER_ID_FETCH_USER_RETRY_MS`. Cleared only when the account is
+     * known (it lands, or a tick finds it stored). Holds no marketplace value.
      */
     sellerIdFetch: v.optional(
       v.object({
         token: v.string(),
         startedAt: v.number(),
         endedAt: v.optional(v.number()),
-        endReason: v.optional(v.union(v.literal("gaveUp"), v.literal("noSellerProfile"))),
+        endReason: v.optional(v.union(v.literal("gaveUp"), v.literal("noSellerProfile"), v.literal("stopped"))),
       }),
     ),
     /** When the poll last ran while the owner's credentials needed a fresh sign-in. */

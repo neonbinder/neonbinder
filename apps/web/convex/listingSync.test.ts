@@ -1960,24 +1960,43 @@ describe("setUpListing arms the seller-account read (NEO-483)", () => {
 
 // NEO-483 — a Sync press is the collector asking again: with no BuySportsCards
 // seller account stored it starts the background read at once, past an ended
-// chain's cooldown (the drain claim the press kicks never does).
+// chain's cooldown (the drain claim the press kicks never does), but only once
+// the ended chain's per-row floor has passed (`BSC_SELLER_ID_FETCH_USER_RETRY_MS`),
+// so a scripted press loop cannot read BSC every few seconds.
 describe("syncVariant arms the seller-account read (NEO-483)", () => {
   const ticks = (s: S) => pendingNamed(s, "fetchTick");
   const rowOf = async (s: S) => (await states(s)).find((r) => r.platform === "bsc");
-  const endChain = (s: S) =>
+  /** An ENDED chain, `endedAgoMs` ago (past the 5 min noSellerProfile floor, inside the 6 h cooldown, by default). */
+  const endChain = (
+    s: S,
+    endReason: "gaveUp" | "noSellerProfile" | "stopped" = "noSellerProfile",
+    endedAgoMs = 10 * 60_000,
+  ) =>
     s.t.run(async (ctx) => {
       const row = await ctx.db
         .query("marketplaceListingStates")
         .withIndex("by_owner_platform", (q) => q.eq("ownerId", ME.subject).eq("platform", "bsc"))
         .first();
-      const endedAt = Date.now() - 60_000;
-      const chain = { token: "ended-chain", startedAt: endedAt - 60_000, endedAt, endReason: "noSellerProfile" as const };
+      const endedAt = Date.now() - endedAgoMs;
+      const chain = { token: "ended-chain", startedAt: endedAt - 60_000, endedAt, endReason };
       await ctx.db.patch(row!._id, { sellerIdFetch: chain });
       return chain;
     });
+  /** Moves the row's ended chain's `endedAt` to `endedAgoMs` before now (time passing). */
+  const age = (s: S, endedAgoMs: number) =>
+    s.t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", ME.subject).eq("platform", "bsc"))
+        .first();
+      await ctx.db.patch(row!._id, { sellerIdFetch: { ...row!.sellerIdFetch!, endedAt: Date.now() - endedAgoMs } });
+    });
   const press = (s: S) => s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId });
+  /** Distinct chain tokens among the pending reads. */
+  const chainsScheduled = async (s: S) =>
+    new Set((await ticks(s)).map((j) => (j.args as unknown as Array<{ token: string }>)[0].token));
 
-  test("an ended chain inside its cooldown: the press starts a new one, first read at once, and still kicks the drain", async () => {
+  test("an ended chain past its floor, inside its cooldown: the press starts a new one, first read at once, and still kicks the drain", async () => {
     const s = await fresh();
     await connect(s);
     await addTo(s, s.fx.gooden1, s.box);
@@ -2029,7 +2048,7 @@ describe("syncVariant arms the seller-account read (NEO-483)", () => {
     expect(await ticks(s)).toEqual([]);
   });
 
-  test("a throttled press still asks again (the stalled line says to hit Sync)", async () => {
+  test("a throttled press still asks again past the floor (the stalled line says to hit Sync)", async () => {
     const s = await fresh();
     await connect(s);
     await listOn(s);
@@ -2076,5 +2095,75 @@ describe("syncVariant arms the seller-account read (NEO-483)", () => {
 
     expect((await rowOf(s))?.sellerIdFetch).toEqual(chain);
     expect(await ticks(s)).toEqual([]);
+  });
+
+  // The NEO-483 delta re-audit: a press loop on an account BSC says has no
+  // seller profile (or never answers) must not read BSC every few seconds.
+  test.each<["noSellerProfile" | "gaveUp", number]>([
+    ["noSellerProfile", 5 * 60_000],
+    ["gaveUp", 60_000],
+  ])("%s: presses 1 s apart start exactly one chain; after it ends, none until the %i ms floor has passed", async (reason, floorMs) => {
+    const s = await fresh();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    await endChain(s, reason, floorMs + 1_000);
+    holdDrains();
+
+    // Two presses a second apart: one chain.
+    await press(s);
+    const first = (await rowOf(s))?.sellerIdFetch;
+    expect(first?.token).not.toBe("ended-chain");
+    expect(first?.endedAt).toBeUndefined();
+    await press(s);
+    expect((await rowOf(s))?.sellerIdFetch).toEqual(first);
+    expect(await chainsScheduled(s)).toEqual(new Set([first!.token]));
+
+    // That chain ends the same way, through the module's own mutations.
+    if (reason === "noSellerProfile") {
+      await s.t.mutation(internal.bscSellerId.endChainNoSellerProfile, { ownerId: ME.subject, token: first!.token });
+    } else {
+      await s.t.mutation(internal.bscSellerId.scheduleNext, { ownerId: ME.subject, token: first!.token, attempt: 10 });
+    }
+    const ended = (await rowOf(s))?.sellerIdFetch;
+    expect(ended).toMatchObject({ token: first!.token, endReason: reason });
+
+    // Presses a second later, and just inside the floor: nothing new.
+    await press(s);
+    await age(s, floorMs - 1_000);
+    await press(s);
+    expect((await rowOf(s))?.sellerIdFetch?.token).toBe(first!.token);
+    expect((await rowOf(s))?.sellerIdFetch?.endedAt).toBeDefined();
+    expect(await chainsScheduled(s)).toEqual(new Set([first!.token]));
+
+    // Past the floor: the next press starts a second chain.
+    await age(s, floorMs);
+    await press(s);
+    const second = (await rowOf(s))?.sellerIdFetch;
+    expect(second?.token).not.toBe(first!.token);
+    expect(second?.endedAt).toBeUndefined();
+    expect(await chainsScheduled(s)).toEqual(new Set([first!.token, second!.token]));
+  });
+
+  test("a stopped chain cannot be restarted by a press inside its 60 s floor, and can after it", async () => {
+    const s = await fresh();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    const chain = await endChain(s, "stopped", 1_000);
+    holdDrains();
+
+    await press(s);
+    await age(s, 59_000);
+    await press(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toMatchObject({ token: chain.token, endReason: "stopped" });
+    expect(await ticks(s)).toEqual([]);
+
+    await age(s, 60_000);
+    await press(s);
+
+    expect((await rowOf(s))?.sellerIdFetch?.token).not.toBe("ended-chain");
+    expect(await ticks(s)).toHaveLength(1);
   });
 });

@@ -1,6 +1,6 @@
 ---
 name: every-stored-session-login-runs-set-up-listing
-description: every successful BSC/SL stored-session login (hourly renewal, Test Credentials) reaches listingSync.setUpListing with save:false; a user-only side effect must key on opts.save / transient
+description: stored-session logins reach setUpListing(save:false) hourly, so user-only effects key on opts.save / transient; a user-action bypass still needs a per-row floor
 metadata:
   type: reference
 ---
@@ -24,3 +24,9 @@ Prove it end to end in credentials.test.ts: seed the ended state, call
 scheduled job; then plant `userAction: true` and confirm the test reds.
 
 Related: [[reference_store_loops_fall_through_to_insert]].
+
+A user-action bypass needs its own floor too: a Sync press is a public
+mutation a script can loop, so "user action skips the cooldown" is
+unbounded unless the bypass waits a per-row minimum since the chain ended.
+And clearing a chain's field on a stop is itself a re-arm hole (no record,
+no floor); keep an ended record and clear only when the account is known.
