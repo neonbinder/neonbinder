@@ -16,7 +16,8 @@ import { PanelLink } from "./panelLink";
  *   5 need your yes · 1 to identify          one row per run with a scan
  *   [Finish this run]                        still open, newest first
  *   ─────────────────────────────────────
- *   6  runs sorted this week                 only when the week has one
+ *   6 runs sorted                            only when the week has one
+ *     this week
  *
  * Each block's button opens the run on the Add cards tab that finishes it:
  * Collection for a run into a binder, Inventory for one into a box (Jason,
@@ -119,16 +120,19 @@ export default function Hopper({ intake, wanted }: { intake: IntakeInProgress; w
       )}
 
       {/* The week's score: the number lit in blue, as the Boards' percentages are, so the green
-          button above stays the one thing to press. One inline run of text, never flex: flex items
-          are blockified and a reader can stop between "6" and "runs sorted this week". */}
+          button above stays the one thing to press. Its words lock up beside it in two lines on its
+          baseline (cb-numeral-words), not one small line drifting at its foot. One inline run of
+          text, never flex: flex items are blockified and a reader can stop between "6" and "runs
+          sorted this week". The words' inline-block would add a box for a reader too, so it is
+          role="presentation" and the paragraph stays one phrase. */}
       {intake.sortedThisWeek > 0 && (
         <p
           className={`text-neon-blue-text ${
             intake.uploads.length > 0 ? "border-t border-rule pt-3" : intake.total > 0 ? "mt-3" : ""
           }`}
         >
-          <span className="cb-numeral cb-glow mr-2.5 align-baseline text-4xl tabular-nums sm:text-5xl">{intake.sortedThisWeek}</span>{" "}
-          <span className="text-sm font-semibold text-ink-2">{sortedLabel(intake.sortedThisWeek)}</span>
+          <span className="cb-numeral cb-glow text-4xl tabular-nums sm:text-5xl">{intake.sortedThisWeek}</span>{" "}
+          <span role="presentation" className="cb-numeral-words ml-0.5 text-sm font-semibold text-ink sm:text-base">{sortedLabel(intake.sortedThisWeek)}</span>
         </p>
       )}
     </section>
