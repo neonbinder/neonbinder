@@ -76,6 +76,7 @@ import type {
   Want,
 } from "@/app/collection/final/data/types";
 import { problemSentence } from "@/app/collection/final/inventory/listing/copy";
+import { hasReportableCard, isReportableSyncReason } from "@/lib/collection/sync-report";
 import { dashSetLabel, setRefLabel, toDash, type DashCard } from "../dash-card";
 import type {
   AddedCard,
@@ -498,6 +499,17 @@ export function heldBackReason(
 }
 
 /**
+ * NEO-536: who has to fix a set's held-back cards. "all" when every card the
+ * read names is one only the crew can fix, "some" when such cards sit beside
+ * ones the collector fixes, nothing when there are none. A failed last sync
+ * is never a report (NB runs it again on its own), so it gets nothing.
+ */
+export function crewFixOf(set: Pick<SyncAlertsRaw["sets"][number], "failed" | "cards">): { crewFix?: "all" | "some" } {
+  if (set.failed || !hasReportableCard(set.cards)) return {};
+  return { crewFix: set.cards.every((c) => isReportableSyncReason(c.reason)) ? "all" : "some" };
+}
+
+/**
  * The sync status from its read: null when nothing is waiting and nothing is
  * wrong, so no section shows (the widget rule). A held-back card not
  * hydrated yet (or gone from the catalog) is still counted, just not named.
@@ -516,6 +528,8 @@ export function syncStatusOf(raw: SyncAlertsRaw | undefined, cards: CardsById | 
         const card = cards?.get(c.cardId as CardId);
         return card ? [{ card: toDash(card), reason: heldBackReason(c, set.platform), code: c.reason }] : [];
       }),
+      variantId: set.variantId,
+      ...crewFixOf(set),
     })),
     more: raw.more,
   };

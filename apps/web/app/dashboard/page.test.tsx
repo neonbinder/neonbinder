@@ -12,6 +12,14 @@ import { getDashboard, type DashboardData } from "./fake-data";
  */
 let current: DashboardData | undefined;
 vi.mock("./real/useRealDashboard", () => ({ useRealDashboard: () => current }));
+vi.mock("./real/useCrewDesk", () => ({
+  useRealCrew: () => ({
+    desk: undefined,
+    isReported: () => false,
+    report: async () => null,
+    withdraw: async () => null,
+  }),
+}));
 vi.mock("@/app/collection/final/data/convexStore", () => ({
   ConvexCollectionProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));

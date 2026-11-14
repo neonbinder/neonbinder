@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { seedRedirect, seedsAsked, syncReadout } from "./page";
+import { listingProblemReasonValidator } from "@/convex/schema";
+import { SYNC_HELD_REASONS, seedRedirect, seedsAsked, syncReadout } from "./page";
 
 const ask = (query: string) => seedsAsked(new URLSearchParams(query));
 
@@ -68,5 +69,33 @@ describe("seedRedirect: where the page forwards once done", () => {
     for (const raw of ["//evil.example", "/\\evil.example", "https://evil.example/", "evil.example", "javascript:alert(1)"]) {
       expect(to(`redirect=${encodeURIComponent(raw)}`)).toBe("/dashboard");
     }
+  });
+});
+
+describe("NEO-536: syncHeld asks for a held set", () => {
+  it("a known reason is a held-set ask, no sale; an unknown one is no ask", () => {
+    expect(ask("syncHeld=noLink")).toEqual({
+      clear: false,
+      sale: false,
+      syncPending: false,
+      syncError: false,
+      syncRecovered: false,
+      syncHeld: "noLink",
+    });
+    expect(ask("syncHeld=bogus")).toEqual({ clear: false, sale: true, syncPending: false, syncError: false, syncRecovered: false });
+  });
+
+  it("a failed or recovered ask wins over it, and clear drops it", () => {
+    expect(ask("syncError=1&syncHeld=noLink").syncHeld).toBeUndefined();
+    expect(ask("syncRecovered=1&syncHeld=noLink").syncHeld).toBeUndefined();
+    expect(ask("clear=1&syncHeld=noLink").syncHeld).toBeUndefined();
+  });
+
+  it("knows every reason a sync records", () => {
+    expect([...SYNC_HELD_REASONS].sort()).toEqual(listingProblemReasonValidator.members.map((m) => m.value).sort());
+  });
+
+  it("the readout names a held set", () => {
+    expect(syncReadout([{ platform: "bsc", pending: false, error: false, held: true }])).toEqual(["sync on bsc: held set"]);
   });
 });

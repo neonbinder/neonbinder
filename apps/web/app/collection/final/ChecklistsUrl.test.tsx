@@ -225,3 +225,11 @@ describe("the tab title names the view", () => {
     expect(document.title).toBe("My Cards · Collection");
   });
 });
+
+describe("?ask=mine in the demo (NEO-536)", () => {
+  it("opens nothing: the demo has no My requests and never reads Convex", () => {
+    renderDemo([`${DEMO}&tab=checklists&ask=mine`]);
+    expect(screen.getByRole("searchbox", { name: "Search every card" })).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});

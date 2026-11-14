@@ -1,8 +1,13 @@
-import { ArrowPathIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import { ArrowPathIcon, CheckCircleIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useLocation } from "react-router";
-import type { SyncProblemSet, SyncStatusData } from "../fake-data";
+import NeonButton from "@/components/modules/NeonButton";
+import { Input } from "@/components/primitives/Input";
+import { isReportableSyncReason, MAX_SYNC_REPORT_NOTE } from "@/lib/collection/sync-report";
+import type { HeldBackCard, SyncProblemSet, SyncStatusData } from "../fake-data";
 import { MARKETPLACES } from "../dash-labels";
 import { CardTitle, count, MarketBadge, sideHref, Thumb } from "./bits";
+import { useCrew, type Crew } from "./crew";
 import { heldOf, PanelLink } from "./panelLink";
 import { useOpen } from "./useOpen";
 
@@ -95,17 +100,48 @@ export default function SyncStatus({ status }: { status: SyncStatusData }) {
   );
 }
 
+/**
+ * The line over a set's held-back cards. Who fixes them decides it: the
+ * collector (each card's own fix), the crew (NEO-536: report it), or both.
+ */
+export function heldLead(set: Pick<SyncProblemSet, "heldBack" | "marketplace" | "crewFix">): string {
+  const lead = `${count(set.heldBack, "card")} held back from ${MARKETPLACES[set.marketplace].name}.`;
+  const one = set.heldBack === 1;
+  // The crew's cases end on a full stop: the action is the Report button under the tiles.
+  if (set.crewFix === "all") return `${lead} On our crew, not you.`;
+  if (set.crewFix === "some") return `${lead} Fix yours on the card. The rest are on us.`;
+  return `${lead} ${one ? "Fix it on the card and it goes up next sync:" : "Fix each one on its card and it goes up next sync:"}`;
+}
+
+/** A held-back card only the crew can fix (NEO-536): its reason's code says so. */
+export function isCrewCard(card: Pick<HeldBackCard, "code">): boolean {
+  return card.code !== undefined && isReportableSyncReason(card.code);
+}
+
+/**
+ * A set's held-back cards in the order they show: the collector's own fixes
+ * first, the crew's after them, each kind in the read's order. In a mixed
+ * set the crew's tiles say so ("On our crew"), so the ones to act on lead.
+ */
+export function heldOrder<C extends Pick<HeldBackCard, "code">>(cards: readonly C[]): C[] {
+  return [...cards.filter((c) => !isCrewCard(c)), ...cards.filter(isCrewCard)];
+}
+
 function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }) {
+  const crew = useCrew();
   const market = MARKETPLACES[set.marketplace].name;
   const headingId = `${set.id}-heading`;
   const [all, toggle] = useOpen(set.id);
-  const shown = all ? set.cards : set.cards.slice(0, HELD_PREVIEW);
-  const folded = set.cards.length - HELD_PREVIEW;
-  const unnamed = set.heldBack - set.cards.length;
-  // ↑ ↓ in a held-back card's panel walk the set's held-back cards, the folded ones too, each with its reason.
-  const heldIds = set.cards.map((c) => c.card.id);
+  const cards = heldOrder(set.cards);
+  // Only a mixed set tags the crew's tiles; where every card is the crew's, the lead says so once.
+  const tagCrew = set.crewFix === "some";
+  const shown = all ? cards : cards.slice(0, HELD_PREVIEW);
+  const folded = cards.length - HELD_PREVIEW;
+  const unnamed = set.heldBack - cards.length;
+  // ↑ ↓ in a held-back card's panel walk the set's held-back cards in the order they show, the folded ones too, each with its reason.
+  const heldIds = cards.map((c) => c.card.id);
   const heldList = new Map(
-    set.cards.flatMap((c) => {
+    cards.flatMap((c) => {
       const held = heldOf(set.marketplace, c.code);
       return held ? [[c.card.id, held] as const] : [];
     }),
@@ -121,12 +157,7 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
       </div>
       {set.heldBack > 0 && (
         <>
-          <p className="mt-2 text-sm font-semibold text-ink">
-            {count(set.heldBack, "card")} held back from {market}.{" "}
-            {set.heldBack === 1
-              ? "Fix it on the card and it goes up next sync:"
-              : "Fix each one on its card and it goes up next sync:"}
-          </p>
+          <p className="mt-2 text-sm font-semibold text-ink">{heldLead(set)}</p>
           {shown.length > 0 && (
             <ul className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {shown.map(({ card, reason, code }) => (
@@ -147,6 +178,14 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
                         className="font-semibold text-ink underline-offset-2 group-hover:underline"
                       />
                       <span className="mt-1 block text-notice-warn-ink">{reason}</span>
+                      {tagCrew && isCrewCard({ code }) && (
+                        // Words, not only a colour: the crew's blue, on the card's own ground, off the warn tint.
+                        <span className="mt-1.5 block">
+                          <span className="inline-flex items-center rounded-full border border-neon-blue/60 bg-raised px-2 py-0.5 font-semibold text-neon-blue-text">
+                            On our crew
+                          </span>
+                        </span>
+                      )}
                     </span>
                   </PanelLink>
                 </li>
@@ -167,7 +206,7 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
                     className={`size-4 transition-transform motion-reduce:transition-none ${all ? "rotate-180" : ""}`}
                   />
                   {/* The words on it lead its name (WCAG 2.5.3): the count it adds is seen, the set it is in is read, last. */}
-                  {all ? "Show fewer" : `Show all ${set.cards.length}`}
+                  {all ? "Show fewer" : `Show all ${cards.length}`}
                   {!all && (
                     <span aria-hidden="true" className="text-ink-3">
                       {" "}
@@ -193,6 +232,9 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
           )}
         </>
       )}
+      {crew && set.crewFix && set.variantId && !set.failure && (
+        <ReportToCrew crew={crew} set={set} variantId={set.variantId} />
+      )}
       {set.failure && (
         <p className="mt-2 flex items-start gap-2 rounded-md border border-notice-danger-rule bg-notice-danger-bg px-2 py-1.5 text-sm text-notice-danger-ink">
           <ExclamationTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
@@ -200,5 +242,159 @@ function ProblemSet({ set, pathname }: { set: SyncProblemSet; pathname: string }
         </p>
       )}
     </article>
+  );
+}
+
+/**
+ * NEO-536 — "Report to our crew", under a set holding back cards only the
+ * crew can fix. Opens a short form in place (a note is optional): Enter
+ * sends, Escape backs out. Sent, the set reads "Reported" for as long as the
+ * report is open: that comes from the collector's open reports, not from
+ * this form, so it holds on a reload and clears when the crew closes it or
+ * the collector withdraws it. Focus follows: into the note on open, onto the
+ * "Reported" line once sent (or, should the read not say "Reported" by the
+ * render after the send, the button, so focus never sits nowhere waiting to
+ * jump later), back to the button on Cancel.
+ */
+function ReportToCrew({ crew, set, variantId }: { crew: Crew; set: SyncProblemSet; variantId: string }) {
+  const market = MARKETPLACES[set.marketplace].name;
+  const reported = crew.isReported(variantId, set.marketplace);
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const noteRef = useRef<HTMLInputElement>(null);
+  const statusRef = useRef<HTMLParagraphElement>(null);
+  const errorId = useId();
+  /**
+   * Where focus goes on the next render: set by an open, a send or a cancel,
+   * never on a fresh load. Spent by that render, whether its target is there
+   * or not: a target that is missing falls back to the button.
+   */
+  const focusNext = useRef<"note" | "status" | "button" | null>(null);
+
+  useEffect(() => {
+    const want = focusNext.current;
+    if (!want) return;
+    focusNext.current = null;
+    const el = want === "note" ? noteRef.current : want === "status" ? statusRef.current : buttonRef.current;
+    (el ?? buttonRef.current)?.focus();
+  });
+
+  function cancel() {
+    if (busy) return;
+    setOpen(false);
+    setNote("");
+    setError(null);
+    focusNext.current = "button";
+  }
+
+  async function send(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const why = await crew.report({ variantId, platform: set.marketplace, note });
+    setBusy(false);
+    if (why) {
+      setError(why);
+      return;
+    }
+    setOpen(false);
+    setNote("");
+    focusNext.current = "status";
+  }
+
+  if (reported && !open) {
+    return (
+      <p
+        ref={statusRef}
+        tabIndex={-1}
+        className="mt-3 flex items-center gap-2 rounded-sm text-sm font-semibold text-neon-green-text focus-outline"
+      >
+        <CheckCircleIcon aria-hidden="true" className="size-5 shrink-0" />
+        <span>
+          Reported. Our crew&apos;s on it.
+          <span className="sr-only">
+            {" "}
+            {set.setLabel} on {market}
+          </span>
+        </span>
+      </p>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div className="mt-3">
+        <NeonButton
+          ref={buttonRef}
+          variant="secondary"
+          outline
+          size="2"
+          className="max-sm:min-h-11"
+          onClick={() => {
+            setOpen(true);
+            focusNext.current = "note";
+          }}
+        >
+          Report to our crew
+          <span className="sr-only">
+            {" "}
+            about {set.setLabel} on {market}
+          </span>
+        </NeonButton>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={(e) => void send(e)}
+      onKeyDown={(e: KeyboardEvent) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          cancel();
+        }
+      }}
+      className="mt-3 flex max-w-xl flex-col gap-2 rounded-md border border-rule bg-raised-deep p-3"
+    >
+      <label className="flex flex-col gap-1.5">
+        <span className="text-sm font-medium text-ink-2">
+          Note for our crew (optional)
+          <span className="sr-only">
+            {" "}
+            about {set.setLabel} on {market}
+          </span>
+        </span>
+        <Input
+          bare
+          ref={noteRef}
+          value={note}
+          maxLength={MAX_SYNC_REPORT_NOTE}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Anything we should know?"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : undefined}
+          className="w-full px-3 py-2 text-base sm:text-sm"
+        />
+      </label>
+      {/* Mounted with the form, so a refusal is announced; empty, it cancels its own gap. */}
+      <p id={errorId} role="alert" className="text-sm text-neon-pink-text empty:-mt-2">
+        {error}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <NeonButton type="submit" variant="primary" size="2" aria-disabled={busy || undefined} className="max-sm:min-h-11">
+          {busy ? "Sending" : "Send"}
+          <span className="sr-only"> report on {set.setLabel} on {market}</span>
+        </NeonButton>
+        <NeonButton type="button" variant="negative" outline size="2" onClick={cancel} className="max-sm:min-h-11">
+          Cancel
+          <span className="sr-only"> report on {set.setLabel} on {market}</span>
+        </NeonButton>
+      </div>
+    </form>
   );
 }

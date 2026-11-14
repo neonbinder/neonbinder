@@ -302,3 +302,122 @@ describe("My requests", () => {
     expect(within(item).queryByRole("button")).toBeNull();
   });
 });
+
+describe("My requests: sync reports (NEO-536)", () => {
+  const report = (over: Record<string, unknown> = {}) => ({
+    _id: "sr1",
+    status: "open",
+    label: "2024 Topps Chrome Base",
+    platform: "bsc",
+    variantId: "v1",
+    heldBack: 3,
+    note: "Ohtani never lists.",
+    reportedAt: 1,
+    ...over,
+  });
+
+  it("lists every report with where it stands and the crew's note", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [
+      report(),
+      report({ _id: "sr2", status: "fixed", label: "1996 Contenders Base", closedAt: 2, closeNote: "Relinked it." }),
+      report({ _id: "sr3", status: "notABug", label: "1990 Score Base", platform: "ebay", closedAt: 3, closeNote: "eBay wants the team." }),
+    ]);
+    open("mine");
+    screen.getByText("No card or set requests yet.");
+    const items = within(screen.getByRole("list", { name: "My sync reports" })).getAllByRole("listitem");
+    expect(items).toHaveLength(3);
+    within(items[0]).getByText("Waiting on our crew");
+    expect(items[0].textContent).toContain("BuySportsCards: 2024 Topps Chrome Base");
+    expect(items[0].textContent).toContain("3 cards held back");
+    within(items[0]).getByText("Your note: Ohtani never lists.");
+    within(items[1]).getByText("Fixed");
+    within(items[1]).getByText(/Relinked it\./);
+    within(items[2]).getByText("Not a bug");
+    expect(items[2].textContent).toContain("eBay: 1990 Score Base");
+    within(items[2]).getByText(/eBay wants the team\./);
+    // Only an open report can be withdrawn.
+    expect(within(items[1]).queryByRole("button")).toBeNull();
+    expect(within(items[2]).queryByRole("button")).toBeNull();
+  });
+
+  it("withdraws an open report in one press, and the keyboard lands on the section", async () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report()]);
+    answers.set("syncReports:withdraw", null);
+    open("mine");
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw the report on 2024 Topps Chrome Base (BuySportsCards)" }));
+    await waitFor(() => expect(calls).toEqual([{ name: "syncReports:withdraw", args: { id: "sr1" } }]));
+    const done = await screen.findByText("Withdrew the report on 2024 Topps Chrome Base (BuySportsCards).");
+    expect(done.getAttribute("role")).toBe("status");
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Sets you reported" }));
+  });
+
+  it("while it withdraws, the name starts with the words on the button (WCAG 2.5.3)", async () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report()]);
+    answers.set("syncReports:withdraw", () => new Promise(() => {}));
+    open("mine");
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw the report on 2024 Topps Chrome Base (BuySportsCards)" }));
+    const busy = await screen.findByRole("button", { name: "Withdrawing… the report on 2024 Topps Chrome Base (BuySportsCards)" });
+    expect(busy.hasAttribute("aria-label")).toBe(false);
+    expect(busy.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("a long unbroken name or note wraps rather than pushing the row past a phone's width", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report({ label: "X".repeat(120), note: "Y".repeat(200) })]);
+    open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
+    const text = within(item).getByText(`Your note: ${"Y".repeat(200)}`).parentElement!;
+    expect(text.className).toContain("min-w-0");
+    expect(text.className).toContain("[overflow-wrap:anywhere]");
+  });
+
+  it("shows the server's refusal on a withdraw", async () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report()]);
+    // This file's store stub reads an error's message (the real one reads a ConvexError's data first).
+    answers.set("syncReports:withdraw", () => {
+      throw new Error("The crew closed that report already.");
+    });
+    open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw the report on 2024 Topps Chrome Base (BuySportsCards)" }));
+    await waitFor(() => expect(within(item).getByRole("alert").textContent).toBe("The crew closed that report already."));
+  });
+
+  it("each report's alert and the section's status are there, empty, before anything happens, so they are announced", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report(), report({ _id: "sr2", status: "fixed", label: "1996 Contenders Base", closedAt: 2 })]);
+    open("mine");
+    const items = within(screen.getByRole("list", { name: "My sync reports" })).getAllByRole("listitem");
+    for (const item of items) {
+      const alert = within(item).getByRole("alert");
+      expect(alert.textContent).toBe("");
+      // Empty, it gives back the gap it would take.
+      expect(alert.className).toContain("empty:-mt-2");
+    }
+    const status = screen
+      .getAllByRole("status")
+      .find((el) => el.parentElement?.querySelector("h3")?.textContent === "Sets you reported");
+    expect(status?.textContent).toBe("");
+    expect(status?.className).toContain("empty:-mt-2");
+  });
+
+  it("a fixed report says the cards go up next sync, no hedging", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report({ status: "fixed", closedAt: 2 })]);
+    open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
+    within(item).getByText("Those cards go up next sync.");
+  });
+
+  it("keeps the old empty line when there is nothing at all", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", []);
+    open("mine");
+    screen.getByText("Nothing asked for yet. Your requests show up here.");
+    expect(screen.queryByRole("heading", { name: "Sets you reported" })).toBeNull();
+  });
+});

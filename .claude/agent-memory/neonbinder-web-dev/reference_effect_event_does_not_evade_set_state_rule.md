@@ -27,3 +27,9 @@ intent), the lint-clean shape is React's adjust-state-while-rendering pattern:
 hold the intent in `useState(() => initial)`, and in render
 `if (intent && data !== undefined) { setIntent(null); ...other setStates }`.
 It runs once, needs no effect and no disable (NEO-464 CardDetail held-back fix).
+
+A dialog a URL param opens (`?ask=mine`) needs no state write at all: derive
+`const open = picked ?? (param === "mine" ? "mine" : null)` in render, and have
+close clear both the local pick and the param (replace). The same compiler
+lint refuses `Date.now()` in render (`react-hooks/purity`); a page-load
+timestamp is `const [now] = useState(() => Date.now())` (NEO-536).

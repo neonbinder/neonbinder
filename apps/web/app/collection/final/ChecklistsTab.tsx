@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { MagnifyingGlassIcon } from "@heroicons/react/20/solid";
+import { useSearchParams } from "react-router";
 import { Input } from "@/components/primitives/Input";
 import { DRILL_ROW_ATTR } from "../prototypes/p1/StaticColumn";
 import { FOCUS } from "../prototypes/p1/ui";
@@ -13,7 +14,7 @@ import { useSearchText } from "./catalog/search";
 import { LoadingNote, SkeletonBars } from "./catalog/Skeleton";
 import Suggestions from "./catalog/Suggestions";
 import type { DrillState } from "./catalog/useDrillState";
-import type { EntityParam } from "./checklistParams";
+import { ASK_MINE, ASK_PARAM, type EntityParam } from "./checklistParams";
 import Checklist from "./Checklist";
 import {
   searchable,
@@ -29,7 +30,7 @@ import {
 import type { Card, CardId, Suggestion } from "./data/types";
 import { QuickEntryProvider } from "./inventory/QuickEntry";
 import TargetBoxPicker from "./inventory/TargetBoxPicker";
-import { useSetScope } from "./mode";
+import { useReplaceParams, useSetScope } from "./mode";
 import RequestCardDialog from "./RequestCardDialog";
 import RequestsDialog, { type RequestsTab } from "./requests/RequestsDialog";
 
@@ -123,9 +124,31 @@ function ChecklistsView({
   // Requests are a collection-side thing: "I have it" files the card in a binder.
   const canRequest = capabilities.cardRequests && (real ? !inventory : !!demo);
 
+  // NEO-536 — `?ask=mine` (the dashboard's link) opens My requests; closing
+  // the dialog takes the param off with a replace, so Back never reopens it.
+  // Opened by the link, nothing on the page opened it, so the dialog has
+  // nowhere to hand the keyboard back to: the checklist's heading takes it
+  // (the search box when no checklist is open), never the page's top.
+  const [params] = useSearchParams();
+  const replaceParams = useReplaceParams();
+  const askedMine = params.get(ASK_PARAM) === ASK_MINE && real && canRequest;
+  // What's open: the collector's own pick, else the link's ask.
+  const asking: RequestsTab | null = requesting ?? (askedMine ? "mine" : null);
+  const landAfterLink = useRef(false);
+  const closeRequests = useCallback(() => {
+    if (requesting === null) landAfterLink.current = true;
+    setRequesting(null);
+    replaceParams((p) => p.delete(ASK_PARAM));
+  }, [replaceParams, requesting]);
+
   const checklistHeading = useRef<HTMLHeadingElement>(null);
   const entityHeading = useRef<HTMLHeadingElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (asking || !landAfterLink.current) return;
+    landAfterLink.current = false;
+    (checklistHeading.current ?? searchInput.current)?.focus();
+  }, [asking]);
   const entityKey = entity ? `${entity.kind}:${entity.id}` : "";
   useEffect(() => {
     const want = arrivalRef.current;
@@ -338,14 +361,14 @@ function ChecklistsView({
         )}
       </section>
 
-      {requesting && real && (
+      {asking && real && (
         <RequestsDialog
           searched={query}
           drill={drill.drill}
-          initialTab={requesting}
+          initialTab={asking}
           // NEO-374 — "I have it" is its own explicit add: under All it files into Main.
           onHave={(card) => actions.have(card, readOnly ? systemContainer(containers, "main")?.id : undefined)}
-          onClose={() => setRequesting(null)}
+          onClose={closeRequests}
         />
       )}
       {requesting && !real && demo && (

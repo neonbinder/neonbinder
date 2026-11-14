@@ -13,6 +13,7 @@ import PocketPage, { PocketTitle, WaitingTitle } from "./PocketPage";
 import { Chase, FreshPulls } from "./Pulls";
 import { FillingUp, OddsAndEnds } from "./Rail";
 import Shelf from "./Shelf";
+import CrewDesk from "./CrewDesk";
 import { CollectionStarter, InventoryStarter } from "./Starters";
 import SyncStatus from "./SyncStatus";
 import { pageCount, shelfOrder, type ShelfBinder } from "./shelf-model";
@@ -28,6 +29,9 @@ import "./combined.css";
  *   1. Greeting and one summary line (the page's one <h1>), then the sync
  *      status: cards waiting for the next sync, and sets whose latest sync
  *      failed or held cards back (none of either: not drawn).
+ *      Under it, what is open with the crew (`CrewDesk`, NEO-536): the
+ *      collector's open requests and reports, and for an admin every
+ *      collector's. The signed-in page only (the demo has no crew).
  *   2. The top band: a lead section with a side column beside it.
  *      - Side: In the Hopper (any scans in intake), then Needs a Look (a
  *        problem order, or a box with cards not listed).
@@ -236,6 +240,8 @@ export default function DashboardScreen({ data }: { data: DashboardData }) {
       </header>
 
       {sync}
+      {/* What is open with the crew (NEO-536): the signed-in page's only; it never decides what leads. */}
+      <CrewDesk />
       {newsLeads && news}
 
       {(lead || side) && (

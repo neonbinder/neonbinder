@@ -489,4 +489,24 @@ describe("review", () => {
     expect(await s.admin.query(api.collectionRequests.waitingCount, {})).toBe(1);
     expect(await s.admin.query(api.collectionRequests.queue, { status: "declined" })).toHaveLength(1);
   });
+  // NEO-536 — /admin/card-requests?open=<id> hands the URL's id straight to review; a pasted, cut or
+  // hand-typed one must read as "not there", never throw (the page would fall to its error boundary).
+  test("review: a malformed id, or another table's id, reads as not there rather than throwing", async () => {
+    const s = await setup();
+    const reportId = await s.t.run((ctx) =>
+      ctx.db.insert("syncReports", {
+        ownerId: ME.subject,
+        platform: "bsc",
+        variantId: s.fx.baseId,
+        label: "x",
+        cards: [],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      }),
+    );
+    for (const requestId of ["", " ", "not-an-id", "%00", "j57".repeat(40), reportId]) {
+      expect(await s.admin.query(api.collectionRequests.review, { requestId })).toBeNull();
+    }
+  });
 });

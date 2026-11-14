@@ -42,3 +42,14 @@ One more seen on 2026-11-12 (NEO-527): `app/dashboard/screen/panelLink.test.tsx`
 alone and in the next full run. A red `test:unit` also makes
 `verify-test-completeness` print "vitest reported success=false"; that is the
 same red, not a dropped file.
+
+Seen 2026-11-13 (NEO-536) with machine load average ~50-60 (parallel agents
+plus a live Playwright run): every test that renders the whole
+`DashboardScreen` (CrewDesk.test, DashboardScreen.test) took 3-9 s each and
+hit vitest's 5 s timeout, and `app/dashboard/screen/panelLink.test.tsx` →
+"a Fresh Pull: the click pushes…" failed `findByRole("dialog")` (1 s RTL
+wait on the lazy card panel) even run alone — and equally on a detached HEAD
+worktree, so not the diff. To tell load from logic, check `uptime` and rerun
+the file with `--testTimeout=60000`; a scratch `git worktree add --detach`
+at HEAD with `apps/web/node_modules` symlinked (copy `convex/_generated`)
+proves a baseline red without touching the shared worktree.

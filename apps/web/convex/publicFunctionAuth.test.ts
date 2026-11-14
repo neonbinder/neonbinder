@@ -3416,3 +3416,122 @@ describe("NEO-500: the pick-order seed is locked like the other testing seeds", 
     expect(await written(t)).toBe(0);
   });
 });
+
+/**
+ * NEO-536 — a collector's report of a held-back set, and the dashboard's
+ * "with the crew" reads. The collector half reads and writes only the
+ * caller's own reports (`syncReports.test.ts` covers the ownership
+ * refusals); the queue, the review and the close read or settle every
+ * collector's, so they are admin. `crewDesk.waiting` is every collector's
+ * open asks, so it is admin too.
+ */
+describe("NEO-536: sync reports are the caller's own, and closing them is admin-gated", () => {
+  const NOT_AN_ID = "not-an-id";
+  const SIGNED_IN_GATED: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["syncReports.mine", (t) => t.query(api.syncReports.mine, {})],
+    ["crewDesk.mine", (t) => t.query(api.crewDesk.mine, {})],
+  ];
+
+  test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(SIGNED_IN_GATED)("%s answers a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN))).resolves.not.toThrow();
+  });
+
+  const ADMIN_READS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["syncReports.queue", (t) => t.query(api.syncReports.queue, {})],
+    ["syncReports.review", (t) => t.query(api.syncReports.review, { id: NOT_AN_ID })],
+    ["crewDesk.waiting", (t) => t.query(api.crewDesk.waiting, {})],
+  ];
+
+  test.each(ADMIN_READS)("%s rejects anonymous and signed-in non-admin callers, and answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow(/Admin access required/);
+    await expect(call(t.withIdentity(ADMIN))).resolves.not.toThrow();
+  });
+
+  /** An open report of "user"'s on a real variant, with the sync record it came from. */
+  async function seed(t: ReturnType<typeof convexTest>) {
+    return await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", { level: "sport", value: "Football", platformData: {}, lastUpdated: 0 });
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Contenders",
+        parentId: sportId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: setId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "41",
+        cardName: "Reggie White",
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: "user",
+        variantId,
+        platform: "bsc",
+        status: "idle",
+        problems: [{ cardId, reason: "noLink" }],
+        conditionsPushed: [],
+        lastUpdated: 0,
+      });
+      const reportId = await ctx.db.insert("syncReports", {
+        ownerId: "user",
+        platform: "bsc",
+        variantId,
+        label: "1996 Playoff Contenders",
+        cards: [{ cardId, reason: "noLink" }],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      });
+      return { variantId, reportId };
+    });
+  }
+
+  test("report and withdraw reject an anonymous caller and write nothing", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await expect(t.mutation(api.syncReports.report, { variantId: ids.variantId, platform: "bsc" })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(t.mutation(api.syncReports.withdraw, { id: ids.reportId })).rejects.toThrow(/Not authenticated/);
+    const rows = await t.run((ctx) => ctx.db.query("syncReports").collect());
+    expect(rows.map((r) => [r._id, r.status])).toEqual([[ids.reportId, "open"]]);
+  });
+
+  test("close rejects anonymous and signed-in non-admin callers (the reporter included) and leaves the report open", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const close = (c: ReturnType<typeof convexTest>) =>
+      c.mutation(api.syncReports.close, { id: ids.reportId, outcome: "notABug", note: "no" });
+    await expect(close(t)).rejects.toThrow(/Not authenticated/);
+    await expect(close(t.withIdentity(SIGNED_IN))).rejects.toThrow(/Admin access required/);
+    const rows = await t.run((ctx) => ctx.db.query("syncReports").collect());
+    expect(rows.map((r) => r.status)).toEqual(["open"]);
+  });
+
+  test("the collector-facing returns never carry who closed a report", () => {
+    const src = readFileSync(join(__dirname, "syncReports.ts"), "utf8");
+    const mineValidator = src.slice(src.indexOf("export const mySyncReportValidator"), src.indexOf("export const syncReportQueueItemValidator"));
+    expect(mineValidator).not.toContain("closedBy");
+    const crewDesk = readFileSync(join(__dirname, "crewDesk.ts"), "utf8");
+    expect(crewDesk).not.toContain("closedBy");
+    expect(crewDesk).not.toContain("ownerId: v.");
+  });
+});

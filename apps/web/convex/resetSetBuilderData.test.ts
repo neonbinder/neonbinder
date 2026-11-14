@@ -1147,6 +1147,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     // NEO-370 — the listing outbox and per-variant sync records name a variant.
     "listingOutbox",
     "marketplaceListingSyncs",
+    // NEO-536 — a collector's sync report names a variant and its cards.
+    "syncReports",
     // NEO-509 — a sale line's description names a sport row (listed.sportId).
     "marketplaceSales",
     "cardPlayerLinks",
@@ -1306,6 +1308,17 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         conditionsPushed: [],
         lastUpdated: 0,
       });
+      // NEO-536 — a collector's report of that variant, naming the card.
+      await ctx.db.insert("syncReports", {
+        ownerId: "user",
+        platform: "bsc",
+        variantId: card.selectorOptionId,
+        label: "Reset set",
+        cards: [{ cardId: card._id, reason: "noLink" }],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      });
       await ctx.db.insert("marketplaceListingStates", {
         ownerId: "user",
         platform: "bsc",
@@ -1428,8 +1441,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       intakeRunsDeleted: 2,
       // NEO-427: the job, its image, its pair, and the pair the intake match names.
       placeholderJobsDeleted: 4,
-      // NEO-370: outbox, sync record, state, sale; NEO-415: the eBay link row.
-      marketplaceListingDeleted: 5,
+      // NEO-370: outbox, sync record, state, sale; NEO-415: the eBay link row; NEO-536: the sync report.
+      marketplaceListingDeleted: 6,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,

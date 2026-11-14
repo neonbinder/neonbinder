@@ -762,6 +762,14 @@ export interface SyncProblemSet {
   /** Cards it held back (every one, counted); `cards` names the first few. */
   heldBack: number;
   cards: HeldBackCard[];
+  /** NB's id for the set (its variant), so it can be reported to the crew; absent in the demo. */
+  variantId?: string;
+  /**
+   * NEO-536: held-back cards only the crew can fix (`lib/collection/sync-report`):
+   * "all" of them, "some" beside ones the collector fixes; absent when none, or
+   * when the last sync failed (NB tries that again on its own).
+   */
+  crewFix?: "all" | "some";
 }
 
 /**

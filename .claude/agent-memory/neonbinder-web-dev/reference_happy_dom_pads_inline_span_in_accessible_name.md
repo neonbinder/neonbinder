@@ -16,3 +16,9 @@ with a normalising function in the unit test,
 `getByRole("link", { name: (n) => n.replace(" ,", ",") === expected })`, and
 keep the exact string for the E2E spec. Found on NEO-415's eBay setup
 checklist step links.
+
+**Sturdier still (NEO-536):** word the sr-only suffix so it starts with a
+space and a word, never punctuation: `Report to our crew<span class=sr-only>
+about {set} on {market}</span>` names the same in happy-dom, Chrome and
+Playwright (all collapse the extra whitespace), where `": {set}"` came out
+`"Report to our crew : …"` in the unit test.

@@ -7,8 +7,10 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { LABEL, SELECT_PANEL } from "../../prototypes/p1/ui";
 import { SkeletonBars } from "../catalog/Skeleton";
 import { writeErrorMessage } from "../data/store";
+import { PLATFORM_NAME } from "@/lib/marketplace/listing-copy";
 
 type Mine = FunctionReturnType<typeof api.collectionRequests.mine>[number];
+type MyReport = FunctionReturnType<typeof api.syncReports.mine>[number];
 
 const STATUS: Record<Doc<"cardRequests">["status"], { label: string; cls: string }> = {
   waiting: { label: "Waiting", cls: "border-neon-blue/60 text-neon-blue-text" },
@@ -18,48 +20,173 @@ const STATUS: Record<Doc<"cardRequests">["status"], { label: string; cls: string
 
 /**
  * NEO-361 — My requests: each card and set asked for, where it stands, and
- * our crew's note. A waiting request can be withdrawn and a declined one
+ * our crew's note. NEO-536: below them, the held-back sets reported to the
+ * crew (`syncReports.mine`). A waiting request can be withdrawn and a declined one
  * removed; either deletes the cards it made and every copy of them, behind
  * a confirm that says how many. An added set whose cards didn't all match
  * lists the leftovers to file by hand.
  */
 export default function MyRequests() {
   const mine = useQuery(api.collectionRequests.mine, {});
+  const reports = useQuery(api.syncReports.mine, {});
   // A withdrawn row goes away under the keyboard: once the list has redrawn
   // without it, focus lands on the list (or its empty line).
   const landing = useRef<HTMLElement | null>(null);
   const [gone, setGone] = useState(0);
+  const [withdrawn, setWithdrawn] = useState<string | null>(null);
   const count = mine?.length;
   useEffect(() => {
     if (gone > 0) landing.current?.focus();
   }, [gone, count]);
   if (mine === undefined) return <SkeletonBars rows={3} />;
-  if (mine.length === 0) {
-    return (
-      <p
-        ref={(el) => {
-          landing.current = el;
-        }}
-        tabIndex={-1}
-        className="rounded-md text-sm text-ink-2 focus-outline"
-      >
-        Nothing asked for yet. Your requests show up here.
-      </p>
-    );
-  }
+  const hasReports = !!reports && reports.length > 0;
+  // Once one is withdrawn the section stays, even empty, so the keyboard and
+  // the announcement have somewhere to land.
+  const showReports = !!reports && (hasReports || withdrawn !== null);
   return (
-    <ul
-      ref={(el) => {
-        landing.current = el;
-      }}
-      tabIndex={-1}
-      className="space-y-2 rounded-md focus-outline"
-      aria-label="My requests"
-    >
-      {mine.map((r) => (
-        <RequestRow key={r._id} request={r} onGone={() => setGone((n) => n + 1)} />
-      ))}
-    </ul>
+    <div className="space-y-5">
+      {mine.length === 0 ? (
+        <p
+          ref={(el) => {
+            landing.current = el;
+          }}
+          tabIndex={-1}
+          className="rounded-md text-sm text-ink-2 focus-outline"
+        >
+          {hasReports ? "No card or set requests yet." : "Nothing asked for yet. Your requests show up here."}
+        </p>
+      ) : (
+        <ul
+          ref={(el) => {
+            landing.current = el;
+          }}
+          tabIndex={-1}
+          className="space-y-2 rounded-md focus-outline"
+          aria-label="My requests"
+        >
+          {mine.map((r) => (
+            <RequestRow key={r._id} request={r} onGone={() => setGone((n) => n + 1)} />
+          ))}
+        </ul>
+      )}
+      {showReports && reports && <MySyncReports reports={reports} withdrawn={withdrawn} onWithdrawn={setWithdrawn} />}
+    </div>
+  );
+}
+
+const REPORT_STATUS: Record<MyReport["status"], { label: string; cls: string }> = {
+  open: { label: "Waiting on our crew", cls: "border-neon-blue/60 text-neon-blue-text" },
+  fixed: { label: "Fixed", cls: "border-neon-green/60 text-neon-green-text" },
+  notABug: { label: "Not a bug", cls: "border-rule-strong text-ink-2" },
+};
+
+/**
+ * NEO-536 — the held-back sets the collector told the crew about (from the
+ * dashboard's Sync status), every status, newest first: where each stands
+ * and the crew's note on a closed one. An open one can be withdrawn; that
+ * deletes only the report, nothing of theirs, so it takes one press.
+ */
+function MySyncReports({
+  reports,
+  withdrawn,
+  onWithdrawn,
+}: {
+  reports: MyReport[];
+  withdrawn: string | null;
+  onWithdrawn: (message: string) => void;
+}) {
+  // A withdrawn report goes away under the keyboard: land on the heading.
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (withdrawn) heading.current?.focus();
+  }, [withdrawn]);
+  return (
+    <div className="space-y-2">
+      <h3 ref={heading} tabIndex={-1} className="rounded-sm text-sm font-semibold text-ink focus-outline">
+        Sets you reported
+      </h3>
+      {reports.length === 0 ? (
+        <p className="text-sm text-ink-2">No reports left. The crew&apos;s queue thanks you.</p>
+      ) : (
+        <ul className="space-y-2" aria-label="My sync reports">
+          {reports.map((r) => (
+            <SyncReportRow key={r._id} report={r} onWithdrawn={(label) => onWithdrawn(`Withdrew the report on ${label}.`)} />
+          ))}
+        </ul>
+      )}
+      {/* Mounted from the start, so it is announced; empty, it cancels its own gap. */}
+      <p role="status" className="text-sm text-neon-green-text empty:-mt-2">
+        {withdrawn ?? ""}
+      </p>
+    </div>
+  );
+}
+
+function SyncReportRow({ report: r, onWithdrawn }: { report: MyReport; onWithdrawn: (label: string) => void }) {
+  const withdraw = useMutation(api.syncReports.withdraw);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const status = REPORT_STATUS[r.status];
+  const platform = PLATFORM_NAME[r.platform];
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await withdraw({ id: r._id });
+      onWithdrawn(`${r.label} (${platform})`);
+    } catch (err) {
+      setProblem(writeErrorMessage(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <li className="space-y-2 rounded-md border border-rule-strong px-3 py-2">
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+          <p className="text-sm text-ink">
+            <span className="text-ink-3">{platform}: </span>
+            {r.label}
+          </p>
+          <p className="text-xs text-ink-3">
+            {r.heldBack === 1 ? "1 card held back" : `${r.heldBack} cards held back`}, reported{" "}
+            {new Date(r.reportedAt).toLocaleDateString()}
+          </p>
+          {r.note && <p className="text-xs text-ink-3">Your note: {r.note}</p>}
+        </div>
+        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${status.cls}`}>{status.label}</span>
+      </div>
+      {r.closeNote && (
+        <p className="text-sm text-ink-2 [overflow-wrap:anywhere]">
+          <span className="font-semibold text-ink">From our crew:</span> {r.closeNote}
+        </p>
+      )}
+      {r.status === "fixed" && (
+        <p className="text-xs text-ink-3">Those cards go up next sync.</p>
+      )}
+      {r.status === "open" && (
+        <div className="flex justify-end">
+          {/* The words on it lead its name (WCAG 2.5.3); which report it is, a reader hears after. */}
+          <NeonButton
+            type="button"
+            variant="negative"
+            outline
+            aria-disabled={busy || undefined}
+            onClick={() => void run()}
+          >
+            {busy ? "Withdrawing…" : "Withdraw"}
+            <span className="sr-only">
+              {" "}
+              the report on {r.label} ({platform})
+            </span>
+          </NeonButton>
+        </div>
+      )}
+      {/* Mounted from the start, so a refusal is announced; empty, it cancels its own gap. */}
+      <p role="alert" className="text-sm text-neon-pink-text empty:-mt-2">
+        {problem}
+      </p>
+    </li>
   );
 }
 

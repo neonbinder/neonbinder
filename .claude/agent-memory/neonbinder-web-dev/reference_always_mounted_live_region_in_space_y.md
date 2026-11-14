@@ -12,3 +12,10 @@ Tailwind's `space-y-*` puts its margin on every child, so a zero-height, always-
 The line has to be one element. An extra `sr-only` copy makes `getByText(line)` a strict-mode violation in Playwright. A control sitting next to the line goes outside the region, so its name isn't read as part of the announcement.
 
 Related: `getByRole("button", { name: "New run" })` is a case-insensitive substring match, so it also hits "Start a new run". Specs need `exact: true` when both are drawn.
+
+**Two cheaper escapes (NEO-536):** Tailwind v4's `space-y-*` and `gap` rules
+sit in `:where(...)`, zero specificity, so a plain `mb-0` on a section that has
+nothing to draw cancels its own `space-y` gap while its empty live region stays
+mounted. Inside a flex column or wrapping row, an always-mounted `role="alert"`
+can carry `empty:-mt-2` (match the gap) so it takes no room until it has text;
+render `{error}` (null), not `{error ?? ""}`, so the element is truly `:empty`.

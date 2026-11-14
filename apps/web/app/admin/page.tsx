@@ -72,7 +72,7 @@ const TOOL_DETAILS: Record<
   },
   "/admin/card-requests": {
     description:
-      "Review the cards and sets collectors asked us to add: approve one as a catalog card, or decline it with a note.",
+      "Review the cards and sets collectors asked us to add, and the held-back sets they reported: approve, decline, or close with a note.",
     icon: InboxArrowDownIcon,
     accent: "text-neon-blue-text group-hover:border-neon-blue/50",
   },
