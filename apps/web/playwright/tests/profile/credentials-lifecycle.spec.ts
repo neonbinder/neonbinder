@@ -3,6 +3,7 @@
 // test, clear, then a rejected sign-in with fake creds (nothing saved: the
 // sign-in form is still showing), re-connect real creds, test, clear.
 import type { Page } from "@playwright/test";
+import { BSC_TEST_SUCCESS } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const SEED_BUDGET = 90_000; // seed-credentials performs a real marketplace sign-in
@@ -72,7 +73,7 @@ test(
     // ---- BuySportsCards ----
     const bsc = "BuySportsCards";
     await seedAndOpen(page, "buysportscards", bsc);
-    await testStoredSession(page, bsc, /BSC account authenticated successfully/);
+    await testStoredSession(page, bsc, BSC_TEST_SUCCESS);
     await clearConnection(page, bsc);
 
     await failedSignIn(
@@ -85,7 +86,7 @@ test(
 
     // Recover: re-connect real creds and prove the session works.
     await seedAndOpen(page, "buysportscards", bsc);
-    await testStoredSession(page, bsc, /BSC account authenticated successfully/);
+    await testStoredSession(page, bsc, BSC_TEST_SUCCESS);
 
     // A fresh load still shows the connection; clear it for good.
     await page.goto("/profile/credentials");

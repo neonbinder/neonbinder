@@ -1,4 +1,5 @@
 // Origin: .maestro/flows/profile/test-credentials.yaml (Maestro suite retired in NEO-341; see git history)
+import { BSC_TEST_SUCCESS } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const LIVE = 30_000; // live marketplace round trip
@@ -17,7 +18,7 @@ test("BSC and SportLots credentials pass a live test", { tag: ["@credentials", "
   const testButton = page.getByRole("button", { name: "Test Credentials" });
   await expect(testButton).toBeVisible({ timeout: LIVE });
   await testButton.click();
-  await expect(page.getByText(/BSC account authenticated successfully/)).toBeVisible({
+  await expect(page.getByText(BSC_TEST_SUCCESS)).toBeVisible({
     timeout: LIVE,
   });
   await expectAccessible(page, { label: "Profile, BuySportsCards credentials, tested" });

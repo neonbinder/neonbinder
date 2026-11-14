@@ -21,6 +21,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
+  BSC_SELLER_ID_FETCH_COOLDOWN_MS,
   BSC_SELLER_ID_FETCH_DELAYS_MS,
   BSC_SELLER_ID_FETCH_MAX_ATTEMPTS,
   BSC_SELLER_ID_FETCH_STALE_MS,
@@ -95,7 +96,7 @@ type StateOpts = {
   dormant?: "sellerConflict" | "noCredentials";
   testListingOff?: boolean;
   platformAccountId?: string;
-  fetch?: { token: string; startedAt: number };
+  fetch?: { token: string; startedAt: number; endedAt?: number; endReason?: "gaveUp" | "noSellerProfile" };
   drainScheduledAt?: number;
   lastUpdated?: number;
 };
@@ -200,13 +201,37 @@ const ensure = (t: T, firstDelayMs?: number, ownerId = OWNER) =>
 
 const seedChain = (t: T, token = "chain-1", startedAt = Date.now()) => seedState(t, { fetch: { token, startedAt } });
 
+/** A chain that ENDED `endedAgoMs` ago (field kept with `endedAt` and `endReason`). */
+const seedEndedChain = (
+  t: T,
+  endReason: "gaveUp" | "noSellerProfile" = "gaveUp",
+  endedAgoMs = 60_000,
+  token = "ended-1",
+) => {
+  const endedAt = Date.now() - endedAgoMs;
+  return seedState(t, { fetch: { token, startedAt: endedAt - 40 * 60_000, endedAt, endReason } });
+};
+
+/** The ensure a user action makes (Connect/save, Sync press, turning listing on). */
+const ensureByUser = (t: T, firstDelayMs?: number, ownerId = OWNER) =>
+  t.mutation(internal.bscSellerId.ensureFetch, {
+    ownerId,
+    userAction: true,
+    ...(firstDelayMs !== undefined ? { firstDelayMs } : {}),
+  });
+
+/** The drain claim a scheduled drain (the 15-minute poll's) makes. */
+const pollClaim = (t: T, ownerId = OWNER) =>
+  t.mutation(internal.listingDrain.claimDrain, { ownerId, platform: "bsc", leaseToken: "lease-poll" });
+
 // ── The schedule ────────────────────────────────────────────────────────────
 
 describe("the schedule", () => {
-  test("the numbers: 30, 60, 120 then 300 s; ten tries; stale at 45 min; a 20 s wait for BSC", () => {
+  test("the numbers: 30, 60, 120 then 300 s; ten tries; stale at 60 min; a 6 h cooldown; a 20 s wait for BSC", () => {
     expect([...BSC_SELLER_ID_FETCH_DELAYS_MS]).toEqual([30_000, 60_000, 120_000, 300_000]);
     expect(BSC_SELLER_ID_FETCH_MAX_ATTEMPTS).toBe(10);
-    expect(BSC_SELLER_ID_FETCH_STALE_MS).toBe(45 * 60_000);
+    expect(BSC_SELLER_ID_FETCH_STALE_MS).toBe(60 * 60_000);
+    expect(BSC_SELLER_ID_FETCH_COOLDOWN_MS).toBe(6 * 60 * 60 * 1000);
     expect(BSC_SELLER_ID_FETCH_TIMEOUT_MS).toBe(20_000);
   });
 
@@ -250,23 +275,33 @@ describe("the schedule", () => {
     await cancelScheduled(t);
   });
 
-  test("the tenth failed read gives up: the field is cleared, nothing is scheduled", async () => {
+  test("the tenth failed read gives up: the field is KEPT, ended gaveUp, nothing is scheduled", async () => {
     const t = convexTest(schema, modules);
-    await seedChain(t, "chain-1");
+    const startedAt = Date.now() - 39 * 60_000;
+    await seedChain(t, "chain-1", startedAt);
 
-    expect(await t.mutation(internal.bscSellerId.scheduleNext, { ownerId: OWNER, token: "chain-1", attempt: 10 })).toBe("gaveUp");
+    const { result, from, to } = await around(() =>
+      t.mutation(internal.bscSellerId.scheduleNext, { ownerId: OWNER, token: "chain-1", attempt: 10 }),
+    );
 
-    expect((await stateOf(t))?.sellerIdFetch).toBeUndefined();
+    expect(result).toBe("gaveUp");
+    const chain = (await stateOf(t))?.sellerIdFetch;
+    expect(chain).toMatchObject({ token: "chain-1", startedAt, endReason: "gaveUp" });
+    expect(chain?.endedAt).toBeGreaterThanOrEqual(from);
+    expect(chain?.endedAt).toBeLessThanOrEqual(to);
     expect(await ticks(t)).toEqual([]);
   });
 
-  test("a later chain can start after one gave up", async () => {
+  test("an ended chain's late scheduleNext is stale: it neither reschedules nor re-ends", async () => {
     const t = convexTest(schema, modules);
-    await seedState(t, { fetch: { token: "chain-1", startedAt: Date.now() } });
-    await t.mutation(internal.bscSellerId.scheduleNext, { ownerId: OWNER, token: "chain-1", attempt: 10 });
+    await seedEndedChain(t, "gaveUp", 60_000, "chain-1");
+    const before = await stateOf(t);
 
-    expect(await ensure(t, 0)).toBe("started");
-    await cancelScheduled(t);
+    expect(await t.mutation(internal.bscSellerId.scheduleNext, { ownerId: OWNER, token: "chain-1", attempt: 4 })).toBe("stale");
+    expect(await t.mutation(internal.bscSellerId.scheduleNext, { ownerId: OWNER, token: "chain-1", attempt: 10 })).toBe("stale");
+
+    expect(await stateOf(t)).toEqual(before);
+    expect(await ticks(t)).toEqual([]);
   });
 
   test("the give-up logs the attempt and no owner, token or id", async () => {
@@ -278,8 +313,179 @@ describe("the schedule", () => {
 
     const lines = log.mock.calls.map((c) => String(c[0]));
     expect(lines).toEqual([
-      JSON.stringify({ msg: "bsc_seller_id_fetch", platform: "bsc", operation: "tick", outcome: "gave_up", attempt: 10 }),
+      JSON.stringify({
+        msg: "bsc_seller_id_fetch",
+        platform: "bsc",
+        operation: "tick",
+        outcome: "gave_up",
+        attempt: 10,
+        endReason: "gaveUp",
+      }),
     ]);
+  });
+});
+
+// ── Re-arming after a chain ended (the NEO-483 audit) ───────────────────────
+
+describe("an ended chain is not re-armed by renewals or the poll, only by the collector", () => {
+  /** Gives up a running chain through the real path (scheduleNext at the last attempt). */
+  async function giveUp(t: T) {
+    await seedProfile(t);
+    await seedChain(t, "chain-1", Date.now() - 39 * 60_000);
+    expect(await t.mutation(internal.bscSellerId.scheduleNext, { ownerId: OWNER, token: "chain-1", attempt: 10 })).toBe("gaveUp");
+    return (await stateOf(t))!.sellerIdFetch!;
+  }
+
+  test("give up, then the poll's drain claim: awaitingSeller, coolingDown, no new chain, no read scheduled", async () => {
+    const t = convexTest(schema, modules);
+    const ended = await giveUp(t);
+    await queueOne(t);
+
+    // Four polls, an hour of them.
+    for (let i = 0; i < 4; i++) {
+      expect(await pollClaim(t)).toEqual({ claimed: false, reason: "awaitingSeller" });
+    }
+
+    expect((await stateOf(t))?.sellerIdFetch).toEqual(ended);
+    expect(await ticks(t)).toEqual([]);
+  });
+
+  test("give up, then a token renewal (ensureFetch with no userAction, as runSiteLogin arms it): coolingDown", async () => {
+    const t = convexTest(schema, modules);
+    const ended = await giveUp(t);
+
+    expect(await ensure(t)).toBe("coolingDown");
+    expect(await ensure(t, 0)).toBe("coolingDown");
+
+    expect((await stateOf(t))?.sellerIdFetch).toEqual(ended);
+    expect(await ticks(t)).toEqual([]);
+  });
+
+  test("give up, then a user action: a new chain starts at once, with a new token", async () => {
+    const t = convexTest(schema, modules);
+    await giveUp(t);
+
+    const { result, from, to } = await around(() => ensureByUser(t, 0));
+
+    expect(result).toBe("started");
+    const chain = (await stateOf(t))?.sellerIdFetch;
+    expect(chain?.token).not.toBe("chain-1");
+    expect(chain?.endedAt).toBeUndefined();
+    expect(chain?.endReason).toBeUndefined();
+    expect(chain?.startedAt).toBeGreaterThanOrEqual(from);
+    expect(chain?.startedAt).toBeLessThanOrEqual(to);
+    const [job] = await ticks(t);
+    expect(job.args).toEqual({ ownerId: OWNER, token: chain?.token, attempt: 1 });
+    // The new chain reads; the ended one's token stands down.
+    expect(await t.query(internal.bscSellerId.tickState, { ownerId: OWNER, token: chain!.token })).toBe("go");
+    expect(await t.query(internal.bscSellerId.tickState, { ownerId: OWNER, token: "chain-1" })).toBe("stale");
+    await cancelScheduled(t);
+  });
+
+  test("a user action never doubles a RUNNING chain: inFlight", async () => {
+    const t = convexTest(schema, modules);
+    await seedState(t);
+    await ensure(t);
+    const before = await stateOf(t);
+
+    expect(await ensureByUser(t, 0)).toBe("inFlight");
+
+    expect(await stateOf(t)).toEqual(before);
+    expect(await ticks(t)).toHaveLength(1);
+    await cancelScheduled(t);
+  });
+
+  test.each<["gaveUp" | "noSellerProfile"]>([["gaveUp"], ["noSellerProfile"]])(
+    "%s: cooling down just inside 6 h, re-armed by a renewal or the poll once it has passed",
+    async (reason) => {
+      const t = convexTest(schema, modules);
+      await seedProfile(t);
+      await seedEndedChain(t, reason, BSC_SELLER_ID_FETCH_COOLDOWN_MS - 60_000);
+      expect(await ensure(t)).toBe("coolingDown");
+      expect(await ticks(t)).toEqual([]);
+
+      await t.run(async (ctx) => {
+        const row = (await ctx.db
+          .query("marketplaceListingStates")
+          .withIndex("by_owner_platform", (q) => q.eq("ownerId", OWNER).eq("platform", "bsc"))
+          .first())!;
+        const endedAt = Date.now() - BSC_SELLER_ID_FETCH_COOLDOWN_MS - 1;
+        await ctx.db.patch(row._id, { sellerIdFetch: { ...row.sellerIdFetch!, endedAt } });
+      });
+
+      expect(await pollClaim(t)).toEqual({ claimed: false, reason: "awaitingSeller" });
+      const chain = (await stateOf(t))?.sellerIdFetch;
+      expect(chain?.token).not.toBe("ended-1");
+      expect(chain?.endedAt).toBeUndefined();
+      expect((await ticks(t))[0].args.attempt).toBe(1);
+      await cancelScheduled(t);
+    },
+  );
+
+  test("an ended chain is not stale by age: a renewal 2 h after a chain STARTED still cools down", async () => {
+    const t = convexTest(schema, modules);
+    const endedAt = Date.now() - 60 * 60_000;
+    await seedState(t, {
+      fetch: { token: "ended-1", startedAt: endedAt - 60 * 60_000, endedAt, endReason: "gaveUp" },
+    });
+
+    expect(await ensure(t, 0)).toBe("coolingDown");
+    expect(await ticks(t)).toEqual([]);
+  });
+
+  test("the cooling-down line carries the reason and no owner or token", async () => {
+    const t = convexTest(schema, modules);
+    await seedEndedChain(t, "noSellerProfile");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await ensure(t);
+
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    expect(lines).toEqual([
+      JSON.stringify({
+        msg: "bsc_seller_id_fetch",
+        platform: "bsc",
+        operation: "ensure",
+        outcome: "cooling_down",
+        endReason: "noSellerProfile",
+      }),
+    ]);
+    for (const l of lines) expect(l).not.toMatch(/ended-1|collector_sellerid/);
+  });
+
+  test("an account that lands after the chain ended clears the ended chain and kicks the drain", async () => {
+    const t = convexTest(schema, modules);
+    await seedEndedChain(t, "gaveUp");
+    await queueOne(t);
+
+    await t.mutation(internal.userProfile.setMarketplaceAccountIdInternal, {
+      userId: OWNER,
+      site: "buysportscards",
+      accountId: SELLER,
+    });
+
+    const row = await stateOf(t);
+    expect(row?.sellerIdFetch).toBeUndefined();
+    expect(row?.platformAccountId).toBe(SELLER);
+    expect(await drainRuns(t)).toHaveLength(1);
+    await cancelScheduled(t);
+  });
+
+  test("tickState: an ended chain's own token is stale, so a late tick never reads", async () => {
+    const t = convexTest(schema, modules);
+    await seedEndedChain(t, "gaveUp", 60_000, "chain-1");
+
+    expect(await t.query(internal.bscSellerId.tickState, { ownerId: OWNER, token: "chain-1" })).toBe("stale");
+  });
+
+  test("stopChain leaves an ended chain alone (only the cooldown or a user action replaces it)", async () => {
+    const t = convexTest(schema, modules);
+    await seedEndedChain(t, "noSellerProfile", 60_000, "chain-1");
+    const before = await stateOf(t);
+
+    await t.mutation(internal.bscSellerId.stopChain, { ownerId: OWNER, token: "chain-1" });
+
+    expect(await stateOf(t)).toEqual(before);
   });
 });
 
@@ -347,7 +553,7 @@ describe("ensureFetch", () => {
     await cancelScheduled(t);
   });
 
-  test("a chain just under 45 minutes old is still in flight", async () => {
+  test("a chain just under 60 minutes old is still in flight", async () => {
     const t = convexTest(schema, modules);
     await seedChain(t, "old", Date.now() - BSC_SELLER_ID_FETCH_STALE_MS + 60_000);
 
@@ -356,7 +562,7 @@ describe("ensureFetch", () => {
     expect(await ticks(t)).toEqual([]);
   });
 
-  test("a chain 45 minutes old is stale and replaced: a new token, and the old tick then stands down", async () => {
+  test("a chain 60 minutes old is stale and replaced: a new token, and the old tick then stands down", async () => {
     const t = convexTest(schema, modules);
     await seedChain(t, "old", Date.now() - BSC_SELLER_ID_FETCH_STALE_MS - 1);
 
@@ -810,19 +1016,36 @@ describe("fetchTick", () => {
     await cancelScheduled(t);
   });
 
-  test("an answer with no usable id is not a landing: the next read is scheduled", async () => {
+  test.each<[string, () => Response]>([
+    ["a seller profile with no id", () => profileOk(null)],
+    ["no seller profile at all", () => Response.json({ userName: "someone" })],
+  ])("a 2xx with %s is terminal: ended noSellerProfile, nothing scheduled, no further reads", async (_name, answer) => {
     const t = convexTest(schema, modules);
+    await seedProfile(t);
     await seedChain(t);
-    stubBsc(() => profileOk(null));
+    await queueOne(t);
+    const asked = stubBsc(answer);
 
-    await tick(t);
+    const { from, to } = await around(() => tick(t, 3));
 
+    expect(asked.n).toBe(1);
     expect(await profileId(t)).toBeNull();
-    expect((await nextTick(t)).args.attempt).toBe(2);
-    await cancelScheduled(t);
+    const chain = (await stateOf(t))?.sellerIdFetch;
+    expect(chain).toMatchObject({ token: "chain-1", endReason: "noSellerProfile" });
+    expect(chain?.endedAt).toBeGreaterThanOrEqual(from);
+    expect(chain?.endedAt).toBeLessThanOrEqual(to);
+    expect(await ticks(t)).toEqual([]);
+
+    // A late tick of the same chain, a renewal and the poll's claim: still no BSC call.
+    await tick(t, 4);
+    expect(await ensure(t)).toBe("coolingDown");
+    expect(await pollClaim(t)).toEqual({ claimed: false, reason: "awaitingSeller" });
+    expect(asked.n).toBe(1);
+    expect(await ticks(t)).toEqual([]);
+    expect((await stateOf(t))?.sellerIdFetch).toEqual(chain);
   });
 
-  test("an id with characters outside the stored shape is not stored", async () => {
+  test("an id with characters outside the stored shape is not stored (and BSC has answered: terminal)", async () => {
     const t = convexTest(schema, modules);
     await seedChain(t);
     stubBsc(() => profileOk("has spaces"));
@@ -831,10 +1054,11 @@ describe("fetchTick", () => {
 
     expect(await profileId(t)).toBeNull();
     expect((await stateOf(t))?.platformAccountId).toBeUndefined();
-    await cancelScheduled(t);
+    expect((await stateOf(t))?.sellerIdFetch?.endReason).toBe("noSellerProfile");
+    expect(await ticks(t)).toEqual([]);
   });
 
-  test("gives up after ten tries: the tenth failed read clears the field and schedules nothing", async () => {
+  test("gives up after ten tries: the tenth failed read ends the chain (gaveUp, field kept) and schedules nothing", async () => {
     const t = convexTest(schema, modules);
     await seedChain(t);
     stubBsc(() => new Response("", { status: 503 }));
@@ -844,7 +1068,7 @@ describe("fetchTick", () => {
     await cancelScheduled(t);
     await tick(t, 10);
 
-    expect((await stateOf(t))?.sellerIdFetch).toBeUndefined();
+    expect((await stateOf(t))?.sellerIdFetch).toMatchObject({ token: "chain-1", endReason: "gaveUp" });
     expect(await ticks(t)).toEqual([]);
   });
 
@@ -865,7 +1089,7 @@ describe("fetchTick", () => {
     expect(asked.n).toBe(10);
     // The first wait (30 s) belongs to ensure; these are the nine between reads.
     expect(waits).toEqual([60_000, 120_000, 300_000, 300_000, 300_000, 300_000, 300_000, 300_000, 300_000]);
-    expect((await stateOf(t))?.sellerIdFetch).toBeUndefined();
+    expect((await stateOf(t))?.sellerIdFetch?.endReason).toBe("gaveUp");
   });
 
   test("signed out (a 401 refused again after the one refresh): the chain stops, nothing is scheduled", async () => {
@@ -1103,6 +1327,7 @@ describe("fetchTick", () => {
       internal.bscSellerId.ensureFetch,
       internal.bscSellerId.tickState,
       internal.bscSellerId.stopChain,
+      internal.bscSellerId.endChainNoSellerProfile,
       internal.bscSellerId.scheduleNext,
       internal.bscSellerId.fetchTick,
     ]) {

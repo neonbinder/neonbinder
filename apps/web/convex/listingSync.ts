@@ -224,7 +224,10 @@ export type ListingSetup =
  * stored (`storedBscSellerId`), the spaced background read is armed to start
  * in `BSC_SELLER_FETCH_AFTER_SETUP_MS` (`ensureBscSellerIdFetch`; a no-op
  * while one is in flight). The drain refuses to run until it lands
- * (`listingDrain.claimDrain`, `awaitingSeller`).
+ * (`listingDrain.claimDrain`, `awaitingSeller`). Turning listing on, and a
+ * collector's own save (`opts.save`), are user actions: they start a new
+ * chain even inside an ended chain's cooldown. A sign-in renewal re-asserting
+ * the flag (`save` false, already listing) is not, and leaves the cooldown.
  */
 export async function setUpListing(
   ctx: MutationCtx,
@@ -236,7 +239,9 @@ export async function setUpListing(
   if (!opts.save && process.env.TESTING_RESET_SECRET) return "testOff";
   const state = await listingStateOf(ctx, ownerId, platform);
   if (state && pushesCounts(state)) {
-    if (platform === "bsc") await awaitBscSeller(ctx, ownerId, null);
+    // Only the collector's own save counts as asking again; a sign-in renewal
+    // re-asserting the flag leaves an ended chain's cooldown standing.
+    if (platform === "bsc") await awaitBscSeller(ctx, ownerId, undefined, { userAction: opts.save });
     return "listing";
   }
   if (state?.testListingOff === true && !opts.save) return "testOff";
@@ -278,7 +283,8 @@ export async function setUpListing(
   if (state) await ctx.db.patch(state._id, on);
   else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...on });
   await ctx.scheduler.runAfter(0, internal.listingSync.startListingWalk, { ownerId, platform, startedAt: now });
-  if (platform === "bsc") await awaitBscSeller(ctx, ownerId, credential.sellerId);
+  // Turning listing on is a fresh start: it never waits out an ended chain's cooldown.
+  if (platform === "bsc") await awaitBscSeller(ctx, ownerId, credential.sellerId, { userAction: true });
   return "started";
 }
 
@@ -289,15 +295,30 @@ export async function setUpListing(
  */
 export const BSC_SELLER_FETCH_AFTER_SETUP_MS = 30_000;
 
+/** NEO-483 — a Sync press asks at once, like a drain claim that finds no account. */
+export const BSC_SELLER_FETCH_ON_SYNC_MS = 0;
+
 /**
  * Arms the background read of the owner's BuySportsCards seller account when
- * none is stored. `sellerId` is the stored value when the caller already read
- * it; null reads it here (the owner's profile, one document).
+ * none is stored. `sellerId` is the stored value (null: none) when the caller
+ * already read the profile; `undefined` reads it here (one document).
+ * `userAction`: the collector asked (a save, turning listing on, a Sync
+ * press), so an ended chain's cooldown does not hold it back.
  */
-async function awaitBscSeller(ctx: MutationCtx, ownerId: string, sellerId: string | null): Promise<void> {
-  const stored = storedBscSellerId(sellerId ?? (await listingCredentialOf(ctx, ownerId, "bsc")).sellerId);
+async function awaitBscSeller(
+  ctx: MutationCtx,
+  ownerId: string,
+  sellerId: string | null | undefined,
+  opts: { userAction: boolean; firstDelayMs?: number },
+): Promise<void> {
+  const stored = storedBscSellerId(
+    sellerId === undefined ? (await listingCredentialOf(ctx, ownerId, "bsc")).sellerId : sellerId,
+  );
   if (stored !== null) return;
-  await ensureBscSellerIdFetch(ctx, ownerId, { firstDelayMs: BSC_SELLER_FETCH_AFTER_SETUP_MS });
+  await ensureBscSellerIdFetch(ctx, ownerId, {
+    firstDelayMs: opts.firstDelayMs ?? BSC_SELLER_FETCH_AFTER_SETUP_MS,
+    ...(opts.userAction ? { userAction: true } : {}),
+  });
 }
 
 /**
@@ -672,6 +693,11 @@ async function recordOf(
  * `queued: false` with no reason: nothing to sync here (the set has no card any
  * listing platform can list, or the collector holds no copy of it and never
  * synced it).
+ *
+ * NEO-483: on BuySportsCards with no seller account stored, every press also
+ * starts the background read of the account (`userAction`: past an ended
+ * chain's cooldown), throttled or not, since "Hit Sync" is what the stalled
+ * Sync status line tells the collector to do.
  */
 export const syncVariant = mutation({
   args: { variantId: v.id("selectorOptions") },
@@ -686,6 +712,11 @@ export const syncVariant = mutation({
     let queued = false;
     let throttled = 0;
     for (const platform of platforms) {
+      // NEO-483: a press is the collector asking again. With no BuySportsCards
+      // seller account stored, it starts the background read now, even inside
+      // an ended chain's cooldown (a drain claim alone never does), whatever
+      // the press does to the queue. A chain already running is left alone.
+      if (platform === "bsc") await armBscSellerOnSync(ctx, ownerId);
       const outcome = await syncOnePlatform(ctx, ownerId, platform, args.variantId);
       if (outcome === "queued") queued = true;
       else if (outcome === "throttled") throttled += 1;
@@ -695,6 +726,21 @@ export const syncVariant = mutation({
     return { queued: false };
   },
 });
+
+/**
+ * NEO-483 — a Sync press on BuySportsCards with no seller account stored
+ * starts the background read now, past an ended chain's cooldown. Gated as a
+ * drain claim is (`listingDrain.claimDrain`): a sign-in that is missing or
+ * needs renewing reads nothing (that has its own line and its own fix).
+ */
+async function armBscSellerOnSync(ctx: MutationCtx, ownerId: string): Promise<void> {
+  const credential = await listingCredentialOf(ctx, ownerId, "bsc");
+  if (!credential.hasCredentials || credential.needsReauth) return;
+  await awaitBscSeller(ctx, ownerId, credential.sellerId, {
+    userAction: true,
+    firstDelayMs: BSC_SELLER_FETCH_ON_SYNC_MS,
+  });
+}
 
 /** The variant's first waiting outbox row on this platform, if it has one. */
 async function firstQueuedRow(
@@ -931,10 +977,20 @@ const platformStatusValidator = v.object({
   lastDrainAt: v.optional(v.number()),
   /**
    * NEO-483 — BuySportsCards only: listing, and no seller account stored yet,
-   * so no sync can run until the background read lands it. Since when the
-   * current read started (else since listing started). Absent otherwise.
+   * so no sync can run until the background read lands it. Set only while
+   * that read's chain is RUNNING (`sellerIdFetch` with no `endedAt`): the
+   * chain's `startedAt`, so a refresh or a re-render never restarts the
+   * count. Absent otherwise, including when no chain exists at all (see
+   * `sellerAccountWait`).
    */
   awaitingSellerSince: v.optional(v.number()),
+  /**
+   * NEO-483 — BuySportsCards only, same conditions, but the chain has ENDED
+   * (`endedAt` set): `gaveUp` after its reads all failed, `noSellerProfile`
+   * when BSC answered that the account has no seller profile. Never set
+   * together with `awaitingSellerSince`.
+   */
+  sellerAccountStalled: v.optional(v.union(v.literal("gaveUp"), v.literal("noSellerProfile"))),
   /** Cards waiting for the next sync, oldest first, `STATUS_CAPS.queued` at most. */
   queued: v.object({
     cards: v.array(
@@ -1077,12 +1133,10 @@ async function platformStatus(
 
   // NEO-483: listing on BSC with no seller account stored: the drain waits
   // on the background read (`listingDrain.claimDrain`, `awaitingSeller`).
-  let awaitingSellerSince: number | undefined;
+  let wait: SellerAccountWait = {};
   if (platform === "bsc" && settings.listing && !settings.paused && !settings.needsReauth && !settings.sellerConflict) {
     const credential = await listingCredentialOf(ctx, ownerId, platform);
-    if (storedBscSellerId(credential.sellerId) === null) {
-      awaitingSellerSince = state?.sellerIdFetch?.startedAt ?? settings.listingSince;
-    }
+    if (storedBscSellerId(credential.sellerId) === null) wait = sellerAccountWait(state?.sellerIdFetch);
   }
 
   return {
@@ -1095,10 +1149,35 @@ async function platformStatus(
     running,
     ...(state?.drainScheduledAt !== undefined ? { scheduledAt: state.drainScheduledAt } : {}),
     ...(state?.lastDrainAt !== undefined ? { lastDrainAt: state.lastDrainAt } : {}),
-    ...(awaitingSellerSince !== undefined ? { awaitingSellerSince } : {}),
+    ...wait,
     queued: { cards, more: rows.length > caps.queued },
     sets,
   };
+}
+
+type SellerAccountWait = Pick<PlatformStatus, "awaitingSellerSince" | "sellerAccountStalled">;
+
+/**
+ * NEO-483 — what Sync status says about a BuySportsCards seller account NB
+ * does not know yet, from the background read's chain on the state row
+ * (`bscSellerId`). The caller has already checked the owner lists on BSC with
+ * no account stored.
+ *   - RUNNING (`endedAt` unset): `awaitingSellerSince` = the chain's
+ *     `startedAt`. A chain past its stale age still reads as running until a
+ *     claim replaces it; the new chain is a new wait and counts afresh.
+ *   - ENDED (`endedAt` set): `sellerAccountStalled` = its `endReason`. An
+ *     ended chain with no reason reads as `gaveUp`, the reason that promises
+ *     nothing about BSC's answer.
+ *   - No chain: neither. Nothing is asking BSC at that moment (a listing
+ *     that predates the read, or a chain cleared by a pause or a sign-out),
+ *     so there is no wait to count. Counting from `listingSince` instead
+ *     would jump back the moment the next drain claim, save, sign-in or Sync
+ *     press arms a chain; staying silent until then is the stable choice.
+ */
+function sellerAccountWait(chain: Doc<"marketplaceListingStates">["sellerIdFetch"]): SellerAccountWait {
+  if (chain === undefined) return {};
+  if (chain.endedAt === undefined) return { awaitingSellerSince: chain.startedAt };
+  return { sellerAccountStalled: chain.endReason ?? "gaveUp" };
 }
 
 async function syncStatusOf(

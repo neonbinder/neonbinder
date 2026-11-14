@@ -84,14 +84,15 @@
 // The seller account (NEO-483). The first press after a listing sign-in is saved
 // can meet a worker whose BuySportsCards seller account NeonBinder does not know
 // yet: BuySportsCards answers its profile slowly, so NeonBinder asks again in the
-// background (30 s, 60 s, 120 s ...) and Sync status reads "Waiting on
-// BuySportsCards..." until the answer lands, when the run starts by itself. The
+// background (30 s, 60 s, 120 s ...) and Sync status says BuySportsCards is
+// slow to confirm the seller account until the answer lands, when the run starts by itself. The
 // spec passes in BOTH orders, the run starting at once and the run starting after
 // that wait: `expectRunOrSellerWait` settles on the state the press led to (the
 // run, or the wait line, which it checks for accessibility), and the walk's claim
 // wait (`SELLER_ACCOUNT_CAP_MS`, support/collection.ts) is BuySportsCards' own
 // time plus 7 s of ours. Both orders end in the same unconditional asserts. A
-// screen that reads "Seller account in use" is thrown by name, never waited out.
+// screen that reads "Seller account in use", or one of the two gave-up sentences
+// (still hasn't confirmed / isn't set up to sell), is thrown by name, never waited out.
 //
 // Two triggers (NEO-433). A set's sync is set going by the press of the
 // checklist's Sync and by the 15-minute sales poll, and the poll can list a
@@ -819,7 +820,7 @@ test(
     const settled = queueSettled(platform, SET_LABEL);
     // NEO-483: this is the worker's first press on a freshly saved sign-in, so
     // NeonBinder may still be waiting for BuySportsCards to name the seller account.
-    // Then Sync status reads "Waiting on BuySportsCards..." and the run starts by
+    // Then Sync status says BuySportsCards is slow to confirm the seller account and the run starts by
     // itself when the answer lands (the walk's claim wait, SELLER_ACCOUNT_CAP_MS).
     // Either way the run happens, and everything after the walk is unconditional
     // (R2): the ledger, the "2 listed" line and the send-or-nothing branch below

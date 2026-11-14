@@ -87,7 +87,7 @@ Signs in to the marketplace for one credential key. Only Convex calls these
 | `key` | string | The credential key. Required. |
 | `username`, `password` | string | Optional, together or not at all. Used for this one sign-in and never stored (NEO-141). |
 | `canary` | boolean | Synthetic probe: skip the cached token and the write-back. Only `true` counts. |
-| `tokenRefused` | boolean | **BSC only, contract version 2 (NEO-483).** Convex sets it after BSC answered 401 to the stored access token. The adapter then skips its cached-token branch and goes straight to the refresh grant, the silent re-authorize, or `reauth_required`. Only a strict boolean `true` counts; the string `"true"` is ignored. An older service ignores the field. |
+| `tokenRefused` | boolean | **BSC only, contract version 2 (NEO-483).** Convex sets it after BSC answered 401 to the stored access token. The adapter then skips its cached-token branch and goes straight to the refresh grant, the silent re-authorize, or `reauth_required`. Only a strict boolean `true` counts; the string `"true"` is ignored. An older service ignores the field; an older Convex never sends it (see the release note under **Version history**). |
 
 **Response (200):** `{ success, message, expiresAt, storeName?, sellerId? }`.
 `storeName` and `sellerId` are optional and Convex must not depend on them:
@@ -466,7 +466,20 @@ half a credential pair is a 400 rather than a silent fallback.)
 | Version | Ticket | Change |
 |---|---|---|
 | 1 | NEO-143 | The version check itself; transient login credentials. |
-| 2 | NEO-483 | `/login/bsc` accepts `tokenRefused`. Refresh and silent re-authorize stop returning `storeName`/`sellerId`; a cached token whose profile read gives no verdict is served without them. Additive in both directions, so Convex's `REQUIRED_CONTRACT_VERSION` stays 1 in this release. |
+| 2 | NEO-483 | `/login/bsc` accepts `tokenRefused`. Refresh and silent re-authorize stop returning `storeName`/`sellerId`; a cached token whose profile read gives no verdict is served without them. Convex's `REQUIRED_CONTRACT_VERSION` stays 1 in this release. Not safe in every release order; see below. |
+
+**Version 2 during a release.** Old service with new Convex is safe: the old
+service ignores `tokenRefused` and keeps its old cached-branch behaviour.
+New service with old Convex is not fully safe, and it is the window every
+release passes through, because `release.yml` promotes this service before it
+pushes Convex (a few minutes). Old Convex never sends `tokenRefused`. If BSC
+answers 401 to the stored token while its profile endpoint is stalling, the new
+cached branch gets no verdict from the profile read and serves the refused
+token again instead of renewing it. BSC calls in that window keep failing with
+401, and a collector can be told to sign in to BuySportsCards again for a few
+minutes, until new Convex is live (its next renewal sends `tokenRefused`) or
+the stall ends. Nothing is lost: the stored session is untouched, and waiting or
+signing in again clears it.
 
 ### The mechanical check
 

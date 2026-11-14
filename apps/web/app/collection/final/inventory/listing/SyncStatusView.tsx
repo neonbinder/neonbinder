@@ -31,6 +31,7 @@ import {
   STEP_STATE_WORD,
   awaitingSellerLine,
   lastStepsName,
+  sellerAccountStalledLine,
   runStepsName,
   sellerConflictLine,
   stepLabels,
@@ -268,8 +269,11 @@ function Platform({
 function RunningNow({ p, level, readOnly }: { p: PlatformSyncStatus; level: number; readOnly: boolean }) {
   const name = PLATFORM_NAME[p.platform];
   const steps = p.running?.steps;
-  // NEO-483 — no sync can start until the marketplace names the seller account.
+  // NEO-483 — no sync can start until the marketplace names the seller
+  // account: still asking (with a live count), or stopped asking until the
+  // collector's next Sync (no count: nothing is outstanding).
   const awaitingSeller = !p.running && p.awaitingSellerSince !== undefined;
+  const stalled = !p.running && !awaitingSeller ? p.sellerAccountStalled : undefined;
   return (
     <section className={`space-y-1.5 ${RULE}`}>
       <Heading level={level} className="text-base font-semibold">
@@ -285,6 +289,8 @@ function RunningNow({ p, level, readOnly }: { p: PlatformSyncStatus; level: numb
         </p>
       ) : awaitingSeller ? (
         <p className="text-sm text-ink-2">{awaitingSellerLine(p.platform, readOnly)}</p>
+      ) : stalled ? (
+        <p className="text-sm text-ink-2">{sellerAccountStalledLine(p.platform, stalled, readOnly)}</p>
       ) : (
         <p className="text-sm text-ink-2">
           Nothing syncing right now.{" "}

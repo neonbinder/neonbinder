@@ -66,6 +66,7 @@ function toPlatform(raw: RawPlatform): PlatformSyncStatus {
     ...(raw.scheduledAt !== undefined ? { scheduledAt: raw.scheduledAt } : {}),
     ...(raw.lastDrainAt !== undefined ? { lastDrainAt: raw.lastDrainAt } : {}),
     ...(raw.awaitingSellerSince !== undefined ? { awaitingSellerSince: raw.awaitingSellerSince } : {}),
+    ...(raw.sellerAccountStalled !== undefined ? { sellerAccountStalled: raw.sellerAccountStalled } : {}),
     queued: {
       cards: raw.queued.cards.map((c) => ({
         cardId: c.cardId,

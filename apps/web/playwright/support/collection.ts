@@ -6,7 +6,7 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible, test } from "./fixtures";
-import { expectAfterMarketplace, waitingOn } from "./marketplace-wait";
+import { expectAfterMarketplace } from "./marketplace-wait";
 
 /**
  * NEO-527 — the title of the brand column in every year the suite drills BY
@@ -731,8 +731,29 @@ export const SELLER_ACCOUNT_CAP_MS = 240_000;
 /** The state word Sync status gives a platform whose seller account lists from another NeonBinder account. */
 const SELLER_CONFLICT_WORD = "Seller account in use";
 
+/**
+ * The collector's seller-account sentences on Sync status (NEO-483), matched on a
+ * distinctive phrase so the platform's name and the sentences' tails can change.
+ * The wait line "Waiting on BuySportsCards..." is NOT the signal: it also shows
+ * during any ordinary step that is waiting on the marketplace, so only this
+ * sentence says the run is held for the seller account. Spec code does not import
+ * app copy (it is a running product's text, read here the way a user reads it).
+ */
+const SELLER_WAIT_SENTENCE = /slow to confirm your seller account/;
+const SELLER_GAVE_UP_SENTENCE = /still hasn['\u2019]t confirmed your seller account/;
+const SELLER_NO_PROFILE_SENTENCE = /isn['\u2019]t set up to sell yet/;
+
 function sellerConflictOf(platform: Locator): Locator {
   return platform.getByText(SELLER_CONFLICT_WORD, { exact: true }).first();
+}
+
+function sellerAwaitedOf(platform: Locator): Locator {
+  return platform.getByText(SELLER_WAIT_SENTENCE).first();
+}
+
+/** Both states the seller-account wait can end in without an account: the run will never start. */
+function sellerGaveUpOf(platform: Locator): Locator {
+  return platform.getByText(SELLER_GAVE_UP_SENTENCE).or(platform.getByText(SELLER_NO_PROFILE_SENTENCE)).first();
 }
 
 function sellerInUse(marketplace: string): Error {
@@ -740,6 +761,20 @@ function sellerInUse(marketplace: string): Error {
     `${marketplace} reads "${SELLER_CONFLICT_WORD}" on Sync status: its seller account lists from another NeonBinder account, so this run will never start. ` +
       "Nothing waits that out: the account the seed saved is held elsewhere (a seller spec ran on the same account, or a cleanup left a stale claim).",
   );
+}
+
+function sellerGaveUp(marketplace: string, reading: string): Error {
+  return new Error(
+    `${marketplace} Sync status reads "${reading.trim()}": NeonBinder stopped asking for the seller account (it never confirmed, or says the account is not set up to sell), so this run will never start. ` +
+      "Nothing waits that out: it is a finding about the seed's seller account or the marketplace, not a wait to lengthen.",
+  );
+}
+
+/** Throws by name when Sync status shows a state the run cannot leave: another account holds the seller account, or the seller-account read gave up. */
+async function throwIfSellerBlocked(platform: Locator, marketplace: string): Promise<void> {
+  if (await sellerConflictOf(platform).isVisible()) throw sellerInUse(marketplace);
+  const gaveUp = sellerGaveUpOf(platform);
+  if (await gaveUp.isVisible()) throw sellerGaveUp(marketplace, (await gaveUp.textContent()) ?? "");
 }
 
 /**
@@ -750,9 +785,13 @@ function sellerInUse(marketplace: string): Error {
  * starts by itself once BuySportsCards answers. So:
  *  - the run is under way, or already over (the press's queued cards are gone,
  *    `settled`): "started";
- *  - the wait line is up: "waiting". The screen is a state of its own, so the axe
- *    check runs on it (light and dark) before the walk;
- *  - "Seller account in use" is up: thrown by name, it never resolves.
+ *  - the seller-account sentence ("... slow to confirm your seller account ...")
+ *    is up: "waiting". The screen is a state of its own, so the axe check runs on
+ *    it (light and dark) before the walk. The live line "Waiting on <marketplace>..."
+ *    is not the signal: it also shows during an ordinary step's wait;
+ *  - "Seller account in use", or either gave-up sentence ("... still hasn't
+ *    confirmed your seller account", "... isn't set up to sell yet"), is up:
+ *    thrown by name, none of them resolves.
  * Both returns lead to the same walk (`followRunToRest`, whose claim wait covers
  * the seller read) and the same hard asserts after it (R2), so a spec that calls
  * this proves its feature in either order; the answer goes to the report as a
@@ -770,10 +809,9 @@ export async function expectRunOrSellerWait(
   { marketplace, label }: { marketplace: string; label: string },
 ): Promise<"started" | "waiting"> {
   const page = platform.page();
-  const waiting = waitingOn(page, marketplace);
-  const conflict = sellerConflictOf(platform);
-  await expect(waiting.or(run.running).or(settled).or(conflict).first()).toBeVisible();
-  if (await conflict.isVisible()) throw sellerInUse(marketplace);
+  const waiting = sellerAwaitedOf(platform);
+  await expect(waiting.or(run.running).or(settled).or(sellerConflictOf(platform)).or(sellerGaveUpOf(platform)).first()).toBeVisible();
+  await throwIfSellerBlocked(platform, marketplace);
   const outcome = (await waiting.isVisible()) ? "waiting" : "started";
   try {
     test.info().annotations.push({
@@ -813,7 +851,7 @@ export async function expectRunOrSellerWait(
  * the seller account: it is `expectAfterMarketplace` with `SELLER_ACCOUNT_CAP_MS`,
  * so the wait line's seconds are the marketplace's and our own share stays 7 s.
  * Pass `marketplace` on every press that could be the worker's first run. If the
- * platform reads "Seller account in use" the walk throws by name instead. Without
+ * platform reads "Seller account in use", or a gave-up sentence, the walk throws by name instead. Without
  * `marketplace` (eBay) a claim is the plain 7 s, as before.
  */
 export async function followRunToRest(
@@ -825,7 +863,7 @@ export async function followRunToRest(
 ): Promise<void> {
   const idle = platform.getByText(/^Nothing syncing right now\./);
   const open = run.running.getByRole("listitem", { name: /, (working|waiting)$/ });
-  const conflict = sellerConflictOf(platform);
+  const blocked = sellerConflictOf(platform).or(sellerGaveUpOf(platform)).first();
   for (let pass = 0; pass < MAX_REST_PASSES; pass++) {
     // Either the press's rows are gone, or a run shows the step it is on (a run
     // not yet claimed shows neither, and 7 s is the whole claim's budget). With a
@@ -835,12 +873,12 @@ export async function followRunToRest(
     if (marketplace === undefined) {
       await expect(next).toBeVisible();
     } else {
-      await expectAfterMarketplace(platform.page(), next.or(conflict).first(), {
+      await expectAfterMarketplace(platform.page(), next.or(blocked).first(), {
         platform: marketplace,
         cap: pass === 0 ? SELLER_ACCOUNT_CAP_MS : undefined,
         what: pass === 0 ? "the press's run to start (the seller account may be awaited)" : "the next step of the run",
       });
-      if (await conflict.isVisible()) throw sellerInUse(marketplace);
+      await throwIfSellerBlocked(platform, marketplace);
     }
     if (await settled.isVisible()) break;
     // One look at the open steps that never waits (a compare-only run's one step is

@@ -1789,6 +1789,14 @@ async function runSiteLogin(
   // by listing setup instead (`listingSync.setUpListing`), since the owner
   // does not list yet at this point. The drain never reads the id live; it
   // waits (`awaitingSeller`) until the account lands.
+  //
+  // NEO-483 audit: only a password sign-in (`transient` set: the collector's
+  // Connect/save, or the testing seed's store, which stands in for one) is a
+  // user action. A renewal, a silent re-authorize and Test Credentials run
+  // on the stored session and arm WITHOUT `userAction`, so a chain that gave
+  // up or found no seller profile cools down instead of being restarted by
+  // every hourly renewal (`ensureBscSellerIdFetch`, `coolingDown`).
+  let sellerFetch: "started" | "inFlight" | "coolingDown" | "notListing" | "known" | "notArmed" | null = null;
   if (site === "buysportscards") {
     if (loginResult.sellerId) {
       await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
@@ -1799,8 +1807,12 @@ async function runSiteLogin(
     } else {
       try {
         // The default first wait (30 s) applies.
-        await ctx.runMutation(internal.bscSellerId.ensureFetch, { ownerId: userId });
+        sellerFetch = await ctx.runMutation(internal.bscSellerId.ensureFetch, {
+          ownerId: userId,
+          ...(transient !== undefined ? { userAction: true } : {}),
+        });
       } catch {
+        sellerFetch = "notArmed";
         // Arming the read never fails a login; the next drain claim re-arms it.
         console.warn(
           JSON.stringify({ msg: "bsc_seller_id_fetch", platform: "bsc", operation: "ensure", outcome: "not_armed" }),
@@ -1818,12 +1830,31 @@ async function runSiteLogin(
 
   return {
     success: true,
-    message: cfg.successMessage,
+    message:
+      site === "buysportscards" && !loginResult.storeName ? bscUnconfirmedSuccessMessage(sellerFetch) : cfg.successMessage,
     details: loginResult.storeName ? `Store: ${loginResult.storeName}` : undefined,
     reauthRequired: false,
     transient: false,
     paused: false,
   };
+}
+
+/**
+ * NEO-483 audit (security note 2): a BSC sign-in that came back without a
+ * store name did not have its token confirmed by BSC's profile read: either
+ * the read stalled (the browser service serves the cached token unchecked)
+ * or the session was renewed, which never reads the profile. "Authenticated
+ * successfully" overstates that, so Test Credentials says what is known.
+ * "We'll keep checking" only when the background seller-account read is
+ * actually running for this owner (`started` / `inFlight`).
+ */
+function bscUnconfirmedSuccessMessage(
+  sellerFetch: "started" | "inFlight" | "coolingDown" | "notListing" | "known" | "notArmed" | null,
+): string {
+  const checking = sellerFetch === "started" || sellerFetch === "inFlight";
+  return checking
+    ? "Signed in to BuySportsCards. Couldn't confirm your store name right now; we'll keep checking."
+    : "Signed in to BuySportsCards. Couldn't confirm your store name right now; test again in a few minutes.";
 }
 
 /**

@@ -54,6 +54,7 @@ import { enqueueListingCards, kickOwnerDrains } from "./listingOutbox";
 import { BSC_SELLER_COPY, BSC_SELLER_TIMEOUTS_MS, type BscSellerSession } from "./adapters/bscSeller";
 import { EBAY_TIMEOUTS_MS } from "./adapters/ebaySeller";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
+import { BSC_SELLER_ID_FETCH_COOLDOWN_MS } from "./bscSellerId";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -2936,6 +2937,57 @@ describe("NEO-483: no stored seller account, the drain waits and never reads it 
     expect(row?.drainRequested).toBeUndefined();
     expect(first).toBeDefined();
     expect(row?.sellerIdFetch).toEqual(first);
+    await s.t.finishAllScheduledFunctions(() => {});
+    await cancelScheduled(s.t);
+  });
+
+  /** Stamps an ENDED chain on the owner's BSC row, `endedAgoMs` before now. */
+  const endChain = (s: S, endedAgoMs: number, endReason: "gaveUp" | "noSellerProfile" = "gaveUp") =>
+    s.t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", OWNER).eq("platform", "bsc"))
+        .first();
+      const endedAt = Date.now() - endedAgoMs;
+      const chain = { token: "ended-chain", startedAt: endedAt - 60_000, endedAt, endReason };
+      await ctx.db.patch(row!._id, { sellerIdFetch: chain });
+      return chain;
+    });
+
+  test("a claim is no user action: inside an ended chain's cooldown it still waits (awaitingSeller), and starts no new read", async () => {
+    const s = await setup();
+    await forgetSellerId(s);
+    const { bsc } = await twoCards(s);
+    const asks = profileAnswers(bsc, () => {
+      throw new Error("a cooling-down claim must not ask BSC");
+    });
+    const chain = await endChain(s, 60_000);
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
+    await s.t.finishAllScheduledFunctions(() => {});
+
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "awaitingSeller" });
+    expect((await bscState(s))?.sellerIdFetch).toEqual(chain);
+    expect(await pendingTicks(s)).toEqual([]);
+    expect(asks.n).toBe(0);
+    expect(bsc.puts).toEqual([]);
+    await cancelScheduled(s.t);
+  });
+
+  test("a claim past the cooldown starts a fresh chain at once", async () => {
+    const s = await setup();
+    await forgetSellerId(s);
+    const { bsc } = await twoCards(s);
+    profileAnswers(bsc, () => new Response("", { status: 429 }));
+    await endChain(s, BSC_SELLER_ID_FETCH_COOLDOWN_MS + 60_000, "noSellerProfile");
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
+
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "awaitingSeller" });
+    const chain = (await bscState(s))?.sellerIdFetch;
+    expect(chain?.token).not.toBe("ended-chain");
+    expect(chain?.endedAt).toBeUndefined();
+    expect(await pendingTicks(s)).toHaveLength(1);
     await s.t.finishAllScheduledFunctions(() => {});
     await cancelScheduled(s.t);
   });

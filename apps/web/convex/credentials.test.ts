@@ -2490,6 +2490,259 @@ describe("NEO-483 — tokenRefused and the seller-account read", () => {
       warn.mockRestore();
     });
   });
+
+  // NEO-483 audit: an ended chain (gave up, or BSC said the account has no
+  // seller profile) is kept on the row. Only a user action starts another
+  // inside the cooldown; renewals, silent re-authorize and Test Credentials
+  // do not.
+  describe("who re-arms an ended chain", () => {
+    /** Ends the listing owner's chain as `reason`, `endedAgoMs` ago, as token "ended-1". */
+    async function endChain(
+      t: ReturnType<typeof convexTest>,
+      reason: "gaveUp" | "noSellerProfile" = "gaveUp",
+      endedAgoMs = 60_000,
+    ) {
+      await t.run(async (ctx) => {
+        const row = (await ctx.db.query("marketplaceListingStates").collect()).find(
+          (r) => r.ownerId === USER_A && r.platform === "bsc",
+        )!;
+        const endedAt = Date.now() - endedAgoMs;
+        await ctx.db.patch(row._id, {
+          sellerIdFetch: { token: "ended-1", startedAt: endedAt - 40 * 60_000, endedAt, endReason: reason },
+        });
+      });
+      return (await listingRow(t))!.sellerIdFetch!;
+    }
+
+    test.each(["gaveUp", "noSellerProfile"] as const)(
+      "%s, then a token renewal (refreshSiteTokenForUser, no seller id back): no new chain",
+      async (reason) => {
+        const t = convexTest(schema, modules);
+        await listingOwner(t);
+        const ended = await endChain(t, reason);
+        const logins = stubLogins({ success: true, message: "ok" });
+
+        // Three hourly renewals.
+        for (let i = 0; i < 3; i++) {
+          __resetContractCache();
+          expect(await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A })).toEqual({
+            refreshed: true,
+          });
+        }
+
+        expect(logins).toHaveLength(3);
+        expect((await listingRow(t))?.sellerIdFetch).toEqual(ended);
+        expect(await pendingTicks(t)).toEqual([]);
+        await cancelScheduled(t);
+      },
+    );
+
+    test("give up, then a renewal through getSiteToken (a stale cached token): no new chain", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      const ended = await endChain(t);
+      let reads = 0;
+      stubFetch(async (url) => {
+        const u = String(url);
+        if (u.includes("/token")) {
+          reads += 1;
+          return jsonResponse(
+            reads === 1 ? { token: "old", expiresAt: Date.now() - 1000 } : { token: "new", expiresAt: Date.now() + 3_600_000 },
+          );
+        }
+        if (u.includes("/login/bsc")) return jsonResponse({ success: true, message: "ok" });
+        throw new Error(`unexpected fetch: ${u}`);
+      });
+
+      await t.withIdentity({ subject: USER_A }).action(internal.credentials.getSiteToken, { site: SITE });
+
+      expect((await listingRow(t))?.sellerIdFetch).toEqual(ended);
+      expect(await pendingTicks(t)).toEqual([]);
+      await cancelScheduled(t);
+    });
+
+    test("give up, then Test Credentials (stored session): no new chain, and the message does not promise checking", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      const ended = await endChain(t);
+      stubLogins({ success: true, message: "ok" });
+
+      const result = await t.withIdentity({ subject: USER_A }).action(api.credentials.testSiteCredentials, { site: SITE });
+
+      expect(result).toEqual({
+        success: true,
+        message: "Signed in to BuySportsCards. Couldn't confirm your store name right now; test again in a few minutes.",
+      });
+      expect((await listingRow(t))?.sellerIdFetch).toEqual(ended);
+      expect(await pendingTicks(t)).toEqual([]);
+      await cancelScheduled(t);
+    });
+
+    test.each(["gaveUp", "noSellerProfile"] as const)(
+      "%s, then the collector saves the BSC sign-in (saveCredentials): a new chain, first read in 30 s",
+      async (reason) => {
+        const t = convexTest(schema, modules);
+        await listingOwner(t);
+        await endChain(t, reason);
+        const logins = stubLogins({ success: true, message: "ok" });
+        const before = Date.now();
+
+        const result = await t.withIdentity({ subject: USER_A }).action(api.credentials.saveCredentials, {
+          site: SITE,
+          username: "real-user",
+          password: "real-pass",
+        });
+
+        expect(result.success).toBe(true);
+        expect(logins).toHaveLength(1);
+        const chain = (await listingRow(t))?.sellerIdFetch;
+        expect(chain?.token).not.toBe("ended-1");
+        expect(chain?.endedAt).toBeUndefined();
+        expect(chain?.endReason).toBeUndefined();
+        const ticks = await pendingTicks(t);
+        expect(ticks).toHaveLength(1);
+        expect((ticks[0].args as unknown as Array<{ token: string; attempt: number }>)[0]).toMatchObject({
+          token: chain?.token,
+          attempt: 1,
+        });
+        expect(ticks[0].scheduledTime).toBeGreaterThanOrEqual(before + 30_000);
+        expect(ticks[0].scheduledTime).toBeLessThanOrEqual(Date.now() + 30_000);
+        await cancelScheduled(t);
+      },
+    );
+
+    test("the testing seed's storeTestCredentials({ listing: true }) counts as a user save: a new chain", async () => {
+      vi.stubEnv("TESTING_RESET_SECRET", "test-secret");
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      await endChain(t);
+      stubLogins({ success: true, message: "ok" });
+
+      const result = await t.action(internal.credentials.storeTestCredentials, {
+        userId: USER_A,
+        site: SITE,
+        username: "seed-user",
+        password: "seed-pass",
+        listing: true,
+      });
+
+      expect(result.success).toBe(true);
+      const chain = (await listingRow(t))?.sellerIdFetch;
+      expect(chain?.token).not.toBe("ended-1");
+      expect(chain?.endedAt).toBeUndefined();
+      expect(await pendingTicks(t)).toHaveLength(1);
+      await cancelScheduled(t);
+      vi.unstubAllEnvs();
+    });
+
+    test("a save that turns listing back on (a stopped row with an ended chain) arms a new chain", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      await endChain(t);
+      // The owner had stopped listing: no stamp, the ended chain still on the row.
+      await t.run(async (ctx) => {
+        const row = (await ctx.db.query("marketplaceListingStates").collect()).find((r) => r.ownerId === USER_A)!;
+        await ctx.db.patch(row._id, { listingStartedAt: undefined });
+      });
+      stubLogins({ success: true, message: "ok" });
+
+      await t.withIdentity({ subject: USER_A }).action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+
+      const row = await listingRow(t);
+      expect(row?.listingStartedAt).toBeDefined();
+      expect(row?.sellerIdFetch?.token).not.toBe("ended-1");
+      expect(row?.sellerIdFetch?.endedAt).toBeUndefined();
+      expect(await pendingTicks(t)).toHaveLength(1);
+      await cancelScheduled(t);
+    });
+
+    test("a save never doubles a RUNNING chain", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      stubLogins({ success: true, message: "ok" });
+      await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A });
+      const running = (await listingRow(t))?.sellerIdFetch;
+      expect(running?.endedAt).toBeUndefined();
+      __resetContractCache();
+
+      await t.withIdentity({ subject: USER_A }).action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+
+      expect((await listingRow(t))?.sellerIdFetch).toEqual(running);
+      expect(await pendingTicks(t)).toHaveLength(1);
+      await cancelScheduled(t);
+    });
+  });
+
+  // NEO-483 audit (security note 2): during a profile stall the browser
+  // service serves the cached token without validating it, and a renewal
+  // never reads the profile; either way no store name comes back.
+  describe("Test Credentials says what it knows", () => {
+    test("a store name came back: the confirmed message and the Store line, as before", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t, "seller-kept");
+      stubLogins({ success: true, message: "ok", storeName: "Acme Cards", sellerId: "seller-kept" });
+
+      const result = await t.withIdentity({ subject: USER_A }).action(api.credentials.testSiteCredentials, { site: SITE });
+
+      expect(result).toEqual({
+        success: true,
+        message: "BSC account authenticated successfully! Token stored.",
+        details: "Store: Acme Cards",
+      });
+      await drainScheduled(t);
+      await cancelScheduled(t);
+    });
+
+    test("no store name while the seller-account read runs: signed in, store name unconfirmed, we'll keep checking", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      stubLogins({ success: true, message: "ok" });
+
+      const result = await t.withIdentity({ subject: USER_A }).action(api.credentials.testSiteCredentials, { site: SITE });
+
+      expect(result).toEqual({
+        success: true,
+        message: "Signed in to BuySportsCards. Couldn't confirm your store name right now; we'll keep checking.",
+      });
+      expect(await pendingTicks(t)).toHaveLength(1);
+      await cancelScheduled(t);
+    });
+
+    test("no store name and the seller account already stored: no promise to keep checking", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t, "seller-kept");
+      stubLogins({ success: true, message: "ok" });
+
+      const result = await t.withIdentity({ subject: USER_A }).action(api.credentials.testSiteCredentials, { site: SITE });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toBe(
+        "Signed in to BuySportsCards. Couldn't confirm your store name right now; test again in a few minutes.",
+      );
+      expect(result.message).not.toMatch(/authenticated successfully/);
+      expect(result.details).toBeUndefined();
+      await cancelScheduled(t);
+    });
+
+    test("SportLots keeps its message", async () => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, "sportlots");
+      stubLogins({ success: true, message: "ok" });
+
+      const result = await t.withIdentity({ subject: USER_A }).action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+      expect(result.message).toBe("SportLots account authenticated successfully! Session cookie stored.");
+      await cancelScheduled(t);
+    });
+  });
 });
 
 /** SportLots credential flag beside the BSC one, for the "arms nothing" case. */

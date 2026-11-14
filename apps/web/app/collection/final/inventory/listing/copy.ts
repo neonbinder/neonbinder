@@ -2,6 +2,7 @@ import type {
   ListingPlatform,
   ListingProblemReason,
   SaleItem,
+  SellerAccountStall,
   SyncProblem,
   SyncStep,
   SyncStepStatus,
@@ -344,7 +345,30 @@ export function awaitingSellerLine(platform: ListingPlatform, readOnly = false):
   const name = PLATFORM_NAME[platform];
   return readOnly
     ? `${name} hasn't said which seller account this collector lists from yet. Syncing starts on its own once it answers.`
-    : `${name} hasn't told us which seller account is yours yet. Hang tight: nothing is lost, and syncing kicks off on its own the moment it answers.`;
+    : `${name} is slow to confirm your seller account. Hang tight: nothing's lost, and your first sync kicks off on its own the moment it answers.`;
+}
+
+/**
+ * NEO-483 — Running now, once NB has stopped asking BuySportsCards for the
+ * seller account without getting one (`sellerAccountStalled`). Nothing asks
+ * again until the collector's next Sync, which sits on each checklist's header
+ * (Checklists tab; this screen never writes), so the collector lines say where
+ * it is, and no live counter sits under them.
+ */
+export function sellerAccountStalledLine(
+  platform: ListingPlatform,
+  stall: SellerAccountStall,
+  readOnly = false,
+): string {
+  const name = PLATFORM_NAME[platform];
+  if (stall === "noSellerProfile") {
+    return readOnly
+      ? `${name} says this collector's account isn't set up to sell yet. It tries again on their next Sync.`
+      : `${name} says this account isn't set up to sell yet. Finish seller setup on ${name}, then hit Sync on any checklist.`;
+  }
+  return readOnly
+    ? `${name} never confirmed this collector's seller account. It tries again on their next Sync.`
+    : `${name} still hasn't confirmed your seller account. Nothing's lost. Hit Sync on any checklist to give it another go.`;
 }
 
 /** A set row's last run folds its compare and every read into this one line (the run going now keeps each). */

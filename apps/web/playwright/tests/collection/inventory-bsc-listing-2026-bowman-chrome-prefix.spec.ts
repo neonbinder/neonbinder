@@ -39,7 +39,7 @@
 // step at a time within the standard 7 s (`followRunToEnd`). The one other wait
 // above 7 s is the seed hop's sign-in when the sign-in is saved again. The first
 // press can also meet a worker whose BuySportsCards seller account NeonBinder is
-// still waiting to hear (NEO-483): Sync status reads "Waiting on BuySportsCards..."
+// still waiting to hear (NEO-483): Sync status says BuySportsCards is slow to confirm the seller account
 // and the run starts by itself; the walk's claim wait allows that
 // (`SELLER_ACCOUNT_CAP_MS`, support/collection.ts) and the spec passes either way.
 //
@@ -543,12 +543,13 @@ test(
     //
     // NEO-483: this is the worker's first press on a freshly saved sign-in, so
     // NeonBinder may still be waiting for BuySportsCards to name the seller account.
-    // Sync status then reads "Waiting on BuySportsCards..." (no run, no result line
-    // yet) and the run starts by itself when the answer lands: the walk's claim
+    // Sync status then says BuySportsCards is slow to confirm the seller account (no
+    // run, no result line yet) and the run starts by itself when the answer lands: the walk's claim
     // wait covers it (SELLER_ACCOUNT_CAP_MS). `expectRunOrSellerWait` settles on
     // whichever state the press led to and checks the wait line for accessibility.
     // Both orders reach the same unconditional asserts below (R2): the ledger, the
-    // "2 listed" line, nothing held back. A "Seller account in use" screen throws.
+    // "2 listed" line, nothing held back. "Seller account in use", or a
+    // gave-up sentence (still hasn't confirmed / isn't set up to sell), throws by name.
     const run = syncRun(platform, SET_LABEL, BSC);
     const resultLine = row.getByText(/^\d+ listed/);
     const settled = queueSettled(platform, SET_LABEL);

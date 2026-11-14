@@ -225,7 +225,12 @@ async function markSetupIncomplete(ctx: MutationCtx, ownerId: string, now: numbe
  *     background read is armed at once (`ensureBscSellerIdFetch`, a no-op
  *     while one is in flight), and the account landing kicks the drain
  *     (`bscSellerId.landBscSellerId`). The drain never reads it live, so a
- *     BSC profile stall can no longer fail a set's send;
+ *     BSC profile stall can no longer fail a set's send. A claim is never a
+ *     user action (the poll, a scheduled drain, a kick): it arms without
+ *     `userAction`, so an ended chain's cooldown stands (`coolingDown`) and
+ *     the claim still answers `awaitingSeller`. The collector's Sync press
+ *     arms with `userAction` itself, before its kick
+ *     (`listingSync.syncVariant`);
  *   - another run's live lease: `busy`, and that run is asked to run once
  *     more on release (`drainRequested`).
  * A claim clears `drainScheduledAt` and `drainRequested`. NEO-433: it also
@@ -286,7 +291,8 @@ export const claimDrain = internalMutation({
     }
     if (args.platform === "bsc" && storedBscSellerId(credential.sellerId) === null) {
       // NEO-483: nothing is sent without the seller account a PUT names. The
-      // queue waits; the read that fetches the account starts now, and its
+      // queue waits; the read that fetches the account starts now (or is
+      // already running, or is cooling down after an ended chain), and its
       // landing kicks the drain again.
       if (state.drainScheduledAt !== undefined || state.drainRequested !== undefined) {
         await ctx.db.patch(state._id, { drainScheduledAt: undefined, drainRequested: undefined, lastUpdated: now });

@@ -13,19 +13,32 @@
  * Schedule: the first read `firstDelayMs` after the chain starts (30 s after
  * a save or sign-in that found no account, 0 s when a drain claim finds
  * none), then 60 s, 120 s and 300 s after each failed read, then every 300 s.
- * The chain stops when:
+ * The chain stops, and its field is cleared, when:
  *   - the account lands (from this chain or from any sign-in that returned
  *     it: `userProfile.setMarketplaceAccountIdInternal` → `landBscSellerId`),
  *   - the owner stops listing on BSC, BSC is paused, the row is gone, or a
  *     newer chain replaced this one (its token no longer matches),
- *   - BSC signed the owner out or no token can be read,
- *   - `BSC_SELLER_ID_FETCH_MAX_ATTEMPTS` reads failed (~39 min).
- * It is re-armed only by the next drain claim, save or sign-in. A 429, like
- * every other failed read, waits for the next scheduled tick: there is no
- * immediate retry (one attempt per tick, `fetchBscSellerId`'s `attempts: 1`).
+ *   - BSC signed the owner out or no token can be read.
+ * The chain ENDS, and its field is kept with `endedAt` and `endReason`, when:
+ *   - BSC answered with no seller profile (`noSellerProfile`): the account is
+ *     not set up to sell, and asking again will not change that,
+ *   - `BSC_SELLER_ID_FETCH_MAX_ATTEMPTS` reads failed (`gaveUp`, ~39 min).
+ * A 429, like every other failed read, waits for the next scheduled tick:
+ * there is no immediate retry (one attempt per tick, `fetchBscSellerId`'s
+ * `attempts: 1`).
+ *
+ * Re-arming (NEO-483 audit). Every hourly token renewal and every 15-minute
+ * poll's drain claim calls `ensureBscSellerIdFetch`, so a chain that cleared
+ * itself on giving up was started again at once, forever, for an account BSC
+ * never answers for. An ended chain therefore stays on the row, and only a
+ * user action (`userAction: true`: Connect or saving the BSC sign-in, the Sync
+ * press, turning listing on) starts a new one before
+ * `BSC_SELLER_ID_FETCH_COOLDOWN_MS` has passed. Renewals, Test Credentials and
+ * scheduled claims get `coolingDown`.
  *
  * Cost: a tick is a handful of function calls and one BSC request, and runs
- * only for owners who list on BSC with no account stored.
+ * only for owners who list on BSC with no account stored; at most one chain
+ * per owner per cooldown unless the owner acts.
  *
  * The seller id is always read live from BSC and stored only on the
  * collector's profile and state row. Logs carry platform, operation, outcome,
@@ -65,12 +78,26 @@ export const BSC_SELLER_ID_FETCH_DELAYS_MS: ReadonlyArray<number> = [30_000, 60_
 export const BSC_SELLER_ID_FETCH_MAX_ATTEMPTS = 10;
 
 /**
- * A chain older than this is stale and a new one replaces it. Longer than a
- * whole chain (30 + 60 + 120 + 7 × 300 s, plus each read's wait), so a live
+ * A RUNNING chain older than this is stale and a new one replaces it. Longer
+ * than a whole chain (30 + 60 + 120 + 7 × 300 s = 38.5 min, plus up to ten
+ * reads' 20 s waits, ~42 min), with room for a slow scheduler, so a live
  * chain is never doubled; short enough that a chain whose tick was lost (a
  * deploy, a failed scheduled function) does not block the next for long.
  */
-export const BSC_SELLER_ID_FETCH_STALE_MS = 45 * 60_000;
+export const BSC_SELLER_ID_FETCH_STALE_MS = 60 * 60_000;
+
+/**
+ * After a chain ENDS (`gaveUp` or `noSellerProfile`), how long before
+ * anything but a user action may start another. Token renewals (hourly) and
+ * scheduled drain claims (every 15 min) would otherwise re-arm it at once.
+ */
+export const BSC_SELLER_ID_FETCH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+/** Why an ended chain ended (`marketplaceListingStates.sellerIdFetch.endReason`). */
+export type BscSellerIdFetchEndReason = "gaveUp" | "noSellerProfile";
+
+/** What `ensureBscSellerIdFetch` did. */
+export type EnsureBscSellerIdFetchResult = "started" | "inFlight" | "coolingDown" | "notListing";
 
 /** One read's wait for BSC's answer, headers and body. */
 export const BSC_SELLER_ID_FETCH_TIMEOUT_MS = 20_000;
@@ -89,20 +116,31 @@ function logFetch(fields: {
   failure?: BscSellerFailureKind;
   httpStatus?: number;
   durationMs?: number;
+  endReason?: BscSellerIdFetchEndReason;
+  userAction?: boolean;
 }): void {
   console.log(JSON.stringify({ msg: "bsc_seller_id_fetch", platform: "bsc", ...fields }));
 }
 
 /**
- * Starts the owner's background seller-account read unless one is under way.
+ * Starts the owner's background seller-account read unless one is under way
+ * or one ended recently.
  *
  * - `notListing`: the owner has no BSC state row, does not list there now
  *   (stopped, dormant, test marker) or BSC is paused. Nothing written.
- * - `inFlight`: a chain started under `BSC_SELLER_ID_FETCH_STALE_MS` ago is
- *   still running. Nothing written (its own schedule stands).
- * - `started`: a new chain was stamped on the row (replacing a stale one,
- *   whose ticks then stand down on the token) and its first read scheduled
- *   `opts.firstDelayMs` from now.
+ * - `inFlight`: a RUNNING chain (no `endedAt`) started under
+ *   `BSC_SELLER_ID_FETCH_STALE_MS` ago. Nothing written (its own schedule
+ *   stands). `userAction` does not override this.
+ * - `coolingDown`: an ENDED chain ended under
+ *   `BSC_SELLER_ID_FETCH_COOLDOWN_MS` ago and this is not a user action.
+ *   Nothing written, nothing scheduled.
+ * - `started`: a new chain was stamped on the row (replacing a stale or
+ *   ended one, whose ticks then stand down on the token) and its first read
+ *   scheduled `opts.firstDelayMs` from now.
+ *
+ * `opts.userAction` is true only for something the collector did: Connect or
+ * saving the BSC sign-in, the Sync press, turning listing on. Token renewals,
+ * Test Credentials and scheduled drain claims leave it unset.
  *
  * Callers call it when no account is stored for the owner; a tick that
  * finds one stored stops without contacting BSC.
@@ -110,19 +148,30 @@ function logFetch(fields: {
 export async function ensureBscSellerIdFetch(
   ctx: MutationCtx,
   ownerId: string,
-  opts: { firstDelayMs: number },
-): Promise<"started" | "inFlight" | "notListing"> {
+  opts: { firstDelayMs: number; userAction?: boolean },
+): Promise<EnsureBscSellerIdFetchResult> {
   const state = await listingStateOf(ctx, ownerId, "bsc");
   if (!state || !pushesCountsNow(state)) return "notListing";
   const now = Date.now();
-  if (state.sellerIdFetch !== undefined && now - state.sellerIdFetch.startedAt < BSC_SELLER_ID_FETCH_STALE_MS) {
-    return "inFlight";
+  const chain = state.sellerIdFetch;
+  if (chain !== undefined) {
+    if (chain.endedAt === undefined) {
+      if (now - chain.startedAt < BSC_SELLER_ID_FETCH_STALE_MS) return "inFlight";
+    } else if (opts.userAction !== true && now - chain.endedAt < BSC_SELLER_ID_FETCH_COOLDOWN_MS) {
+      logFetch({ operation: "ensure", outcome: "cooling_down", endReason: chain.endReason });
+      return "coolingDown";
+    }
   }
   const token = newToken();
   const firstDelayMs = Math.max(0, opts.firstDelayMs);
   await ctx.db.patch(state._id, { sellerIdFetch: { token, startedAt: now }, lastUpdated: now });
   await ctx.scheduler.runAfter(firstDelayMs, internal.bscSellerId.fetchTick, { ownerId, token, attempt: 1 });
-  logFetch({ operation: "ensure", outcome: "started", delayMs: firstDelayMs });
+  logFetch({
+    operation: "ensure",
+    outcome: "started",
+    delayMs: firstDelayMs,
+    ...(opts.userAction === true ? { userAction: true } : {}),
+  });
   return "started";
 }
 
@@ -131,7 +180,7 @@ export async function ensureBscSellerIdFetch(
  * `userProfile.setMarketplaceAccountIdInternal` after it stores the id on the
  * profile (from any sign-in that returned it, or from a chain's read).
  *
- * Clears any chain under way. Then, if the owner lists on BSC:
+ * Clears any chain, running or ended. Then, if the owner lists on BSC:
  *   - another NB owner who lists now holds the account
  *     (`listingOutbox.sellerAccountHolder`): the row goes dormant
  *     `sellerConflict` and the account is not stamped on it (the same
@@ -175,12 +224,19 @@ export async function landBscSellerId(ctx: MutationCtx, ownerId: string, account
  * seller account, `credentials.runSiteLogin`). Does nothing when the profile
  * already stores one (`known`). `firstDelayMs` defaults to the save/sign-in
  * wait (`BSC_SELLER_ID_FETCH_DELAYS_MS[0]`), so a `"use node"` caller need
- * not import this module.
+ * not import this module. `userAction`: see `ensureBscSellerIdFetch` (true
+ * for a Connect/save, unset for a renewal or Test Credentials).
  */
 export const ensureFetch = internalMutation({
-  args: { ownerId: v.string(), firstDelayMs: v.optional(v.number()) },
-  returns: v.union(v.literal("started"), v.literal("inFlight"), v.literal("notListing"), v.literal("known")),
-  handler: async (ctx, args): Promise<"started" | "inFlight" | "notListing" | "known"> => {
+  args: { ownerId: v.string(), firstDelayMs: v.optional(v.number()), userAction: v.optional(v.boolean()) },
+  returns: v.union(
+    v.literal("started"),
+    v.literal("inFlight"),
+    v.literal("coolingDown"),
+    v.literal("notListing"),
+    v.literal("known"),
+  ),
+  handler: async (ctx, args): Promise<EnsureBscSellerIdFetchResult | "known"> => {
     const profile = await ctx.db
       .query("userProfiles")
       .withIndex("by_user", (q) => q.eq("userId", args.ownerId))
@@ -188,13 +244,15 @@ export const ensureFetch = internalMutation({
     if (profile?.marketplaceAccountIds?.bscSellerId) return "known";
     return await ensureBscSellerIdFetch(ctx, args.ownerId, {
       firstDelayMs: args.firstDelayMs ?? BSC_SELLER_ID_FETCH_DELAYS_MS[0],
+      ...(args.userAction === true ? { userAction: true } : {}),
     });
   },
 });
 
 /**
  * What a tick may do, read before BSC is contacted:
- * - `stale`: the row is gone or another chain owns it; write nothing.
+ * - `stale`: the row is gone, another chain owns it, or this chain has
+ *   already ended; write nothing.
  * - `stop`: this chain's work is over (the owner stopped listing, BSC is
  *   paused, or the account is already stored); clear the field.
  * - `go`: read the account.
@@ -204,7 +262,7 @@ export const tickState = internalQuery({
   returns: v.union(v.literal("go"), v.literal("stop"), v.literal("stale")),
   handler: async (ctx, args): Promise<"go" | "stop" | "stale"> => {
     const state = await listingStateOf(ctx, args.ownerId, "bsc");
-    if (!state || state.sellerIdFetch?.token !== args.token) return "stale";
+    if (!state || !runningChainOwns(state, args.token)) return "stale";
     if (!pushesCountsNow(state)) return "stop";
     const profile = await ctx.db
       .query("userProfiles")
@@ -215,32 +273,78 @@ export const tickState = internalQuery({
   },
 });
 
-/** Ends the chain named by `token`, if it still owns the row. */
+/** True when `state` holds a RUNNING chain named `token`. */
+function runningChainOwns(state: { sellerIdFetch?: { token: string; endedAt?: number } }, token: string): boolean {
+  return state.sellerIdFetch?.token === token && state.sellerIdFetch.endedAt === undefined;
+}
+
+/**
+ * Stops the chain named by `token` and clears the field (the owner stopped
+ * listing, BSC is paused or signed the owner out, the account is stored), if
+ * it still owns the row and is running.
+ */
 export const stopChain = internalMutation({
   args: { ownerId: v.string(), token: v.string() },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const state = await listingStateOf(ctx, args.ownerId, "bsc");
-    if (!state || state.sellerIdFetch?.token !== args.token) return null;
+    if (!state || !runningChainOwns(state, args.token)) return null;
     await ctx.db.patch(state._id, { sellerIdFetch: undefined, lastUpdated: Date.now() });
     return null;
   },
 });
 
 /**
- * After read `attempt` failed: schedules the next, or gives up (clears the
- * field) once `BSC_SELLER_ID_FETCH_MAX_ATTEMPTS` reads have failed. Does
- * nothing when the chain no longer owns the row.
+ * Ends the RUNNING chain named by `token`: keeps the field with `endedAt`
+ * and `endReason`, so renewals and scheduled claims cool down
+ * (`ensureBscSellerIdFetch`). False when the chain no longer owns the row or
+ * has already ended.
+ */
+async function endChain(
+  ctx: MutationCtx,
+  ownerId: string,
+  token: string,
+  endReason: BscSellerIdFetchEndReason,
+): Promise<boolean> {
+  const state = await listingStateOf(ctx, ownerId, "bsc");
+  const chain = state?.sellerIdFetch;
+  if (!state || chain === undefined || !runningChainOwns(state, token)) return false;
+  const now = Date.now();
+  await ctx.db.patch(state._id, {
+    sellerIdFetch: { token, startedAt: chain.startedAt, endedAt: now, endReason },
+    lastUpdated: now,
+  });
+  return true;
+}
+
+/**
+ * BSC answered the profile read (2xx) with no seller profile: the account is
+ * not set up to sell. Terminal for this chain (`endReason: "noSellerProfile"`).
+ */
+export const endChainNoSellerProfile = internalMutation({
+  args: { ownerId: v.string(), token: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    await endChain(ctx, args.ownerId, args.token, "noSellerProfile");
+    return null;
+  },
+});
+
+/**
+ * After read `attempt` failed: schedules the next, or ends the chain
+ * (`endReason: "gaveUp"`, the field kept) once
+ * `BSC_SELLER_ID_FETCH_MAX_ATTEMPTS` reads have failed. Does nothing when the
+ * chain no longer owns the row or has already ended.
  */
 export const scheduleNext = internalMutation({
   args: { ownerId: v.string(), token: v.string(), attempt: v.number() },
   returns: v.union(v.literal("scheduled"), v.literal("gaveUp"), v.literal("stale")),
   handler: async (ctx, args): Promise<"scheduled" | "gaveUp" | "stale"> => {
     const state = await listingStateOf(ctx, args.ownerId, "bsc");
-    if (!state || state.sellerIdFetch?.token !== args.token) return "stale";
+    if (!state || !runningChainOwns(state, args.token)) return "stale";
     if (args.attempt >= BSC_SELLER_ID_FETCH_MAX_ATTEMPTS) {
-      await ctx.db.patch(state._id, { sellerIdFetch: undefined, lastUpdated: Date.now() });
-      logFetch({ operation: "tick", outcome: "gave_up", attempt: args.attempt });
+      await endChain(ctx, args.ownerId, args.token, "gaveUp");
+      logFetch({ operation: "tick", outcome: "gave_up", attempt: args.attempt, endReason: "gaveUp" });
       return "gaveUp";
     }
     const delayMs = bscSellerIdFetchDelayAfter(args.attempt);
@@ -264,9 +368,12 @@ const STOPPING_FAILURES: ReadonlySet<BscSellerFailureKind> = new Set(["signed_ou
  * `BSC_SELLER_ID_FETCH_TIMEOUT_MS`:
  *   - an id: stored through `userProfile.setMarketplaceAccountIdInternal`,
  *     which lands it (`landBscSellerId`: clears the chain, binds, kicks);
+ *   - a 2xx with no seller profile (or no usable id in it): the chain ends
+ *     (`noSellerProfile`): BSC has answered, and reading again will not
+ *     change it until the collector finishes seller setup and acts;
  *   - signed out, no token or paused: the chain stops;
- *   - anything else (a timeout, a 429 or other non-2xx, a garbled body, an
- *     answer with no usable id): the next tick, or give up after the last.
+ *   - anything else (a timeout, a 429 or other non-2xx, a garbled body): the
+ *     next tick, or give up (`gaveUp`) after the last.
  */
 export const fetchTick = internalAction({
   args: { ownerId: v.string(), token: v.string(), attempt: v.number() },
@@ -326,7 +433,21 @@ export const fetchTick = internalAction({
       logFetch({ operation: "tick", outcome: "landed", attempt: args.attempt, durationMs: Date.now() - startedAt });
       return null;
     }
-    if (!result.ok && STOPPING_FAILURES.has(result.failure.kind)) {
+    if (result.ok) {
+      await ctx.runMutation(internal.bscSellerId.endChainNoSellerProfile, {
+        ownerId: args.ownerId,
+        token: args.token,
+      });
+      logFetch({
+        operation: "tick",
+        outcome: "no_seller_profile",
+        attempt: args.attempt,
+        endReason: "noSellerProfile",
+        durationMs: Date.now() - startedAt,
+      });
+      return null;
+    }
+    if (STOPPING_FAILURES.has(result.failure.kind)) {
       await ctx.runMutation(internal.bscSellerId.stopChain, { ownerId: args.ownerId, token: args.token });
       logFetch({
         operation: "tick",
@@ -339,10 +460,10 @@ export const fetchTick = internalAction({
     }
     logFetch({
       operation: "tick",
-      outcome: result.ok ? "no_account" : "failed",
+      outcome: "failed",
       attempt: args.attempt,
-      ...(result.ok ? {} : { failure: result.failure.kind }),
-      ...(!result.ok && result.failure.httpStatus !== undefined ? { httpStatus: result.failure.httpStatus } : {}),
+      failure: result.failure.kind,
+      ...(result.failure.httpStatus !== undefined ? { httpStatus: result.failure.httpStatus } : {}),
       durationMs: Date.now() - startedAt,
     });
     await ctx.runMutation(internal.bscSellerId.scheduleNext, {

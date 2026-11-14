@@ -260,7 +260,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
-- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`. The 15-minute sales poll runs the same drain as a press, so a stocked box can be listed before the spec presses Sync (NEO-433), and neither the set's row nor the "Nothing syncing right now." line proves THIS press ran: the poll leaves a row that looks like a press's own, and the page is idle between two runs. A seller spec therefore presses, then walks the set to rest with `followRunToRest(platform, run, queueSettled(platform, setLabel))` (one step per wait; `slow` gives a named step a signed-off longer ceiling), and only then reads the row and picks its branch. `queueSettled` is the evidence: the press queues the set's cards before its toast, and a run's finish clears them in the write that records its result, only if the run claimed them, so "no card of this set queued" plus idle means a run that started after the press has finished. A press that never claims leaves them queued and fails the walk. NEO-483: the seller account is not always known when the first press lands (next-but-two section), so the FIRST press of a seller spec calls `expectRunOrSellerWait(platform, run, settled, { marketplace, label })` before the walk (it settles on the run or on "Waiting on BuySportsCards…", runs the axe check on the wait line, and throws by name on "Seller account in use"), and every press that could be the worker's first run passes the marketplace name to `followRunToRest`, whose claim wait is then `expectAfterMarketplace` capped at `SELLER_ACCOUNT_CAP_MS`. A run that sent nothing ends on "Gathering data, done" then "Nothing new to send" (`expectNothingSent`); a sending branch asserts `run.nothingNew()` absent.
+- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`. The 15-minute sales poll runs the same drain as a press, so a stocked box can be listed before the spec presses Sync (NEO-433), and neither the set's row nor the "Nothing syncing right now." line proves THIS press ran: the poll leaves a row that looks like a press's own, and the page is idle between two runs. A seller spec therefore presses, then walks the set to rest with `followRunToRest(platform, run, queueSettled(platform, setLabel))` (one step per wait; `slow` gives a named step a signed-off longer ceiling), and only then reads the row and picks its branch. `queueSettled` is the evidence: the press queues the set's cards before its toast, and a run's finish clears them in the write that records its result, only if the run claimed them, so "no card of this set queued" plus idle means a run that started after the press has finished. A press that never claims leaves them queued and fails the walk. NEO-483: the seller account is not always known when the first press lands (next-but-two section), so the FIRST press of a seller spec calls `expectRunOrSellerWait(platform, run, settled, { marketplace, label })` before the walk (it settles on the run or on the seller-account sentence, runs the axe check on it, and throws by name on "Seller account in use" or either gave-up sentence), and every press that could be the worker's first run passes the marketplace name to `followRunToRest`, whose claim wait is then `expectAfterMarketplace` capped at `SELLER_ACCOUNT_CAP_MS`. A run that sent nothing ends on "Gathering data, done" then "Nothing new to send" (`expectNothingSent`); a sending branch asserts `run.nothingNew()` absent.
 - `support/cross-list.ts`: cross-release import (`openCrossListForm`,
   `pickCrossListSource`, `crossListCards`).
 - `support/photo-viewer.ts`: the card photo viewer (NEO-481): `photoViewer`
@@ -669,20 +669,25 @@ line is the measured time plus 7 s, never a flat bump.
 **The seller account (NEO-483), as a seller spec meets it.** BSC answers its seller
 profile slowly, sometimes for minutes. NeonBinder therefore never fails on it: when
 a drain finds no seller account it holds the run (the cards stay queued), the
-platform on Sync status reads "Waiting on BuySportsCards…" with running seconds, and a
+platform on Sync status says "BuySportsCards is slow to confirm your seller account…" (the live "Waiting on BuySportsCards…" line with running seconds sits under it, but that line also shows during any ordinary step's wait, so it is never the signal), and a
 background read asks BSC again after 30 s, 60 s and 120 s (then every 300 s, ten
 tries). The run starts by itself the moment an answer lands. So the first press of a
 seller spec ends in one of two orders, and **the spec passes in both with the same
 unconditional asserts after the walk (R2)**:
 - the run starts at once (the account is already stored): the ledger appears under
   Running now;
-- the run starts after the wait: no ledger and no result line yet, only the wait
-  line, then the ledger.
+- the run starts after the wait: no ledger and no result line yet, only the
+  seller-account sentence, then the ledger.
 How a spec handles it, all in `support/collection.ts`:
 - `expectRunOrSellerWait` waits (7 s of our own time) until Sync status shows ONE of
-  the run, the finished press (`queueSettled`), the wait line or "Seller account in
-  use", throws by name on the last, and on the wait line runs `expectAccessible` (light
-  and dark) before the walk. It records which order it met as a `seller-wait`
+  the run, the finished press (`queueSettled`), the seller-account sentence (matched
+  on /slow to confirm your seller account/, a phrase of the collector copy; a spec
+  does not import app copy), "Seller account in use", or a gave-up sentence
+  (/still hasn't confirmed your seller account/, /isn't set up to sell yet/). It
+  throws by name on the last two kinds (the walk does too, on every pass) rather than
+  waiting out the cap, and on the wait sentence runs `expectAccessible` (light and
+  dark) before the walk. Nothing parses the elapsed counter ("45s", then "1m 5s"):
+  the measured time comes from the live line being on screen, never from its text. It records which order it met as a `seller-wait`
   annotation in the report, so a green run shows whether the waiting branch ran. The
   spec never gates a first press on `underWay(resultLine)` (neither exists while the
   press is held).

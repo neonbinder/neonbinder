@@ -31,6 +31,15 @@ async function testStoredSession(page: Page, success: RegExp): Promise<void> {
   await expect(page.getByText(success)).toBeVisible({ timeout: LIVE_LOGIN });
 }
 
+/**
+ * What Test Credentials says when BuySportsCards accepts the stored session: the
+ * store name is read from BSC's seller profile, which can stall (NEO-483), so the
+ * line is either the authenticated message or, with no store name to show,
+ * "Signed in to BuySportsCards. Couldn't confirm your store name right now; ...".
+ * Both are a success; a failure reads "Could not sign in to ..." and matches neither.
+ */
+export const BSC_TEST_SUCCESS = /BSC account authenticated successfully|Signed in to BuySportsCards/i;
+
 /** Open the BSC credentials page and check the worker is connected (no Test press). */
 export async function openBscCredentials(page: Page): Promise<void> {
   await openCredentials(page);
@@ -41,7 +50,7 @@ export async function openBscCredentials(page: Page): Promise<void> {
 /** util-login-to-bsc.yaml */
 export async function loginToBsc(page: Page): Promise<void> {
   await openBscCredentials(page);
-  await testStoredSession(page, /BSC account authenticated successfully/i);
+  await testStoredSession(page, BSC_TEST_SUCCESS);
 }
 
 /** util-login-to-sportlots.yaml — two branches on the operator's pause switch. */
