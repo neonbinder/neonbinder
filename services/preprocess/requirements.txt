@@ -17,7 +17,7 @@ Pillow==12.3.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 transformers==4.47.1
-accelerate==1.2.1
+accelerate==1.15.0
 opencv-python-headless==4.10.0.84
 numpy==2.5.4
 # Tiered crop's BiRefNet model (NEO-161) — hot path, not a rare fallback:
