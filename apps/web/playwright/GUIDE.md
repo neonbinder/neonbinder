@@ -284,6 +284,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   could not tie to a card. A tick is optimistic and the list shows no
   "saved" state, so a spec that reloads or navigates after a pull first reads
   the list in a second tab (`inventory-pick-list`'s `fromServer`).
+- `support/placeholder-intake.ts`: the placeholder tool's real intake at `/print/placeholders` (NEO-529); the four `placeholders/pipeline-*` and `flip-edge` specs drop the committed scans (`public/placeholder-fixtures{,-corner,-fullbleed}/`, order from each `manifest.json`) on the drop zone: `placeholderScans(set, { backFirst })` (absolute paths; back-first swaps each adjacent pair in one `setInputFiles` call), `startPlaceholderBatch(page, files)` (drop, then the run view or the active-batch cap alert; on the cap it discards the running batches through "Recent runs" and drops again; any other refusal, the 12-starts-an-hour limit included, fails by name), `discardRunningBatches`, `finishPlaceholderBatch(page, pairs)` (axe on the dialog, "N pairs ready to print."), and `discardIfStillOpen(page, testInfo, { all })` for each spec's `afterEach` (works on a second page so the red run's screenshot stays whole; `all` discards every running batch, for a spec that starts runs on more than one page). Two Jason-approved ceilings, recorded with their measurements in the file (2026-11-13): `UPLOAD_CEILING` 18 s (drop to "Uploaded 6 of 6 images.", measured 4.1-10.6 s) and `HEAVY_CEILING` 80 s (escalating state to "Finish the batch" on the heavy path, measured 6.4-73.2 s; a heavy call is 2.0-3.5 s warm, 25.6-27.6 s cold). Everything else a placeholder spec waits for is 7 s, "All 6 photos read." after a fast-path upload included (about 6.5 s or less measured, so a red there is a product finding). The batch-level cold-start notice is proven by unit tests, not E2E (the escalating state outlasts the upload by only 3-4 s on a warm pool).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
@@ -469,9 +470,9 @@ The one exception is `playwright/project-scope.mjs` (NEO-389): a spec listed
 there is left out of that project entirely (the config's `testIgnore`, the
 shard plan and the gate all read it), so it is not planned rather than
 skipped. A listing needs a reason in the file: the other project's run must
-add no UI coverage. Today only `pipeline-escalation-cold-start` is
-desktop-only, because it spends minutes waiting on the preprocess model's
-cold start, not on the UI.
+add no UI coverage. Today only the eBay sandbox listing spec is listed (NEO-453,
+temporary, both projects); `pipeline-escalation-cold-start` was desktop-only
+until NEO-529 took its minutes-long cold-start wait out, and runs on both.
 
 - **Write one spec for both.** Role, label and text locators do not care
   about the viewport, and `click()` scrolls by itself. Most specs need no
@@ -562,7 +563,12 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   axe checks whatever is in the DOM at that moment, and a half-faded element
   measures as a contrast failure that no user sees. A dialog opening, a
   wizard step, an error state and an empty state are each a state. It runs on both projects
-  with the same call, so the phone layout is checked too.
+  with the same call, so the phone layout is checked too. `expectAccessible`
+  also re-checks (up to three passes in all) a pass that has violations AND saw a
+  finite animation or transition start while axe ran (a row fading into a live
+  list), because axe read a half-faded frame; a green pass, or a red on a screen
+  that held still, is final, and the last pass is what it reports, so a
+  violation the settled screen really has is never hidden.
 - **Helpers.** A `support/` helper whose product is a screen, dialog or
   wizard it opens and returns with showing (`fetchChecklistToWizard`,
   `openCrossListForm`) runs `expectAccessible` itself on arrival, so every
@@ -1140,6 +1146,12 @@ sessions at once.
    usually visibly different from what is there.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
    `convex-logs-*-a<attempt>` artifacts, before deciding which branch the spec took.
+   A burst of 502 "preprocess pipeline upstream failure" across several jobs
+   is an outside-service signature: read the preprocess tracebacks (Cloud
+   Logging, the fast and the heavy service) and the LLM provider's status feed
+   before blaming our code. NEO-538 was an Anthropic API incident (5xx on
+   classify, 2026-11-13 12:51-13:26 UTC) and the pool's retries behaved
+   correctly.
 5. A red during a `pr-queue` turn gets one full rerun (`gh run rerun`, never
    `--failed`) only when the evidence names an outside service (BuySportsCards,
    SportLots, eBay, ESPN, Wikidata, Clerk, Vercel, Convex's platform, GitHub's

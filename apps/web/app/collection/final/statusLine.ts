@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { Notice } from "../prototypes/p1/notice";
+import { spokenNotices, type Notice, type SpokenNotices } from "../prototypes/p1/notice";
 import { writeErrorMessage } from "./data/store";
 import type { Undo } from "./data/types";
-import type { PageApi } from "./pageApi";
+import type { PageApi, WriteTicket } from "./pageApi";
 
 /**
  * NEO-358 / NEO-464 — the one status line with its Undo, as a page holds it:
@@ -36,6 +36,12 @@ function runUndo(undo: () => unknown, onDone: () => void, onError: (error: unkno
 /** What Ctrl/⌘+Z says when the status line has no Undo to give. */
 export const NOTHING_TO_UNDO = "Nothing to undo.";
 
+/**
+ * What Ctrl/⌘+Z says while a write is still saving: said only (the words on
+ * the line stay), since there is nothing to take back until it answers.
+ */
+export const STILL_SAVING = "Still saving.";
+
 /** What an undo that the server refused says on the status line. */
 function undoFailed(error: unknown): string {
   return `That undo didn't go through. ${writeErrorMessage(error)}`;
@@ -43,21 +49,52 @@ function undoFailed(error: unknown): string {
 
 export const NOTICE_MS = 10_000;
 
+/** A refusal set in front of other words ends its sentence first. */
+function endSentence(words: string): string {
+  return /[.!?…]["'’”)\]]?$/.test(words.trimEnd()) ? words.trimEnd() : `${words.trimEnd()}.`;
+}
+
 /** The status line a page holds, and the page API's half that speaks on it. */
 export interface StatusLine extends Pick<PageApi, "notify" | "inform" | "undoLast" | "run"> {
+  beginWrite: () => WriteTicket;
   notice: Notice | null;
   /** The line's Undo button. */
   undo: () => void;
   /** The line's dismiss button: takes it down now. */
   dismiss: () => void;
+  /**
+   * Which of this line's notices have been said: give it to every line that
+   * draws them (`NoticeSpokenContext`), so none says one twice.
+   */
+  spoken: SpokenNotices;
 }
 
 export function useStatusLine(): StatusLine {
   const [notice, setNotice] = useState<Notice | null>(null);
   const held = useNoticeHold();
+  // Every notice gets an id never used before on this line, even after the
+  // line was taken down: an undo's answer finds the notice it ran from by id
+  // (NEO-460), so a later notice must never wear the same one.
+  const lastId = useRef(0);
+  const nextId = () => ++lastId.current;
+  // Writes started and not yet answered. Read from a ref, never from the
+  // notice a render closed over: a Ctrl/⌘+Z in the same tick as `beginWrite`
+  // still sees the earlier Undo on that notice.
+  const saving = useRef(new Set<number>());
+  // Notices up to this id lost their Undo to a write started since; one said
+  // after it (that write's own, say) keeps its Undo.
+  const undoFloor = useRef(0);
+  const [spoken] = useState(spokenNotices);
+  useEffect(() => {
+    const outstanding = saving.current;
+    // A page that goes keeps no write counted as saving: whatever answers
+    // late finds nothing to hold "Still saving." up for.
+    return () => outstanding.clear();
+  }, []);
   // No manual memo here: the React Compiler memoizes these handlers itself.
   const notify = (message: string, undo?: () => void) => {
-    setNotice((prev) => ({ id: (prev?.id ?? 0) + 1, message, undo }));
+    const id = nextId();
+    setNotice({ id, message, undo });
   };
   useEffect(() => {
     // A running undo keeps its line up: "Undone." (or why not) replaces it.
@@ -65,10 +102,77 @@ export function useStatusLine(): StatusLine {
     const t = setTimeout(() => setNotice(null), NOTICE_MS);
     return () => clearTimeout(t);
   }, [notice, held]);
+  /**
+   * Says a refusal (a write's, or an undo's), which is never left unsaid. A
+   * line holding a newer write's live Undo keeps it: the refusal goes first in
+   * its words, and only the refusal is said (the newer words were said when
+   * they landed). The Undo still belongs to that newer write, never to the
+   * refusal in front of it. One refusal at a time goes in front: a later one
+   * replaces it ("R2 R1 B" would read as two live problems; it is "R2 B").
+   * Anything else on the line (the notice the undo ran from, a plain word, a
+   * running undo's line) gives way to it.
+   */
+  const refuse = (message: string, ran?: number) => {
+    const id = nextId();
+    const refusal = { words: endSentence(message), id, at: Date.now() };
+    setNotice((prev) => {
+      if (prev && prev.id !== ran && prev.undo && !prev.undoing) {
+        const undoFor = prev.undoFor ?? { words: prev.message, id: prev.id };
+        return {
+          ...prev,
+          id,
+          kind: "refusal",
+          refusal,
+          undoFor,
+          message: `${refusal.words} ${undoFor.words}`,
+          announce: message,
+        };
+      }
+      return { id, message, kind: "refusal", refusal };
+    });
+  };
+  /**
+   * The newest write landed: its words, with its Undo. A refusal still in
+   * its time on the line (younger than NOTICE_MS, so maybe not yet read)
+   * stays in front of them, and only the new words are said, the refusal
+   * having been said when it came up; the Undo is this write's. Its timer
+   * starts over, but the refusal is carried into a later write's words only
+   * while it is that young, so it never rides along for good. Only a write's
+   * answer does this (`beginWrite`'s `done`, and so `run`): a plain `notify`
+   * is a fresh word that replaces whatever is on the line.
+   *
+   * A newer write landing while an undo runs takes the line, and that undo's
+   * "Undone." is then dropped on purpose: the newer words stay (`undo`). A
+   * refused undo is still said, merged in front of them (`refuse`).
+   */
+  const land = (message: string, undo?: () => void) => {
+    const id = nextId();
+    const now = Date.now();
+    setNotice((prev) => {
+      const refusal = prev?.refusal;
+      if (!refusal || now - refusal.at >= NOTICE_MS) return { id, message, undo };
+      return {
+        id,
+        kind: "refusal",
+        refusal,
+        undoFor: { words: message, id },
+        message: `${refusal.words} ${message}`,
+        announce: message,
+        undo,
+      };
+    });
+  };
+  /** Says `message` with the line's words left as they are (shown when it has none). */
+  const sayOnly = (message: string) => {
+    const id = nextId();
+    setNotice((prev) => (prev ? { ...prev, id, announce: message } : { id, message }));
+  };
   // One undo at a time: a second press while the first is running does nothing.
   const undoing = useRef(false);
   const undo = () => {
-    if (!notice?.undo || undoing.current) return;
+    // `notice` is the one this render saw: an Undo a write started since
+    // has taken (`beginWrite`, same tick) must not run from it.
+    if (!notice?.undo || undoing.current || notice.id <= undoFloor.current) return;
     const run = notice.undo;
     undoing.current = true;
     const ran = notice.id;
@@ -76,44 +180,92 @@ export function useStatusLine(): StatusLine {
     // for it, so whatever it put back is already the server's when the
     // collector reaches for it.
     setNotice((prev) => (prev && prev.id === ran ? { ...prev, undoing: true } : prev));
+    // NEO-460: "Undone." takes the line only while it still shows the notice
+    // the undo ran from. Anything newer said since stays, with or without an
+    // Undo of its own, and "Undone." goes unsaid. A line taken down meanwhile
+    // (dismissed) has nothing newer on it, so it is said. A refusal is never
+    // left unsaid (`refuse`).
     runUndo(
       run,
       () => {
         undoing.current = false;
-        notify("Undone.");
+        const id = nextId();
+        setNotice((prev) => (!prev || prev.id === ran ? { id, message: "Undone." } : prev));
       },
       (error) => {
         undoing.current = false;
-        notify(undoFailed(error));
+        refuse(undoFailed(error), ran);
       },
     );
   };
-  /** Ctrl/⌘+Z from quick entry: the line's Undo, or a word that there is none. */
   // An aside keeps a live Undo on the line: it is skipped rather than replace
-  // it (an undo running counts too: its "Undone." is on the way).
+  // it (an undo running counts too: its "Undone." is on the way). It never
+  // replaces a refusal either: a refusal is never left unsaid.
+  //
+  // So the words of a write a later one overtook (its ticket's `done` comes
+  // here) are dropped whenever the newest write's Undo, or a refusal, is on
+  // the line. That is deliberate: they are old news, their Undo was never
+  // offered, and the line on show is the one that matters. Don't "fix" it by
+  // merging them in.
   const inform = (message: string) => {
-    setNotice((prev) => (prev?.undo ? prev : { id: (prev?.id ?? 0) + 1, message }));
+    const id = nextId();
+    setNotice((prev) => (prev?.undo || prev?.kind === "refusal" ? prev : { id, message }));
   };
+  /**
+   * Ctrl/⌘+Z from quick entry: the line's Undo; "Still saving." while a write
+   * is still saving (its words stay up); or a word that there is none.
+   */
   const undoLast = () => {
     if (undoing.current) return;
-    if (notice?.undo) undo();
+    if (notice?.undo && notice.id > undoFloor.current) undo();
+    else if (saving.current.size > 0) sayOnly(STILL_SAVING);
     else notify(NOTHING_TO_UNDO);
+  };
+  // The newest write started on this line (NEO-460).
+  const lastWrite = useRef(0);
+  const beginWrite = (): WriteTicket => {
+    const mine = ++lastWrite.current;
+    saving.current.add(mine);
+    undoFloor.current = lastId.current;
+    const settle = () => saving.current.delete(mine);
+    // NEO-460: a new write is under way, so the line's Undo (the write before
+    // it) goes now, its words staying until this one answers: an Undo, or
+    // Ctrl/⌘+Z ("Still saving."), in that gap must never take back the
+    // earlier write. An undo already running keeps its inert button: its
+    // "Undone." is on the way.
+    setNotice((prev) => (prev?.undo && !prev.undoing ? { ...prev, undo: undefined } : prev));
+    return {
+      // Only the newest write's answer brings its Undo. One a later write
+      // overtook is an aside: said while that write is still saving (no Undo
+      // on the line), never over the Undo the later one brought.
+      done: (message, undo) => {
+        settle();
+        if (mine === lastWrite.current) land(message, undo);
+        else inform(message);
+      },
+      refused: (message) => {
+        settle();
+        refuse(message);
+      },
+      refusedElsewhere: settle,
+    };
   };
   const run = async <T extends { undo: Undo }>(
     write: () => Promise<T>,
     message: (result: T) => string,
   ): Promise<T | null> => {
+    const ticket = beginWrite();
     try {
       const result = await write();
-      notify(message(result), result.undo);
+      ticket.done(message(result), result.undo);
       return result;
     } catch (error) {
-      notify(writeErrorMessage(error));
+      ticket.refused(writeErrorMessage(error));
       return null;
     }
   };
   const dismiss = () => setNotice(null);
-  return { notice, notify, inform, undoLast, run, undo, dismiss };
+  return { notice, notify, inform, undoLast, run, beginWrite, undo, dismiss, spoken };
 }
 
 /** Room kept under a field the keyboard reaches while the floating status line is up. */

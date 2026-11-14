@@ -4,7 +4,7 @@ import { MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { Input } from "@/components/primitives/Input";
 import NeonButton from "@/components/modules/NeonButton";
 import CardFace from "../../prototypes/_shared/CardFace";
-import type { Notice } from "../../prototypes/p1/notice";
+import { NoticeLiveRegion, NoticeWords, type Notice } from "../../prototypes/p1/notice";
 import { cardCaption, cardNumberLine } from "../captions";
 import { cardLabel } from "../data/labels";
 import { isForSale } from "../data/store";
@@ -321,9 +321,13 @@ export default function PackTray(props: PackTrayProps) {
         <div className="p2-pack px-3 pb-[max(env(safe-area-inset-bottom),10px)] pt-3 sm:px-4">
           {/* data-notice-hold: the page holds the line's timer while it is pointed at or focused. */}
           <div className={notice ? "mb-2 flex flex-wrap items-center gap-2" : ""} data-notice-hold="">
-            <p role="status" className="min-w-0 flex-1 basis-56 text-sm text-ink">
-              {notice?.message ?? ""}
-            </p>
+            {/* The shared live region speaks; the words shown are not a second one. */}
+            <NoticeLiveRegion notice={notice} />
+            {notice && (
+              <p className="min-w-0 flex-1 basis-56 text-sm text-ink">
+                <NoticeWords notice={notice} />
+              </p>
+            )}
             {notice?.undo && (
               <NeonButton type="button" variant="secondary" onClick={onUndo} className="max-sm:min-h-11">
                 Undo

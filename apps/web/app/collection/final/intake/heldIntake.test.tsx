@@ -9,6 +9,7 @@ import {
   holdFiles,
   keepHeldFor,
   readHeld,
+  releaseForNewRun,
   removeHeld,
   retryHeld,
   sayHeld,
@@ -246,6 +247,77 @@ describe("the note", () => {
     sayHeld(A, "Couldn't send these photos.");
     removeHeld(A);
     expect(readHeld(A).note).toBe("");
+  });
+});
+
+describe("waitForNewRun (NEO-529)", () => {
+  /** A send into a session that closed: `landed` went in, the rest are kept. */
+  const closeOn = (files: string[], landed: string[]) => {
+    holdFiles(A, files.map(photo), setup());
+    const pile = beginSend(A)!;
+    finishSend(A, pile.filter((f) => landed.includes(f.name)), null, true);
+  };
+
+  it("is absent on a pile with no closed-session history, before and after a send", () => {
+    holdFiles(A, [photo("a.jpg")], setup());
+    expect(readHeld(A).waitForNewRun).toBeUndefined();
+    const pile = beginSend(A)!;
+    finishSend(A, pile.slice(0, 0), null);
+    expect(readHeld(A).waitForNewRun).toBeUndefined();
+    expect(readHeld(A)).not.toHaveProperty("waitForNewRun");
+  });
+
+  it("marks the photos a closed session left behind", () => {
+    closeOn(["a.jpg", "b.jpg"], ["a.jpg"]);
+    expect(names(A)).toEqual(["b.jpg"]);
+    expect(readHeld(A).waitForNewRun).toBe(true);
+    expect(readHeld(A).setup).not.toBeNull();
+  });
+
+  it("is never set with nothing left to wait", () => {
+    closeOn(["a.jpg"], ["a.jpg"]);
+    expect(readHeld(A)).toEqual({ files: [], setup: null, sending: false, failedConfig: null, note: "" });
+  });
+
+  it("outlasts a later drop and a later failure: only New run lets them go", () => {
+    closeOn(["a.jpg", "b.jpg"], ["a.jpg"]);
+    holdFiles(A, [photo("c.jpg")], setup());
+    expect(readHeld(A).waitForNewRun).toBe(true);
+    const pile = beginSend(A)!;
+    finishSend(A, pile, "cfg-1");
+    expect(readHeld(A).waitForNewRun).toBe(true);
+    retryHeld(A);
+    expect(readHeld(A).waitForNewRun).toBe(true);
+  });
+
+  it("a send into a run the collector opened keeps waiting for whatever is still left", () => {
+    closeOn(["a.jpg", "b.jpg", "c.jpg"], ["a.jpg"]);
+    const pile = beginSend(A)!;
+    finishSend(A, pile.filter((f) => f.name === "b.jpg"), null);
+    expect(names(A)).toEqual(["c.jpg"]);
+    expect(readHeld(A).waitForNewRun).toBe(true);
+  });
+
+  it("New run releases it and keeps the photos", () => {
+    closeOn(["a.jpg", "b.jpg"], ["a.jpg"]);
+    releaseForNewRun(A);
+    expect(names(A)).toEqual(["b.jpg"]);
+    expect(readHeld(A)).not.toHaveProperty("waitForNewRun");
+  });
+
+  it("New run on a pile that isn't waiting changes nothing and tells no one", () => {
+    holdFiles(A, [photo("a.jpg")], setup());
+    const before = readHeld(A);
+    releaseForNewRun(A);
+    expect(readHeld(A)).toBe(before);
+  });
+
+  it("goes with the pile when it is removed", () => {
+    closeOn(["a.jpg", "b.jpg"], ["a.jpg"]);
+    removeHeld(A);
+    expect(readHeld(A)).toEqual({ files: [], setup: null, sending: false, failedConfig: null, note: "" });
+    holdFiles(A, [photo("d.jpg")], setup());
+    expect(readHeld(A).waitForNewRun).toBeUndefined();
   });
 });
 

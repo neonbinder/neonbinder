@@ -71,7 +71,6 @@ const TestKilledDrain = lazy(() => import("@/app/testing/killed-drain/page"));
 const TestBackdateDashboardVisit = lazy(() => import("@/app/testing/backdate-dashboard-visit/page"));
 const TestSeedDashboard = lazy(() => import("@/app/testing/seed-dashboard/page"));
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
-const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
 const TestFailPlaceholderEntry = lazy(() => import("@/app/testing/fail-placeholder-entry/page"));
 const TestSeedPickOrder = lazy(() => import("@/app/testing/seed-pick-order/page"));
 const Dashboard = lazy(loadDashboard);
@@ -121,10 +120,10 @@ const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
  * The old /placeholders stopgap URL, forwarded to the real tool.
  *
  * Carries the QUERY STRING across, which a bare `<Navigate to="/print/placeholders">`
- * silently drops. `?jobId=…` is the whole point of the link: it is how a run is
- * reopened, and how /testing/seed-placeholder-upload hands the E2E suite its
- * freshly seeded batch. Dropping it lands the user on an empty page with their
- * run apparently gone.
+ * silently drops. `?jobId=…` is the whole point of the link: it is how a
+ * bookmarked, reloaded or pasted run is reopened, whether it is still going or
+ * already finished. Dropping it lands the user on an empty page with their run
+ * apparently gone.
  */
 function LegacyPlaceholders() {
   const { search } = useLocation();
@@ -225,14 +224,6 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route
             path="/testing/seed-placeholder-run"
             element={<Deferred><TestSeedPlaceholderRun /></Deferred>}
-          />
-          {/* The E2E suite's door into the real upload path: only the file
-              picker is bypassed. Built because the retired maestro-web driver
-              could not drive a file input; the Playwright placeholder specs
-              still enter through it. */}
-          <Route
-            path="/testing/seed-placeholder-upload"
-            element={<Deferred><TestSeedPlaceholderUpload /></Deferred>}
           />
           {/* NEO-481: fails one of the caller's real uploaded scans, for the hand-crop rescue spec. */}
           <Route

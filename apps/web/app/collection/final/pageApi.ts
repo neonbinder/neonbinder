@@ -50,8 +50,9 @@ export interface PageApi {
   inform: (message: string) => void;
   /**
    * Takes back the last change, as the status line's Undo does (the
-   * keyboard's Ctrl/⌘+Z in quick entry). With nothing to take back it says
-   * so; while an undo is running it does nothing.
+   * keyboard's Ctrl/⌘+Z in quick entry). While a write is still saving it
+   * says so, leaving the line's words up; with nothing to take back it says
+   * that; while an undo is running it does nothing.
    */
   undoLast: () => void;
   /**
@@ -60,6 +61,42 @@ export interface PageApi {
    * when it was refused.
    */
   run: <T extends { undo: Undo }>(write: () => Promise<T>, message: (result: T) => string) => Promise<T | null>;
+  /**
+   * NEO-460: for a write that does not go through `run` (its own queue, a
+   * dialog that shows its own refusal). Call it as the write starts: the
+   * line's live Undo (the write before it) goes at once, so it is never
+   * pressed while this one saves. The ticket says how the write went, and
+   * every ticket must be answered (`done`, `refused` or `refusedElsewhere`):
+   * until then Ctrl/⌘+Z says "Still saving.". Read
+   * it through `startWrite(api)`. Every page that holds a status line gives
+   * it; optional only so a test rig may leave it out.
+   */
+  beginWrite?: () => WriteTicket;
+}
+
+/** How a write started with `beginWrite` went, said on the status line. */
+export interface WriteTicket {
+  /** It landed: the words, with its Undo while no later write has started. */
+  done: (message: string, undo?: () => void) => void;
+  /** It was refused: why. Never left unsaid; a newer write's Undo stays. */
+  refused: (message: string) => void;
+  /**
+   * It was refused, and the caller says why itself (a dialog's own error
+   * line): nothing is said on the status line, and the write stops counting
+   * as saving, so Ctrl/⌘+Z is not left saying "Still saving.".
+   */
+  refusedElsewhere: () => void;
+}
+
+/** `api.beginWrite()`, or plain `notify` where the page gives none (a test rig). */
+export function startWrite(api: PageApi): WriteTicket {
+  return (
+    api.beginWrite?.() ?? {
+      done: (message, undo) => api.notify(message, undo),
+      refused: (message) => api.notify(message),
+      refusedElsewhere: () => {},
+    }
+  );
 }
 
 export const PageApiContext = createContext<PageApi | null>(null);

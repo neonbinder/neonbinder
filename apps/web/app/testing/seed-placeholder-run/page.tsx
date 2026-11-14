@@ -20,9 +20,8 @@ import { api } from "@/convex/_generated/api";
 // can act on the FIRST row without needing to carry an id around. The short id
 // is still printed below for a spec that would rather read it.
 //
-// RESET FIRST, like /testing/seed-placeholder-upload: this page also leaves a
-// `collecting` job behind (that IS its output — the abort flow's fixture), so
-// it feeds the same 2-active-per-user cap on the same worker account. Left
+// RESET FIRST: this page leaves a `collecting` job behind (that IS its
+// output — the abort flow's fixture), so it feeds the same 2-active-per-user cap on the same worker account. Left
 // unchecked, a second run — or an earlier abort flow that failed before it
 // aborted — would leave two active jobs and `seedMyTestPlaceholderStream` would
 // refuse. Cancelling the caller's active jobs first (through the real cancel

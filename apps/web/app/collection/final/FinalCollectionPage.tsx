@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useLocation, useNavigationType } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
-import NoticeLine from "../prototypes/p1/notice";
+import NoticeLine, { NoticeSpokenContext } from "../prototypes/p1/notice";
 import { isOpen, OpenCardDrawer, useCardDrawer } from "./drawerControl";
 import type { RowActions } from "./CardRows";
 import { drillToCard, EMPTY_DRILL, type Drill } from "./catalog/drill";
@@ -477,7 +477,7 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
   // --- Status line -----------------------------------------------------------
   // One line with its Undo for every tab and the card drawer (`./statusLine`).
   const line = useStatusLine();
-  const { notice, notify, inform, undoLast, run, undo, dismiss } = line;
+  const { notice, notify, inform, undoLast, run, beginWrite, undo, dismiss } = line;
 
   // --- Checklists: writing the URL ------------------------------------------
   const writeQuery = useCallback(
@@ -626,6 +626,7 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
     inform,
     undoLast,
     run,
+    beginWrite,
   };
 
   const resetDemo = () => {
@@ -635,137 +636,140 @@ function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => vo
 
   return (
     <PageApiContext.Provider value={pageApi}>
-      <ViewScopeProvider value={scope}>
-        <ScopedRows containers={containers} openCard={openCard} run={run}>
-          {(actions) => (
-            <div className="text-ink">
-              <div className="space-y-4">
-                {capabilities.demoChrome && demo && (
-                  <DemoBar onReset={resetDemo} onExit={onExit} shell={shell} />
+      {/* Every line that draws this status line (toast, desk, drawer, tray) shares what has been said. */}
+      <NoticeSpokenContext.Provider value={line.spoken}>
+        <ViewScopeProvider value={scope}>
+          <ScopedRows containers={containers} openCard={openCard} run={run}>
+            {(actions) => (
+              <div className="text-ink">
+                <div className="space-y-4">
+                  {capabilities.demoChrome && demo && (
+                    <DemoBar onReset={resetDemo} onExit={onExit} shell={shell} />
+                  )}
+                  <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold focus:outline-none">
+                    {SIDE_TITLE[side]}
+                  </h1>
+
+                  <nav
+                    aria-label={`${SIDE_TITLE[side]} sections`}
+                    className="border-b border-rule"
+                  >
+                    <ul className="flex flex-wrap gap-x-6 gap-y-2">
+                      {tabs.map((t) => {
+                        const active = t.key === tab;
+                        return (
+                          <li key={t.key}>
+                            <ParamLink
+                              // Checklists opens where you left it.
+                              search={
+                                t.key === "checklists"
+                                  ? checklistsSearch()
+                                  : { tab: t.key }
+                              }
+                              onClick={settleQuery}
+                              aria-current={active ? "page" : undefined}
+                              className={
+                                "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
+                                (active
+                                  ? // One hue per section: the collection's cyan, the inventory's yellow.
+                                    onInventory
+                                    ? "border-neon-yellow-text text-neon-yellow-text"
+                                    : "border-selection text-neon-blue-text"
+                                  : "border-transparent text-ink-3 hover:border-control hover:text-ink")
+                              }
+                            >
+                              {t.label}
+                            </ParamLink>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </nav>
+
+                  {!redirect && tab === "cards" && (onInventory ? <InventoryListTab /> : <MyCardsTab />)}
+                  {!redirect && desk && capabilities.binders && (
+                    // My Binders' pack tray is pinned to the bottom, where the floating
+                    // toast would sit on its search box, so the tray shows the notice
+                    // (My Boxes floats its own where no box is open). One desk per
+                    // side: what each has aimed or found stays its own.
+                    <MyBindersTab
+                      key={side}
+                      surface={side}
+                      openCard={openCard}
+                      goToTab={goToTab}
+                      notify={notify}
+                      // While the card drawer is open it carries the status
+                      // line; the desk's copy would say it a second time.
+                      notice={drawer ? null : notice}
+                      onUndo={undo}
+                      onDismissNotice={dismiss}
+                    />
+                  )}
+                  {!redirect && tab === "add" && capabilities.intake && (
+                    <Suspense fallback={<SkeletonBars rows={4} />}>
+                      {storeKind === "convex" ? <RealAddCardsTab /> : <AddCardsTab />}
+                    </Suspense>
+                  )}
+                  {!redirect && tab === "sales" && capabilities.marketplaceListing && (
+                    <Suspense fallback={<SkeletonBars rows={4} />}>
+                      <SalesTab />
+                    </Suspense>
+                  )}
+                  {!redirect && tab === "pick" && capabilities.pickList && (
+                    <Suspense fallback={<SkeletonBars rows={4} />}>
+                      {storeKind === "convex" ? (
+                        <ConvexPickListTab onTitleDetail={setPickDetail} />
+                      ) : (
+                        <PickListTab onTitleDetail={setPickDetail} />
+                      )}
+                    </Suspense>
+                  )}
+                  {!redirect && tab === "sync" && capabilities.marketplaceListing && (
+                    <Suspense fallback={<SkeletonBars rows={4} />}>
+                      <SyncStatusTab />
+                    </Suspense>
+                  )}
+                  {!redirect && tab === "checklists" && (
+                    <ChecklistsTab
+                      actions={actions}
+                      query={query}
+                      onQuery={setQuery}
+                      drill={drillState}
+                      cascadeKey={cascadeKey}
+                      onDrill={drillInto}
+                      onJump={jumpTo}
+                      highlightCardId={highlightCardId}
+                      selectedCardId={drawer?.cardId ?? null}
+                      entity={entity}
+                      onPickSuggestion={pickSuggestion}
+                      onFranchise={setFranchise}
+                      onClearEntity={clearEntity}
+                      missingCard={jumpCard === null}
+                      arrivalRef={arrival}
+                    />
+                  )}
+                </div>
+
+                {isPublic && capabilities.demoChrome && !shell && (
+                  <DemoRail onExit={onExit} />
                 )}
-                <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold focus:outline-none">
-                  {SIDE_TITLE[side]}
-                </h1>
 
-                <nav
-                  aria-label={`${SIDE_TITLE[side]} sections`}
-                  className="border-b border-rule"
-                >
-                  <ul className="flex flex-wrap gap-x-6 gap-y-2">
-                    {tabs.map((t) => {
-                      const active = t.key === tab;
-                      return (
-                        <li key={t.key}>
-                          <ParamLink
-                            // Checklists opens where you left it.
-                            search={
-                              t.key === "checklists"
-                                ? checklistsSearch()
-                                : { tab: t.key }
-                            }
-                            onClick={settleQuery}
-                            aria-current={active ? "page" : undefined}
-                            className={
-                              "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
-                              (active
-                                ? // One hue per section: the collection's cyan, the inventory's yellow.
-                                  onInventory
-                                  ? "border-neon-yellow-text text-neon-yellow-text"
-                                  : "border-selection text-neon-blue-text"
-                                : "border-transparent text-ink-3 hover:border-control hover:text-ink")
-                            }
-                          >
-                            {t.label}
-                          </ParamLink>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </nav>
-
-                {!redirect && tab === "cards" && (onInventory ? <InventoryListTab /> : <MyCardsTab />)}
-                {!redirect && desk && capabilities.binders && (
-                  // My Binders' pack tray is pinned to the bottom, where the floating
-                  // toast would sit on its search box, so the tray shows the notice
-                  // (My Boxes floats its own where no box is open). One desk per
-                  // side: what each has aimed or found stays its own.
-                  <MyBindersTab
-                    key={side}
-                    surface={side}
-                    openCard={openCard}
-                    goToTab={goToTab}
-                    notify={notify}
-                    // While the card drawer is open it carries the status
-                    // line; the desk's copy would say it a second time.
-                    notice={drawer ? null : notice}
+                {!drawer && !desk && (
+                  <NoticeLine
+                    notice={notice}
                     onUndo={undo}
-                    onDismissNotice={dismiss}
+                    onDismiss={dismiss}
+                    floating
                   />
                 )}
-                {!redirect && tab === "add" && capabilities.intake && (
-                  <Suspense fallback={<SkeletonBars rows={4} />}>
-                    {storeKind === "convex" ? <RealAddCardsTab /> : <AddCardsTab />}
-                  </Suspense>
-                )}
-                {!redirect && tab === "sales" && capabilities.marketplaceListing && (
-                  <Suspense fallback={<SkeletonBars rows={4} />}>
-                    <SalesTab />
-                  </Suspense>
-                )}
-                {!redirect && tab === "pick" && capabilities.pickList && (
-                  <Suspense fallback={<SkeletonBars rows={4} />}>
-                    {storeKind === "convex" ? (
-                      <ConvexPickListTab onTitleDetail={setPickDetail} />
-                    ) : (
-                      <PickListTab onTitleDetail={setPickDetail} />
-                    )}
-                  </Suspense>
-                )}
-                {!redirect && tab === "sync" && capabilities.marketplaceListing && (
-                  <Suspense fallback={<SkeletonBars rows={4} />}>
-                    <SyncStatusTab />
-                  </Suspense>
-                )}
-                {!redirect && tab === "checklists" && (
-                  <ChecklistsTab
-                    actions={actions}
-                    query={query}
-                    onQuery={setQuery}
-                    drill={drillState}
-                    cascadeKey={cascadeKey}
-                    onDrill={drillInto}
-                    onJump={jumpTo}
-                    highlightCardId={highlightCardId}
-                    selectedCardId={drawer?.cardId ?? null}
-                    entity={entity}
-                    onPickSuggestion={pickSuggestion}
-                    onFranchise={setFranchise}
-                    onClearEntity={clearEntity}
-                    missingCard={jumpCard === null}
-                    arrivalRef={arrival}
-                  />
+                {isOpen(drawerControl) && (
+                  <OpenCardDrawer control={drawerControl} line={line} />
                 )}
               </div>
-
-              {isPublic && capabilities.demoChrome && !shell && (
-                <DemoRail onExit={onExit} />
-              )}
-
-              {!drawer && !desk && (
-                <NoticeLine
-                  notice={notice}
-                  onUndo={undo}
-                  onDismiss={dismiss}
-                  floating
-                />
-              )}
-              {isOpen(drawerControl) && (
-                <OpenCardDrawer control={drawerControl} line={line} />
-              )}
-            </div>
-          )}
-        </ScopedRows>
-      </ViewScopeProvider>
+            )}
+          </ScopedRows>
+        </ViewScopeProvider>
+      </NoticeSpokenContext.Provider>
     </PageApiContext.Provider>
   );
 }

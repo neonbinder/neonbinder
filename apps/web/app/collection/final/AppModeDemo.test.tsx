@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import CollectionPage from "../page";
@@ -102,10 +102,13 @@ describe("the demo store in app mode", () => {
     ]);
   });
 
-  it("Reset in the bar puts the starting stack back", () => {
+  it("Reset in the bar puts the starting stack back", async () => {
     renderAt("/collection?tab=binders", <FinalCollectionPage />);
     fireEvent.click(screen.getByRole("button", { name: "Reset demo data" }));
-    expect(screen.getAllByRole("status").some((s) => s.textContent === "Back to the starting stack.")).toBe(true);
+    // The status line says it a frame after it shows it (NEO-529).
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((s) => s.textContent === "Back to the starting stack.")).toBe(true),
+    );
   });
 
   it("a card request says it stays on the page, never that an admin will review it", () => {

@@ -11,7 +11,8 @@
  */
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { batchNotCollecting } from "@/convex/lib/placeholderRefusals";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // `?raw` gives the route table as text — importing src/main.tsx for real mounts
@@ -91,6 +92,12 @@ vi.mock("convex/react", () => ({
 
 import CardIntake from "./intake";
 
+/** Shows the router's current search so a test can read pushes. */
+function LocationProbe() {
+  const { search } = useLocation();
+  return <output data-testid="loc">{search}</output>;
+}
+
 /**
  * The page reads its session id from the query string now, so every render needs
  * a router. `initialEntry` is how the "open an existing run" case arrives.
@@ -99,7 +106,15 @@ function renderPage(initialEntry = "/print/placeholders") {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/print/placeholders" element={<CardIntake />} />
+        <Route
+          path="/print/placeholders"
+          element={
+            <>
+              <CardIntake />
+              <LocationProbe />
+            </>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );
@@ -266,6 +281,298 @@ describe("CardIntake", () => {
     );
     expect(notice.getAttribute("role")).toBe("alert");
     expect(mocks.fns[REFS.uploadUrl]).not.toHaveBeenCalled();
+  });
+
+  it("NEO-529: a refused start does not leave the drop zone saying the photos were sent", async () => {
+    mocks.fns[REFS.start] = vi.fn().mockResolvedValue({
+      started: false,
+      reason: "you already have 2 active batches (limit 2) — wait for one to finish",
+    });
+    renderPage();
+    selectFiles(["front.jpg", "back.jpg"]);
+
+    await screen.findByText(/Couldn't start a scan session/);
+    // Nothing went anywhere, so the drop zone must not claim it did.
+    expect(screen.queryByText(/photos? sent\./)).toBeNull();
+    expect(screen.queryByText("2 photos sent.")).toBeNull();
+    // The zone goes quiet under an error alert, so the line is empty rather
+    // than a polite "Nothing selected yet." queuing behind the alert.
+    expect(screen.queryByText("Nothing selected yet.")).toBeNull();
+    expect(
+      screen.getAllByRole("status").map((el) => el.textContent ?? "").join(" "),
+    ).not.toMatch(/Nothing selected|sent\./);
+    expect(screen.getByRole("alert").textContent).toMatch(/Couldn't start a scan session/);
+  });
+
+  describe("NEO-529: dropping more photos on an open run", () => {
+    const runJob = (status: string) => ({
+      jobId: "job-run1",
+      status,
+      mode: "stream",
+      createdAt: Date.now(),
+      totalImages: 2,
+      processedImages: 2,
+      failedImages: 0,
+      rejectedEntries: 0,
+      pairCount: 0,
+    });
+
+    it("adds to a run that is still collecting instead of starting a new batch", async () => {
+      mocks.queries = {
+        [REFS.job]: runJob("collecting"),
+        [REFS.images]: [],
+        [REFS.pairs]: [],
+      };
+      renderPage("/print/placeholders?jobId=job-run1");
+      selectFiles(["front.jpg", "back.jpg"]);
+
+      await waitFor(() =>
+        expect(screen.getByText("Uploaded 2 of 2 images.")).not.toBeNull(),
+      );
+      expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+      expect(mocks.fns[REFS.confirm]).toHaveBeenCalledWith({
+        jobId: "job-run1",
+        entryIndex: 0,
+      });
+      expect(mocks.fns[REFS.uploadUrl]).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId: "job-run1" }),
+      );
+    });
+
+    // Only pending/uploaded/collecting leave the drop zone on screen (the
+    // later statuses hide it), so those two are the reachable non-collecting
+    // cases; the rest are pinned below as "no drop zone, nothing to reuse".
+    it.each(["pending", "uploaded"])(
+      "starts a fresh batch when the open run is only %s, not collecting",
+      async (status) => {
+        mocks.queries = {
+          [REFS.job]: runJob(status),
+          [REFS.images]: [],
+          [REFS.pairs]: [],
+        };
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg"]);
+
+        await waitFor(() =>
+          expect(mocks.fns[REFS.start]).toHaveBeenCalledWith({ source: "web" }),
+        );
+        // The new batch's confirms go to the NEW job, never the finished one.
+        await waitFor(() =>
+          expect(mocks.fns[REFS.confirm]).toHaveBeenCalledWith({
+            jobId: "job-1234abcd",
+            entryIndex: 0,
+          }),
+        );
+        expect(mocks.fns[REFS.confirm]).not.toHaveBeenCalledWith(
+          expect.objectContaining({ jobId: "job-run1" }),
+        );
+      },
+    );
+
+    it.each(["extracting", "processing", "pairing", "succeeded", "failed"])(
+      "offers no drop zone at all once the run is %s",
+      (status) => {
+        mocks.queries = {
+          [REFS.job]: runJob(status),
+          [REFS.images]: [],
+          [REFS.pairs]: [],
+        };
+        renderPage("/print/placeholders?jobId=job-run1");
+        expect(screen.queryByLabelText(/Drag your card photos here/)).toBeNull();
+      },
+    );
+
+    describe("the run closes between the render and the drop", () => {
+      /** Every allocation into the run is refused with `refusal` (after the first, if `landFirst`). */
+      function closeRunOnFirstRefusal(landFirst: boolean, refusal: () => Error = () => batchNotCollecting("processing")) {
+        let calls = 0;
+        mocks.fns[REFS.uploadUrl] = vi.fn(
+          async (args: { jobId: string; entryIndex?: number }) => {
+            if (args.jobId === "job-run1") {
+              calls += 1;
+              if (!(landFirst && calls === 1)) throw refusal();
+            }
+            return {
+              uploadUrl: "https://storage.example/bucket",
+              fields: { key: "k" },
+              entryIndex: calls,
+              expiresAt: Date.now() + 900_000,
+              maxUploadBytes: 25 * 1024 * 1024,
+            };
+          },
+        );
+      }
+
+      beforeEach(() => {
+        mocks.queries = {
+          [REFS.job]: runJob("collecting"),
+          [REFS.images]: [],
+          [REFS.pairs]: [],
+        };
+      });
+
+      it("re-sends everything as a new run when none of the photos got in, and says so in an info status", async () => {
+        closeRunOnFirstRefusal(false);
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+
+        const notice = await screen.findByText(
+          /That batch was already finished, so these started a new one\. Uploaded 2 of 2 images\./,
+        );
+        // Nothing failed: news, not an alarm.
+        expect(notice.getAttribute("role")).toBe("status");
+        expect(mocks.fns[REFS.start]).toHaveBeenCalledWith({ source: "web" });
+        expect(mocks.fns[REFS.confirm]).toHaveBeenCalledWith(
+          expect.objectContaining({ jobId: "job-1234abcd" }),
+        );
+      });
+
+      it("the re-send is an error alert when some of the re-sent photos failed", async () => {
+        closeRunOnFirstRefusal(false);
+        const refuse = mocks.fns[REFS.uploadUrl] as unknown as (args: { jobId: string }) => Promise<unknown>;
+        let fresh = 0;
+        mocks.fns[REFS.uploadUrl] = vi.fn(async (args: { jobId: string }) => {
+          if (args.jobId === "job-1234abcd") {
+            fresh += 1;
+            if (fresh === 2) throw new Error("storage hiccup");
+          }
+          return refuse(args);
+        });
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+
+        const notice = await screen.findByText(
+          "That batch was already finished, so these started a new one. Uploaded 1 of 2 images — 1 failed.",
+        );
+        expect(notice.getAttribute("role")).toBe("alert");
+      });
+
+      const sessionHeading = () => screen.getByRole("heading", { name: /Your cards/ });
+
+      it("after a re-send, focus that fell to the page parks on the session heading", async () => {
+        closeRunOnFirstRefusal(false);
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+        await screen.findByText(/That batch was already finished/);
+        await waitFor(() => expect(document.activeElement).toBe(sessionHeading()));
+      });
+
+      it("after a re-send, focus that is somewhere real stays where it is", async () => {
+        closeRunOnFirstRefusal(false);
+        renderPage("/print/placeholders?jobId=job-run1");
+        const input = screen.getByLabelText(/Drag your card photos here/) as HTMLInputElement;
+        input.focus();
+        selectFiles(["front.jpg", "back.jpg"]);
+        await screen.findByText(/That batch was already finished/);
+        // Let the deferred frame run.
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+        expect(document.activeElement).toBe(input);
+      });
+
+      it("a plain Error with the same words is an ordinary per-file failure: no re-send, no closed-run notice", async () => {
+        closeRunOnFirstRefusal(false, () => new Error("job is processing, not collecting"));
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+
+        expect(await screen.findByText("Uploaded 0 of 2 images — 2 failed.")).not.toBeNull();
+        expect(screen.queryByText(/already finished|finished while/)).toBeNull();
+        expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+        // Both files were tried: a plain failure does not stop the loop.
+        expect(mocks.fns[REFS.uploadUrl]).toHaveBeenCalledTimes(2);
+      });
+
+      it("keeps the photos that landed, names the rest, and offers Start a new batch outside the alert", async () => {
+        closeRunOnFirstRefusal(true);
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+
+        const alert = await screen.findByRole("alert");
+        expect(alert.textContent).toBe(
+          "This batch was finished while your photos were going up. 1 of 2 got in. Start a new batch for the other 1.",
+        );
+        expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+        // The tray is cleared so a re-drop of the pile cannot double-send.
+        expect(screen.queryByText(/photos? sent\./)).toBeNull();
+        // The action is beside the live region, not read out inside it.
+        const button = screen.getByRole("button", { name: "Start a new batch" });
+        expect(button.closest('[role="alert"]')).toBeNull();
+        expect(alert.contains(button)).toBe(false);
+      });
+
+      it("parks focus on the session heading when the notice appears", async () => {
+        closeRunOnFirstRefusal(true);
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+        await screen.findByRole("alert");
+        await waitFor(() => expect(document.activeElement).toBe(sessionHeading()));
+      });
+
+      it("parks focus there too when it was still on the drop zone that is about to leave", async () => {
+        closeRunOnFirstRefusal(true);
+        renderPage("/print/placeholders?jobId=job-run1");
+        const input = screen.getByLabelText(/Drag your card photos here/) as HTMLInputElement;
+        input.focus();
+        selectFiles(["front.jpg", "back.jpg"]);
+        await screen.findByRole("alert");
+        await waitFor(() => expect(document.activeElement).toBe(sessionHeading()));
+      });
+
+      it("Start a new batch pushes a URL with no jobId and focuses the drop zone", async () => {
+        closeRunOnFirstRefusal(true);
+        renderPage("/print/placeholders?jobId=job-run1");
+        selectFiles(["front.jpg", "back.jpg"]);
+        fireEvent.click(await screen.findByRole("button", { name: "Start a new batch" }));
+
+        await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe(""));
+        // The notice is spent, and so is its button.
+        expect(screen.queryByRole("button", { name: "Start a new batch" })).toBeNull();
+        await waitFor(() =>
+          expect(document.activeElement).toBe(
+            screen.getByLabelText(/Drag your card photos here/),
+          ),
+        );
+      });
+    });
+
+    it("a zip dropped on a collecting run starts its own batch and never touches the open one", async () => {
+      mocks.queries = {
+        [REFS.job]: runJob("collecting"),
+        [REFS.images]: [],
+        [REFS.pairs]: [],
+      };
+      mocks.fns[REFS.zipUploadUrl] = vi.fn(async () => ({
+        uploadUrl: "https://storage.example/bucket",
+        fields: { key: "k" },
+        jobId: "job-zip1",
+        expiresAt: Date.now() + 900_000,
+        maxUploadBytes: 25 * 1024 * 1024,
+      }));
+      const startBatch = vi.fn().mockResolvedValue({ started: true });
+      mocks.fns["placeholderPipeline:startPlaceholderBatch"] = startBatch;
+      renderPage("/print/placeholders?jobId=job-run1");
+      selectFiles(["cards.zip"]);
+
+      await waitFor(() =>
+        expect(startBatch).toHaveBeenCalledWith({ jobId: "job-zip1", source: "web" }),
+      );
+      // The zip mints its own job (no jobId in the mint) and is not poured
+      // into the stream session, which a zip cannot join.
+      expect(mocks.fns[REFS.zipUploadUrl]).toHaveBeenCalledWith({});
+      expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
+      expect(mocks.fns[REFS.uploadUrl]).not.toHaveBeenCalled();
+      expect(mocks.fns[REFS.confirm]).not.toHaveBeenCalled();
+      expect(startBatch).not.toHaveBeenCalledWith(
+        expect.objectContaining({ jobId: "job-run1" }),
+      );
+    });
+
+    it("starts a new batch when there is no open run at all", async () => {
+      renderPage();
+      selectFiles(["front.jpg"]);
+      await waitFor(() =>
+        expect(mocks.fns[REFS.start]).toHaveBeenCalledWith({ source: "web" }),
+      );
+    });
   });
 
   it("NEO-440: says how many photos were read when some failed, never 'All'", async () => {
@@ -652,7 +959,7 @@ describe("CardIntake", () => {
 
   it("keeps the old /placeholders URL working, query string and all", () => {
     // The stopgap was never in the nav, but it IS in browser histories and it
-    // is where /testing/seed-placeholder-upload sends the E2E suite. Deleting
+    // is what old bookmarks and shared links still point at. Deleting
     // the route would 404 those; forwarding with a bare `to` would be worse —
     // it drops `?jobId=`, so the run silently vanishes and the page looks empty
     // rather than broken. The redirect must carry the search across.

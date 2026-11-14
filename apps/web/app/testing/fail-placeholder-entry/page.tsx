@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 
 // Test-only hop (NEO-481). An E2E spec uploads real scans first (through
-// /testing/seed-placeholder-upload or the Add cards picker), then visits
+// the placeholder upload screen or the Add cards picker), then visits
 // /testing/fail-placeholder-entry?file=<originalName>[&jobId=<job>][&redirect=<path>].
 // This page waits for the Convex client to pick up the Clerk session, calls
 // `testing.failMyTestPlaceholderEntry` (the caller's own photo only), and

@@ -131,6 +131,7 @@ import type * as lib_parallelCardLink from "../lib/parallelCardLink.js";
 import type * as lib_photoEdit from "../lib/photoEdit.js";
 import type * as lib_pickLines from "../lib/pickLines.js";
 import type * as lib_placeholderObjects from "../lib/placeholderObjects.js";
+import type * as lib_placeholderRefusals from "../lib/placeholderRefusals.js";
 import type * as lib_preprocessBaseline from "../lib/preprocessBaseline.js";
 import type * as lib_preprocessWarmup from "../lib/preprocessWarmup.js";
 import type * as lib_r2 from "../lib/r2.js";
@@ -340,6 +341,7 @@ declare const fullApi: ApiFromModules<{
   "lib/photoEdit": typeof lib_photoEdit;
   "lib/pickLines": typeof lib_pickLines;
   "lib/placeholderObjects": typeof lib_placeholderObjects;
+  "lib/placeholderRefusals": typeof lib_placeholderRefusals;
   "lib/preprocessBaseline": typeof lib_preprocessBaseline;
   "lib/preprocessWarmup": typeof lib_preprocessWarmup;
   "lib/r2": typeof lib_r2;

@@ -7,6 +7,7 @@ import QuantityRow, { BLANK_MESSAGE, quantityMessage } from "./QuantityRow";
 import { QuickEntryProvider } from "./QuickEntry";
 import { CollectionModeProvider } from "../mode";
 import { PageApiContext, type PageApi } from "../pageApi";
+import { useStatusLine } from "../statusLine";
 import { CollectionStoreContext, type CollectionActions, type CollectionData, type CollectionStoreValue } from "../data/store";
 import { REAL_CAPABILITIES, type Card, type Container, type Copy } from "../data/types";
 
@@ -697,5 +698,115 @@ describe("a row that outlives its own commit", () => {
     // The card's 2 copies are in Unsorted; the target is the Show box, so the field reads 0.
     expect(field().value).toBe("0");
     expect(field().getAttribute("aria-label")).toBe("Quantity of #12 Elly De La Cruz in Show box");
+  });
+});
+
+/**
+ * NEO-460 — through a real `useStatusLine`: a send starts a write on the line,
+ * so the earlier write's Undo is gone while this one saves.
+ */
+describe("the status line while a quantity saves (NEO-460)", () => {
+  function Line({ children }: { children: React.ReactNode }) {
+    const line = useStatusLine();
+    const pageApi: PageApi = {
+      openCard: vi.fn(),
+      goToChecklists: vi.fn(),
+      openSuggestion: vi.fn(),
+      notify: line.notify,
+      inform: line.inform,
+      undoLast: line.undoLast,
+      run: line.run,
+      beginWrite: line.beginWrite,
+    };
+    return (
+      <PageApiContext.Provider value={pageApi}>
+        {children}
+        <div role="status">{line.notice?.message}</div>
+        {line.notice?.undo ? (
+          <button type="button" onClick={line.undo}>
+            Undo
+          </button>
+        ) : null}
+        <button type="button" onClick={line.undoLast}>
+          Press Ctrl+Z
+        </button>
+      </PageApiContext.Provider>
+    );
+  }
+
+  function live(write: (card: Card, box: Container, quantity: number) => Promise<unknown>) {
+    const setBoxQuantity = vi.fn(write);
+    const data = { useContainers: () => SHELF, useDemoExtension: () => undefined, useDefaultCondition: () => "Excellent" } as unknown as CollectionData;
+    const value = { kind: "convex", capabilities: REAL_CAPABILITIES, data, actions: { setBoxQuantity } as unknown as CollectionActions } as CollectionStoreValue;
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={["/inventory?tab=checklists"]}>
+          <CollectionStoreContext.Provider value={value}>
+            <CollectionModeProvider mode="app" surface="inventory">
+              <Line>
+                <QuickEntryProvider>
+                  <ul data-qty-list="">
+                    <QuantityRow card={ELLY} copies={[line()]} onOpen={vi.fn()} />
+                  </ul>
+                </QuickEntryProvider>
+              </Line>
+            </CollectionModeProvider>
+          </CollectionStoreContext.Provider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    return setBoxQuantity;
+  }
+
+  it("drops the previous write's Undo while the next quantity saves, and brings the new one when it lands", async () => {
+    const firstUndo = vi.fn(async () => {});
+    const secondUndo = vi.fn(async () => {});
+    let finish!: (r: unknown) => void;
+    let calls = 0;
+    live((_c, _b, quantity) => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve({ before: 2, after: quantity, undo: firstUndo });
+      return new Promise((r) => (finish = r));
+    });
+    type(field(), "3");
+    fireEvent.keyDown(field(), { key: "Enter" });
+    await flush();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+    const words = screen.getByRole("status").textContent;
+
+    type(field(), "4");
+    fireEvent.keyDown(field(), { key: "Enter" });
+    await flush();
+    // The second write is still saving: no Undo, the words stay, and Ctrl+Z
+    // only says "Still saving." (NEO-529: `statusLine.test`), leaving them up.
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe(words);
+    fireEvent.click(screen.getByRole("button", { name: "Press Ctrl+Z" }));
+    expect(screen.getByRole("status").textContent).toBe(words);
+    expect(firstUndo).not.toHaveBeenCalled();
+
+    await act(async () => finish({ before: 3, after: 4, undo: secondUndo }));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await flush();
+    expect(secondUndo).toHaveBeenCalledTimes(1);
+    expect(firstUndo).not.toHaveBeenCalled();
+  });
+
+  it("a refused quantity says why on the line, with no Undo left from the write before", async () => {
+    const firstUndo = vi.fn(async () => {});
+    let calls = 0;
+    live((_c, _b, quantity) => {
+      calls += 1;
+      return calls === 1 ? Promise.resolve({ before: 2, after: quantity, undo: firstUndo }) : Promise.reject(new Error("Not today."));
+    });
+    type(field(), "3");
+    fireEvent.keyDown(field(), { key: "Enter" });
+    await flush();
+    type(field(), "4");
+    fireEvent.keyDown(field(), { key: "Enter" });
+    await flush();
+    expect(screen.getByRole("status").textContent).toMatch(/didn't change\. .*Not today/);
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(firstUndo).not.toHaveBeenCalled();
   });
 });

@@ -38,7 +38,15 @@ test(
     const haveOff = checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false });
     await expect(haveOff).not.toHaveAttribute("aria-disabled", "true");
     await haveOff.click();
+    // No wait on the pressed state: reach for the row's next control at once. Have flips from the
+    // optimistic line and the server's answer then swaps that line's id; the row keeps its place
+    // (NEO-460), so the focus put on Details survives the swap and the line is still the same one.
+    const details = checklist.getByRole("button", { name: `Details for ${short}`, exact: true });
+    await details.focus();
+    await expect(details).toBeFocused();
+    await expect(page.getByRole("status").filter({ hasText: `Added ${short} to Main` })).toBeVisible();
     await expect(checklist.getByRole("button", { name: `Have ${short}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
+    await expect(details).toBeFocused();
 
     // --- A click on the row opens the drawer already editing its one line ----
     await checklist.getByText(`#${number}`, { exact: true }).click();
@@ -125,6 +133,7 @@ test(
     await page.getByRole("button", { name: "Undo", exact: true }).click();
     await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
     await expect(yourCopies.getByRole("img", { name: "Front of Raw, Excellent", exact: true })).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card drawer, copy back after Undo" });
 
     // --- Saving the line's other details keeps its photo ----------------------
     await yourCopies.getByRole("button", { name: `Edit ${short}, Raw, Excellent`, exact: true }).click();
@@ -137,6 +146,28 @@ test(
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     // The server's answer, not the optimistic list, before the drawer closes.
+    await confirmRemoved(drawer);
+    await drawer.getByRole("button", { name: "Close card detail" }).click();
+    await expect(drawer).toBeHidden();
+    await expect(checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false })).toBeVisible();
+
+    // --- An Undo pressed straight after a Remove takes back the Remove, not the Have before it --
+    // The Have's notice (and its Undo) is still up when the Remove starts; the line drops that
+    // Undo the moment the Remove is under way (NEO-460), so the only one to find is the Remove's,
+    // which arrives with its notice. Pressed with no wait on that notice, it must bring the copy
+    // back; the Have's Undo would have taken the copy away and left the list empty.
+    await checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false }).click();
+    await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
+    await expect(drawer).toBeVisible();
+    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Undone." })).toBeVisible();
+    await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
+    await expect(yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true })).toBeVisible();
+
+    // --- Remove it for good again (self-cleaning) ----------------------------
+    await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
+    await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();

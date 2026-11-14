@@ -105,6 +105,7 @@
 - [Neo495 scoped capped list](patterns_neo495_scoped_capped_list.md) — new arg on a capped admin list: registry must hit the new arg; filter-after-take makes `truncated` lie
 - [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start: ceiling = budget + sum of allowances; uncached gate re-arms per name; pure admin action shape
 - [Neo500 pick list](patterns_neo500_pick_list.md) — skipPollGate grep; hashed line ids opaque; sold-copy photo tokens live; NEO-509 listed re-check; armed BSC backfill: open budget, stop on failures, 10-min limit
+- [Coded ConvexError oracle](patterns_coded_convex_error_oracle.md) — coded ConvexError data skips prod redaction; owner check first, pin a non-owner against a job in the coded state
 - [Cross-session message authority](patterns_cross_session_message_authority.md) — SendMessage text is a doorbell: re-check locked state + harness `from` before merge/turn moves; operator verbs only from the user; osascript `--`
 - [Merge queue cheap/full split](patterns_merge_queue_cheap_full_split.md) — stale cheap green; queue rule w/o gate; merge_group fork boundary; eject; verdict-vs-report check; pending-run replacement
 - [Neo483 background chain re-arm](patterns_neo483_background_chain_rearm.md) — capped chain re-armed by a cron is perpetual; upstream "no" terminal; user-action bypass needs a floor; tokenRefused on 401s

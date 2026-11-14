@@ -60,5 +60,9 @@
 - [Publisher checklist is a Match Cards source](publisher-checklist-is-a-match-cards-source.md) — third column in CardPairingModal; rows discardable, marketplace cards never (NEO-490)
 - [BSC poll re-reads open orders](bsc-poll-rereads-open-orders-so-sale-fields-self-fill.md) — new recordOrder fields self-fill open orders within one poll; check before planning a backfill; sportId→sport slot
 - [Leftover copy red = unconfirmed final Remove](leftover-copy-red-is-an-unconfirmed-final-remove.md) — earlier spec on the worker ended on optimistic Remove; count removeCopy completions in its window; dismiss between identical notices
+- [Heavy cold-start notice is order-dependent](heavy-cold-start-notice-is-order-dependent.md) — warm notice ~2 s; real intake mounts the run view only after the last upload, so a screen move alone keeps the race
+- [PW step timings live in the blob report](pw-step-timings-live-in-the-blob-report.md) — report.jsonl in pw-report blob zip has every expect's start+duration; results.json does not
+- [Photo red with upstream 502s](photo-red-with-upstream-502s-read-the-preprocess-traceback.md) — 502 "pipeline upstream failure" bursts: read preprocess traceback tails (anthropic.* = provider), status feed; never raise ceilings
+- [Photo red triage starts with the branch](photo-red-triage-starts-with-the-branch.md) — bucket sweep reds by branch + before/after the fixing merge; [a-z0-9-] for project names; pre-load axe on photo boxes
 - [Heavy cold-start notice is order-dependent](heavy-cold-start-notice-is-order-dependent.md) — warm heavy (~2 s post-#454) resolves before the seed redirect; NEO-481 edit warm-up is FAST-only
 - [Fresh-load stall: find the user's cached-hit batch](fresh-load-stall-check-for-the-users-cached-hit-batch.md) — no batch + healthy probe = page never subscribed; set-builder heading shows before its BSC sync ends

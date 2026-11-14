@@ -7,6 +7,10 @@ import { demoCard } from "./data/demoStore";
 import { cardLabel, shortCardName } from "./data/labels";
 import { shortName as trayName } from "./binders/model";
 import { initialCollectionState, MAIN_BINDER_ID, SHOW_BOX_ID } from "./store";
+import { DemoCollectionProvider } from "./data/demoStore";
+import { CollectionStoreContext, useCollectionStore } from "./data/store";
+import type { NewContainer } from "./data/types";
+import type { ReactNode } from "react";
 
 // NEO-356: the demo bar's theme switch asks Clerk who is looking (signed in here).
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true }) }));
@@ -269,13 +273,14 @@ describe("My Binders", () => {
     expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
   });
 
-  it("Enter in the hunt asks when two cards fit instead of taking the first", () => {
+  it("Enter in the hunt asks when two cards fit instead of taking the first", async () => {
     renderBinders("/collection?tab=binders&all=1");
     const search = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
     // A card number is not unique: #13 is in many sets and parallels.
     fireEvent.change(search, { target: { value: "13" } });
     fireEvent.keyDown(search, { key: "Enter" });
-    expect(screen.getAllByRole("status").some((s) => /we won't guess/.test(s.textContent ?? ""))).toBe(true);
+    // The status line says it a frame after it shows it (NEO-529).
+    await waitFor(() => expect(screen.getAllByRole("status").some((s) => /we won't guess/.test(s.textContent ?? ""))).toBe(true));
     expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
   });
 
@@ -321,7 +326,7 @@ describe("the hunt tray", () => {
     expect(within(mine).getAllByRole("button", { name: /^Add another / }).length).toBeGreaterThan(0);
   });
 
-  it("a place with a pocket opens that binder there and rings the pocket", () => {
+  it("a place with a pocket opens that binder there and rings the pocket", async () => {
     renderBinders();
     fireEvent.change(hunt(), { target: { value: "96 contenders reggie white" } });
     act(() => {
@@ -331,7 +336,8 @@ describe("the hunt tray", () => {
     const ringed = document.querySelector<HTMLElement>('[data-found="true"]');
     expect(ringed?.getAttribute("aria-label")).toMatch(/^1996 Playoff Contenders #4 Reggie White/);
     expect(document.activeElement).toBe(ringed);
-    expect(statusSays(/^Found #4 Reggie White: '96 Contenders, page 1, pocket 4\.$/)).toBe(true);
+    // The status line says it a frame after it shows it (NEO-529).
+    await waitFor(() => expect(statusSays(/^Found #4 Reggie White: '96 Contenders, page 1, pocket 4\.$/)).toBe(true));
     // The results fold away so the pocket is in view.
     expect(screen.queryByRole("list", { name: "In your binders" })).toBeNull();
   });
@@ -1255,5 +1261,62 @@ describe("My Boxes (NEO-364)", () => {
     const said = () => screen.getAllByRole("status").filter((s) => /off sale\. They're back in /.test(s.textContent ?? ""));
     await waitFor(() => expect(said()).toHaveLength(1));
     expect(drawer.contains(said()[0])).toBe(true);
+  });
+});
+
+/**
+ * NEO-460 — a dialog write goes through the page's status line like any other:
+ * the previous write's Undo is gone while it saves. The demo store answers in
+ * the same click, so the second create is held by a wrapper over the store.
+ */
+describe("the status line while a shelf write saves (NEO-460)", () => {
+  function HoldSecondWrite({ hold, children }: { hold: { release?: () => void }; children: ReactNode }) {
+    const store = useCollectionStore();
+    const actions = {
+      ...store.actions,
+      updateContainer: (...args: Parameters<typeof store.actions.updateContainer>) => {
+        const real = store.actions.updateContainer(...args);
+        return new Promise<Awaited<typeof real>>((resolve) => {
+          hold.release = () => void real.then(resolve);
+        });
+      },
+    };
+    return <CollectionStoreContext.Provider value={{ ...store, actions }}>{children}</CollectionStoreContext.Provider>;
+  }
+
+  it("a rename drops the create's Undo while it saves, and brings its own when it lands", async () => {
+    const hold: { release?: () => void } = {};
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={["/inventory?tab=boxes"]}>
+          <DemoCollectionProvider>
+            <HoldSecondWrite hold={hold}>
+              <FinalCollectionPage surface="inventory" />
+            </HoldSecondWrite>
+          </DemoCollectionProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    const statusSays = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
+    fireEvent.click(screen.getByRole("button", { name: "New box" }));
+    const made = screen.getByRole("dialog");
+    fireEvent.change(within(made).getByLabelText("Box name"), { target: { value: "Dime box" } });
+    fireEvent.click(within(made).getByRole("button", { name: "Put it on the shelf" }));
+    await waitFor(() => expect(statusSays(/^Dime box is on the shelf/)).toBe(true));
+    expect(screen.getAllByRole("button", { name: "Undo" }).length).toBeGreaterThan(0);
+
+    // The create navigates into the new box after it says so: wait for its desk.
+    fireEvent.click(await screen.findByRole("button", { name: "Rename or delete Dime box" }));
+    const edit = screen.getByRole("dialog");
+    fireEvent.change(within(edit).getByLabelText("Box name"), { target: { value: "Nickel box" } });
+    fireEvent.click(within(edit).getByRole("button", { name: "Save" }));
+    // Saving: the create's words stay, its Undo does not.
+    await waitFor(() => expect(hold.release).toBeDefined());
+    expect(statusSays(/^Dime box is on the shelf/)).toBe(true);
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+
+    await act(async () => hold.release!());
+    await waitFor(() => expect(statusSays(/^Dime box is now Nickel box\./)).toBe(true));
+    expect(screen.getAllByRole("button", { name: "Undo" }).length).toBeGreaterThan(0);
   });
 });

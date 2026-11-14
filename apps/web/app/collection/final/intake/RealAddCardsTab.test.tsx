@@ -1608,6 +1608,270 @@ describe("RealAddCardsTab holds dropped photos until the run is ready (NEO-452)"
     expect(screen.getByRole("button", { name: "Try again: send the waiting photos" })).toBeTruthy();
   });
 
+  describe("NEO-529: the run is finished while the photos go up", () => {
+    const SOME = "1 of 2 got in. 1 is waiting.";
+    const NONE = "None of your photos got in. They're waiting.";
+    // `closedAt` is where the refused file sat, so it equals how many went in.
+    const closedOutcome = (jobId: string, uploaded: number, total = 2) => ({
+      ok: true,
+      jobId,
+      kind: "images",
+      uploaded,
+      failed: total - uploaded,
+      total,
+      batchClosed: true,
+      closedAt: uploaded,
+    });
+    /** Past the mocked upload's delay, and the renders that follow it. */
+    const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+    const heldNames = () => readHeld(heldKey).files.map((f) => f.name);
+    const trayAction = () => screen.queryByRole("button", { name: /Try again/ });
+
+    /**
+     * A fresh session that closes under the upload. The run row appears when the
+     * run is created, carrying the session's job (j1) and still collecting, the
+     * way the live query shows it before the job catches up.
+     */
+    const closeFreshSession = (uploaded: number, total = 2) => {
+      createRun().mockImplementationOnce(async () => {
+        setRun(RUN_ID, { homeKind: "box" });
+        (mocks.data.run as { jobId: string }).jobId = "j1";
+        return RUN_ID;
+      });
+      // A real upload takes seconds: long enough for the run's address to land
+      // and the run to load, which is what the page sees when the refusal comes.
+      mocks.upload.mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return closedOutcome("j1", uploaded, total);
+      });
+    };
+
+    describe("fresh session", () => {
+      it("some got in: the ones that never did stay held, and the note counts them", async () => {
+        closeFreshSession(1);
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await pickSet();
+        await settle();
+        expect(statusTexts().join(" ")).toContain(SOME);
+        expect(heldNames()).toEqual(["b.jpg"]);
+        expect(readHeld(heldKey).failedConfig).toBeNull();
+        // The run row still says collecting, yet the zone is gone and the kept
+        // photo was not sent into the session that just refused it.
+        expect(screen.queryByLabelText(ZONE_NAME)).toBeNull();
+        expect(sent()).toHaveLength(1);
+        expect(trayAction()).toBeNull();
+      });
+
+      it("none got in: all stay held, with no failed setup to retry", async () => {
+        closeFreshSession(0);
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await pickSet();
+        await settle();
+        expect(statusTexts().join(" ")).toContain(NONE);
+        expect(heldNames()).toEqual(["a.jpg", "b.jpg"]);
+        expect(readHeld(heldKey).failedConfig).toBeNull();
+        expect(trayAction()).toBeNull();
+      });
+
+      it("a single photo that did not get in says so in the singular", async () => {
+        closeFreshSession(0, 1);
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg")]);
+        await pickSet();
+        await settle();
+        expect(statusTexts().join(" ")).toContain("Your photo didn't get in. It's waiting.");
+        expect(heldNames()).toEqual(["a.jpg"]);
+      });
+
+      it("several left over say 'are waiting'", async () => {
+        closeFreshSession(1, 3);
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg"), photoOf("c.jpg")]);
+        await pickSet();
+        await settle();
+        expect(statusTexts().join(" ")).toContain("1 of 3 got in. 2 are waiting.");
+        expect(heldNames()).toEqual(["b.jpg", "c.jpg"]);
+      });
+
+      it("an instant refusal, before the run's address lands, keeps the photos for New run and starts no second session", async () => {
+        // The upload answers at once, so the refusal arrives while `?run=` is
+        // still on its way: the page has no run yet, and the kept photo must not
+        // read that as "no run, start one".
+        createRun().mockImplementationOnce(async () => {
+          setRun(RUN_ID, { homeKind: "box" });
+          (mocks.data.run as { jobId: string }).jobId = "j1";
+          return RUN_ID;
+        });
+        mocks.upload.mockResolvedValueOnce(closedOutcome("j1", 1));
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await pickSet();
+        await settle();
+        expect(startStream()).toHaveBeenCalledTimes(1);
+        expect(createRun()).toHaveBeenCalledTimes(1);
+        expect(sent()).toHaveLength(1);
+        expect(heldNames()).toEqual(["b.jpg"]);
+        expect(statusTexts().join(" ")).toContain(SOME);
+
+        // Nothing more goes up while the closed run is on screen...
+        await settle();
+        expect(sent()).toHaveLength(1);
+        expect(startStream()).toHaveBeenCalledTimes(1);
+
+        // ...and New run lets it go, into a session of its own (the set carries over).
+        fireEvent.click(screen.getByRole("button", { name: "New run" }));
+        await settle();
+        expect(startStream()).toHaveBeenCalledTimes(2);
+        expect(createRun()).toHaveBeenCalledTimes(2);
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1][0].map((f: File) => f.name)).toEqual(["b.jpg"]);
+      });
+
+      it("after a remount with no run open, kept photos from a closed session still wait for New run", async () => {
+        closeFreshSession(1);
+        const first = newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await pickSet();
+        await settle();
+        expect(heldNames()).toEqual(["b.jpg"]);
+        expect(readHeld(heldKey).waitForNewRun).toBe(true);
+
+        // A trip elsewhere in the app and back: a new screen, no `?run=`, no memory
+        // of the closed session but what the store kept.
+        first.unmount();
+        newRunIntoBox(PRICED);
+        await settle();
+        expect(startStream()).toHaveBeenCalledTimes(1);
+        expect(sent()).toHaveLength(1);
+        expect(screen.getByText("1 photo waiting. Press New run to send it.")).toBeTruthy();
+
+        fireEvent.click(screen.getByRole("button", { name: "New run" }));
+        await settle();
+        expect(startStream()).toHaveBeenCalledTimes(2);
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1][0].map((f: File) => f.name)).toEqual(["b.jpg"]);
+        expect(readHeld(heldKey).waitForNewRun).toBeUndefined();
+      });
+
+      it("a plain failure count with no closed flag is still reported as a send, not a closed run", async () => {
+        mocks.upload.mockResolvedValueOnce({ ok: true, jobId: "j1", kind: "images", uploaded: 1, failed: 1, total: 2 });
+        newRunIntoBox(PRICED);
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await pickSet();
+        await act(async () => {});
+        expect(statusTexts().join(" ")).not.toMatch(/waiting\.$|got in\. \d/);
+        expect(heldNames()).toEqual([]);
+      });
+    });
+
+    describe("open run", () => {
+      const openRun = () => {
+        setRun(RUN_ID, { homeKind: "box", variantId: "v1" });
+        mocks.data.side = "inventory";
+        mocks.data.gate = PRICED;
+        return render(<Tab runId={RUN_ID} />);
+      };
+      const JOB = `job-${RUN_ID}`;
+
+      it("some got in: the rest stay held and the note counts them", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome(JOB, 1));
+        openRun();
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await act(async () => {});
+        expect(sent()[0][1]).toEqual({ source: "web", jobId: JOB });
+        expect(statusTexts().join(" ")).toContain(SOME);
+        expect(heldNames()).toEqual(["b.jpg"]);
+        expect(readHeld(heldKey).failedConfig).toBeNull();
+      });
+
+      it("none got in: the pile stays held", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome(JOB, 0));
+        openRun();
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await act(async () => {});
+        expect(statusTexts().join(" ")).toContain(NONE);
+        expect(heldNames()).toEqual(["a.jpg", "b.jpg"]);
+        expect(readHeld(heldKey).failedConfig).toBeNull();
+      });
+
+      it("the drop zone leaves at once, while the job row still says collecting", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome(JOB, 1));
+        openRun();
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await act(async () => {});
+        // Nothing updated the job: it is still collecting as far as the query knows.
+        expect((mocks.data.job as { status: string }).status).toBe("collecting");
+        expect(screen.queryByLabelText(ZONE_NAME)).toBeNull();
+      });
+
+      it("offers no Try again and sends nothing more into the closed job", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome(JOB, 1));
+        openRun();
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await act(async () => {});
+        await act(async () => {});
+        expect(trayAction()).toBeNull();
+        expect(sent()).toHaveLength(1);
+      });
+
+      it("backstop: a held pile that meets a run already known closed is kept and not sent", async () => {
+        // A closes (1 of 2 in, b kept). B opens and closes on the kept photo.
+        // Back to A, whose job row has not caught up: the effect sees a ready run
+        // and sends, and only the closed-job memory stands between b.jpg and A.
+        mocks.upload.mockResolvedValueOnce(closedOutcome(JOB, 1));
+        const view = openRun();
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await act(async () => {});
+        expect(heldNames()).toEqual(["b.jpg"]);
+
+        mocks.upload.mockResolvedValueOnce(closedOutcome("job-B", 0, 1));
+        setRun("runB0000000001", { homeKind: "box", variantId: "v1" });
+        view.rerender(<Tab runId={RUN_ID} />);
+        await act(async () => {});
+        await act(async () => {});
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1][1]).toEqual({ source: "web", jobId: "job-runB0000000001" });
+        expect(heldNames()).toEqual(["b.jpg"]);
+
+        setRun(RUN_ID, { homeKind: "box", variantId: "v1" });
+        view.rerender(<Tab runId={RUN_ID} />);
+        await act(async () => {});
+        await act(async () => {});
+        expect(sent()).toHaveLength(2);
+        expect(statusTexts().join(" ")).toContain("1 photo waiting.");
+        expect(heldNames()).toEqual(["b.jpg"]);
+      });
+
+      it("after New run, the kept photos go up into a fresh session", async () => {
+        mocks.upload.mockResolvedValueOnce(closedOutcome(JOB, 1));
+        const view = openRun();
+        await act(async () => {});
+        await dropOnZone([photoOf("a.jpg"), photoOf("b.jpg")]);
+        await act(async () => {});
+        expect(heldNames()).toEqual(["b.jpg"]);
+        expect(sent()).toHaveLength(1);
+
+        mocks.data.homes = [{ id: "box1", name: "For sale", kind: "box" }];
+        fireEvent.click(screen.getByRole("button", { name: "New run" }));
+        mocks.data.run = null;
+        mocks.data.job = null;
+        view.rerender(<Tab runId={RUN_ID} />);
+        await act(async () => {});
+        // Nothing goes up until a set is picked for the new run, then the kept pile does.
+        expect(sent()).toHaveLength(1);
+        await pickSet();
+        await settle();
+        expect(startStream()).toHaveBeenCalled();
+        expect(sent()).toHaveLength(2);
+        expect(sent()[1][0].map((f: File) => f.name)).toEqual(["b.jpg"]);
+        expect(sent()[1][1]).toEqual({ source: "web", jobId: "j1" });
+        expect(heldNames()).toEqual([]);
+      });
+    });
+  });
+
   it("a second drop adds to the pile", async () => {
     newRunIntoBox(HELD);
     await dropOnZone([photoOf("a.jpg")]);
