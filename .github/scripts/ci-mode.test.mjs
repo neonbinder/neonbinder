@@ -51,7 +51,12 @@ function run(env) {
   return { status: result.status, out, stderr: result.stderr ?? "" };
 }
 
-const RULES_WITH_QUEUE = JSON.stringify([{ type: "pull_request" }, { type: "merge_queue" }]);
+const gateRule = (checks) => ({
+  type: "required_status_checks",
+  parameters: { required_status_checks: checks },
+});
+const GATE_PINNED = gateRule([{ context: "CI Gate", integration_id: 15368 }]);
+const RULES_WITH_QUEUE = JSON.stringify([{ type: "pull_request" }, { type: "merge_queue" }, GATE_PINNED]);
 const RULES_NO_QUEUE = JSON.stringify([{ type: "pull_request" }, { type: "deletion" }]);
 
 const pr = (extra = {}) => ({
@@ -98,6 +103,49 @@ test("pull_request: variable set but no merge_queue rule -> full", () => {
   const r = run(pr({ STUB_RULES: RULES_NO_QUEUE }));
   assert.equal(r.out.full, "true");
   assert.match(r.out.reason, /no merge_queue rule/);
+});
+
+test("S2: queue rule but CI Gate not required at all -> full", () => {
+  const rules = JSON.stringify([{ type: "merge_queue" }]);
+  const r = run(pr({ STUB_RULES: rules }));
+  assert.equal(r.out.full, "true");
+  assert.match(r.out.reason, /CI Gate/);
+});
+
+test("S2: required_status_checks rule without CI Gate -> full", () => {
+  const rules = JSON.stringify([{ type: "merge_queue" }, gateRule([{ context: "Playwright E2E", integration_id: 15368 }])]);
+  assert.equal(run(pr({ STUB_RULES: rules })).out.full, "true");
+});
+
+test("S2: CI Gate pinned to the wrong integration id -> full", () => {
+  for (const id of [1234, "15368", null]) {
+    const rules = JSON.stringify([{ type: "merge_queue" }, gateRule([{ context: "CI Gate", integration_id: id }])]);
+    assert.equal(run(pr({ STUB_RULES: rules })).out.full, "true", String(id));
+  }
+});
+
+test("S2: CI Gate with no integration id at all -> full", () => {
+  const rules = JSON.stringify([{ type: "merge_queue" }, gateRule([{ context: "CI Gate" }])]);
+  assert.equal(run(pr({ STUB_RULES: rules })).out.full, "true");
+});
+
+test("S2: required_status_checks rule with null or missing parameters -> full", () => {
+  for (const rule of [{ type: "required_status_checks" }, { type: "required_status_checks", parameters: null }, { type: "required_status_checks", parameters: { required_status_checks: null } }]) {
+    const rules = JSON.stringify([{ type: "merge_queue" }, rule]);
+    assert.equal(run(pr({ STUB_RULES: rules })).out.full, "true", JSON.stringify(rule));
+  }
+});
+
+test("S2: the pinned gate may sit beside other checks -> cheap", () => {
+  const rules = JSON.stringify([
+    { type: "merge_queue" },
+    gateRule([{ context: "other", integration_id: 1 }, { context: "CI Gate", integration_id: 15368 }]),
+  ]);
+  assert.equal(run(pr({ STUB_RULES: rules })).out.full, "false");
+});
+
+test("S2: gate pinned but no merge_queue rule -> full", () => {
+  assert.equal(run(pr({ STUB_RULES: JSON.stringify([GATE_PINNED]) })).out.full, "true");
 });
 
 test("pull_request: empty rule list -> full", () => {
@@ -148,7 +196,7 @@ test("merge_group: always full; PR from the queue ref, head from the API", () =>
     GITHUB_REF: `refs/heads/gh-readonly-queue/main/pr-77-${"b".repeat(40)}`,
     GITHUB_SHA: "d".repeat(40),
     MERGE_QUEUE: "",
-    STUB_HEAD: `${"e".repeat(40)}\tneo-77-feature/with-slash`,
+    STUB_HEAD: `${"e".repeat(40)}\tneo-77-feature/with-slash\tacme/app\tjason`,
   });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.out.full, "true");
@@ -162,7 +210,7 @@ test("merge_group: ref without the refs/heads/ prefix parses too", () => {
   const r = run({
     EVENT_NAME: "merge_group",
     GITHUB_REF: `gh-readonly-queue/main/pr-5-${"b".repeat(40)}`,
-    STUB_HEAD: `${"e".repeat(40)}\tx`,
+    STUB_HEAD: `${"e".repeat(40)}\tx\tacme/app\tjason`,
   });
   assert.equal(r.out.pr, "5");
 });
@@ -184,7 +232,7 @@ test("merge_group: PR lookup error fails loudly, never cheap", () => {
 });
 
 test("merge_group: PR lookup returns nothing usable -> fails loudly", () => {
-  for (const head of ["", "onlyonefield", `${"e".repeat(40)}\t`]) {
+  for (const head of ["", "onlyonefield", `${"e".repeat(40)}\t`, `${"e".repeat(40)}\tbranch`, `${"e".repeat(40)}\tbranch\tacme/app`]) {
     const r = run({
       EVENT_NAME: "merge_group",
       GITHUB_REF: `refs/heads/gh-readonly-queue/main/pr-9-${"b".repeat(40)}`,
@@ -194,6 +242,38 @@ test("merge_group: PR lookup returns nothing usable -> fails loudly", () => {
   }
 });
 
+const mg = (head) => ({
+  EVENT_NAME: "merge_group",
+  GITHUB_REF: `refs/heads/gh-readonly-queue/main/pr-8-${"b".repeat(40)}`,
+  STUB_HEAD: head,
+});
+
+test("S3: merge_group refuses a fork PR", () => {
+  const r = run(mg(`${"e".repeat(40)}\tbranch\tforker/app\tforker`));
+  assert.equal(r.status, 1);
+  assert.equal(r.out.full, undefined);
+  assert.match(r.stderr, /not this repository/);
+});
+
+test("S3: merge_group refuses a PR whose head repo is gone", () => {
+  // a deleted fork comes back with an empty head.repo
+  const r = run(mg(`${"e".repeat(40)}\tbranch\t\tforker`));
+  assert.equal(r.status, 1);
+});
+
+test("S3: merge_group refuses a Dependabot PR", () => {
+  const r = run(mg(`${"e".repeat(40)}\tdependabot/npm_and_yarn/x\tacme/app\tdependabot[bot]`));
+  assert.equal(r.status, 1);
+  assert.equal(r.out.full, undefined);
+  assert.match(r.stderr, /Dependabot/);
+});
+
+test("S3: a same-repo PR by a human still proceeds", () => {
+  const r = run(mg(`${"e".repeat(40)}\tbranch\tacme/app\tjason`));
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.out.full, "true");
+});
+
 test("merge_group ignores MERGE_QUEUE, rules and labels", () => {
   const r = run({
     EVENT_NAME: "merge_group",
@@ -201,7 +281,7 @@ test("merge_group ignores MERGE_QUEUE, rules and labels", () => {
     MERGE_QUEUE: "true",
     STUB_RULES_FAIL: "1",
     STUB_LABELS_FAIL: "1",
-    STUB_HEAD: `${"e".repeat(40)}\tbranch`,
+    STUB_HEAD: `${"e".repeat(40)}\tbranch\tacme/app\tjason`,
   });
   assert.equal(r.out.full, "true");
 });

@@ -9,6 +9,16 @@ on:
     # `closed` event follows and tears down. See the `gate` job.
     types: [closed, dequeued]
 
+# NEO-546 S5: one cleanup run per PR at a time, so a `dequeued` run and the
+# `closed` run that follows it (or two quick dequeues) never tear down the same
+# previews concurrently. Never cancel a run in progress: a half-finished
+# teardown is worse than a queued one. (GitHub keeps only one PENDING run per
+# group, so a third event in a row could replace a queued one; the events for
+# one PR do not arrive that fast.)
+concurrency:
+  group: preview-cleanup-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 # ⚠️ DO NOT close-and-reopen a PR to re-run CI. It fires this workflow.
 #
 # "Close/reopen to re-trigger the pipeline" is a common reflex and it is a trap
@@ -81,12 +91,17 @@ jobs:
   #
   # It also cancels the PR's merge-queue runs that are still going (for
   # example Browser CI after the E2E failed), so nothing rebuilds a preview
-  # after the teardown below. Best-effort: a failure here never blocks the
-  # teardown.
+  # after the teardown below. Only runs created BEFORE this run are cancelled,
+  # and teardown is skipped when the PR is already back in the queue
+  # (queue-entry-state.sh), so a quick re-enqueue keeps its previews.
+  # Best-effort: a failure of the cancel step never blocks the teardown.
   #
-  # Scripts and the notify action come from the DEFAULT branch, not from the PR
-  # merge ref: this job holds a webhook secret and can cancel runs, so it does
-  # not execute PR-controlled code.
+  # TRUST: this job's YAML comes from the PR merge ref (a `pull_request` event
+  # runs the workflow file as merged), so a PR can change what this job does.
+  # What the default-branch checkout below protects is the SCRIPTS and the
+  # notify action: the steps load them from `main`, not from the PR. The job
+  # holds a webhook secret and `actions: write`, which is why the audit asked
+  # for that; it is not a claim that no PR-controlled code runs here.
   gate:
     name: Queue eject gate
     if: |
@@ -98,6 +113,7 @@ jobs:
     permissions:
       contents: read
       actions: write   # cancel this PR's orphaned merge-queue runs
+      pull-requests: read   # GraphQL mergeQueueEntry
     outputs:
       teardown: ${{ steps.decide.outputs.teardown }}
     steps:
@@ -109,28 +125,29 @@ jobs:
             .github/scripts
             .github/actions
 
+      # Read at job time, not event time: the author may have re-enqueued.
+      - name: Is the PR back in the queue?
+        id: queue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/queue-entry-state.sh >> "$GITHUB_OUTPUT"
+
       - name: Decide from the dequeue reason
         id: decide
         env:
           EVENT_ACTION: ${{ github.event.action }}
           REASON: ${{ github.event.reason }}
+          QUEUE_ENTRY: ${{ steps.queue.outputs.entry }}
         run: bash .github/scripts/queue-eject-gate.sh >> "$GITHUB_OUTPUT"
 
-      - name: Cancel this PR's orphaned merge-queue runs
+      - name: Cancel this PR's older merge-queue runs
         if: steps.decide.outputs.teardown == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -uo pipefail
-          for status in queued in_progress; do
-            for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&status=$status&per_page=100" \
-                           --jq ".workflow_runs[] | select(.head_branch | test(\"^gh-readonly-queue/.+/pr-${PR}-[0-9a-f]+$\")) | .id"); do
-              echo "Cancelling merge-queue run $rid"
-              gh run cancel "$rid" --repo "$GITHUB_REPOSITORY" || true
-            done
-          done
+        run: bash .github/scripts/cancel-queue-runs.sh
 
       - name: Notify Discord
         if: steps.decide.outputs.notify == 'true'

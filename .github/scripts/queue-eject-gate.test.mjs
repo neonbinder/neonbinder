@@ -106,3 +106,29 @@ test("a very long reason is capped", () => {
   const r = dq("A".repeat(500));
   assert.ok(r.out.reason.length <= 40);
 });
+
+// --- S5: the PR is back in the queue ----------------------------------------
+
+test("S5: dequeued but the PR is queued again -> no teardown, still notifies a failure", () => {
+  for (const entry of ["present", "unknown", "garbage"]) {
+    const r = run({ EVENT_ACTION: "dequeued", REASON: "CI_FAILURE", QUEUE_ENTRY: entry });
+    assert.equal(r.out.teardown, "false", entry);
+    assert.equal(r.out.notify, "true", entry);
+    assert.match(r.out.detail, /teardown skipped/);
+  }
+});
+
+test("S5: a manual dequeue with the PR queued again does not tear down", () => {
+  const r = run({ EVENT_ACTION: "dequeued", REASON: "MANUAL", QUEUE_ENTRY: "present" });
+  assert.equal(r.out.teardown, "false");
+  assert.equal(r.out.notify, "false");
+});
+
+test("S5: queue entry absent or unset tears down as before", () => {
+  assert.equal(run({ EVENT_ACTION: "dequeued", REASON: "CI_FAILURE", QUEUE_ENTRY: "absent" }).out.teardown, "true");
+  assert.equal(run({ EVENT_ACTION: "dequeued", REASON: "CI_FAILURE" }).out.teardown, "true");
+});
+
+test("S5: a closed PR tears down whatever the queue says", () => {
+  assert.equal(run({ EVENT_ACTION: "closed", QUEUE_ENTRY: "present" }).out.teardown, "true");
+});

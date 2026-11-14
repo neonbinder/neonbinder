@@ -8,8 +8,12 @@
 # these hold:
 #   1. the event is pull_request,
 #   2. repo variable MERGE_QUEUE is exactly "true",
-#   3. the LIVE branch rules for main contain a `merge_queue` rule
-#      (read from the API now, never from the event payload), and
+#   3. the LIVE branch rules for main contain a `merge_queue` rule AND a
+#      `required_status_checks` rule that requires the context `CI Gate`
+#      pinned to the GitHub Actions app (integration id 15368). Both are read
+#      from the API now, never from the event payload. Without the pinned
+#      gate, the queue would merge on whatever else is required, and cheap
+#      checks alone could reach main (NEO-546 S2).
 #   4. the PR carries no `run-e2e` label (read live, so "label it, re-run" works).
 # Anything else is FULL: merge_group and push/dispatch events, an unset
 # variable, a missing rule, the label, and EVERY API or parse error. The
@@ -39,9 +43,14 @@
 #   reason     why this mode, for the log
 # Human-readable notes go to stderr.
 #
-# Exit status: 0, except on a merge_group run whose queue ref cannot be parsed
-# or whose PR cannot be read. That run is still FULL, but it cannot name its
-# PR, so it fails loudly instead of building previews for nothing.
+# Exit status: 0, except on a merge_group run that must not proceed:
+#   * the queue ref cannot be parsed, or the PR cannot be read (it cannot name
+#     its PR, so it fails loudly instead of building previews for nothing);
+#   * the PR's head repository is not this repository (a fork), or the PR was
+#     opened by dependabot[bot]. Those runs get repo secrets and OIDC on a
+#     merge_group event, which a fork or Dependabot PR must never reach
+#     (NEO-546 S3). Every job that uses a secret `needs:` the job running this
+#     script, so exiting 1 here stops them before any secret is used.
 set -uo pipefail
 
 EVENT_NAME="${EVENT_NAME:-}"
@@ -67,15 +76,23 @@ case "$EVENT_NAME" in
     # The queue ref carries only the PR number. The PR's own head commit and
     # branch (the Convex preview is named after the branch) come from the API,
     # because head_ref is empty on a merge_group event.
-    if ! info=$(gh api "repos/${REPO}/pulls/${pr}" --jq '[.head.sha, .head.ref] | @tsv' 2>/dev/null) \
+    if ! info=$(gh api "repos/${REPO}/pulls/${pr}" \
+        --jq '[.head.sha, .head.ref, (.head.repo.full_name // ""), (.user.login // "")] | @tsv' 2>/dev/null) \
         || [ -z "$info" ]; then
       echo "::error::ci-mode: could not read PR #${pr} to resolve its head commit and branch." >&2
       exit 1
     fi
-    head_sha="${info%%$'\t'*}"
-    head_ref="${info#*$'\t'}"
-    if [ -z "$head_sha" ] || [ -z "$head_ref" ] || [ "$head_ref" = "$info" ]; then
-      echo "::error::ci-mode: PR #${pr} came back without a head sha or ref." >&2
+    IFS=$'\t' read -r head_sha head_ref head_repo author <<<"$info"
+    if [ -z "$head_sha" ] || [ -z "$head_ref" ] || [ -z "$head_repo" ] || [ -z "$author" ]; then
+      echo "::error::ci-mode: PR #${pr} came back without a head sha, ref, repository or author." >&2
+      exit 1
+    fi
+    if [ "$head_repo" != "$REPO" ]; then
+      echo "::error::ci-mode: PR #${pr} comes from '${head_repo}', not this repository. A fork PR never runs in the merge queue with secrets." >&2
+      exit 1
+    fi
+    if [ "$author" = "dependabot[bot]" ]; then
+      echo "::error::ci-mode: PR #${pr} is a Dependabot PR; those are screening only and are never merged directly." >&2
       exit 1
     fi
     emit true "$pr" "${GITHUB_SHA:-}" "$head_sha" "$head_ref" "merge_group: the queue runs the full suite"
@@ -97,13 +114,26 @@ case "$EVENT_NAME" in
       emit true "$pr" "$sha" "$sha" "$ref" "could not read the branch rules (fail closed)"
       exit 0
     fi
-    has_queue=$(printf '%s' "$rules" | jq -r 'if type == "array" then (any(.[]; .type == "merge_queue")) else "error" end' 2>/dev/null) || has_queue="error"
-    if [ "$has_queue" != "true" ]; then
-      if [ "$has_queue" = "false" ]; then
-        emit true "$pr" "$sha" "$sha" "$ref" "main has no merge_queue rule"
-      else
+    # One jq pass over the SAME array: queue rule, and the pinned CI Gate.
+    # integration_id must be the number 15368 (GitHub Actions app).
+    verdict=$(printf '%s' "$rules" | jq -r '
+      if type == "array" then
+        "queue=\(any(.[]; .type == "merge_queue"))",
+        "gate=\(any(.[]; .type == "required_status_checks"
+              and ((.parameters.required_status_checks // []) | type == "array")
+              and ((.parameters.required_status_checks // [])
+                   | any(.[]; .context == "CI Gate" and .integration_id == 15368))))"
+      else "queue=error", "gate=error" end' 2>/dev/null) || verdict=""
+    case "$verdict" in
+      *queue=error*|"")
         emit true "$pr" "$sha" "$sha" "$ref" "branch rules unreadable (fail closed)"
-      fi
+        exit 0 ;;
+      *queue=false*)
+        emit true "$pr" "$sha" "$sha" "$ref" "main has no merge_queue rule"
+        exit 0 ;;
+    esac
+    if ! printf '%s\n' "$verdict" | grep -qx 'gate=true'; then
+      emit true "$pr" "$sha" "$sha" "$ref" "main does not require CI Gate pinned to the GitHub Actions app"
       exit 0
     fi
     if ! labels=$(gh api "repos/${REPO}/pulls/${pr}" --jq '[.labels[].name] | join("\n")' 2>/dev/null); then

@@ -21,7 +21,14 @@
 #                                  ping; silence is the worse mistake.
 #   any other action               neither
 #
-# Environment: EVENT_ACTION (github.event.action), REASON (github.event.reason).
+# A dequeue whose PR is back in the queue (or whose queue state could not be
+# read) never tears down: the new merge group's runs are using those previews.
+# QUEUE_ENTRY (from queue-entry-state.sh): present | absent | unknown. Unset is
+# read as absent. A merge or a `closed` event never looks at it. Notifying is
+# not affected.
+#
+# Environment: EVENT_ACTION (github.event.action), REASON (github.event.reason),
+# QUEUE_ENTRY (optional).
 # Never prints a secret and never reads the network.
 set -uo pipefail
 
@@ -30,9 +37,16 @@ action="${EVENT_ACTION:-}"
 # GITHUB_OUTPUT line and in a Discord message.
 reason=$(printf '%s' "${REASON:-}" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9_' | cut -c1-40)
 
+queue_entry="${QUEUE_ENTRY:-absent}"
+
 emit() {
   # emit <teardown> <notify> <detail>
-  printf 'teardown=%s\nnotify=%s\nreason=%s\ndetail=%s\n' "$1" "$2" "$reason" "$3"
+  local teardown="$1" detail="$3"
+  if [ "$action" = "dequeued" ] && [ "$teardown" = "true" ] && [ "$queue_entry" != "absent" ]; then
+    teardown=false
+    detail="${detail}; teardown skipped, the PR is back in the queue (or the queue could not be read)"
+  fi
+  printf 'teardown=%s\nnotify=%s\nreason=%s\ndetail=%s\n' "$teardown" "$2" "$reason" "$detail"
 }
 
 case "$action" in
