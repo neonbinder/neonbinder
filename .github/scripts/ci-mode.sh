@@ -63,6 +63,54 @@ emit() {
   echo "ci-mode: full=$1 pr=${2:-none} reason=$6" >&2
 }
 
+# The one predicate for "the merge queue is live": main's LIVE rules contain a
+# merge_queue rule AND a required_status_checks rule requiring `CI Gate` pinned
+# to the GitHub Actions app (integration id 15368, a number). Shared by cheap
+# mode below and by `--check-ruleset`, which the pr-queue skills call, so CI and
+# the skills can never disagree. Sets RULESET_STATE (live | off) and
+# RULESET_REASON; any error is "off". Reads only; writes nothing.
+queue_ruleset_state() {
+  RULESET_STATE=off
+  local rules verdict
+  if ! rules=$(gh api "repos/${REPO}/rules/branches/main" 2>/dev/null) || [ -z "$rules" ]; then
+    RULESET_REASON="could not read the branch rules (fail closed)"
+    return
+  fi
+  # One jq pass over the SAME array: queue rule, and the pinned CI Gate.
+  verdict=$(printf '%s' "$rules" | jq -r '
+    if type == "array" then
+      "queue=\(any(.[]; .type == "merge_queue"))",
+      "gate=\(any(.[]; .type == "required_status_checks"
+            and ((.parameters.required_status_checks // []) | type == "array")
+            and ((.parameters.required_status_checks // [])
+                 | any(.[]; .context == "CI Gate" and .integration_id == 15368))))"
+    else "queue=error", "gate=error" end' 2>/dev/null) || verdict=""
+  case "$verdict" in
+    *queue=error*|"")
+      RULESET_REASON="branch rules unreadable (fail closed)"; return ;;
+    *queue=false*)
+      RULESET_REASON="main has no merge_queue rule"; return ;;
+  esac
+  if ! printf '%s\n' "$verdict" | grep -qx 'gate=true'; then
+    RULESET_REASON="main does not require CI Gate pinned to the GitHub Actions app"
+    return
+  fi
+  RULESET_STATE=live
+  RULESET_REASON="merge queue rule and pinned CI Gate present"
+}
+
+# `ci-mode.sh --check-ruleset`: print queue=live and exit 0 only when the
+# predicate holds; otherwise print queue=off and exit 1 (errors included).
+# Needs only GITHUB_REPOSITORY and an authenticated `gh`; never touches
+# GITHUB_OUTPUT.
+if [ "${1:-}" = "--check-ruleset" ]; then
+  queue_ruleset_state
+  echo "ci-mode: ${RULESET_REASON}" >&2
+  if [ "$RULESET_STATE" = "live" ]; then echo "queue=live"; exit 0; fi
+  echo "queue=off"
+  exit 1
+fi
+
 case "$EVENT_NAME" in
   merge_group)
     ref="${GITHUB_REF:-}"
@@ -110,30 +158,9 @@ case "$EVENT_NAME" in
       emit true "$pr" "$sha" "$sha" "$ref" "MERGE_QUEUE is not 'true': today's flow"
       exit 0
     fi
-    if ! rules=$(gh api "repos/${REPO}/rules/branches/main" 2>/dev/null) || [ -z "$rules" ]; then
-      emit true "$pr" "$sha" "$sha" "$ref" "could not read the branch rules (fail closed)"
-      exit 0
-    fi
-    # One jq pass over the SAME array: queue rule, and the pinned CI Gate.
-    # integration_id must be the number 15368 (GitHub Actions app).
-    verdict=$(printf '%s' "$rules" | jq -r '
-      if type == "array" then
-        "queue=\(any(.[]; .type == "merge_queue"))",
-        "gate=\(any(.[]; .type == "required_status_checks"
-              and ((.parameters.required_status_checks // []) | type == "array")
-              and ((.parameters.required_status_checks // [])
-                   | any(.[]; .context == "CI Gate" and .integration_id == 15368))))"
-      else "queue=error", "gate=error" end' 2>/dev/null) || verdict=""
-    case "$verdict" in
-      *queue=error*|"")
-        emit true "$pr" "$sha" "$sha" "$ref" "branch rules unreadable (fail closed)"
-        exit 0 ;;
-      *queue=false*)
-        emit true "$pr" "$sha" "$sha" "$ref" "main has no merge_queue rule"
-        exit 0 ;;
-    esac
-    if ! printf '%s\n' "$verdict" | grep -qx 'gate=true'; then
-      emit true "$pr" "$sha" "$sha" "$ref" "main does not require CI Gate pinned to the GitHub Actions app"
+    queue_ruleset_state
+    if [ "$RULESET_STATE" != "live" ]; then
+      emit true "$pr" "$sha" "$sha" "$ref" "$RULESET_REASON"
       exit 0
     fi
     if ! labels=$(gh api "repos/${REPO}/pulls/${pr}" --jq '[.labels[].name] | join("\n")' 2>/dev/null); then

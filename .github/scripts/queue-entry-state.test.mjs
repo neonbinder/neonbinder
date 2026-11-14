@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +19,7 @@ function run({ body, fail, pr = "12", repo = "acme/app" }) {
     env: { PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: repo, PR: pr, STUB_BODY: body ?? "" },
     encoding: "utf8",
   });
-  return { status: r.status, out: r.stdout.trim() };
+  return { status: r.status, out: r.stdout.trim(), stderr: r.stderr };
 }
 const pr = (entry) => JSON.stringify({ data: { repository: { pullRequest: { mergeQueueEntry: entry } } } });
 
@@ -42,4 +42,27 @@ test("bad inputs -> unknown, exit 0", () => {
     assert.equal(r.status, 0);
     assert.equal(r.out, "entry=unknown", JSON.stringify(o));
   }
+});
+
+test("N-b: every unknown prints a ::warning:: on stderr, known answers do not", () => {
+  assert.match(run({ fail: true }).stderr, /::warning::/);
+  assert.match(run({ body: "<html>" }).stderr, /::warning::/);
+  assert.match(run({ body: pr(null), pr: "x" }).stderr, /::warning::/);
+  assert.equal(run({ body: pr(null) }).stderr, "");
+  assert.equal(run({ body: pr({ id: "x" }) }).stderr, "");
+});
+
+test("N-c: owner and name are passed with -f (strings), only the PR number with -F", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nb-qe-args-"));
+  const gh = join(dir, "gh");
+  const log = join(dir, "args.txt");
+  writeFileSync(gh, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${log}"\nprintf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}'\n`);
+  chmodSync(gh, 0o755);
+  spawnSync("bash", [SCRIPT], { env: { PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "acme/app", PR: "12" }, encoding: "utf8" });
+  const args = readFileSync(log, "utf8").split("\n");
+  const pair = (flag, kv) => args.some((a, i) => a === flag && args[i + 1] === kv);
+  assert.ok(pair("-f", "owner=acme"));
+  assert.ok(pair("-f", "name=app"));
+  assert.ok(pair("-F", "pr=12"));
+  assert.ok(!pair("-F", "owner=acme") && !pair("-F", "name=app"));
 });

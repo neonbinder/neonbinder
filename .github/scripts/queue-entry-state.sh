@@ -20,13 +20,15 @@ owner="${REPO%%/*}"
 name="${REPO#*/}"
 
 if [ -z "$owner" ] || [ -z "$name" ] || [ "$owner" = "$REPO" ] || ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+  echo "::warning::queue-entry-state: bad repository or PR number; reporting entry=unknown." >&2
   echo "entry=unknown"
   exit 0
 fi
 
 # shellcheck disable=SC2016  # GraphQL variables, not shell
 query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){mergeQueueEntry{id}}}}'
-if ! body=$(gh api graphql -f query="$query" -F owner="$owner" -F name="$name" -F pr="$PR" 2>/dev/null) || [ -z "$body" ]; then
+if ! body=$(gh api graphql -f query="$query" -f owner="$owner" -f name="$name" -F pr="$PR" 2>/dev/null) || [ -z "$body" ]; then
+  echo "::warning::queue-entry-state: the GraphQL query failed; reporting entry=unknown." >&2
   echo "entry=unknown"
   exit 0
 fi
@@ -39,5 +41,7 @@ state=$(printf '%s' "$body" | jq -r '
 
 case "$state" in
   present|absent) echo "entry=$state" ;;
-  *) echo "entry=unknown" ;;
+  *)
+    echo "::warning::queue-entry-state: the PR or its queue entry could not be read; reporting entry=unknown." >&2
+    echo "entry=unknown" ;;
 esac

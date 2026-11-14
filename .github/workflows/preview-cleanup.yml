@@ -9,15 +9,12 @@ on:
     # `closed` event follows and tears down. See the `gate` job.
     types: [closed, dequeued]
 
-# NEO-546 S5: one cleanup run per PR at a time, so a `dequeued` run and the
-# `closed` run that follows it (or two quick dequeues) never tear down the same
-# previews concurrently. Never cancel a run in progress: a half-finished
-# teardown is worse than a queued one. (GitHub keeps only one PENDING run per
-# group, so a third event in a row could replace a queued one; the events for
-# one PR do not arrive that fast.)
-concurrency:
-  group: preview-cleanup-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+# NEO-546 S5/N-a: concurrency is per JOB, not per workflow (see each job's
+# `concurrency:`). A workflow-level group would let a run that does nothing (a
+# quiet dequeue, a skipped teardown) occupy the one pending slot and replace a
+# real `closed` teardown queued behind it. Per job, a skipped job takes no slot,
+# and sibling jobs never cancel each other. `cancel-in-progress: false` always:
+# a half-finished teardown is worse than a queued one.
 
 # ⚠️ DO NOT close-and-reopen a PR to re-run CI. It fires this workflow.
 #
@@ -109,6 +106,9 @@ jobs:
       && github.base_ref == 'main'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}-gate
+      cancel-in-progress: false
     timeout-minutes: 10
     permissions:
       contents: read
@@ -171,6 +171,9 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && (github.event.action == 'closed' || needs.gate.outputs.teardown == 'true')
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}-cleanup
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -230,6 +233,9 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && (github.event.action == 'closed' || needs.gate.outputs.teardown == 'true')
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}-preprocess-cleanup
+      cancel-in-progress: false
     timeout-minutes: 10
     permissions:
       contents: read
@@ -344,6 +350,9 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && (github.event.action == 'closed' || needs.gate.outputs.teardown == 'true')
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}-convex-preview-cleanup
+      cancel-in-progress: false
     permissions:
       contents: read
       deployments: read  # needed to query GitHub Deployments API for Vercel preview URL

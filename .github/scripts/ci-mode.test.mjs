@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -298,4 +298,68 @@ test("workflow_dispatch: full, no PR", () => {
 test("push and an unknown event: full", () => {
   assert.equal(run({ EVENT_NAME: "push" }).out.full, "true");
   assert.equal(run({}).out.full, "true");
+});
+
+// --- --check-ruleset: the predicate the pr-queue skills share ----------------
+
+function check(env) {
+  const dir = mkdtempSync(join(tmpdir(), "nb-ci-mode-chk-"));
+  const gh = join(dir, "gh");
+  writeFileSync(gh, STUB);
+  chmodSync(gh, 0o755);
+  const out = join(dir, "gh-output");
+  writeFileSync(out, "");
+  // Only GITHUB_REPOSITORY, as when run locally; GITHUB_OUTPUT is set only to
+  // prove the mode never writes it.
+  const r = spawnSync("bash", [SCRIPT, "--check-ruleset"], {
+    env: { PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "acme/app", GITHUB_OUTPUT: out, ...env },
+    encoding: "utf8",
+    cwd: REPO_ROOT,
+  });
+  return { status: r.status, stdout: r.stdout.trim(), wrote: readFileSync(out, "utf8") };
+}
+
+test("--check-ruleset: queue rule plus pinned gate -> queue=live, exit 0, no GITHUB_OUTPUT", () => {
+  const r = check({ STUB_RULES: RULES_WITH_QUEUE });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, "queue=live");
+  assert.equal(r.wrote, "");
+});
+
+test("--check-ruleset works with no Actions env beyond GITHUB_REPOSITORY (no EVENT_NAME, MERGE_QUEUE)", () => {
+  const r = check({ STUB_RULES: RULES_WITH_QUEUE, EVENT_NAME: "", MERGE_QUEUE: "" });
+  assert.equal(r.stdout, "queue=live");
+});
+
+test("--check-ruleset: every off case prints queue=off and exits 1", () => {
+  const cases = {
+    "no queue rule": RULES_NO_QUEUE,
+    "queue, no gate": JSON.stringify([{ type: "merge_queue" }]),
+    "wrong integration id": JSON.stringify([{ type: "merge_queue" }, gateRule([{ context: "CI Gate", integration_id: 1 }])]),
+    "gate, no queue": JSON.stringify([GATE_PINNED]),
+    "empty list": "[]",
+    "garbage": "<html>",
+    "error object": JSON.stringify({ message: "Not Found" }),
+    "empty body": "",
+  };
+  for (const [name, rules] of Object.entries(cases)) {
+    const r = check({ STUB_RULES: rules });
+    assert.equal(r.status, 1, name);
+    assert.equal(r.stdout, "queue=off", name);
+    assert.equal(r.wrote, "", name);
+  }
+});
+
+test("--check-ruleset: API error -> queue=off, exit 1", () => {
+  const r = check({ STUB_RULES_FAIL: "1" });
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, "queue=off");
+});
+
+test("--check-ruleset agrees with cheap-mode selection", () => {
+  for (const rules of [RULES_WITH_QUEUE, RULES_NO_QUEUE, JSON.stringify([{ type: "merge_queue" }])]) {
+    const live = check({ STUB_RULES: rules }).status === 0;
+    const cheap = run(pr({ STUB_RULES: rules })).out.full === "false";
+    assert.equal(live, cheap);
+  }
 });
