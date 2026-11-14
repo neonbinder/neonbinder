@@ -36,9 +36,9 @@ reliably. Do **not** delegate this to a subagent.
 ## Steps
 
 1. **Parse args.** `--queue` (optional) selects queue mode. First other token = PR number (required). `--repo <dir>` overrides
-   the repo directory (default: current dir if it's a git repo with a GitHub
-   remote, else `apps/web`). NeonBinder repos: `apps/web` (remote
-   `neonbinder_convex`), `services/browser`, and the separate `terraform` checkout (`neonbinder_ioc`).
+   the repo directory (default: the current dir, which must be a checkout of
+   `neonbinder/neonbinder-app`; the `terraform` checkout is `neonbinder_ioc`, a different repo).
+   `--queue` refuses any other repo (`DONE ERROR`) and passes `-R neonbinder/neonbinder-app` to its run reads.
 
 2. **Confirm the PR exists** with a single read:
    `gh pr view <PR> --json state,title,url` from the repo dir. If it errors,
@@ -104,8 +104,8 @@ Terminal lines (one, then the Monitor ends):
 | Line | Meaning | Exit |
 |---|---|---|
 | `DONE MERGED` | GitHub reports the PR merged (the only source of MERGED), with the merge commit | 0 |
-| `DONE EJECTED` | Dequeued by GitHub: failed check, timeout, conflict, or any reason that is not a manual removal. Carries the dequeue reason (from the PR timeline's `RemovedFromMergeQueueEvent`) and the failing job URLs, else the failing run URLs, else says no failing job was found (timeout/conflict) | 1 |
-| `DONE REMOVED` | Taken out by hand (reason says manual), or the PR was closed unmerged | 4 |
+| `DONE EJECTED` | Dequeued by GitHub itself: an allowlisted automatic reason (CI_FAILURE, CI_TIMEOUT, MERGE_CONFLICT and similar; **allowlist to confirm at D0**) with a null or bot actor. Carries the dequeue reason (from the PR timeline's `RemovedFromMergeQueueEvent`) and the failing job URLs, else the failing run URLs, else says no failing job was found (timeout/conflict) | 1 |
+| `DONE REMOVED` | Everything else: a person removed it, the reason is not on the allowlist, or the PR was closed unmerged. Stop and tell Jason; **never re-enqueue** | 4 |
 | `DONE NOT_QUEUED` | Still not in the queue after the grace window (3 min); the enqueue did not happen | 5 |
 | `DONE TIMEOUT` | Watch window elapsed (default 150 min; the queue's own timeout is 120) | 2 |
 
@@ -119,13 +119,15 @@ Terminal lines (one, then the Monitor ends):
   (`.claude/skills/pr-queue/notify.sh`). Set `cc-state answer` only if Jason has
   to decide; otherwise keep working. Read the failing job logs with
   `gh run view <run-id> --log-failed`; unlike plain PR mode, diagnosing is the job here.
-- `REMOVED` → someone took it out; do not re-enqueue on your own, say so.
+- `REMOVED` → stop and tell Jason with the reason and actor the line prints.
+  Never re-enqueue on your own: an unknown reason is treated as a person's decision.
 - Discord is only a backup for when no session is alive; never rely on it.
 
 ## Tuning (optional env on the Monitor command)
 - `PR_WATCH_INTERVAL=120` — seconds between ticks (default 120; the ~2-min cadence).
 - `PR_WATCH_MAX_MIN=90` — safety stop.
-- `PR_WATCH_QUEUE_MAX_MIN=150` / `PR_WATCH_ENQUEUE_GRACE_MIN=3` — `--queue` only.
+- `PR_WATCH_QUEUE_MAX_MIN=150` / `PR_WATCH_ENQUEUE_GRACE_MIN=3` / `PR_WATCH_REPO` /
+  `PR_WATCH_EJECT_REASONS` (regex of automatic dequeue reasons) — `--queue` only.
 - `PR_WATCH_REQUIRED_CHECK="CI Gate"` — the gate check that must be green before
   a `DONE GREEN` is emitted. Change it only if the pipeline's final gate job is
   renamed.

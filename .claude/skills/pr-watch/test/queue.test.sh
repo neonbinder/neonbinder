@@ -2,7 +2,7 @@
 # Tests for `watch.sh --queue` against a fake gh. Run: bash test/queue.test.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-export PR_WATCH_GH="$HERE/fake-gh.sh" PR_WATCH_INTERVAL=0
+export PR_WATCH_GH="$HERE/fake-gh.sh" PR_WATCH_INTERVAL=0 PR_WATCH_REPO=acme/widgets
 fails=0
 
 pr() { # state mqEntryJson nodesJson
@@ -24,15 +24,24 @@ fresh() { FIX=$(mktemp -d); export FIX; echo '[]' > "$FIX/runs.json"; }
 fresh; pr MERGED null "[$ADD]" > "$FIX/graphql.json"
 run "merged" 0 '^DONE MERGED .*abc123'
 
-fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"login":"github-actions"}')]" > "$FIX/graphql.json"
+fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-actions[bot]"}')]" > "$FIX/graphql.json"
 printf "$RUN" completed failure > "$FIX/runs.json"; printf "$JOBS" completed failure > "$FIX/run-7.json"
 run "ejected names reason and failing job, ignores another PR's run" 1 'DONE EJECTED.*CI_FAILURE.*PR Pipeline / E2E / shard-desktop \(3, 8\): https://example.invalid/jobs/2'
 
-fresh; pr OPEN null "[$ADD,$(rem TIMEOUT null)]" > "$FIX/graphql.json"
-run "ejected on timeout with no failing job" 1 'DONE EJECTED.*TIMEOUT.*no failing job'
+fresh; pr OPEN null "[$ADD,$(rem CI_TIMEOUT null)]" > "$FIX/graphql.json"
+run "ejected on timeout with no failing job" 1 'DONE EJECTED.*CI_TIMEOUT.*no failing job'
 
-fresh; pr OPEN null "[$ADD,$(rem MANUAL '{"login":"someone"}')]" > "$FIX/graphql.json"
-run "removed by hand" 4 'DONE REMOVED.*someone'
+fresh; pr OPEN null "[$ADD,$(rem MANUAL '{"__typename":"User","login":"someone"}')]" > "$FIX/graphql.json"
+run "removed by hand" 4 'DONE REMOVED.*someone.*do not re-enqueue'
+
+fresh; pr OPEN null "[$ADD,$(rem SOMETHING_NEW null)]" > "$FIX/graphql.json"
+run "unknown reason is REMOVED, not EJECTED" 4 'DONE REMOVED.*SOMETHING_NEW'
+
+fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"User","login":"someone"}')]" > "$FIX/graphql.json"
+run "known reason with a human actor is REMOVED" 4 'DONE REMOVED.*CI_FAILURE.*someone'
+
+fresh; pr OPEN null "[]" > "$FIX/graphql.json"
+PR_WATCH_REPO=other/repo run "wrong repo refused" 3 'DONE ERROR.*only watches other/repo'
 
 fresh; pr CLOSED null "[$ADD]" > "$FIX/graphql.json"
 run "closed without merge" 4 'DONE REMOVED.*closed'

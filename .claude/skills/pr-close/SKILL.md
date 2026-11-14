@@ -44,6 +44,12 @@ gate run if an earlier one failed.
   `pr-queue` skill: merge only during this
   ticket's turn (a `PR-QUEUE YOUR TURN` message). Not called yet → join the
   queue instead of merging.
+- Claude-run flow only: a green `CI Gate` is not proof of E2E (a cheap-mode run
+  from `MERGE_QUEUE=true` also turns it green). Require a `Playwright E2E` check
+  run with conclusion `success` on the head SHA
+  (`gh api repos/neonbinder/neonbinder-app/commits/<head-sha>/check-runs --jq '.check_runs[]|select(.name=="Playwright E2E")|.conclusion'`),
+  or the pipeline's `deps_only` path. Neither → stop; tell the user to re-run PR
+  Pipeline on it or push.
 - Any check not green → stop. Tell the user to fix it or run `/pr-watch <PR>` first;
   do not merge a red PR.
 - `mergeable != MERGEABLE` → stop, report the conflict.
@@ -64,6 +70,15 @@ else, this step and the rest of the skill apply exactly as written.
   `AskUserQuestion`, no `state.sh`, no turn. A session that decided to run this
   skill on its own for a PR that is not at that bar still confirms first, as
   below. If the PR is already queued, skip the enqueue.
+- **Before `gh pr merge --squash`, in this order:**
+  1. `gh api repos/neonbinder/neonbinder-app/rules/branches/main --jq '[.[].type]'`
+     must contain `merge_queue`. If it does not (the ruleset was rolled back
+     while the variable still says true), `gh pr merge` would merge on cheap
+     checks: **fall back to the Claude-run flow** (this skill's other branch).
+  2. `gh pr view <PR> --json isCrossRepository,headRepositoryOwner,author`:
+     `isCrossRepository` false, `headRepositoryOwner.login` `neonbinder`, author
+     not a Dependabot account. Otherwise stop and tell Jason.
+  3. Remove the `run-e2e` label if present (`gh pr edit <PR> --remove-label run-e2e`).
 - Step 2's pre-flight changes: the PR checks that matter are the cheap ones
   (lint, typecheck, unit, hygiene); E2E is not expected on the PR itself. A
   `CONFLICTING` PR still stops here. Never use `--admin` or merge around the queue.
@@ -72,11 +87,13 @@ else, this step and the rest of the skill apply exactly as written.
   The verdicts:
   - `DONE MERGED`: continue below with the merge commit it prints (confirm with
     `gh pr view <PR> --json mergeCommit --jq .mergeCommit.oid`).
-  - `DONE EJECTED`: the PR did not merge. Do not continue the gates. Treat it
+  - `DONE EJECTED` (GitHub removed it itself): the PR did not merge. Do not continue the gates. Treat it
     as a red per the `pr-queue` skill's GitHub-queue flow (artifacts, ci-fail
     ticket, planner, fix, re-enqueue, Mac notification) and re-run this skill
-    when the next verdict is MERGED.
-  - `DONE REMOVED` / `NOT_QUEUED`: stop and tell Jason.
+    when the next verdict is MERGED. Re-enqueueing after a code fix needs the
+    delta audit and local gates first (the `pr-queue` bar), and the PR's
+    `Preview Cleanup` run must have finished.
+  - `DONE REMOVED` / `NOT_QUEUED`: stop and tell Jason; never re-enqueue.
 - After `MERGED`, **keep everything else in this skill**: Mac notification
   (`notify.sh`, as below), then gate 2 (production verify), the smoke test,
   the Linear close-out and gate 5 (worktree cleanup). Skip only the "MAIN
@@ -260,6 +277,10 @@ gate 5 reclaimed — worktree, branches, orphaned browsers — plus anything it
 deliberately left alone and why.
 
 ## Hard rules
+- **Never enqueue a fork PR or a Dependabot-authored PR.** Check
+  `isCrossRepository`, `headRepositoryOwner` and the author before `gh pr merge`.
+- **Before enqueueing, the live ruleset must contain `merge_queue`**; if not, the
+  variable is stale and the Claude-run flow applies.
 - **`MERGE_QUEUE=true`: enqueueing is the approval, and the verdict comes from
   `pr-watch --queue`, never from the cheap PR checks.** Do not say merged or
   start gate 2 before `DONE MERGED`.

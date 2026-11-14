@@ -33,13 +33,24 @@ desktop and mobile, and, for a UI change, Jason's verdict given on the local bui
 that bar runs `gh pr merge --squash` without asking again. Not at the bar: do not
 enqueue.
 
+0. **Never enqueue a fork PR or a Dependabot-authored PR.** Before every
+   `gh pr merge`: `gh pr view <PR> --json isCrossRepository,headRepositoryOwner,author`
+   must show `isCrossRepository` false, `headRepositoryOwner.login` `neonbinder`,
+   and an author that is not a Dependabot account. Otherwise stop and tell Jason
+   (a Dependabot bump ships only inside a `deps-batch` PR).
 1. **Push freely, no turn needed.** `git fetch origin && git merge origin/main`
    is optional (the queue builds on current main itself). Push, open the PR with
    the ticket in the title (`NEO-123(<pr>) Short title`), and let the cheap checks run;
    `pr-watch <PR>` reports them as "cheap checks green", never "green".
    Need the full E2E run off-queue (a harness change, a pinned tool bump, a
    red you want to reproduce on a preview)? Add the `run-e2e` label and push.
-2. **Enqueue.** `gh pr merge <PR> --squash` (it enqueues, it does not merge
+   **Remove the `run-e2e` label before enqueueing** (`gh pr edit <PR> --remove-label run-e2e`):
+   the queue interlock treats the label as "this PR already ran full".
+2. **Enqueue.** First confirm the ruleset still has the queue:
+   `gh api repos/neonbinder/neonbinder-app/rules/branches/main --jq '[.[].type]'`
+   must contain `merge_queue` (otherwise `gh pr merge` would merge on cheap checks
+   alone: stop, and use the Claude-run flow or ask Jason). Then
+   `gh pr merge <PR> --squash` (it enqueues, it does not merge
    at once). Tab `cc-state queue`. Do not push to the branch while it is queued
    unless you mean to leave: a push dequeues it.
 3. **Keep watching in this session, do not rely on Discord:**
@@ -49,22 +60,36 @@ enqueue.
 4. **`DONE MERGED`** → `pr-close` finishes it (Mac notification, production
    check, smoke test, Linear, cleanup); `cc-state test` when production
    checks out.
-5. **`DONE EJECTED`** → same rules as any red:
+5. **`DONE EJECTED`** (GitHub removed it itself) → same rules as any red:
    - save the run's artifacts first (the red-run triage steps), into the
      session scratchpad;
    - look for an existing ci-fail ticket before filing one (bump Occurrences);
    - run the failure through the planner, not a guess;
    - an outside-service flake (the flake rule below) is re-enqueued unchanged
      with `gh pr merge <PR> --squash`, once per ticket (a merge-group run
-     cannot be rerun); anything pointing at our code is fixed locally,
-     pushed (free) and re-enqueued;
+     cannot be rerun); no new audit is needed because the code is unchanged;
+   - anything pointing at our code is fixed locally and pushed (free), but
+     **re-enqueueing after a code fix needs the same bar as re-joining the
+     Claude-run queue today**: the delta audit of the fix and the local gates
+     (and covering specs) green first;
+   - **before any re-enqueue, wait for the PR's `Preview Cleanup` run to finish**
+     (`gh run list --workflow preview-cleanup.yml --limit 5`, find the run for
+     this PR): a dequeue tears the PR's previews down, and enqueueing while that
+     runs races the rebuild;
    - send the Mac notification: `REASON='#499 ejected: one-line reason' notify.sh 'NEO-123 ejected' "$REASON"`
      (free text single-quoted, as above);
    - `cc-state answer` only if Jason must decide; otherwise keep working.
-6. **`DONE REMOVED`** → someone took it out by hand: `cc-state clear`, say so,
-   do not re-enqueue on your own.
+6. **`DONE REMOVED`** (a person, an unknown dequeue reason, or a closed PR) →
+   stop: `cc-state answer`, tell Jason the reason and actor, and **never
+   re-enqueue on your own**.
 7. **Leaving the queue:** `gh pr merge <PR> --disable-auto`, then `cc-state clear`.
-8. **Discord is a backup only**, for when no session is alive. A live session
+8. **Rollback runbook** (the queue rule is taken off, `MERGE_QUEUE` deleted or
+   the ruleset restored to its saved copy). A PR whose last green was a
+   cheap-mode run has never run E2E, so after the ruleset is restored and before
+   anything merges: **re-run PR Pipeline on every open PR, or push to it**, so
+   each head SHA gets a full run. Then the Claude-run flow's merge check below
+   (a `Playwright E2E` check run on the head SHA) decides, not `CI Gate` alone.
+9. **Discord is a backup only**, for when no session is alive. A live session
    always knows first through its own `pr-watch --queue`.
 
 A flake is judged exactly as in the turn flow (evidence names an outside service,
@@ -303,7 +328,12 @@ still be open when it starts.
    7. **Green: merge with `pr-close`.** Your turn is the merge authorisation
       (Jason, 2026-11-12); pr-close does not ask again. Before merging,
       check the turn again (`"$Q" position NEO-123` prints position 0) and
-      confirm the PR's pushed head holds current main:
+      confirm the PR's head SHA ran full CI: a `Playwright E2E` check run
+      with conclusion `success` on it
+      (`gh api repos/neonbinder/neonbinder-app/commits/<sha>/check-runs --jq '.check_runs[]|select(.name=="Playwright E2E")|.conclusion'`),
+      or the pipeline's `deps_only` path. A green `CI Gate` alone is not
+      enough, because a cheap-mode run (left over from `MERGE_QUEUE=true`)
+      also turns it green. Also confirm the PR's pushed head holds current main:
       `git fetch origin && git merge-base --is-ancestor origin/main "$(gh pr view <pr> --json headRefOid -q .headRefOid)"`
       succeeds. If something merged during your turn, the queue was bypassed:
       stop (step 6) and tell Jason.
@@ -323,6 +353,12 @@ still be open when it starts.
    `PR-QUEUE LEAVE <ticket>`, then `cc-state clear`.
 
 ## Hard rules
+
+- **Never enqueue a fork PR or a Dependabot-authored PR** (GitHub-queue flow),
+  and never run a turn for one (Claude-run flow). Check `isCrossRepository`,
+  `headRepositoryOwner` and the author before `gh pr merge`.
+- **Never treat a green `CI Gate` as proof of E2E** in the Claude-run flow:
+  require the `Playwright E2E` check run on the head SHA (or `deps_only`).
 
 - **No push outside your turn.** A push starts a CI run, and a run that
   cannot merge is wasted money. One turn is one main merge, one push, one run

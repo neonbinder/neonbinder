@@ -170,9 +170,14 @@ run off-queue.
    UI verdict given). **Enqueueing is the merge approval**; `pr-close` does not
    ask again. `gh pr merge --disable-auto` leaves the queue; a push to a queued
    PR dequeues it.
+   Never enqueue a fork PR or a Dependabot-authored PR; remove the `run-e2e`
+   label first; the live ruleset must still contain `merge_queue` (else use the
+   Claude-run flow). In the Claude-run flow a green `CI Gate` is not E2E proof:
+   require the `Playwright E2E` check run on the head SHA.
 5. **Keep watching in the same session** with `pr-watch --queue <PR>`, which
-   ends in `MERGED`, `EJECTED` (reason and failing run/job included) or
-   `REMOVED`. A green PR run alone is never "green". Discord is a backup for
+   ends in `MERGED`, `EJECTED` (GitHub removed it by itself; reason and failing
+   run/job included) or `REMOVED` (anything else: stop and tell Jason, never
+   re-enqueue). A green PR run alone is never "green". Discord is a backup for
    when no session is alive, not the signal.
 6. **`MERGED`:** `pr-close` does the production check, smoke test, Linear and
    cleanup. **`EJECTED`:** treat it as any red (save artifacts, ci-fail ticket,

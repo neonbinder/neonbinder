@@ -445,6 +445,14 @@ that went `READY`, which Dependabot PRs/branches were closed or deleted, what wa
 - **Never let one failing bump block the batch** — drop it, park it, ticket it, and say
   so. And never call a failure flaky unless its evidence names an outside service
   (the `pr-queue` flake rule).
+- **Never enqueue or merge a fork PR or a Dependabot-authored PR.** The batch is
+  maintainer-authored on a `neonbinder` branch: before `gh pr merge`, check
+  `gh pr view <PR> --json isCrossRepository,headRepositoryOwner,author` (not
+  cross-repo, owner `neonbinder`, author not Dependabot). The Dependabot PRs
+  themselves are never enqueued.
+- **A green `CI Gate` is not E2E proof in the Claude-run flow**: the turn's
+  `pr-close` requires the `Playwright E2E` check run on the batch's head SHA.
+  In queue mode, `pr-close` also requires the live ruleset to contain `merge_queue`.
 - **Never join the queue (or, with `MERGE_QUEUE=true`, enqueue) without the user's
   explicit approval for this batch.** The merge follows on green, so that
   approval is the merge approval.

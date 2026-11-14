@@ -23,9 +23,11 @@
 # the full run is the merge_group run on gh-readonly-queue/main/pr-<N>-*. Its
 # terminal lines are the only ones that mean anything:
 #   DONE MERGED  — the PR merged (state MERGED on GitHub). Exit 0.
-#   DONE EJECTED — dequeued by GitHub (failed check, timeout, conflict). Names
-#                  the dequeue reason and the failing run/job URLs. Exit 1.
-#   DONE REMOVED — taken out by hand, or the PR was closed. Exit 4.
+#   DONE EJECTED — dequeued by GitHub itself: an allowlisted automatic reason
+#                  (failed check, timeout, conflict) AND a null/bot actor. Names
+#                  the reason and the failing run/job URLs. Exit 1.
+#   DONE REMOVED — everything else: a person, an unknown reason, a closed PR.
+#                  Stop and tell the operator; never re-enqueue. Exit 4.
 #   DONE NOT_QUEUED — never entered the queue within the grace window. Exit 5.
 #   DONE TIMEOUT (2) / DONE ERROR (3) as in PR mode.
 # Queue mode never prints GREEN.
@@ -41,6 +43,11 @@
 #                       own timeout is 120)
 #   PR_WATCH_ENQUEUE_GRACE_MIN  --queue: minutes to wait for the PR to appear
 #                       in the queue before giving up (default 3)
+#   PR_WATCH_REPO       --queue: the only repo this may watch (default
+#                       neonbinder/neonbinder-app); every gh call passes -R to it
+#   PR_WATCH_EJECT_REASONS  --queue: regex of dequeue reasons GitHub applies by
+#                       itself. ONLY these (with a null/bot actor) are EJECTED;
+#                       every other reason is REMOVED. CONFIRM AT D0.
 #   PR_WATCH_GH         the gh binary (default gh); tests point it at a fake
 set -uo pipefail
 { set +x; } 2>/dev/null  # defensive: never trace
@@ -54,6 +61,11 @@ MAX_MIN="${PR_WATCH_MAX_MIN:-90}"
 [ "$MODE" = "queue" ] && MAX_MIN="${PR_WATCH_QUEUE_MAX_MIN:-150}"
 GRACE_MIN="${PR_WATCH_ENQUEUE_GRACE_MIN:-3}"
 GH="${PR_WATCH_GH:-gh}"
+EXPECTED_REPO="${PR_WATCH_REPO:-neonbinder/neonbinder-app}"
+# Automatic dequeue reasons. CONFIRM AT D0 (the first enqueue/dequeue dry run):
+# GitHub documents the event's `reason` only loosely, so this is a guess at the
+# strings it uses. Unknown reasons deliberately fall to REMOVED (stop, tell a person).
+EJECT_REASONS="${PR_WATCH_EJECT_REASONS:-^(CI_FAILURE|CI_TIMEOUT|TIMEOUT|MERGE_CONFLICT|QUEUE_CONFLICT|INVALID_MERGE_COMMIT|BRANCH_PROTECTIONS|DEPLOYMENT_FAILURE)$}"
 case "$PR" in ''|*[!0-9]*) echo "DONE ERROR — PR number must be digits: $PR"; exit 3;; esac
 REQUIRED_CHECK="${PR_WATCH_REQUIRED_CHECK:-CI Gate}"
 
@@ -128,7 +140,7 @@ tick() {
 # queue entry, queue timeline events), the merge_group runs on this PR's queue
 # branch, and those runs' jobs.
 # shellcheck disable=SC2016  # GraphQL variables, not shell
-QUERY='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){state mergeCommit{oid} mergeQueueEntry{state position} timelineItems(last:20,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason actor{login}}}}}}}'
+QUERY='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){state mergeCommit{oid} mergeQueueEntry{state position} timelineItems(last:20,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason actor{__typename login}}}}}}}'
 OWNER=""; NAME=""; DETAIL=""; NOT_QUEUED_TICKS=0
 
 # Failing jobs (url list) of the runs in $1 (JSON array of runs with .jobs).
@@ -141,7 +153,7 @@ failing_jobs() {
 }
 
 tick_queue() {
-  local pr state last_add last_rem rem_reason rem_actor runs group
+  local pr state last_add last_rem rem_reason rem_actor rem_bot runs group
   local mq_state mq_pos nruns nrun_active jtotal jdone shards_t shards_d gate
   pr=$($GH api graphql -f query="$QUERY" -F owner="$OWNER" -F name="$NAME" -F pr="$PR" 2>/dev/null \
         | jq -c '.data.repository.pullRequest // empty') || pr=""
@@ -154,11 +166,13 @@ tick_queue() {
   last_rem=$(echo "$pr" | jq -r '[.timelineItems.nodes[]?|select(.__typename=="RemovedFromMergeQueueEvent")|.createdAt]|max // ""')
   rem_reason=$(echo "$pr" | jq -r --arg t "$last_rem" 'first(.timelineItems.nodes[]?|select(.__typename=="RemovedFromMergeQueueEvent" and .createdAt==$t))|.reason // "unknown"')
   rem_actor=$(echo "$pr" | jq -r --arg t "$last_rem" 'first(.timelineItems.nodes[]?|select(.__typename=="RemovedFromMergeQueueEvent" and .createdAt==$t))|.actor.login // ""')
+  # A null actor or a bot is GitHub acting by itself; anything else is a person.
+  rem_bot=$(echo "$pr" | jq -r --arg t "$last_rem" 'first(.timelineItems.nodes[]?|select(.__typename=="RemovedFromMergeQueueEvent" and .createdAt==$t))|(.actor // null) as $a | if $a==null or ($a.__typename=="Bot") or (($a.login//"")|test("\\[bot\\]$")) then "yes" else "no" end')
 
   # merge_group runs for THIS pr, from its latest enqueue on (an earlier ejected
   # attempt's runs must not colour the current one). Newest-attempt filter is a
   # string compare on ISO-8601, which orders correctly.
-  runs=$($GH run list --event merge_group --limit 100 \
+  runs=$($GH run list -R "$EXPECTED_REPO" --event merge_group --limit 100 \
           --json databaseId,headBranch,status,conclusion,url,workflowName,createdAt 2>/dev/null \
         | jq -c --arg p "gh-readonly-queue/main/pr-$PR-" --arg since "$last_add" \
             '[.[]|select(.headBranch|startswith($p))|select($since=="" or .createdAt>=$since)]') || runs="[]"
@@ -169,7 +183,7 @@ tick_queue() {
   local id
   for id in $(echo "$runs" | jq -r '.[].databaseId'); do
     local one
-    one=$($GH run view "$id" --json jobs 2>/dev/null | jq -c --argjson r "$(echo "$runs" | jq -c --argjson i "$id" 'first(.[]|select(.databaseId==$i))')" \
+    one=$($GH run view "$id" -R "$EXPECTED_REPO" --json jobs 2>/dev/null | jq -c --argjson r "$(echo "$runs" | jq -c --argjson i "$id" 'first(.[]|select(.databaseId==$i))')" \
             '{workflowName:$r.workflowName, jobs:(.jobs // [])}') || one=""
     [ -n "$one" ] && group=$(echo "$group" | jq -c --argjson o "$one" '. + [$o]')
   done
@@ -189,14 +203,16 @@ tick_queue() {
   elif [ "$state" = "CLOSED" ]; then
     VERDICT="REMOVED"; DETAIL="PR closed without merging"
   elif [ -n "$last_rem" ] && { [ -z "$last_add" ] || [ "$last_rem" \> "$last_add" ] || [ "$last_rem" = "$last_add" ]; }; then
-    # Dequeued after its latest enqueue. By hand = REMOVED; anything else
-    # (failed check, timeout, conflict, unknown reason) = EJECTED, because the
-    # cost of wrongly calling a manual removal an ejection is one look, and the
-    # cost of the reverse is a silently dead PR.
+    # Dequeued after its latest enqueue. EJECTED only for an allowlisted
+    # automatic reason AND a null/bot actor (GitHub did it, the session may fix
+    # and re-enqueue). Everything else, an unknown reason or a person, is
+    # REMOVED: stop and tell the operator, never re-enqueue. Wrongly calling an
+    # ejection REMOVED costs a message; the reverse re-enqueues something a person
+    # pulled on purpose.
     local failed_runs
     failed_runs=$(echo "$runs" | jq -r '[.[]|select((.conclusion//"")|test("failure|timed_out|startup_failure";"i"))|.url]|.[:5]|join("; ")')
-    if echo "$rem_reason" | grep -Eqi 'manual|by_user|user_removed|disable'; then
-      VERDICT="REMOVED"; DETAIL="removed by ${rem_actor:-a person} (reason: $rem_reason)"
+    if ! echo "$rem_reason" | grep -Eq -- "$EJECT_REASONS" || [ "$rem_bot" != "yes" ]; then
+      VERDICT="REMOVED"; DETAIL="dequeued, reason: $rem_reason, actor: ${rem_actor:-none} — not a known automatic ejection; stop and tell the operator, do not re-enqueue"
     else
       VERDICT="EJECTED"
       DETAIL="dequeued, reason: $rem_reason${rem_actor:+ (actor $rem_actor)}"
@@ -223,8 +239,9 @@ tick_queue() {
 queue_main() {
   local repo
   repo=$($GH repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || repo=""
-  case "$repo" in */*) OWNER="${repo%%/*}"; NAME="${repo#*/}";;
-    *) echo "DONE ERROR — cannot resolve the repository from $REPO_DIR"; exit 3;; esac
+  if [ "$repo" != "$EXPECTED_REPO" ]; then
+    echo "DONE ERROR — $REPO_DIR is repo '${repo:-unknown}', queue mode only watches $EXPECTED_REPO"; exit 3; fi
+  OWNER="${repo%%/*}"; NAME="${repo#*/}"
   while true; do
     tick_queue
     case "$VERDICT" in
