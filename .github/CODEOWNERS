@@ -1,5 +1,8 @@
 # CODEOWNERS — auto-requests review on security-sensitive surfaces.
 #
+# This repo is owned by the neonbinder GitHub org (an org cannot be a code
+# owner), so entries name the maintainer, @edvedafi.
+#
 # NOTE: review is currently ADVISORY. The `main` ruleset requires 0 approvals,
 # and a solo maintainer cannot approve their own PR, so we do not gate merges on
 # code-owner review (that would wedge the workflow). These entries exist to flag
@@ -7,15 +10,15 @@
 # ready to become blocking if/when a second maintainer is added.
 
 # Default owner for everything in the repo
-*                                                    @neonbinder
+*                                                    @edvedafi
 
 # CI / deploy pipeline (workflows + composite actions)
-/.github/                                            @neonbinder
-/apps/web/.github/                                   @neonbinder
+/.github/                                            @edvedafi
+/apps/web/.github/                                   @edvedafi
 
 # Credential proxy + marketplace-adapter security boundary (Convex side)
-/apps/web/convex/credentials.ts                      @neonbinder
-/apps/web/convex/adapters/                           @neonbinder
+/apps/web/convex/credentials.ts                      @edvedafi
+/apps/web/convex/adapters/                           @edvedafi
 
 # Google Secret Manager access (browser service)
-/services/browser/src/services/secrets-manager.ts    @neonbinder
+/services/browser/src/services/secrets-manager.ts    @edvedafi
