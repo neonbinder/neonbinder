@@ -1,7 +1,7 @@
-fastapi==0.143.3
+fastapi==0.162.2
 uvicorn[standard]==0.54.0
-python-multipart==0.0.32
-pydantic==2.14.1
+python-multipart==0.0.33
+pydantic==2.14.3
 google-cloud-vision==3.16.0
 # GCS access for the NEO-170 batch routes (/extract, /process-entry): reads the
 # input archive as a seekable stream (so a 500MB zip never lands in memory
@@ -17,7 +17,7 @@ Pillow==12.3.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 transformers==4.47.1
-accelerate==1.2.1
+accelerate==1.15.0
 opencv-python-headless==4.10.0.84
 numpy==2.5.4
 # Tiered crop's BiRefNet model (NEO-161) — hot path, not a rare fallback:
@@ -28,4 +28,4 @@ numpy==2.5.4
 # rembg 2.0.78's). The model is baked into the image at build time by
 # scripts/bake_birefnet.py, same rationale as SAM above. An onnxruntime bump
 # changes the baked model's provenance, so it rides with the parity job.
-onnxruntime==1.31.0
+onnxruntime==1.31.1
