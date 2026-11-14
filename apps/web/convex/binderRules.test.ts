@@ -606,6 +606,60 @@ describe("brandsOfSport", () => {
 });
 
 /**
+ * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of the
+ * admin screen") — the year's brand-unknown row, by its flag and never its
+ * name, is not a brand a rule can pick, and a set rule's words leave it out.
+ */
+describe("NEO-527: the brand-unknown row in the rule builder", () => {
+  async function withUnknownBrand(s: S) {
+    return s.t.run(async (ctx) => {
+      const unknownId = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Unknown",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: s.fx.yearId,
+        lastUpdated: 1,
+        hasCards: true,
+        metadata: { isBrandUnknown: true },
+      } as never);
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Bowman",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: unknownId,
+        lastUpdated: 1,
+      } as never);
+      return { unknownId, setId };
+    });
+  }
+
+  test("brandsOfSport never offers it", async () => {
+    const s = await setup();
+    await withUnknownBrand(s);
+    const brands = await s.me.query(api.binderRules.brandsOfSport, { sportId: s.fx.sportId });
+    expect(brands.map((b) => b.name)).toEqual(["Topps"]);
+  });
+
+  test("a set rule names the set without it; a real brand's set keeps its brand", async () => {
+    const s = await setup();
+    const { setId } = await withUnknownBrand(s);
+    const id = await smartBinder(s, {
+      version: 1,
+      match: "any",
+      terms: [{ test: { kind: "set", setIds: [setId, s.fx.setId] } }],
+    });
+    const listed = (await s.me.query(api.collectionContainers.list, {})).find((c) => c._id === id)!;
+    expect(listed.ruleNames).toContainEqual({ id: setId, name: "2024 Bowman" });
+    expect(listed.ruleNames).toContainEqual({ id: s.fx.setId, name: "2024 Topps Chrome" });
+    expect(JSON.stringify(listed.ruleNames)).not.toMatch(/unknown/i);
+  });
+});
+
+/**
  * NEO-410 — a smart binder is never left waiting for its empty slots. In CI
  * one `writeFitsPage` never finished ("too many system operations"), nothing
  * retried it, and the binder stayed pending forever. These fail the write on

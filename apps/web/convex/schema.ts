@@ -1475,6 +1475,10 @@ export default defineSchema({
     .index("by_parent", ["parentId"])
     .index("by_value", ["value"])
     .index("by_level_and_parent", ["level", "parentId"])
+    // NEO-527: the collector's set column reads sets with cards (count > 0,
+    // biggest first) and then the uncounted ones, so a brand with hundreds
+    // of empty synced sets never pushes a set that holds cards past the cap.
+    .index("by_level_parent_and_subtree_count", ["level", "parentId", "subtreeCardCount"])
     // NEO-358: the collector's set suggestions ("Topps Chrome" → the set, so
     // picking it opens its checklist). Filtered to `level: "setName"` by the
     // reader (`collectionCatalog.suggest`), which re-checks every word.

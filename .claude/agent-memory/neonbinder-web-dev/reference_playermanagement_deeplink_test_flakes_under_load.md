@@ -35,6 +35,14 @@ and green alone and in the next full run, in files the diff never touched:
   the wall clock's milliseconds happen to contain those four digits. Not a
   leak; the fixture should use digits a timestamp cannot hold, or a fake clock.
 
+One more seen on 2026-11-12 (NEO-527): `app/dashboard/screen/panelLink.test.tsx`
+→ "the ends of the batch: stepping ↓ stops at the last card …" hit vitest's
+5000 ms default timeout (5147 ms) in one full `npm run test:unit`; the file is
+~6 s for 20 tests alone, so that one test sits right at the ceiling. Green
+alone and in the next full run. A red `test:unit` also makes
+`verify-test-completeness` print "vitest reported success=false"; that is the
+same red, not a dropped file.
+
 Seen 2026-11-13 (NEO-536) with machine load average ~50-60 (parallel agents
 plus a live Playwright run): every test that renders the whole
 `DashboardScreen` (CrewDesk.test, DashboardScreen.test) took 3-9 s each and

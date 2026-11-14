@@ -838,6 +838,12 @@ describe("Checklists on the real collection", () => {
     renderAt("/collection?tab=checklists", makeStore({ loading: true }));
     expect(statuses()).toContain("Loading sports…");
   });
+
+  it("the drill's intro names brand or set as one step (NEO-527: a year's loose sets sit in the brand column)", () => {
+    renderAt("/collection?tab=checklists");
+    const browse = screen.getByRole("region", { name: "Browse sets" });
+    expect(within(browse).getByText("Or drill down: sport, year, brand or set, then base, an insert or a parallel.")).toBeTruthy();
+  });
 });
 
 describe("the card drawer on the real collection", () => {
