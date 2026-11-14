@@ -199,13 +199,13 @@ test("assertOutsideRepo: sibling '..x' dirs are outside; '..' escapes and symlin
 
 test("listRuns drops runs whose head repository is not --repo (fork PRs)", () => {
   const lines = [
-    { id: 1, run_attempt: 1, conclusion: "success", created_at: "a", pr: 1, head_repo: "neonbinder/neonbinder" },
+    { id: 1, run_attempt: 1, conclusion: "success", created_at: "a", pr: 1, head_repo: "neonbinder/neonbinder-app" },
     { id: 2, run_attempt: 1, conclusion: "success", created_at: "a", pr: 2, head_repo: "evil/neonbinder" },
     { id: 3, run_attempt: 1, conclusion: "success", created_at: "a", pr: 3, head_repo: null },
   ]
     .map((l) => JSON.stringify(l))
     .join("\n");
-  const runs = listRuns({ repo: "neonbinder/neonbinder", days: 1, run: () => lines });
+  const runs = listRuns({ repo: "neonbinder/neonbinder-app", days: 1, run: () => lines });
   expect(runs.map((r) => r.id)).toEqual([1]);
   expect(runs[0]).not.toHaveProperty("headRepo");
 });

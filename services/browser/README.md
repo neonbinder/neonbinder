@@ -203,7 +203,7 @@ The project uses strict TypeScript settings with:
 ## Deployment
 
 This service deploys to Cloud Run from the consolidated monorepo
-(`neonbinder/neonbinder`). As of the NEO-18 cutover (2026-06-27), the monorepo
+(`neonbinder/neonbinder-app`). As of the NEO-18 cutover (2026-06-27), the monorepo
 is the sole deploy source of truth for the browser service; the standalone
 `neonbinder_browser` repo is retired.
 

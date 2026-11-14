@@ -2,7 +2,19 @@ name: Preview Cleanup
 
 on:
   pull_request:
-    types: [closed]
+    # NEO-546: `dequeued` fires when GitHub's merge queue drops a PR (a failed
+    # check, a timeout, a conflict, or someone removing it) while the PR stays
+    # open. The merge group built its own previews, which would otherwise live
+    # until the PR closes. A dequeue caused by a MERGE is skipped here: the PR's
+    # `closed` event follows and tears down. See the `gate` job.
+    types: [closed, dequeued]
+
+# NEO-546 S5/N-a: concurrency is per JOB, not per workflow (see each job's
+# `concurrency:`). A workflow-level group would let a run that does nothing (a
+# quiet dequeue, a skipped teardown) occupy the one pending slot and replace a
+# real `closed` teardown queued behind it. Per job, a skipped job takes no slot,
+# and sibling jobs never cancel each other. `cancel-in-progress: false` always:
+# a half-finished teardown is worse than a queued one.
 
 # ⚠️ DO NOT close-and-reopen a PR to re-run CI. It fires this workflow.
 #
@@ -69,11 +81,99 @@ on:
 #                          accepted by the Management API delete endpoint.
 
 jobs:
-  cleanup:
+  # NEO-546: on `dequeued`, decide from the queue's `reason` what to do
+  # (.github/scripts/queue-eject-gate.sh): tear down for any reason except a
+  # merge, and ping Discord for a failed check, a timeout or anything
+  # unfamiliar, but not for a manual removal. Runs only on `dequeued`.
+  #
+  # It also cancels the PR's merge-queue runs that are still going (for
+  # example Browser CI after the E2E failed), so nothing rebuilds a preview
+  # after the teardown below. Only runs created BEFORE this run are cancelled,
+  # and teardown is skipped when the PR is already back in the queue
+  # (queue-entry-state.sh), so a quick re-enqueue keeps its previews.
+  # Best-effort: a failure of the cancel step never blocks the teardown.
+  #
+  # TRUST: this job's YAML comes from the PR merge ref (a `pull_request` event
+  # runs the workflow file as merged), so a PR can change what this job does.
+  # What the default-branch checkout below protects is the SCRIPTS and the
+  # notify action: the steps load them from `main`, not from the PR. The job
+  # holds a webhook secret and `actions: write`, which is why the audit asked
+  # for that; it is not a claim that no PR-controlled code runs here.
+  gate:
+    name: Queue eject gate
     if: |
-      github.base_ref == 'main'
+      github.event.action == 'dequeued'
+      && github.base_ref == 'main'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}-gate
+      cancel-in-progress: false
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write   # cancel this PR's orphaned merge-queue runs
+      pull-requests: read   # GraphQL mergeQueueEntry
+    outputs:
+      teardown: ${{ steps.decide.outputs.teardown }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/actions
+
+      # Read at job time, not event time: the author may have re-enqueued.
+      - name: Is the PR back in the queue?
+        id: queue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/queue-entry-state.sh >> "$GITHUB_OUTPUT"
+
+      - name: Decide from the dequeue reason
+        id: decide
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          REASON: ${{ github.event.reason }}
+          QUEUE_ENTRY: ${{ steps.queue.outputs.entry }}
+        run: bash .github/scripts/queue-eject-gate.sh >> "$GITHUB_OUTPUT"
+
+      - name: Cancel this PR's older merge-queue runs
+        if: steps.decide.outputs.teardown == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/cancel-queue-runs.sh
+
+      - name: Notify Discord
+        if: steps.decide.outputs.notify == 'true'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: failed
+          workflow: "Merge queue: PR #${{ github.event.pull_request.number }} left the queue"
+          details: ${{ steps.decide.outputs.detail }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          event: dequeued
+
+  cleanup:
+    needs: gate
+    # `always()` because `gate` is skipped on `closed`; teardown on a PR close
+    # must never depend on it.
+    if: |
+      always()
+      && github.base_ref == 'main'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (github.event.action == 'closed' || needs.gate.outputs.teardown == 'true')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}-cleanup
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -124,10 +224,18 @@ jobs:
       # Collection lags by design — but it does not lie about having happened.
 
   preprocess-cleanup:
+    needs: gate
+    # `always()` because `gate` is skipped on `closed`; teardown on a PR close
+    # must never depend on it.
     if: |
-      github.base_ref == 'main'
+      always()
+      && github.base_ref == 'main'
       && github.event.pull_request.head.repo.full_name == github.repository
+      && (github.event.action == 'closed' || needs.gate.outputs.teardown == 'true')
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}-preprocess-cleanup
+      cancel-in-progress: false
     timeout-minutes: 10
     permissions:
       contents: read
@@ -233,10 +341,18 @@ jobs:
     # from Convex (already GC'd) are all silent no-ops. Only truly unexpected
     # errors (network failure, bad token) are logged; they still never fail the
     # PR close (continue-on-error: true on the step).
+    needs: gate
+    # `always()` because `gate` is skipped on `closed`; teardown on a PR close
+    # must never depend on it.
     if: |
-      github.base_ref == 'main'
+      always()
+      && github.base_ref == 'main'
       && github.event.pull_request.head.repo.full_name == github.repository
+      && (github.event.action == 'closed' || needs.gate.outputs.teardown == 'true')
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-cleanup-${{ github.event.pull_request.number }}-convex-preview-cleanup
+      cancel-in-progress: false
     permissions:
       contents: read
       deployments: read  # needed to query GitHub Deployments API for Vercel preview URL

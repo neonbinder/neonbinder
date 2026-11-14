@@ -11,7 +11,7 @@ app-specific compositions, not reusable primitives). Decided with the user 2026-
 
 `apps/web` is a Vite SPA (`private: true`, no `main`/`module`/`exports`) — not a publishable
 package, no Storybook. Added a dedicated build in NEO-93 (PR #84,
-`neonbinder/neonbinder`) purely to give design-sync a real dist + `.d.ts` entry:
+`neonbinder/neonbinder-app`) purely to give design-sync a real dist + `.d.ts` entry:
 
 - `vite.lib.config.ts` — library-mode Vite build, entry `components/primitives/index.ts`,
   output `dist-design-system/`, externals `react`/`react-dom`/`react/jsx-runtime`/`react-router`.

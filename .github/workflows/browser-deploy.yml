@@ -631,7 +631,7 @@ jobs:
           [Deploy run]($RUN_URL)
           EOF
           gh issue create \
-            --repo neonbinder/neonbinder \
+            --repo neonbinder/neonbinder-app \
             --title "Browser deploy failed at ${STAGE}: ${{ github.sha }}" \
             --body-file body.md
 

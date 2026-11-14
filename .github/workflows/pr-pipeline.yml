@@ -24,11 +24,22 @@ name: PR Pipeline
 
 on:
   pull_request:
+  # NEO-546: GitHub's merge queue builds main + the PR on a temporary
+  # gh-readonly-queue/main/pr-<N>-<sha> branch and fires this event. Nothing
+  # changes until the repo variable MERGE_QUEUE is "true" AND the ruleset has a
+  # merge_queue rule: until then no merge_group event is ever sent and every
+  # pull_request run is a full run, exactly as before. The job names, and so
+  # the required check names, are identical on both events.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:
+  # A merge group has no PR number; its ref is unique per group, so groups
+  # never share a concurrency group and are never cancelled by one another
+  # (a cancelled queue run would eject the PR).
   group: pr-pipeline-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 # Superset of what the reusable e2e.yml needs (a called workflow's GITHUB_TOKEN
 # can't exceed the caller's): checks:write + pull-requests:write for the E2E
@@ -58,11 +69,34 @@ jobs:
       scripts: ${{ steps.filter.outputs.scripts }}
       scanner: ${{ steps.filter.outputs.scanner }}
       deps_only: ${{ steps.deps.outputs.deps_only }}
+      # NEO-546 (see .github/scripts/ci-mode.sh). `full` is "false" ONLY for a
+      # pull_request run while the merge queue is verifiably live; every other
+      # case, and every error, is "true". `pr`, `sha`, `head_sha` and
+      # `head_ref` are what the preview jobs key on: on a merge_group run they
+      # come from the queue ref and the API, because github.event.pull_request
+      # does not exist there.
+      full: ${{ steps.mode.outputs.full }}
+      pr: ${{ steps.mode.outputs.pr }}
+      sha: ${{ steps.mode.outputs.sha }}
+      head_sha: ${{ steps.mode.outputs.head_sha }}
+      head_ref: ${{ steps.mode.outputs.head_ref }}
     permissions:
       contents: read
       pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide cheap or full (NEO-546)
+        id: mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: bash .github/scripts/ci-mode.sh >> "$GITHUB_OUTPUT"
+
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
@@ -265,7 +299,8 @@ jobs:
     name: Build the PR's Vercel preview
     needs: changes
     if: |
-      github.event_name == 'pull_request'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -311,7 +346,7 @@ jobs:
           vercel pull --yes --environment=preview \
             --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN"
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REF: ${{ needs.changes.outputs.head_ref }}
 
       # THE `--meta` FLAGS ARE LOAD-BEARING — do not drop them as noise.
       #
@@ -328,8 +363,8 @@ jobs:
       - name: Deploy preview (hosted build; creates the Convex preview)
         id: deploy
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ needs.changes.outputs.head_ref }}
+          HEAD_SHA: ${{ needs.changes.outputs.head_sha }}
         run: |
           set -euo pipefail
           URL="$(vercel deploy --token="$VERCEL_TOKEN" \
@@ -366,7 +401,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           URL: ${{ steps.deploy.outputs.url }}
-          SHA: ${{ github.event.pull_request.head.sha }}
+          SHA: ${{ needs.changes.outputs.head_sha }}
         run: |
           set -euo pipefail
           deployment_id=$(gh api "repos/$GITHUB_REPOSITORY/deployments" \
@@ -412,7 +447,8 @@ jobs:
     name: Wire NEONBINDER_BROWSER_URL → pr-<N> browser preview
     needs: [changes, web-preview]
     if: |
-      github.event_name == 'pull_request'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.outputs.browser == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
@@ -424,7 +460,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ needs.changes.outputs.pr }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -575,7 +611,8 @@ jobs:
     name: Wire NEONBINDER_PREPROCESS_URL → pr-<N> preprocess preview(s)
     needs: [changes, web-preview]
     if: |
-      github.event_name == 'pull_request'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
@@ -604,7 +641,7 @@ jobs:
       heavy_base_url: ${{ steps.host-heavy.outputs.host && format('https://{0}', steps.host-heavy.outputs.host) }}
       heavy_preview_url: ${{ steps.heavy.outputs.url }}
     env:
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ needs.changes.outputs.pr }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -750,7 +787,7 @@ jobs:
       # services/preprocess take no extra wait.
       - name: Wait for the pr-<N> heavy revision to be built from this commit
         env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
         run: |
           bash .github/scripts/wait-preprocess-revision.sh \
             --project neonbinder-dev --service neonbinder-preprocess \
@@ -759,7 +796,7 @@ jobs:
       - name: Wait for the pr-<N> fast revision to be built from this commit
         if: steps.host-fast.outputs.exists == 'true'
         env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
         run: |
           bash .github/scripts/wait-preprocess-revision.sh \
             --project neonbinder-dev --service neonbinder-preprocess-fast \
@@ -869,7 +906,8 @@ jobs:
     needs: [changes, web-preview, wire-preprocess-url]
     if: |
       always()
-      && github.event_name == 'pull_request'
+      && needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.result == 'success'
       && needs.changes.outputs.deps_only != 'true'
       && needs.web-preview.result == 'success'
@@ -879,7 +917,7 @@ jobs:
     permissions:
       contents: read
     env:
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ needs.changes.outputs.pr }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -993,6 +1031,7 @@ jobs:
     if: |
       always()
       && needs.changes.result == 'success'
+      && needs.changes.outputs.full == 'true'
       && needs.changes.outputs.deps_only != 'true'
       && needs.web-preview.result == 'success'
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
@@ -1011,6 +1050,7 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     with:
       preview_url: ${{ needs.web-preview.outputs.url }}
+      pr: ${{ needs.changes.outputs.pr }}
     secrets: inherit
 
   # --- Pre-merge area CI -----------------------------------------------------
@@ -1260,7 +1300,8 @@ jobs:
     name: Preprocess crop matrix (deployed)
     needs: [changes, wire-preprocess-url]
     if: |
-      github.event_name == 'pull_request'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
@@ -1346,8 +1387,8 @@ jobs:
       # it still guards this job if the wiring job is ever restructured.
       - name: Wait for the pr-<N> revision to be built from this commit
         env:
-          PR: ${{ github.event.pull_request.number }}
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ needs.changes.outputs.pr }}
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
         working-directory: ${{ github.workspace }}
         run: |
           bash .github/scripts/wait-preprocess-revision.sh \
@@ -1411,7 +1452,8 @@ jobs:
     name: Preprocess mask parity (shard ${{ matrix.shard }})
     needs: [changes]
     if: |
-      github.event_name == 'pull_request'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
     runs-on: ubuntu-latest
     # The preview image build is ~25 min on a first push; this job may wait
@@ -1515,8 +1557,8 @@ jobs:
       - name: Wait for this commit's pr-<N> image and pin its digest
         id: pin
         env:
-          PR: ${{ github.event.pull_request.number }}
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ needs.changes.outputs.pr }}
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
         run: |
           set -euo pipefail
           ref="$PREVIEW_IMAGE:pr-$PR"
@@ -1717,8 +1759,17 @@ jobs:
     permissions:
       contents: read
     steps:
+      # NEO-546: the verdict lives in a tested script. A skipped heavy job is
+      # acceptable only on a pull_request run that ci-mode.sh declared cheap
+      # (merge queue verifiably live); a merge_group run accepts no skip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - name: Aggregate required-check verdict
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL: ${{ needs.changes.outputs.full }}
           R_CHANGES: ${{ needs.changes.result }}
           R_WEB_LINT: ${{ needs.web-lint.result }}
           R_WEB_TYPECHECK: ${{ needs.web-typecheck.result }}
@@ -1739,49 +1790,4 @@ jobs:
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
           R_HYGIENE: ${{ needs.repo-hygiene.result }}
           R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
-        run: |
-          set -euo pipefail
-          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST scripts-test=$R_SCRIPTS_TEST scanner-test=$R_SCANNER_TEST scanner-build=$R_SCANNER_BUILD crop-matrix=$R_CROP_MATRIX mask-parity=$R_MASK_PARITY wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
-          fail=0
-          # changes must SUCCEED (skipped => gate unreliable)
-          [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
-          # repo-hygiene and capacity-parity are both ungated (always run, no
-          # path filter), so `skipped` is a fault, not out-of-scope, for either.
-          [ "$R_HYGIENE" = "success" ] || { echo "::error::repo-hygiene=$R_HYGIENE (must succeed)"; fail=1; }
-          [ "$R_CAPACITY_PARITY" = "success" ] || { echo "::error::capacity-parity=$R_CAPACITY_PARITY (must succeed)"; fail=1; }
-          # e2e must SUCCEED, except on a dependency-manifest-only PR where a
-          # SKIP is the intended outcome (NEO-87). Note the deps_only check reads
-          # the same job output that gated the skip, so the two can't disagree.
-          if [ "$R_E2E" != "success" ]; then
-            if [ "$R_DEPS_ONLY" = "true" ] && [ "$R_E2E" = "skipped" ]; then
-              echo "e2e=skipped — dependency-manifest-only PR, matrix intentionally not run (NEO-87)."
-            else
-              echo "::error::e2e=$R_E2E (must succeed; skip allowed only when deps_only=true)"; fail=1
-            fi
-          fi
-          # NEO-484: mask parity must SUCCEED whenever preprocess changed,
-          # deps-only PRs included; a skip there would wave an unproven model
-          # path through. Skipped is out-of-scope only when preprocess did not
-          # change.
-          if [ "$R_PREPROCESS_CHANGED" = "true" ]; then
-            [ "$R_MASK_PARITY" = "success" ] || { echo "::error::preprocess-mask-parity=$R_MASK_PARITY (must succeed when preprocess changed)"; fail=1; }
-          else
-            case "$R_MASK_PARITY" in
-              success|skipped) ;;
-              *) echo "::error::preprocess-mask-parity=$R_MASK_PARITY"; fail=1 ;;
-            esac
-          fi
-          # area + wiring jobs: success OR skipped (out-of-area) OK; else fail
-          # web-preview joins this list rather than getting a rule of its own
-          # (NEO-162): it is `skipped` exactly when deps_only skips E2E, and any
-          # OTHER reason it fails to succeed already reds the gate through the
-          # e2e rule above, since e2e `needs:` it.
-          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "scripts-test=$R_SCRIPTS_TEST" "scanner-test=$R_SCANNER_TEST" "scanner-build=$R_SCANNER_BUILD" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS" "wire-preprocess-capacity=$R_WIRE_CAPACITY"; do
-            r="${kv#*=}"
-            case "$r" in
-              success|skipped) ;;
-              *) echo "::error::${kv%%=*}=$r"; fail=1 ;;
-            esac
-          done
-          [ "$fail" = "0" ] || { echo "CI Gate: FAIL"; exit 1; }
-          echo "CI Gate: PASS — in-scope checks green, out-of-scope skipped."
+        run: bash .github/scripts/ci-gate-verdict.sh
