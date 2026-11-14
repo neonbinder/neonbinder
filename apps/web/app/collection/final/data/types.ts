@@ -1114,6 +1114,9 @@ export interface SyncSetResult {
   steps?: SyncStep[];
 }
 
+/** NEO-483 — why the reads for a BuySportsCards seller account stopped. */
+export type SellerAccountStall = "gaveUp" | "noSellerProfile";
+
 /** One platform on the Sync status tab. */
 export interface PlatformSyncStatus extends ListingPlatformSettings {
   platform: ListingPlatform;
@@ -1123,6 +1126,19 @@ export interface PlatformSyncStatus extends ListingPlatformSettings {
   scheduledAt?: number;
   /** When the last sync finished (ms). */
   lastDrainAt?: number;
+  /**
+   * NEO-483 — BuySportsCards hasn't said which seller account is the
+   * collector's yet, so no sync can start: since when NB's current run of
+   * reads started asking (ms). Absent when nothing is asking.
+   */
+  awaitingSellerSince?: number;
+  /**
+   * NEO-483 — the reads for the seller account have stopped without one:
+   * `gaveUp` (BSC never answered), `noSellerProfile` (BSC answered that the
+   * account isn't set up to sell). The collector's next Sync asks again.
+   * Never set together with `awaitingSellerSince`.
+   */
+  sellerAccountStalled?: SellerAccountStall;
   /** Oldest first, capped; `more` when there are others. */
   queued: { cards: QueuedSyncCard[]; more: boolean };
   /** Most recent first, capped. */

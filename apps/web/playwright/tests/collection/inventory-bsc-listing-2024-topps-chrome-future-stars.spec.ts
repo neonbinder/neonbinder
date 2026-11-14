@@ -81,6 +81,19 @@
 // bump; `expectAfterMarketplace` records n in the report). The seed hop's
 // sign-in when the sign-in is saved again (`saveBscSignIn`) is the other.
 //
+// The seller account (NEO-483). The first press after a listing sign-in is saved
+// can meet a worker whose BuySportsCards seller account NeonBinder does not know
+// yet: BuySportsCards answers its profile slowly, so NeonBinder asks again in the
+// background (30 s, 60 s, 120 s ...) and Sync status says BuySportsCards is
+// slow to confirm the seller account until the answer lands, when the run starts by itself. The
+// spec passes in BOTH orders, the run starting at once and the run starting after
+// that wait: `expectRunOrSellerWait` settles on the state the press led to (the
+// run, or the wait line, which it checks for accessibility), and the walk's claim
+// wait (`SELLER_ACCOUNT_CAP_MS`, support/collection.ts) is BuySportsCards' own
+// time plus 7 s of ours. Both orders end in the same unconditional asserts. A
+// screen that reads "Seller account in use", or one of the two gave-up sentences
+// (still hasn't confirmed / isn't set up to sell), is thrown by name, never waited out.
+//
 // Two triggers (NEO-433). A set's sync is set going by the press of the
 // checklist's Sync and by the 15-minute sales poll, and the poll can list a
 // stocked box before the press lands. Both orders are real product behaviour,
@@ -154,7 +167,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
-import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, followRunToRest, goViaShell, intakeDropzone, inventoryTabs, nameOf, ordinaryBaseRows, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, shortNameOf, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
+import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, expectRunOrSellerWait, followRunToRest, goViaShell, intakeDropzone, inventoryTabs, nameOf, ordinaryBaseRows, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, shortNameOf, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { bscReadCeiling } from "../../support/marketplace-wait";
@@ -804,7 +817,16 @@ test(
     // would be a held-back card.
     const listedLine = row.getByText(/^2 listed(, 2 updated)?$/);
     const listedNoSend = row.getByText("2 listed", { exact: true });
-    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL), bscReadCeiling, BSC);
+    const settled = queueSettled(platform, SET_LABEL);
+    // NEO-483: this is the worker's first press on a freshly saved sign-in, so
+    // NeonBinder may still be waiting for BuySportsCards to name the seller account.
+    // Then Sync status says BuySportsCards is slow to confirm the seller account and the run starts by
+    // itself when the answer lands (the walk's claim wait, SELLER_ACCOUNT_CAP_MS).
+    // Either way the run happens, and everything after the walk is unconditional
+    // (R2): the ledger, the "2 listed" line and the send-or-nothing branch below
+    // each assert it. The wait line, when up, is checked for accessibility first.
+    await expectRunOrSellerWait(platform, run, settled, { marketplace: BSC, label: "Inventory Sync status, waiting on BuySportsCards for the seller account" });
+    await followRunToRest(platform, run, settled, bscReadCeiling, BSC);
     // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
     await expect(run.last).toBeVisible();
     await expect(run.gathered()).toBeVisible();
@@ -901,6 +923,7 @@ test(
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const refresh = syncRun(platform, SET_LABEL, BSC);
+    // No marketplace passed: a later press in this spec, the first run has landed, so the seller account is already stored and no claim is held for it.
     await followRunToRest(platform, refresh, queueSettled(platform, SET_LABEL), bscReadCeiling);
     // Positives first (R2): the run's folded ledger and its result line.
     await expect(refresh.last).toBeVisible();

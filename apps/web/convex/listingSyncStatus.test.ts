@@ -517,3 +517,193 @@ describe("admin Sync status", () => {
     expect(one.owners[0].status.platforms[0].sets).toHaveLength(ADMIN_ALL_CAPS.sets + 2);
   });
 });
+
+// NEO-483 — `awaitingSellerSince` and `sellerAccountStalled`: BuySportsCards
+// only, listing, and no seller account stored, so the drain is holding its run
+// until the background read lands one (`listingDrain.claimDrain`,
+// `awaitingSeller`). The read's chain on the state row (`sellerIdFetch`)
+// decides which: RUNNING (no `endedAt`) counts from its `startedAt`; ENDED
+// says why it stopped; no chain says neither.
+describe("awaitingSellerSince and sellerAccountStalled (NEO-483)", () => {
+  const connectWith = (s: S, profile: Record<string, unknown> = {}, owner = ME.subject) =>
+    s.t.run((ctx) =>
+      ctx.db.insert("userProfiles", {
+        userId: owner,
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+        ...profile,
+      } as never),
+    );
+  /** A chain under way, started at `startedAt`. */
+  const running = (startedAt: number) => ({ sellerIdFetch: { token: "secret-chain-token", startedAt } });
+  /** A chain that stopped at `endedAt` for `endReason`. */
+  const ended = (endReason: "gaveUp" | "noSellerProfile" | "stopped" | undefined, startedAt = 4242, endedAt = 9999) => ({
+    sellerIdFetch: {
+      token: "secret-chain-token",
+      startedAt,
+      endedAt,
+      ...(endReason !== undefined ? { endReason } : {}),
+    },
+  });
+
+  test("a read under way: since that read started, not since the listing did", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, { listingStartedAt: 777, ...running(4242) });
+
+    const got = await bsc(s);
+
+    expect(got.awaitingSellerSince).toBe(4242);
+    expect(got).not.toHaveProperty("sellerAccountStalled");
+    expect(JSON.stringify(got)).not.toContain("secret-chain-token");
+  });
+
+  test("the count never restarts: the same chain reads the same start on every read of the status", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, { listingStartedAt: 777, ...running(4242) });
+
+    const first = (await bsc(s)).awaitingSellerSince;
+    // Something else on the row changes (a drain scheduled): the start stands.
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(row!._id, { drainScheduledAt: 123456, lastUpdated: 123456 });
+    });
+
+    expect(first).toBe(4242);
+    expect((await bsc(s)).awaitingSellerSince).toBe(4242);
+  });
+
+  test("listing with no account stored and no chain at all: neither (nothing is asking, and listingSince would jump back when one starts)", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, { listingStartedAt: 777 });
+
+    const got = await bsc(s);
+
+    expect(got).not.toHaveProperty("awaitingSellerSince");
+    expect(got).not.toHaveProperty("sellerAccountStalled");
+  });
+
+  test.each<["gaveUp" | "noSellerProfile"]>([["gaveUp"], ["noSellerProfile"]])(
+    "a chain that ended (%s): says why, and carries no count",
+    async (reason) => {
+      const s = await setup();
+      await connectWith(s);
+      await listOn(s, ME.subject, { listingStartedAt: 777, ...ended(reason) });
+
+      const got = await bsc(s);
+
+      expect(got.sellerAccountStalled).toBe(reason);
+      expect(got).not.toHaveProperty("awaitingSellerSince");
+      expect(JSON.stringify(got)).not.toContain("secret-chain-token");
+    },
+  );
+
+  test("a chain that ended stopped (a pause, a sign-out, no token): neither, it is no stall", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, { listingStartedAt: 777, ...ended("stopped") });
+
+    const got = await bsc(s);
+
+    expect(got).not.toHaveProperty("awaitingSellerSince");
+    expect(got).not.toHaveProperty("sellerAccountStalled");
+    expect(JSON.stringify(got)).not.toContain("secret-chain-token");
+  });
+
+  test("an ended chain with no reason on it reads as gaveUp", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, ended(undefined));
+
+    expect((await bsc(s)).sellerAccountStalled).toBe("gaveUp");
+  });
+
+  test("an account stored: neither, whatever the chain says", async () => {
+    const s = await setup();
+    await connectWith(s, { marketplaceAccountIds: { bscSellerId: "seller-1" } });
+    await listOn(s, ME.subject, ended("gaveUp"));
+
+    const got = await bsc(s);
+    expect(got).not.toHaveProperty("awaitingSellerSince");
+    expect(got).not.toHaveProperty("sellerAccountStalled");
+  });
+
+  test("a stored value that is not a seller id a PUT can name still counts as no account (the drain's own rule)", async () => {
+    const s = await setup();
+    await connectWith(s, { marketplaceAccountIds: { bscSellerId: "has spaces" } });
+    await listOn(s, ME.subject, { listingStartedAt: 55, ...running(56) });
+
+    expect((await bsc(s)).awaitingSellerSince).toBe(56);
+  });
+
+  test.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+    ["not listing", { listingStartedAt: undefined }, {}],
+    ["held off by the test marker", { listingStartedAt: undefined, testListingOff: true }, {}],
+    ["a seller conflict", { dormant: "sellerConflict" }, {}],
+    ["a sign-in that needs renewing", {}, { siteCredentials: [{ site: "buysportscards", hasCredentials: true, needsReauth: true }] }],
+  ])("%s: neither (the status says why on its own)", async (_name, state, profile) => {
+    for (const chain of [running(4242), ended("gaveUp")]) {
+      const s = await setup();
+      await connectWith(s, profile);
+      await listOn(s, ME.subject, { ...chain, ...state });
+
+      const got = await bsc(s);
+      expect(got).not.toHaveProperty("awaitingSellerSince");
+      expect(got).not.toHaveProperty("sellerAccountStalled");
+    }
+  });
+
+  test("BSC paused for everyone: neither", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, running(4242));
+    const before = process.env.NEONBINDER_PAUSED_PLATFORMS;
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    try {
+      const got = await bsc(s);
+      expect(got).not.toHaveProperty("awaitingSellerSince");
+      expect(got).not.toHaveProperty("sellerAccountStalled");
+    } finally {
+      if (before === undefined) delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+      else process.env.NEONBINDER_PAUSED_PLATFORMS = before;
+    }
+  });
+
+  test("eBay never carries either", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, ended("gaveUp"));
+    const status = await s.me.query(api.listingSync.syncStatus, {});
+    const ebay = status.platforms.find((p) => p.platform === "ebay");
+    expect(ebay).not.toHaveProperty("awaitingSellerSince");
+    expect(ebay).not.toHaveProperty("sellerAccountStalled");
+  });
+
+  test("another collector's account does not satisfy it", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await connectWith(s, { marketplaceAccountIds: { bscSellerId: "seller-theirs" } }, THEM.subject);
+    await listOn(s, ME.subject, running(4242));
+
+    expect(await bsc(s)).toHaveProperty("awaitingSellerSince");
+    expect(await bsc(s, "them")).not.toHaveProperty("awaitingSellerSince");
+  });
+
+  test("the admin's read-only view carries both for the collector it names", async () => {
+    const s = await setup();
+    await connectWith(s, {}, THEM.subject);
+    await listOn(s, THEM.subject, { listingStartedAt: 321, ...running(322) });
+
+    const got = await s.admin.query(api.listingSync.adminSyncStatus, { ownerId: THEM.subject });
+    expect(got.owners[0].status.platforms[0].awaitingSellerSince).toBe(322);
+
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(row!._id, ended("noSellerProfile", 322, 400) as never);
+    });
+    const after = await s.admin.query(api.listingSync.adminSyncStatus, { ownerId: THEM.subject });
+    expect(after.owners[0].status.platforms[0].sellerAccountStalled).toBe("noSellerProfile");
+    expect(after.owners[0].status.platforms[0]).not.toHaveProperty("awaitingSellerSince");
+  });
+});

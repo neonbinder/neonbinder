@@ -17,7 +17,9 @@
  *      `drainScheduledAt`. The claim is the credential gate: no saved
  *      credentials puts the state to sleep (`dormant`), and a session that
  *      needs a fresh sign-in is not logged into (the hourly order poll is
- *      what retries it).
+ *      what retries it). NEO-483: on BSC it is also the seller-account gate:
+ *      with no seller account stored, nothing runs until the background read
+ *      (`bscSellerId`) lands one and kicks the drain again.
  *   2. Walks the outbox one VARIANT at a time (BSC is a by-set platform):
  *      snapshots the variant's rows and their `seq`, re-reads each card's
  *      current variant (a moved card's row is re-pointed, a deleted card's is
@@ -88,9 +90,9 @@ import {
   type NbVariantCard,
   type PlannedBscPut,
 } from "./lib/bscSheetPlan";
+import { ensureBscSellerIdFetch } from "./bscSellerId";
 import {
   closeBscSellerSession,
-  fetchBscSellerId,
   isBscSellerId,
   openBscSellerSession,
   putBscListings,
@@ -218,6 +220,17 @@ async function markSetupIncomplete(ctx: MutationCtx, ownerId: string, now: numbe
  *     it again);
  *   - credentials that need a fresh sign-in: `needsReauth`, nothing
  *     written (the hourly order poll retries the sign-in; a drain never does);
+ *   - NEO-483, BuySportsCards: no seller account stored for the owner
+ *     (`storedBscSellerId`): `awaitingSeller`. The queue waits, the spaced
+ *     background read is armed at once (`ensureBscSellerIdFetch`, a no-op
+ *     while one is in flight), and the account landing kicks the drain
+ *     (`bscSellerId.landBscSellerId`). The drain never reads it live, so a
+ *     BSC profile stall can no longer fail a set's send. A claim is never a
+ *     user action (the poll, a scheduled drain, a kick): it arms without
+ *     `userAction`, so an ended chain's cooldown stands (`coolingDown`) and
+ *     the claim still answers `awaitingSeller`. The collector's Sync press
+ *     arms with `userAction` itself, before its kick
+ *     (`listingSync.syncVariant`);
  *   - another run's live lease: `busy`, and that run is asked to run once
  *     more on release (`drainRequested`).
  * A claim clears `drainScheduledAt` and `drainRequested`. NEO-433: it also
@@ -243,6 +256,7 @@ export const claimDrain = internalMutation({
         v.literal("noCredentials"),
         v.literal("needsReauth"),
         v.literal("setupIncomplete"),
+        v.literal("awaitingSeller"),
       ),
     }),
   ),
@@ -274,6 +288,17 @@ export const claimDrain = internalMutation({
         await ctx.db.patch(state._id, { drainScheduledAt: undefined, drainRequested: undefined, lastUpdated: now });
       }
       return { claimed: false as const, reason: "needsReauth" as const };
+    }
+    if (args.platform === "bsc" && storedBscSellerId(credential.sellerId) === null) {
+      // NEO-483: nothing is sent without the seller account a PUT names. The
+      // queue waits; the read that fetches the account starts now (or is
+      // already running, or is cooling down after an ended chain), and its
+      // landing kicks the drain again.
+      if (state.drainScheduledAt !== undefined || state.drainRequested !== undefined) {
+        await ctx.db.patch(state._id, { drainScheduledAt: undefined, drainRequested: undefined, lastUpdated: now });
+      }
+      await ensureBscSellerIdFetch(ctx, args.ownerId, { firstDelayMs: 0 });
+      return { claimed: false as const, reason: "awaitingSeller" as const };
     }
     if (args.platform === "ebay") {
       // NEO-415: a deployment not wired to eBay drains nothing (quietly).
@@ -1157,6 +1182,17 @@ export const bindSellerAccount = internalMutation({
   },
 });
 
+/**
+ * NEO-483 — the BuySportsCards seller account NB holds for an owner
+ * (`userProfiles.marketplaceAccountIds.bscSellerId`), or null when none is
+ * stored or the stored one is not a seller id a PUT can name. The drain's gate
+ * (`claimDrain`), its PUTs (`variantSyncInput`), listing set-up and Sync
+ * status all read it through here, so they never disagree.
+ */
+export function storedBscSellerId(sellerId: string | null | undefined): string | null {
+  return sellerId != null && isBscSellerId(sellerId) ? sellerId : null;
+}
+
 const SELLER_CONFLICT_ERROR =
   "This BuySportsCards seller account already lists from another NeonBinder account, so NeonBinder stopped listing from this one.";
 
@@ -1230,14 +1266,13 @@ export const variantSyncInput = internalQuery({
       .query("userProfiles")
       .withIndex("by_user", (q) => q.eq("userId", args.ownerId))
       .unique();
-    const sellerId = profile?.marketplaceAccountIds?.bscSellerId ?? null;
     return {
       kind: "ok",
       era,
       requests,
       setId,
       commonPriceCents,
-      sellerId: sellerId !== null && isBscSellerId(sellerId) ? sellerId : null,
+      sellerId: storedBscSellerId(profile?.marketplaceAccountIds?.bscSellerId ?? null),
       cardNumberPrefixes,
     };
   },
@@ -1477,7 +1512,9 @@ export interface DrainReport {
     /** NEO-415: eBay settings are not complete; nothing was sent. */
     | "setupIncomplete"
     /** NEO-415: eBay is not wired on this deployment. */
-    | "notConfigured";
+    | "notConfigured"
+    /** NEO-483: no BuySportsCards seller account stored yet; its read is armed, nothing was sent. */
+    | "awaitingSeller";
 }
 
 type SessionResult = BscSellerResult<BscSellerSession>;
@@ -1541,7 +1578,9 @@ export async function drainOwnerImpl(
           ? "needsReauth"
           : claim.reason === "setupIncomplete"
             ? "setupIncomplete"
-            : "notClaimed";
+            : claim.reason === "awaitingSeller"
+              ? "awaitingSeller"
+              : "notClaimed";
     return report;
   }
   report.claimed = true;
@@ -1904,8 +1943,9 @@ async function syncVariant(
   );
   if (!sheet.ok) return await fail(sheet.failure);
 
-  // Seller id for the PUT.
-  let sellerId = input.sellerId;
+  // Seller id for the PUT: the stored account only (NEO-483). `claimDrain`
+  // refuses a run without one, so a null here means it went under the run.
+  const sellerId = input.sellerId;
 
   const planInput = {
     sheetRows: sheet.sheet,
@@ -1983,20 +2023,10 @@ async function syncVariant(
   }
   if (plan.puts.length > 0) {
     if (sellerId === null) {
-      const fetched = await fetchBscSellerId(ctx, session);
-      if (!fetched.ok) return await fail(fetched.failure, problems);
-      sellerId = fetched.value;
-      if (sellerId === null) {
-        return await fail(
-          { kind: "bad_response", message: "BuySportsCards didn't say which seller account this is." },
-          problems,
-        );
-      }
-      await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
-        userId: ownerId,
-        site: "buysportscards",
-        accountId: sellerId,
-      });
+      return await fail(
+        { kind: "bad_response", message: "BuySportsCards didn't say which seller account this is." },
+        problems,
+      );
     }
     // One NB owner per seller account, checked before anything is pushed.
     const binding = await bindSeller(sellerId);

@@ -35,7 +35,10 @@
  *   0 like any other row. Rows are never removed. If BSC goes on showing both
  *   copies at 0, `planBscSheet` still refuses a card listed in that condition
  *   (it keys on the pair, whatever the quantity), so that is reported, not
- *   failed: a spec listing another card or condition is unaffected.
+ *   failed: a spec listing another card or condition is unaffected. NEO-483:
+ *   the PUTs name the seller account the sign-in stored, else one read
+ *   patiently (`patientSellerId`); if BuySportsCards never names it, the rows
+ *   are left as they are and the report says `sellerIdStalled`, not a failure.
  *
  * The sign-ins belong to `CLEANUP_OWNER`, not a worker: no spec's session is
  * touched and the worker's bootstrap runs later, in the spec step. The owner
@@ -73,13 +76,15 @@ import {
   fetchBscSellerId,
   openBscSellerSession,
   putBscListings,
+  type BscSellerFailure,
+  type BscSellerResult,
   type BscSellerSession,
 } from "./adapters/bscSeller";
 import { ebayConfig } from "./lib/ebayEnv";
 import { isBscConditionOfEra, type BscRawCondition } from "./lib/bscConditions";
 import { chunkRows, photoKeyFor, type BscSheetRow } from "./lib/bscSheetPlan";
 import { isPlatformPaused } from "./marketplacePause";
-import { readSheets, type VariantInput } from "./listingDrain";
+import { readSheets, storedBscSellerId, type VariantInput } from "./listingDrain";
 import { variantTypeKindFromTitle } from "./variantRole";
 
 /**
@@ -158,6 +163,78 @@ const EBAY_BUDGET_MS = 5 * 60 * 1000;
  * the 503 answered, so nothing overlaps.
  */
 export const BSC_CLEANUP_SHEET_RETRY_PAUSES_MS: readonly number[] = [10_000, 30_000, 60_000];
+/**
+ * NEO-483 — the waits before each read of the cleanup seller's account, when
+ * its sign-in did not save one (a BSC profile stall): reads start at 0, 30,
+ * 90 and 210 s. Then the cleanup reports `sellerIdStalled` instead of failing
+ * the job: the sets' rows above 0 are left as they are, and the seller specs
+ * still run (the drain waits on the account the same way, NEO-483).
+ */
+export const BSC_CLEANUP_SELLER_ID_PAUSES_MS: readonly number[] = [0, 30_000, 60_000, 120_000];
+
+/**
+ * NEO-483: the wait between seller-account reads. An object so a test can
+ * replace `pause` (and move a fake clock instead of waiting real seconds);
+ * nothing else reassigns it.
+ */
+export const sellerIdClock = {
+  pause: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/** A session that cannot go on: every later call fails the same way, so the cleanup fails. */
+function endsTheSession(f: BscSellerFailure): boolean {
+  return f.kind === "signed_out" || f.kind === "paused" || f.kind === "no_token";
+}
+
+/**
+ * NEO-483 — the seller account a cleanup PUT names: the one the sign-in
+ * stored (`stored`) first, else up to one live read after each of `pausesMs`
+ * (a read that answers without one, times out or fails is tried again after
+ * the next pause). Null when none of them said: the caller reports
+ * `sellerIdStalled`. A session BSC has ended (signed out, paused, no token)
+ * throws at once: nothing else would work either.
+ */
+export async function patientSellerId(
+  stored: () => Promise<string | null>,
+  read: () => Promise<BscSellerResult<string | null>>,
+  pausesMs: readonly number[] = BSC_CLEANUP_SELLER_ID_PAUSES_MS,
+  pause: (ms: number) => Promise<void> = (ms) => sellerIdClock.pause(ms),
+): Promise<string | null> {
+  const saved = await stored();
+  if (saved !== null) return saved;
+  for (const [i, ms] of pausesMs.entries()) {
+    if (ms > 0) await pause(ms);
+    const r = await read();
+    if (!r.ok && endsTheSession(r.failure)) throw new Error(`could not read the seller id: ${r.failure.message}`);
+    const found = r.ok ? storedBscSellerId(r.value) : null;
+    console.log(
+      JSON.stringify({
+        msg: "seller_cleanup_seller_id",
+        platform: "bsc",
+        operation: "clearSellerAccounts",
+        attempt: i + 1,
+        found: found !== null,
+        ...(r.ok ? {} : { failure: r.failure.kind }),
+      }),
+    );
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** NEO-483: the seller account the cleanup owner's sign-in stored, if it is one a PUT can name. */
+export const cleanupSellerId = internalQuery({
+  args: {},
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx) => {
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", CLEANUP_OWNER))
+      .first();
+    return storedBscSellerId(profile?.marketplaceAccountIds?.bscSellerId);
+  },
+});
+
 /** Rows read under one parent when walking a chain. A full read can't say a name is absent or single. */
 export const MAX_CHAIN_SIBLINGS = 1000;
 
@@ -266,7 +343,12 @@ const ebayReportValidator = v.object({
 type EbayReport = typeof ebayReportValidator.type;
 
 const bscReportValidator = v.object({
-  outcome: v.union(v.literal("clean"), v.literal("paused")),
+  /**
+   * NEO-483: `sellerIdStalled` when BuySportsCards never named the seller
+   * account (`BSC_CLEANUP_SELLER_ID_PAUSES_MS`), so rows above 0 were left
+   * as they are (`listed` minus `zeroed`). Not a failure: the specs run.
+   */
+  outcome: v.union(v.literal("clean"), v.literal("paused"), v.literal("sellerIdStalled")),
   rows: v.number(),
   unreadableRows: v.number(),
   /** Rows above 0 when this started, and what the PUTs took to 0. */
@@ -413,13 +495,17 @@ type SetToClear = { input: Extract<VariantInput, { kind: "ok" }>; conditions: re
 
 const SHEET_RETRY = { pausesMs: BSC_CLEANUP_SHEET_RETRY_PAUSES_MS };
 
-/** Sets every row of one set's spec-condition sheets to 0 and proves it by reading back. */
+/**
+ * Sets every row of one set's spec-condition sheets to 0 and proves it by
+ * reading back. NEO-483: with no seller account to name (`sellerIdOf` null),
+ * nothing is PUT and the set says `stalled`.
+ */
 async function zeroSet(
   ctx: ActionCtx,
   session: BscSellerSession,
-  sellerIdOf: () => Promise<string>,
+  sellerIdOf: () => Promise<string | null>,
   { input, conditions }: SetToClear,
-): Promise<Omit<BscReport, "outcome" | "skippedSets">> {
+): Promise<Omit<BscReport, "outcome" | "skippedSets"> & { stalled: boolean }> {
   // Serial, never side by side: overlapping sheet reads are what mint twin rows.
   const first = await readSheets(ctx, session, input.requests, conditions, undefined, SHEET_RETRY);
   if (!first.ok) throw new Error(`could not read the sheets: ${first.failure.message}`);
@@ -427,9 +513,10 @@ async function zeroSet(
   const twinKeys = countTwinKeys(rows);
   const listed = rows.filter((row) => row.quantity > 0);
   const report = { rows: rows.length, unreadableRows: first.sheet.unreadable, listed: listed.length, twinKeys };
-  if (listed.length === 0) return { ...report, zeroed: 0, twinKeysRemaining: twinKeys };
+  if (listed.length === 0) return { ...report, zeroed: 0, twinKeysRemaining: twinKeys, stalled: false };
 
   const sellerId = await sellerIdOf();
+  if (sellerId === null) return { ...report, zeroed: 0, twinKeysRemaining: twinKeys, stalled: true };
   let putFailure: string | null = null;
   const puts = listed.map((row) => ({ ...row.raw, condition: row.condition, availableQuantity: 0 }));
   for (const chunk of chunkRows(puts)) {
@@ -454,7 +541,7 @@ async function zeroSet(
     throw new Error(`${stillListed} rows are still above 0 after the PUT${putFailure ? ` (${putFailure})` : ""}`);
   }
   const final = [...rows.filter((row) => !touched.has(row.condition)), ...backRows];
-  return { ...report, zeroed: listed.length, twinKeysRemaining: countTwinKeys(final) };
+  return { ...report, zeroed: listed.length, twinKeysRemaining: countTwinKeys(final), stalled: false };
 }
 
 async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
@@ -515,14 +602,17 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
   const session = opened.value;
   try {
     // The seller this session is signed in as: the only one a PUT here names.
-    let known: string | null = null;
-    const sellerIdOf = async (): Promise<string> => {
-      if (known !== null) return known;
-      const sellerId = await fetchBscSellerId(ctx, session);
-      if (!sellerId.ok) throw new Error(`could not read the seller id: ${sellerId.failure.message}`);
-      if (sellerId.value === null) throw new Error("BuySportsCards didn't say which seller account this is");
-      known = sellerId.value;
-      return known;
+    // Asked once per cleanup (NEO-483): stored by the sign-in, else read
+    // patiently; a stall is remembered, so later sets don't wait again.
+    let known: { sellerId: string | null } | null = null;
+    const sellerIdOf = async (): Promise<string | null> => {
+      known ??= {
+        sellerId: await patientSellerId(
+          () => ctx.runQuery(internal.testingSellerCleanup.cleanupSellerId, {}),
+          () => fetchBscSellerId(ctx, session),
+        ),
+      };
+      return known.sellerId;
     };
 
     const total: BscReport = { outcome: "clean", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets };
@@ -534,6 +624,7 @@ async function clearBsc(ctx: ActionCtx): Promise<BscReport> {
       total.zeroed += one.zeroed;
       total.twinKeys += one.twinKeys;
       total.twinKeysRemaining += one.twinKeysRemaining;
+      if (one.stalled) total.outcome = "sellerIdStalled";
     }
     return total;
   } finally {
