@@ -29,7 +29,9 @@ import {
   GATHERING_DATA,
   NOTHING_NEW_TO_SEND,
   STEP_STATE_WORD,
+  awaitingSellerLine,
   lastStepsName,
+  sellerAccountStalledLine,
   runStepsName,
   sellerConflictLine,
   stepLabels,
@@ -254,7 +256,7 @@ function Platform({
         <StateNote p={p} readOnly={readOnly} unfinished={unfinished} />
       </header>
 
-      <RunningNow p={p} level={sub} />
+      <RunningNow p={p} level={sub} readOnly={readOnly} />
       <Queue p={p} level={sub} readOnly={readOnly} />
       <Sets p={p} level={sub} loadProblems={loadProblems} readOnly={readOnly} />
     </section>
@@ -264,9 +266,14 @@ function Platform({
 // The platform's three parts are plain sections under their headings, not
 // named regions: three more landmarks per platform (more on the admin's
 // everyone view) would only be noise in the landmark list.
-function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
+function RunningNow({ p, level, readOnly }: { p: PlatformSyncStatus; level: number; readOnly: boolean }) {
   const name = PLATFORM_NAME[p.platform];
   const steps = p.running?.steps;
+  // NEO-483 — no sync can start until the marketplace names the seller
+  // account: still asking (with a live count), or stopped asking until the
+  // collector's next Sync (no count: nothing is outstanding).
+  const awaitingSeller = !p.running && p.awaitingSellerSince !== undefined;
+  const stalled = !p.running && !awaitingSeller ? p.sellerAccountStalled : undefined;
   return (
     <section className={`space-y-1.5 ${RULE}`}>
       <Heading level={level} className="text-base font-semibold">
@@ -280,6 +287,10 @@ function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
             {whenSynced(p.running.startedAt)}.
           </span>
         </p>
+      ) : awaitingSeller ? (
+        <p className="text-sm text-ink-2">{awaitingSellerLine(p.platform, readOnly)}</p>
+      ) : stalled ? (
+        <p className="text-sm text-ink-2">{sellerAccountStalledLine(p.platform, stalled, readOnly)}</p>
       ) : (
         <p className="text-sm text-ink-2">
           Nothing syncing right now.{" "}
@@ -296,11 +307,13 @@ function RunningNow({ p, level }: { p: PlatformSyncStatus; level: number }) {
           marketplace call is outstanding. Always rendered: the line keeps
           its own status region mounted (empty and zero-height while idle),
           so the first wait is announced as reliably as the rest. An empty
-          region says nothing, so it never competes with the run line. */}
+          region says nothing, so it never competes with the run line.
+          NEO-483: with no run, it counts the wait for the seller account
+          instead, flush under the sentence above (no run glyph to indent past). */}
       <WaitingOnMarketplace
-        waitingSince={p.running ? stepWaitingSince(steps) : undefined}
+        waitingSince={p.running ? stepWaitingSince(steps) : p.awaitingSellerSince}
         marketplace={name}
-        className="pl-6"
+        className={p.running ? "pl-6" : ""}
       />
     </section>
   );

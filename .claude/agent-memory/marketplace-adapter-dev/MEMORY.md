@@ -28,7 +28,7 @@
 - [Planner sees the first wire id only](reference_planner_sees_first_wire_id_only.md) — reconcile store plans ids[0] per side; extras need their own one-link-one-row check at the insert
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
 - [Action promise races its subscription](reference_action_promise_races_subscription.md) — action resolves before useQuery sees its runMutation writes; last-chunk team loss; empty is never a diff claim
-- [Action stubs pin old return shapes](reference_action_stubs_pin_old_return_shapes.md) — tests vi.mock adapter actions with their own returns validator; a return-shape change must update every stub
+- [Action stubs pin old shapes](reference_action_stubs_pin_old_return_shapes.md) — vi.mock stubs keep their own args/returns; a new arg or return shape must update every stub
 - [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — `node` is the nvm default in agent Bash; prefix PATH with the .nvmrc version for every gate call
 - [Store working copies hide renames from db guards](reference_store_working_copies_hide_renames_from_db_guards.md) — stores patch in a final pass; a mid-loop ctx.db read misses same-call renames; suggestions apply patches in-loop
 - [Team names contain separators](reference_team_names_contain_separators.md) — teams split on comma only (Bodø/Glimt, "Korea, South"); players on , / |; resolve the whole raw value first
@@ -81,3 +81,4 @@
 - [Convex doc-size budget counts framing](reference_convex_doc_size_budget_counts_framing.md) — getDocumentSize adds ~3 B/field + ~10 B/object; test both fat and many-tiny worst shapes
 - [Edit tool decodes \u escapes](reference_edit_tool_decodes_unicode_escapes.md) — format/bidi escapes land as literal chars; U+2028 in a regex = PARSE_ERROR; write via python, grep -P after
 - [Lint crashes beside a vitest run](reference_lint_crashes_beside_a_vitest_run.md) — eslint glob stack trace when .vitest/ vanishes mid-walk is not a result; rerun lint alone
+- [Every stored-session login runs setUpListing](reference_every_stored_session_login_runs_set_up_listing.md) — renewals reach setUpListing(save:false) hourly; user-only effects key on opts.save / transient

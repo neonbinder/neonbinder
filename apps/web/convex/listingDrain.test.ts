@@ -22,9 +22,10 @@
  * a copy in an in-person box (`listedOnMarketplaces: false`) counts 0.
  * NEO-475: the conditions a run sends under are on the record before its
  * first PUT, and a sheet read BSC answers 503 is retried after a short,
- * bounded schedule of pauses. The seller-id read (`marketplace/user/profile`)
- * is retried once at once; failing twice, the variant fails cleanly and its
- * rows wait for the next round.
+ * bounded schedule of pauses. NEO-483: the drain never reads the seller
+ * account (`marketplace/user/profile`) itself: with none stored it reports
+ * `awaitingSeller`, arms the spaced background read (`bscSellerId`) and waits
+ * for its landing to kick it again.
  */
 import { convexTest } from "convex-test";
 import { getFunctionName } from "convex/server";
@@ -53,6 +54,7 @@ import { enqueueListingCards, kickOwnerDrains } from "./listingOutbox";
 import { BSC_SELLER_COPY, BSC_SELLER_TIMEOUTS_MS, type BscSellerSession } from "./adapters/bscSeller";
 import { EBAY_TIMEOUTS_MS } from "./adapters/ebaySeller";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
+import { BSC_SELLER_ID_FETCH_COOLDOWN_MS } from "./bscSellerId";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -2848,8 +2850,8 @@ describe("bscSheetSteps: sheets NB has no name for (defensive since NEO-475)", (
   });
 });
 
-describe("NEO-475: the seller-id read stalls (BSC's profile call)", () => {
-  /** No stored seller id, so the run must read it from BSC before its PUT. */
+describe("NEO-483: no stored seller account, the drain waits and never reads it live", () => {
+  /** No stored seller id: the owner's profile has no BSC account. */
   const forgetSellerId = (s: S) =>
     s.t.run(async (ctx) => {
       const profile = await ctx.db
@@ -2859,69 +2861,203 @@ describe("NEO-475: the seller-id read stalls (BSC's profile call)", () => {
       await ctx.db.patch(profile!._id, { marketplaceAccountIds: {} } as never);
     });
 
-  /** Times out the next `stalls` profile requests, then hands over to the fake BSC. */
-  function stallProfile(bsc: FakeBsc, stalls: number) {
-    const profileAsks = { n: 0 };
+  /**
+   * Routes every `marketplace/user/profile` request (only the background read
+   * makes one now) to `answer`, counting them; the rest go to the fake BSC.
+   */
+  function profileAnswers(bsc: FakeBsc, answer: (n: number) => Response | Promise<Response>) {
+    const asks = { n: 0 };
     vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
       if (String(url).endsWith("marketplace/user/profile")) {
-        profileAsks.n += 1;
-        if (stalls > 0) {
-          stalls -= 1;
-          throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
-        }
+        asks.n += 1;
+        return await answer(asks.n);
       }
       return await bsc.fetch(url, init);
     }) as typeof fetch);
-    return profileAsks;
+    return asks;
   }
 
-  test("one stall: the read is retried at once and the run sends under the id it read", async () => {
+  /** The owner's BSC state row. */
+  const bscState = (s: S) =>
+    s.t.run(async (ctx) =>
+      ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", OWNER).eq("platform", "bsc"))
+        .first(),
+    );
+
+  /** The pending background seller-account reads. */
+  const pendingTicks = (s: S) =>
+    s.t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (f) => f.name.includes("fetchTick") && f.state.kind === "pending",
+      ),
+    );
+
+  test("the drain makes no BSC sheet read or PUT, reports awaitingSeller, keeps the rows, and arms the read", async () => {
     const s = await setup();
     await forgetSellerId(s);
     const { v, bsc } = await twoCards(s);
-    const asks = stallProfile(bsc, 1);
+    // The background read gets a 429 so it only asks and waits for its next tick.
+    const asks = profileAnswers(bsc, () => new Response("", { status: 429 }));
 
-    const lines = await logLines(() => drain(s));
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
+    // Let the 0-delay first read finish; it is the only caller of the profile.
+    await s.t.finishAllScheduledFunctions(() => {});
 
-    expect(asks.n).toBe(2);
-    expect(bsc.puts).toHaveLength(1);
-    expect(bsc.puts[0].sellerId).toBe("seller-from-profile");
-    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 2 } });
-    expect(await outbox(s)).toHaveLength(0);
-    expect(
-      lines.filter((l) => l.msg === "bsc_seller_call" && l.operation === "sellerProfile").map((l) => [l.attempt, l.outcome]),
-    ).toEqual([
-      [1, "timeout"],
-      [2, "ok"],
-    ]);
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "awaitingSeller" });
+    expect(bsc.sheetReads).toEqual([]);
+    expect(bsc.puts).toEqual([]);
+    expect(bsc.authHeaders).toEqual([]);
+    expect(await record(s, v.variantId)).toBeNull();
+    expect(await outbox(s)).toHaveLength(2);
+    // Exactly the one read the claim armed; the drain itself asked for none.
+    expect(asks.n).toBe(1);
+    expect((await bscState(s))?.sellerIdFetch).toBeDefined();
+    await cancelScheduled(s.t);
   });
 
-  test("two stalls: nothing is sent, the send step fails in NB's words, the rows wait, and the next round lists", async () => {
+  test("a claim that finds no account clears the latches it was holding and arms the read once, not per claim", async () => {
     const s = await setup();
     await forgetSellerId(s);
-    const { v, bsc } = await twoCards(s);
-    const asks = stallProfile(bsc, 2);
+    const { bsc } = await twoCards(s);
+    profileAnswers(bsc, () => new Response("", { status: 429 }));
+    await s.t.run(async (ctx) => {
+      const row = await ctx.db.query("marketplaceListingStates").first();
+      await ctx.db.patch(row!._id, { drainScheduledAt: NOW, drainRequested: true });
+    });
+
+    await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
+    const first = (await bscState(s))?.sellerIdFetch;
+    await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
+    await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
+
+    const row = await bscState(s);
+    expect(row?.drainScheduledAt).toBeUndefined();
+    expect(row?.drainRequested).toBeUndefined();
+    expect(first).toBeDefined();
+    expect(row?.sellerIdFetch).toEqual(first);
+    await s.t.finishAllScheduledFunctions(() => {});
+    await cancelScheduled(s.t);
+  });
+
+  /** Stamps an ENDED chain on the owner's BSC row, `endedAgoMs` before now. */
+  const endChain = (s: S, endedAgoMs: number, endReason: "gaveUp" | "noSellerProfile" = "gaveUp") =>
+    s.t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", OWNER).eq("platform", "bsc"))
+        .first();
+      const endedAt = Date.now() - endedAgoMs;
+      const chain = { token: "ended-chain", startedAt: endedAt - 60_000, endedAt, endReason };
+      await ctx.db.patch(row!._id, { sellerIdFetch: chain });
+      return chain;
+    });
+
+  test("a claim is no user action: inside an ended chain's cooldown it still waits (awaitingSeller), and starts no new read", async () => {
+    const s = await setup();
+    await forgetSellerId(s);
+    const { bsc } = await twoCards(s);
+    const asks = profileAnswers(bsc, () => {
+      throw new Error("a cooling-down claim must not ask BSC");
+    });
+    const chain = await endChain(s, 60_000);
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
+    await s.t.finishAllScheduledFunctions(() => {});
+
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "awaitingSeller" });
+    expect((await bscState(s))?.sellerIdFetch).toEqual(chain);
+    expect(await pendingTicks(s)).toEqual([]);
+    expect(asks.n).toBe(0);
+    expect(bsc.puts).toEqual([]);
+    await cancelScheduled(s.t);
+  });
+
+  test("a claim past the cooldown starts a fresh chain at once", async () => {
+    const s = await setup();
+    await forgetSellerId(s);
+    const { bsc } = await twoCards(s);
+    profileAnswers(bsc, () => new Response("", { status: 429 }));
+    await endChain(s, BSC_SELLER_ID_FETCH_COOLDOWN_MS + 60_000, "noSellerProfile");
 
     const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
 
-    expect(asks.n).toBe(2);
-    expect(bsc.puts).toEqual([]);
-    // The variant failed; the run itself was not stopped (no sign-in problem).
-    expect(report).toMatchObject({ claimed: true, stoppedFor: "done", variants: [{ variantId: v.variantId, result: "error" }] });
-    const rec = await record(s, v.variantId);
-    expect(rec).toMatchObject({ status: "error", lastError: BSC_SELLER_COPY.timeout });
-    expect(rec?.leaseToken).toBeUndefined();
-    expect(await stepsOf(s, v.variantId)).toEqual(["read Mint/Near Mint: done", "read Excellent: done", "send: failed"]);
-    expect(await outbox(s)).toHaveLength(2);
-    expect((await state(s))?.drainLeaseToken).toBeUndefined();
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "awaitingSeller" });
+    const chain = (await bscState(s))?.sellerIdFetch;
+    expect(chain?.token).not.toBe("ended-chain");
+    expect(chain?.endedAt).toBeUndefined();
+    expect(await pendingTicks(s)).toHaveLength(1);
+    await s.t.finishAllScheduledFunctions(() => {});
+    await cancelScheduled(s.t);
+  });
 
-    // BSC answers again: the next round reads the id and lists.
-    await drain(s);
-    expect(asks.n).toBe(3);
+  test("the account landing kicks the drain: the held run then sends under the id the read found", async () => {
+    const s = await setup();
+    await forgetSellerId(s);
+    const { v, bsc } = await twoCards(s);
+    // The fake BSC answers the profile with a seller id.
+    const asks = profileAnswers(bsc, () => Response.json({ sellerProfile: { sellerId: "seller-from-profile" } }));
+
+    const report = await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" }, {});
+    expect(report).toMatchObject({ claimed: false, stoppedFor: "awaitingSeller" });
+    // The read lands the account, which kicks the drain, which sends.
+    await s.t.finishAllScheduledFunctions(() => {});
+
+    expect(asks.n).toBe(1);
     expect(bsc.puts).toHaveLength(1);
     expect(bsc.puts[0].sellerId).toBe("seller-from-profile");
     expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 2 } });
     expect(await outbox(s)).toHaveLength(0);
+    expect((await bscState(s))?.sellerIdFetch).toBeUndefined();
+    expect(await pendingTicks(s)).toEqual([]);
+    await cancelScheduled(s.t);
+  });
+
+  test("an account stored: nothing is armed and no profile is asked", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    const asks = profileAnswers(bsc, () => {
+      throw new Error("a stored account needs no profile read");
+    });
+
+    await drain(s);
+
+    expect(asks.n).toBe(0);
+    expect(bsc.puts).toHaveLength(1);
+    expect(bsc.puts[0].sellerId).toBe("seller-1");
+    expect(await record(s, v.variantId)).toMatchObject({ status: "idle", counts: { listed: 2 } });
+    expect((await bscState(s))?.sellerIdFetch).toBeUndefined();
+  });
+
+  test("an account that goes missing after the claim fails the variant plainly: no profile read, no PUT, the rows wait", async () => {
+    const s = await setup();
+    const { v, bsc } = await twoCards(s);
+    const asks = profileAnswers(bsc, () => {
+      throw new Error("the drain must never read the profile");
+    });
+    const base = stubCtx(s.t);
+    const ctx: DrainCtx = {
+      ...base,
+      runQuery: (async (ref: never, args: never) => {
+        // The claim passed with an account; it is gone by the time the variant reads its input.
+        if (getFunctionName(ref) === "listingDrain:variantSyncInput") await forgetSellerId(s);
+        return await (base.runQuery as (r: unknown, a: unknown) => Promise<unknown>)(ref, args);
+      }) as DrainCtx["runQuery"],
+    };
+
+    const report = await drainOwnerImpl(ctx, { ownerId: OWNER, platform: "bsc" }, {});
+
+    expect(asks.n).toBe(0);
+    expect(bsc.puts).toEqual([]);
+    expect(report).toMatchObject({ claimed: true, variants: [{ variantId: v.variantId, result: "error" }] });
+    expect(await record(s, v.variantId)).toMatchObject({
+      status: "error",
+      lastError: "BuySportsCards didn't say which seller account this is.",
+    });
+    expect(await outbox(s)).toHaveLength(2);
+    await s.t.finishAllScheduledFunctions(() => {});
+    await cancelScheduled(s.t);
   });
 });
 

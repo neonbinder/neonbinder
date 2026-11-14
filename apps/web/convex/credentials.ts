@@ -992,8 +992,10 @@ export const refreshSiteTokenForUser = internalAction({
   handler: async (ctx, args): Promise<{ refreshed: boolean }> => {
     const userId = await actingUserId(ctx, args.userId);
     if (isPlatformPaused(args.site)) return { refreshed: false };
+    // NEO-483: every caller is answering a refusal (a 401 on the token it
+    // was handed), so the login must not hand the same token back.
     return {
-      refreshed: await refreshSiteToken(ctx, userId, args.site, { explicitUserId: true }),
+      refreshed: await refreshSiteToken(ctx, userId, args.site, { explicitUserId: true, tokenRefused: true }),
     };
   },
 });
@@ -1216,6 +1218,12 @@ async function inReauthBackoff(
  * paths (`testSiteCredentials`, `saveCredentials`) run their own login
  * directly and are never subject to the NEO-278 backoff below — a user who
  * clicks "Test" or signs in again must always get a real attempt.
+ *
+ * NEO-483 — `tokenRefused`: the caller is answering a refusal of the token
+ * the cache handed it (the two after-rejection actions). For BSC it rides to
+ * the browser service's `/login/bsc` so the login skips its cached-token
+ * check, which during a BSC profile stall would otherwise hand the refused
+ * token straight back. Other sites ignore it.
  */
 async function refreshSiteToken(
   ctx: {
@@ -1225,7 +1233,7 @@ async function refreshSiteToken(
   },
   userId: string,
   site: string,
-  opts: { explicitUserId?: boolean } = {},
+  opts: { explicitUserId?: boolean; tokenRefused?: boolean } = {},
 ): Promise<boolean> {
   // NEO-370: identity-less work names the user to the login action; a
   // user-driven call leaves it to the identity it carries (its args stay
@@ -1246,7 +1254,10 @@ async function refreshSiteToken(
   return withCredentialLock(ctx, userId, site, "test", async () => {
     try {
       if (site === "buysportscards") {
-        const result = (await ctx.runAction(internal.credentials.authenticateBsc, loginArgs)) as {
+        const result = (await ctx.runAction(internal.credentials.authenticateBsc, {
+          ...loginArgs,
+          ...(opts.tokenRefused === true ? { tokenRefused: true } : {}),
+        })) as {
           success: boolean;
         };
         return result.success;
@@ -1308,7 +1319,8 @@ export const refreshSiteTokenAfterRejection = internalAction({
     }
     // NEO-287 — a paused marketplace is never logged in to.
     if (isPlatformPaused(args.site)) return { refreshed: false };
-    return { refreshed: await refreshSiteToken(ctx, userId, args.site) };
+    // NEO-483: the marketplace refused the cached token; see `refreshSiteToken`.
+    return { refreshed: await refreshSiteToken(ctx, userId, args.site, { tokenRefused: true }) };
   },
 });
 
@@ -1444,6 +1456,10 @@ async function loginWithRetry(
   // — the password is never written to Secret Manager and never leaves this
   // request. When absent the service falls back to the stored secret.
   transient?: { username: string; password: string },
+  // NEO-483 (BSC only): the caller's token was just refused, so the service
+  // must not answer from its cached-token check. Sent only when true; an
+  // older service ignores the field.
+  tokenRefused?: boolean,
 ): Promise<{ success: boolean; data: { success: boolean; message?: string; storeName?: string; sellerId?: string } | null; detail: string; diagnostic?: LoginDiagnostic; errorClass?: string }> {
   // Retry ONLY on 503 (browser service busy serializing Puppeteer logins) —
   // back off and wait our turn. Do NOT retry an actual login failure: a real
@@ -1463,7 +1479,11 @@ async function loginWithRetry(
       const response = await fetch(loginUrl, {
         method: "POST",
         headers: await browserAuthHeaders(),
-        body: JSON.stringify(transient ? { key, ...transient } : { key }),
+        body: JSON.stringify({
+          key,
+          ...(transient ?? {}),
+          ...(tokenRefused === true ? { tokenRefused: true } : {}),
+        }),
         signal: AbortSignal.timeout(60_000),
       });
       if (response.status === 429) {
@@ -1674,6 +1694,8 @@ async function runSiteLogin(
   site: string,
   transient: { username: string; password: string } | undefined,
   label: string,
+  // NEO-483: see `refreshSiteToken`. BSC only; ignored for every other site.
+  opts: { tokenRefused?: boolean } = {},
 ): Promise<SiteLoginOutcome> {
   const cfg = SITE_LOGIN[site];
   if (!cfg) {
@@ -1708,7 +1730,13 @@ async function runSiteLogin(
 
   const key = credKey(site, userId);
   const startedAt = Date.now();
-  const result = await loginWithRetry(`${browserUrl()}${cfg.path}`, key, label, transient);
+  const result = await loginWithRetry(
+    `${browserUrl()}${cfg.path}`,
+    key,
+    label,
+    transient,
+    site === "buysportscards" && opts.tokenRefused === true ? true : undefined,
+  );
   const durationMs = Date.now() - startedAt;
 
   if (!result.success || !result.data) {
@@ -1751,16 +1779,46 @@ async function runSiteLogin(
   // login, on the user's profile. It is never taken from env or config. This
   // runs before the caller writes the credential status (connectAndStore's
   // `updateSiteCredentialStatus`, which starts listing), so a save that
-  // returns the id has it saved before listing turns on. The read is
-  // best-effort: a login can succeed without an id (a stalled or reshaped
-  // profile read), and then nothing is written here; listing still starts,
-  // and the drain reads the id live from BSC (and saves it) when it needs it.
-  if (site === "buysportscards" && loginResult.sellerId) {
-    await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
-      userId,
-      site: "buysportscards",
-      accountId: loginResult.sellerId,
-    });
+  // returns the id has it saved before listing turns on.
+  //
+  // NEO-483: the read is best-effort. A password login can succeed without an
+  // id (a stalled or reshaped profile read), and a token renewal or silent
+  // re-authorize never reads it. Then nothing is stored here, and for an
+  // owner who already lists on BSC with no account stored, the background
+  // read (`bscSellerId.ts`) is armed to start in 30 s. A first save is armed
+  // by listing setup instead (`listingSync.setUpListing`), since the owner
+  // does not list yet at this point. The drain never reads the id live; it
+  // waits (`awaitingSeller`) until the account lands.
+  //
+  // NEO-483 audit: only a password sign-in (`transient` set: the collector's
+  // Connect/save, or the testing seed's store, which stands in for one) is a
+  // user action. A renewal, a silent re-authorize and Test Credentials run
+  // on the stored session and arm WITHOUT `userAction`, so a chain that gave
+  // up or found no seller profile cools down instead of being restarted by
+  // every hourly renewal (`ensureBscSellerIdFetch`, `coolingDown`).
+  let sellerFetch: "started" | "inFlight" | "coolingDown" | "notListing" | "known" | "notArmed" | null = null;
+  if (site === "buysportscards") {
+    if (loginResult.sellerId) {
+      await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
+        userId,
+        site: "buysportscards",
+        accountId: loginResult.sellerId,
+      });
+    } else {
+      try {
+        // The default first wait (30 s) applies.
+        sellerFetch = await ctx.runMutation(internal.bscSellerId.ensureFetch, {
+          ownerId: userId,
+          ...(transient !== undefined ? { userAction: true } : {}),
+        });
+      } catch {
+        sellerFetch = "notArmed";
+        // Arming the read never fails a login; the next drain claim re-arms it.
+        console.warn(
+          JSON.stringify({ msg: "bsc_seller_id_fetch", platform: "bsc", operation: "ensure", outcome: "not_armed" }),
+        );
+      }
+    }
   }
 
   // NEO-43: the success counterpart. Without it only an absolute failure
@@ -1772,12 +1830,31 @@ async function runSiteLogin(
 
   return {
     success: true,
-    message: cfg.successMessage,
+    message:
+      site === "buysportscards" && !loginResult.storeName ? bscUnconfirmedSuccessMessage(sellerFetch) : cfg.successMessage,
     details: loginResult.storeName ? `Store: ${loginResult.storeName}` : undefined,
     reauthRequired: false,
     transient: false,
     paused: false,
   };
+}
+
+/**
+ * NEO-483 audit (security note 2): a BSC sign-in that came back without a
+ * store name did not have its token confirmed by BSC's profile read: either
+ * the read stalled (the browser service serves the cached token unchecked)
+ * or the session was renewed, which never reads the profile. "Authenticated
+ * successfully" overstates that, so Test Credentials says what is known.
+ * "We'll keep checking" only when the background seller-account read is
+ * actually running for this owner (`started` / `inFlight`).
+ */
+function bscUnconfirmedSuccessMessage(
+  sellerFetch: "started" | "inFlight" | "coolingDown" | "notListing" | "known" | "notArmed" | null,
+): string {
+  const checking = sellerFetch === "started" || sellerFetch === "inFlight";
+  return checking
+    ? "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; we'll keep checking."
+    : "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; test again in a few minutes.";
 }
 
 /**
@@ -1834,7 +1911,9 @@ export const authenticateBsc = internalAction({
   // NEO-370 — `userId` is passed only by identity-less work (a scheduled
   // listing drain or order poll, through `refreshSiteTokenForUser`); a
   // user-driven call sends `{}` and is the caller's identity, as before.
-  args: { userId: v.optional(v.string()) },
+  // NEO-483 — `tokenRefused`: set only by `refreshSiteToken` answering a BSC
+  // refusal of the cached token (see there).
+  args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
@@ -1858,6 +1937,7 @@ export const authenticateBsc = internalAction({
         "buysportscards",
         undefined,
         "authenticateBsc",
+        { tokenRefused: args.tokenRefused === true },
       );
       await applyLoginOutcome(ctx, userId, "buysportscards", outcome);
 

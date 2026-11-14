@@ -98,14 +98,18 @@ async function listOn(s: S, owner = ME.subject, extra: Record<string, unknown> =
     }),
   );
 }
-async function connect(s: S, owner = ME.subject) {
+async function connect(s: S, owner = ME.subject, sellerId?: string) {
   await s.t.run((ctx) =>
     ctx.db.insert("userProfiles", {
       userId: owner,
       siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+      // NEO-483: a drain claim refuses a BSC owner with no stored seller account.
+      ...(sellerId !== undefined ? { marketplaceAccountIds: { bscSellerId: sellerId } } : {}),
     }),
   );
 }
+/** A seller id `isBscSellerId` accepts, for the tests that claim a drain. */
+const STORED_SELLER = "seller-1";
 const outbox = (s: S) => s.t.run((ctx) => ctx.db.query("listingOutbox").collect());
 const states = (s: S) => s.t.run((ctx) => ctx.db.query("marketplaceListingStates").collect());
 async function drains(s: S) {
@@ -1307,7 +1311,7 @@ describe("syncVariant", () => {
   test("a press during a run is carried through: the run goes again on release, reads in full, and the queued row survives the running run's finish", async () => {
     const s = await fresh();
     holdDrains();
-    await connect(s);
+    await connect(s, ME.subject, STORED_SELLER);
     await addTo(s, s.fx.gooden1, s.box);
     await listOn(s, ME.subject, { drainLeaseToken: "owner-lease", drainLeaseExpiresAt: Date.now() + 60_000 });
     await record(s, { status: "running", leaseToken: "lease", leaseExpiresAt: Date.now() + 60_000, lastRunAt: Date.now() - 5_000 });
@@ -1445,7 +1449,7 @@ describe("syncVariant", () => {
     /** A run under way, claimed after a press `pressedAgo` ago, with the owner's last finished drain `drainAgo` ago. */
     async function midRun(s: S, drainAgo: number) {
       holdDrains();
-      await connect(s);
+      await connect(s, ME.subject, STORED_SELLER);
       await addTo(s, s.fx.gooden1, s.box);
       await listOn(s, ME.subject, {
         drainLeaseToken: "owner-lease",
@@ -1588,7 +1592,7 @@ describe("syncVariant", () => {
     test("hammering Sync: press, the run fails and releases, every press inside the minute is throttled, then past it the press is taken", async () => {
       const s = await fresh();
       holdDrains();
-      await connect(s);
+      await connect(s, ME.subject, STORED_SELLER);
       await addTo(s, s.fx.gooden1, s.box);
       await listOn(s);
       const id = await record(s);
@@ -1780,5 +1784,386 @@ describe("listSales", () => {
     expect(second.page.map((o) => o.orderNo)).toEqual(["A-1"]);
     expect(second.isDone).toBe(true);
     expect(JSON.stringify([first, second])).not.toContain("bsc-secret-1");
+  });
+});
+
+// NEO-483 — listing set-up arms the background read of the BuySportsCards
+// seller account (30 s out) when none is stored. The drain refuses to run
+// until it lands (`listingDrain.claimDrain`, `awaitingSeller`).
+describe("setUpListing arms the seller-account read (NEO-483)", () => {
+  const ticks = (s: S) => pendingNamed(s, "fetchTick");
+  const rowOf = async (s: S) => (await states(s)).find((r) => r.platform === "bsc");
+
+  test("a first save with no account stored: the read is armed, first try 30 s out", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    const before = Date.now();
+
+    await save(s);
+
+    const row = await rowOf(s);
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.sellerIdFetch?.token).toMatch(/^[0-9a-f]{32}$/);
+    const [tick] = await ticks(s);
+    expect((tick.args as unknown as Array<Record<string, unknown>>)[0]).toEqual({
+      ownerId: ME.subject,
+      token: row?.sellerIdFetch?.token,
+      attempt: 1,
+    });
+    expect(tick.scheduledTime).toBeGreaterThanOrEqual(before + 30_000);
+    expect(tick.scheduledTime).toBeLessThanOrEqual(Date.now() + 30_000);
+  });
+
+  test("a first save with the account already stored: nothing is armed", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s, ME.subject, STORED_SELLER);
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeUndefined();
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  test("a stored value that is not a seller id counts as no account", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s, ME.subject, "has spaces");
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeDefined();
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test("a save for an owner already listing with no account (the early return) arms it too", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    await listOn(s);
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeDefined();
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test("a second save while the read runs does not start another", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    await save(s);
+    const first = (await rowOf(s))?.sellerIdFetch;
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toEqual(first);
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test("a save for an owner already listing with the account stored: nothing is armed", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s, ME.subject, STORED_SELLER);
+    await listOn(s);
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeUndefined();
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  test("the E2E test marker: nothing is armed (the owner does not list)", async () => {
+    const s = await fresh();
+    holdDrains();
+    await withTestingFlag(async () => {
+      await connect(s);
+      await save(s, ME.subject, "testOff");
+    });
+
+    expect((await rowOf(s))?.testListingOff).toBe(true);
+    expect((await rowOf(s))?.sellerIdFetch).toBeUndefined();
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  test("BSC paused: nothing is armed", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+
+    await withPaused(async () => {
+      await save(s);
+    });
+
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  /** An ENDED chain on the owner's BSC row, `endedAgoMs` before now (inside the cooldown unless told otherwise). */
+  const endChain = (s: S, endedAgoMs = 60_000) =>
+    s.t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", ME.subject).eq("platform", "bsc"))
+        .first();
+      const endedAt = Date.now() - endedAgoMs;
+      const chain = { token: "ended-chain", startedAt: endedAt - 60_000, endedAt, endReason: "gaveUp" as const };
+      await ctx.db.patch(row!._id, { sellerIdFetch: chain });
+      return chain;
+    });
+
+  test("a sign-in renewal on an owner already listing (no `listing`) is no user action: an ended chain's cooldown stands", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    await listOn(s);
+    const chain = await endChain(s);
+
+    await refresh(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toEqual(chain);
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  test("the collector's own save on an owner already listing is a user action: a new chain starts inside the cooldown", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    await listOn(s);
+    await endChain(s);
+
+    await save(s);
+
+    const chain = (await rowOf(s))?.sellerIdFetch;
+    expect(chain?.token).not.toBe("ended-chain");
+    expect(chain?.endedAt).toBeUndefined();
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test("turning listing on is a user action even from a sign-in (`listing` absent): a new chain starts inside the cooldown", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    // A row that is not listing, carrying the chain that ended before it stopped.
+    await listOn(s, ME.subject, { listingStartedAt: undefined });
+    await endChain(s);
+
+    await refresh(s);
+
+    const row = await rowOf(s);
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.sellerIdFetch?.token).not.toBe("ended-chain");
+    expect(row?.sellerIdFetch?.endedAt).toBeUndefined();
+    expect(await ticks(s)).toHaveLength(1);
+  });
+});
+
+// NEO-483 — a Sync press is the collector asking again: with no BuySportsCards
+// seller account stored it starts the background read at once, past an ended
+// chain's cooldown (the drain claim the press kicks never does), but only once
+// the ended chain's per-row floor has passed (`BSC_SELLER_ID_FETCH_USER_RETRY_MS`),
+// so a scripted press loop cannot read BSC every few seconds.
+describe("syncVariant arms the seller-account read (NEO-483)", () => {
+  const ticks = (s: S) => pendingNamed(s, "fetchTick");
+  const rowOf = async (s: S) => (await states(s)).find((r) => r.platform === "bsc");
+  /** An ENDED chain, `endedAgoMs` ago (past the 5 min noSellerProfile floor, inside the 6 h cooldown, by default). */
+  const endChain = (
+    s: S,
+    endReason: "gaveUp" | "noSellerProfile" | "stopped" = "noSellerProfile",
+    endedAgoMs = 10 * 60_000,
+  ) =>
+    s.t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", ME.subject).eq("platform", "bsc"))
+        .first();
+      const endedAt = Date.now() - endedAgoMs;
+      const chain = { token: "ended-chain", startedAt: endedAt - 60_000, endedAt, endReason };
+      await ctx.db.patch(row!._id, { sellerIdFetch: chain });
+      return chain;
+    });
+  /** Moves the row's ended chain's `endedAt` to `endedAgoMs` before now (time passing). */
+  const age = (s: S, endedAgoMs: number) =>
+    s.t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", ME.subject).eq("platform", "bsc"))
+        .first();
+      await ctx.db.patch(row!._id, { sellerIdFetch: { ...row!.sellerIdFetch!, endedAt: Date.now() - endedAgoMs } });
+    });
+  const press = (s: S) => s.me.mutation(api.listingSync.syncVariant, { variantId: s.fx.baseId });
+  /** Distinct chain tokens among the pending reads. */
+  const chainsScheduled = async (s: S) =>
+    new Set((await ticks(s)).map((j) => (j.args as unknown as Array<{ token: string }>)[0].token));
+
+  test("an ended chain past its floor, inside its cooldown: the press starts a new one, first read at once, and still kicks the drain", async () => {
+    const s = await fresh();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    await endChain(s);
+    holdDrains();
+    const before = Date.now();
+
+    expect(await press(s)).toEqual({ queued: true });
+
+    const chain = (await rowOf(s))?.sellerIdFetch;
+    expect(chain?.token).toMatch(/^[0-9a-f]{32}$/);
+    expect(chain?.endedAt).toBeUndefined();
+    const [tick] = await ticks(s);
+    expect((tick.args as unknown as Array<Record<string, unknown>>)[0]).toEqual({
+      ownerId: ME.subject,
+      token: chain?.token,
+      attempt: 1,
+    });
+    expect(tick.scheduledTime).toBeGreaterThanOrEqual(before);
+    expect(tick.scheduledTime).toBeLessThanOrEqual(Date.now());
+    expect(await drains(s)).toHaveLength(1);
+  });
+
+  test("no chain yet: the press starts one", async () => {
+    const s = await fresh();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    holdDrains();
+
+    await press(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeDefined();
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test("a chain running: the press leaves it alone", async () => {
+    const s = await fresh();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    const running = { token: "running-chain", startedAt: Date.now() - 1000 };
+    await listOn(s, ME.subject, { sellerIdFetch: running });
+    holdDrains();
+
+    await press(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toEqual(running);
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  test("a throttled press still asks again past the floor (the stalled line says to hit Sync)", async () => {
+    const s = await fresh();
+    await connect(s);
+    await listOn(s);
+    await s.t.run((ctx) =>
+      ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: ME.subject,
+        variantId: s.fx.baseId,
+        platform: "bsc",
+        status: "idle",
+        lastRunAt: 500,
+        resyncRequestedAt: Date.now(),
+        problems: [],
+        conditionsPushed: [],
+        lastUpdated: 1,
+      }),
+    );
+    await endChain(s);
+    holdDrains();
+
+    expect(await press(s)).toEqual({ queued: false, ignored: "throttled" });
+
+    expect((await rowOf(s))?.sellerIdFetch?.token).not.toBe("ended-chain");
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test.each<[string, string | undefined, boolean]>([
+    ["an account stored", STORED_SELLER, false],
+    ["a sign-in that needs renewing", undefined, true],
+  ])("%s: nothing is armed", async (_name, sellerId, needsReauth) => {
+    const s = await fresh();
+    await s.t.run((ctx) =>
+      ctx.db.insert("userProfiles", {
+        userId: ME.subject,
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true, ...(needsReauth ? { needsReauth: true } : {}) }],
+        ...(sellerId !== undefined ? { marketplaceAccountIds: { bscSellerId: sellerId } } : {}),
+      }),
+    );
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    const chain = await endChain(s);
+    holdDrains();
+
+    await press(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toEqual(chain);
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  // The NEO-483 delta re-audit: a press loop on an account BSC says has no
+  // seller profile (or never answers) must not read BSC every few seconds.
+  test.each<["noSellerProfile" | "gaveUp", number]>([
+    ["noSellerProfile", 5 * 60_000],
+    ["gaveUp", 60_000],
+  ])("%s: presses 1 s apart start exactly one chain; after it ends, none until the %i ms floor has passed", async (reason, floorMs) => {
+    const s = await fresh();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    await endChain(s, reason, floorMs + 1_000);
+    holdDrains();
+
+    // Two presses a second apart: one chain.
+    await press(s);
+    const first = (await rowOf(s))?.sellerIdFetch;
+    expect(first?.token).not.toBe("ended-chain");
+    expect(first?.endedAt).toBeUndefined();
+    await press(s);
+    expect((await rowOf(s))?.sellerIdFetch).toEqual(first);
+    expect(await chainsScheduled(s)).toEqual(new Set([first!.token]));
+
+    // That chain ends the same way, through the module's own mutations.
+    if (reason === "noSellerProfile") {
+      await s.t.mutation(internal.bscSellerId.endChainNoSellerProfile, { ownerId: ME.subject, token: first!.token });
+    } else {
+      await s.t.mutation(internal.bscSellerId.scheduleNext, { ownerId: ME.subject, token: first!.token, attempt: 10 });
+    }
+    const ended = (await rowOf(s))?.sellerIdFetch;
+    expect(ended).toMatchObject({ token: first!.token, endReason: reason });
+
+    // Presses a second later, and just inside the floor: nothing new.
+    await press(s);
+    await age(s, floorMs - 1_000);
+    await press(s);
+    expect((await rowOf(s))?.sellerIdFetch?.token).toBe(first!.token);
+    expect((await rowOf(s))?.sellerIdFetch?.endedAt).toBeDefined();
+    expect(await chainsScheduled(s)).toEqual(new Set([first!.token]));
+
+    // Past the floor: the next press starts a second chain.
+    await age(s, floorMs);
+    await press(s);
+    const second = (await rowOf(s))?.sellerIdFetch;
+    expect(second?.token).not.toBe(first!.token);
+    expect(second?.endedAt).toBeUndefined();
+    expect(await chainsScheduled(s)).toEqual(new Set([first!.token, second!.token]));
+  });
+
+  test("a stopped chain cannot be restarted by a press inside its 60 s floor, and can after it", async () => {
+    const s = await fresh();
+    await connect(s);
+    await addTo(s, s.fx.gooden1, s.box);
+    await listOn(s);
+    const chain = await endChain(s, "stopped", 1_000);
+    holdDrains();
+
+    await press(s);
+    await age(s, 59_000);
+    await press(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toMatchObject({ token: chain.token, endReason: "stopped" });
+    expect(await ticks(s)).toEqual([]);
+
+    await age(s, 60_000);
+    await press(s);
+
+    expect((await rowOf(s))?.sellerIdFetch?.token).not.toBe("ended-chain");
+    expect(await ticks(s)).toHaveLength(1);
   });
 });
