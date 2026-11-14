@@ -49,6 +49,7 @@ import type * as brandView from "../brandView.js";
 import type * as browserAudience from "../browserAudience.js";
 import type * as bscCallStats from "../bscCallStats.js";
 import type * as bscFacets from "../bscFacets.js";
+import type * as bscSellerId from "../bscSellerId.js";
 import type * as bscTeamCheck from "../bscTeamCheck.js";
 import type * as bscTeamPool from "../bscTeamPool.js";
 import type * as bulkLoad from "../bulkLoad.js";
@@ -259,6 +260,7 @@ declare const fullApi: ApiFromModules<{
   browserAudience: typeof browserAudience;
   bscCallStats: typeof bscCallStats;
   bscFacets: typeof bscFacets;
+  bscSellerId: typeof bscSellerId;
   bscTeamCheck: typeof bscTeamCheck;
   bscTeamPool: typeof bscTeamPool;
   bulkLoad: typeof bulkLoad;

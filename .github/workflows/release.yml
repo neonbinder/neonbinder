@@ -414,7 +414,7 @@ jobs:
           merge-multiple: true
           path: dist
       # Anyone can check a download came from this workflow:
-      # gh attestation verify <zip> --repo neonbinder/neonbinder
+      # gh attestation verify <zip> --repo neonbinder/neonbinder-app
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/neonbinder-scanner-mac-*.zip

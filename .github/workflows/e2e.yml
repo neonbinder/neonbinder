@@ -20,6 +20,15 @@ on:
           this suite to run against.
         required: true
         type: string
+      pr:
+        description: >-
+          NEO-546: the PR number this run is about, so the sticky results
+          comment can land on the PR when the caller is a merge_group run
+          (no pull_request in that event's context). Empty for a standalone
+          run, and ignored on a pull_request run.
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       preview_url:
@@ -38,7 +47,8 @@ on:
 # to direct workflow_dispatch runs.)
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # NEO-546: never cancel a merge-queue run; a cancelled queue run ejects the PR.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 # Least privilege: every job reads the repo at most. Only `report` widens, at
 # job level, to publish the check run and the sticky comment. (A called
@@ -293,14 +303,20 @@ jobs:
           # and is passed over; a failed run never counts, so a stalled run
           # cannot set the plan.
           files=()
-          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-pipeline.yml/runs?status=success&per_page=30" \
-                         --jq '.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY) | .id'); do
-            d="$RUNNER_TEMP/pw-merged-$rid"
-            if gh run download "$rid" -R "$GITHUB_REPOSITORY" -n pw-merged -D "$d" >/dev/null 2>&1 \
-                && [ -f "$d/results.json" ]; then
-              files+=("$d/results.json")
-              [ "${#files[@]}" -ge 5 ] && break
-            fi
+          # NEO-546: once the merge queue is live the E2E run is the merge_group
+          # run and pull_request runs are cheap (no report), so look there
+          # first, then at pull_request runs.
+          for ev in merge_group pull_request; do
+            for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-pipeline.yml/runs?status=success&event=$ev&per_page=30" \
+                           --jq '.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY) | .id'); do
+              d="$RUNNER_TEMP/pw-merged-$rid"
+              if gh run download "$rid" -R "$GITHUB_REPOSITORY" -n pw-merged -D "$d" >/dev/null 2>&1 \
+                  && [ -f "$d/results.json" ]; then
+                files+=("$d/results.json")
+                [ "${#files[@]}" -ge 5 ] && break
+              fi
+            done
+            [ "${#files[@]}" -ge 5 ] && break
           done
           if [ "${#files[@]}" -lt 3 ]; then
             echo "::notice::Only ${#files[@]} recent green report(s) found; the shards plan from the committed timings.json."
@@ -2483,8 +2499,9 @@ jobs:
           cat combined-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Post Playwright summary as sticky PR comment
-        if: always() && github.event_name == 'pull_request'
+        if: always() && (github.event_name == 'pull_request' || inputs.pr != '')
         uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-results
+          number: ${{ github.event.pull_request.number || inputs.pr }}
           path: combined-summary.md

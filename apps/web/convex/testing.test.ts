@@ -8,12 +8,10 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import type { Doc } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
 import { __resetContractCache } from "./credentials";
-import { SEED_BSC_RELOGIN_SPACING_MS, SEED_BSC_SELLER_CONFLICT_REASON, seedBscReloginClock } from "./testing";
+import { SEED_BSC_SELLER_CONFLICT_REASON } from "./testing";
 import { insertTestCard } from "../lib/testing/card-row";
-import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { VISIT_GAP_MS } from "./dashboard";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 
@@ -1058,7 +1056,7 @@ describe("seedMyTestCredentials — the listing test marker", () => {
     expect((await bscState(t))[0].testListingOff).toBe(true);
     vi.unstubAllGlobals();
     __resetContractCache();
-    // NEO-482: a listing-on BSC seed signs in until the login carries the seller id.
+    // NEO-483: a listing-on BSC seed is exactly one store, whatever the id.
     stubFetch(makeCredentialFetch({ metadata, puts, sellerId: "seller-482" }));
     expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
     const [row] = await bscState(t);
@@ -1104,40 +1102,14 @@ describe("seedMyTestCredentials — the listing test marker", () => {
   });
 });
 
-// NEO-482 — a listing-on BSC seed leaves the caller's BSC seller id saved, or
-// says why not. The E2E reset deletes the userProfiles row (and the id with
-// it). The id arrives only through a password login: the browser service
-// reads BSC's profile inside the login (best effort, so a stalled read still
-// returns a session with no id) and `credentials.runSiteLogin` saves it. The
-// seed makes no profile read of its own. With no id saved it signs in again
-// (no logout), up to 5 sign-ins, each started at least 12 s after the last
-// one started, and none started at or after 58 s. With an id already saved
-// it adds nothing to the old behaviour.
-describe("seedMyTestCredentials — NEO-482 seller id", () => {
-  /**
-   * Every test here runs on a frozen virtual clock: `Date.now` moves only
-   * when a login stub calls `advance` or the seed's spacing sleep runs (the
-   * sleep is spied to move the clock by its `ms` instead of waiting), so the
-   * timing is exact and no test waits real seconds.
-   */
-  let advance: (ms: number) => void;
-  /** Every spacing wait the seed asked for, in order. */
-  let sleeps: number[];
-  /** The virtual clock's reading when the test began. */
-  let t0: number;
-
+// NEO-483 — a listing-on BSC seed is exactly one store with listing on,
+// whatever state the saved session is in. It no longer signs in until the login
+// carries the seller id (NEO-482/NEO-489's loop is gone): a login that does not
+// return the account still sets listing up, and the spaced background read
+// (`bscSellerId`) arms for 30 s later; the drain holds the queue
+// (`awaitingSeller`) until it lands. The seed makes no profile read of its own.
+describe("seedMyTestCredentials — NEO-483 listing-on BSC seed is one store", () => {
   beforeEach(() => {
-    t0 = Date.now();
-    let skew = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => t0 + skew);
-    advance = (ms) => {
-      skew += ms;
-    };
-    sleeps = [];
-    vi.spyOn(seedBscReloginClock, "sleep").mockImplementation(async (ms) => {
-      sleeps.push(ms);
-      advance(ms);
-    });
     process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
     __resetContractCache();
     process.env.DEV_BSC_USERNAME = BSC_USERNAME;
@@ -1156,26 +1128,19 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     delete process.env.NEONBINDER_PAUSED_PLATFORMS;
   });
 
-  /** The flag-only branch: the stored session is correct and renewable. */
+  /** The flag-only branch of old: the stored session is correct and renewable. */
   const SIGNED_IN = { username: BSC_USERNAME } as const;
   const SELLER = "seller-482";
-  const stalled = (tries: number) =>
-    `BuySportsCards seller id not saved: the profile read stalled on every sign-in (${tries} tries).`;
 
   /** What one browser-service login answers. */
   type LoginStep = { sellerId?: string } | { fail: string } | "http500" | "throw";
 
   /**
    * A browser-service stub that counts logins. Login N answers `steps[N]`
-   * (the last step repeats). `onLogin` runs before each answer, so a test can
-   * move the clock. Any call to a BSC host is recorded in `bscHosts`: the
-   * seed makes no marketplace profile read of its own.
+   * (the last step repeats). Any call to a BSC host is recorded in
+   * `bscHosts`: the seed makes no marketplace profile read of its own.
    */
-  function loginStub(opts: {
-    metadata: { username: string } | 404;
-    steps: LoginStep[];
-    onLogin?: (n: number) => void;
-  }) {
+  function loginStub(opts: { metadata: { username: string } | 404; steps: LoginStep[] }) {
     const state = { logins: 0, loginUrls: [] as string[], bscHosts: [] as string[], loginBodies: [] as unknown[] };
     const fetchFn: FetchStub = async (url, init) => {
       const u = String(url);
@@ -1193,7 +1158,6 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
         state.logins += 1;
         state.loginUrls.push(u);
         state.loginBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
-        opts.onLogin?.(n);
         const step = opts.steps[Math.min(n, opts.steps.length - 1)];
         if (step === "throw") throw new TypeError("fetch failed");
         if (step === "http500") return jsonResponse({ error: "boom" }, 500);
@@ -1230,142 +1194,16 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       accountId,
     });
 
-  /** Spy on both console channels; `lines()` is everything written to either. */
+  /** Spy on both console channels; `all()` is everything written to either. */
   function captureConsole() {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const all = () => [...log.mock.calls, ...error.mock.calls].map((args) => args.map(String).join(" "));
-    const relogins = () =>
-      log.mock.calls
-        .map(([line]) => String(line))
-        .filter((line) => line.startsWith("{") && line.includes('"seed_bsc_relogin"'))
-        .map(
-          (line) =>
-            JSON.parse(line) as { msg: string; attempt: number; idSaved: boolean; elapsedMs: number; waitedMs: number },
-        );
-    /** Drop just these two spies (the describe's clock and sleep spies stay). */
     const restore = () => {
       log.mockRestore();
       error.mockRestore();
     };
-    return { all, relogins, restore };
-  }
-
-  /** The describe's virtual clock: `advance(ms)` moves `Date.now` forward. */
-  function skewClock() {
-    return advance;
-  }
-
-  test("the first login returns the seller id: saved, exactly one login, stored true", async () => {
-    const t = convexTest(schema, modules);
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(1);
-    expect(await sellerIdOf(t)).toBe(SELLER);
-    expect(con.relogins()).toEqual([expect.objectContaining({ attempt: 1, idSaved: true })]);
-    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
-    await drainScheduled(t);
-  });
-
-  test("the first login has no id and the second has it: two logins, saved, the log shows false then true", async () => {
-    const t = convexTest(schema, modules);
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, { sellerId: SELLER }] });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(2);
-    expect(await sellerIdOf(t)).toBe(SELLER);
-    expect(con.relogins().map((l) => [l.msg, l.attempt, l.idSaved])).toEqual([
-      ["seed_bsc_relogin", 1, false],
-      ["seed_bsc_relogin", 2, true],
-    ]);
-    for (const line of con.relogins()) expect(line.elapsedMs).toBeGreaterThanOrEqual(0);
-    await drainScheduled(t);
-  });
-
-  test("every login has no id: exactly five logins, then stored false naming five tries, nothing saved", async () => {
-    const t = convexTest(schema, modules);
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    expect((await seed(t, true)).seeded).toEqual([
-      { site: "buysportscards", stored: false, reason: stalled(5) },
-    ]);
-
-    expect(state.logins).toBe(5);
-    expect(con.relogins().map((l) => [l.attempt, l.idSaved])).toEqual([
-      [1, false],
-      [2, false],
-      [3, false],
-      [4, false],
-      [5, false],
-    ]);
-    expect(await sellerIdOf(t)).toBeNull();
-    // The sign-in itself worked, so the credential stays flagged as stored.
-    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
-    await drainScheduled(t);
-  });
-
-  test("the id turns up on the fifth (last) login: still stored true, five logins", async () => {
-    const t = convexTest(schema, modules);
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, {}, {}, {}, { sellerId: SELLER }] });
-    stubFetch(fetchFn);
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(5);
-    expect(await sellerIdOf(t)).toBe(SELLER);
-    await drainScheduled(t);
-  });
-
-  /**
-   * NEO-489: a convex-test instance whose `updateSiteCredentialStatus` records
-   * every call: the `listing` it was asked for, the seller id saved at that
-   * moment, and the BSC listing row it left behind. The real handler runs.
-   */
-  async function recordingStatusWrites() {
-    const calls: Array<{
-      listing: string | undefined;
-      sellerIdAtCall: string | null;
-      rowAfter: Doc<"marketplaceListingStates"> | null;
-    }> = [];
-    const realModule = (await modules["./userProfile.ts"]()) as Record<string, unknown>;
-    const real = realModule.updateSiteCredentialStatus as {
-      _handler: (ctx: MutationCtx, args: { userId: string; listing?: string }) => Promise<null>;
-    };
-    const t = convexTest(schema, {
-      ...modules,
-      "./userProfile.ts": async () => ({
-        ...realModule,
-        updateSiteCredentialStatus: Object.assign(() => undefined, real as object, {
-          _handler: async (
-            ctx: MutationCtx,
-            args: { userId: string; listing?: string },
-          ) => {
-            const profile = await ctx.db
-              .query("userProfiles")
-              .withIndex("by_user", (q) => q.eq("userId", args.userId))
-              .unique();
-            const sellerIdAtCall = profile?.marketplaceAccountIds?.bscSellerId ?? null;
-            const out = await real._handler(ctx, args);
-            const rowAfter = await ctx.db
-              .query("marketplaceListingStates")
-              .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.userId).eq("platform", "bsc"))
-              .first();
-            calls.push({ listing: args.listing, sellerIdAtCall, rowAfter });
-            return out;
-          },
-        }),
-      }),
-    });
-    return { t, calls };
+    return { all, restore };
   }
 
   /** The `startListingWalk` jobs scheduled so far (a listing run starting). */
@@ -1376,67 +1214,19 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       ),
     );
 
-  test("NEO-489: listing stays off while the id is missing, then exactly one save once it lands", async () => {
-    const { t, calls } = await recordingStatusWrites();
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, {}, { sellerId: SELLER }] });
-    stubFetch(fetchFn);
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(3);
-    // Every sign-in in the loop stores with listing off; one save follows the id.
-    expect(calls.map((c) => c.listing)).toEqual(["testOff", "testOff", "testOff", "save"]);
-    for (const call of calls.slice(0, 3)) {
-      expect(call.rowAfter).toMatchObject({ testListingOff: true });
-      expect(call.rowAfter?.listingStartedAt).toBeUndefined();
-    }
-    // The save comes only after the id is saved, and listing starts on that id.
-    const save = calls[3];
-    expect(save.sellerIdAtCall).toBe(SELLER);
-    expect(save.rowAfter?.testListingOff).toBeUndefined();
-    expect(save.rowAfter?.listingStartedAt).toBeTypeOf("number");
-    expect(save.rowAfter?.platformAccountId).toBe(SELLER);
-    expect(await listingWalks(t)).toHaveLength(1);
-    await drainScheduled(t);
-  });
-
-  test("NEO-489: the id on the first sign-in: one listing-off store, then one save", async () => {
-    const { t, calls } = await recordingStatusWrites();
-    const { fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
-    stubFetch(fetchFn);
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(calls.map((c) => [c.listing, c.sellerIdAtCall])).toEqual([
-      ["testOff", SELLER],
-      ["save", SELLER],
-    ]);
-    expect(calls[1].rowAfter).toMatchObject({ platformAccountId: SELLER });
-    expect(calls[1].rowAfter?.listingStartedAt).toBeTypeOf("number");
-    expect(await listingWalks(t)).toHaveLength(1);
-    await drainScheduled(t);
-  });
-
-  test("NEO-489: a stalled seed leaves listing off: no save, the marker held, no listing run", async () => {
-    const { t, calls } = await recordingStatusWrites();
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
-    stubFetch(fetchFn);
-
-    expect((await seed(t, true)).seeded).toEqual([
-      { site: "buysportscards", stored: false, reason: stalled(5) },
-    ]);
-
-    expect(state.logins).toBe(5);
-    expect(calls.map((c) => c.listing)).toEqual(["testOff", "testOff", "testOff", "testOff", "testOff"]);
-    const [row] = await t.run(async (ctx) =>
-      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
+  /** The pending background seller-account reads. */
+  const pendingFetchTicks = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (job) => job.name.includes("fetchTick") && job.state.kind === "pending",
+      ),
     );
-    expect(row.testListingOff).toBe(true);
-    expect(row.listingStartedAt).toBeUndefined();
-    expect(await listingWalks(t)).toEqual([]);
-    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+
+  /** Settle the immediate work and drop the delayed read, as a test that ends must. */
+  const settle = async (t: ReturnType<typeof convexTest>) => {
     await drainScheduled(t);
-  });
+    await cancelScheduled(t);
+  };
 
   /** Another NB owner who already lists from the BSC seller account `accountId`. */
   const otherOwnerListsFrom = (t: ReturnType<typeof convexTest>, accountId: string) =>
@@ -1459,7 +1249,100 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
         .first(),
     );
 
-  test("NEO-489: id missing, the listing save meets a seller conflict: stored false naming it, no listing run", async () => {
+  test("the login returns the seller id: exactly one login, saved, listing on, no background read", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    const row = await ownBscRow(t);
+    expect(row?.testListingOff).toBeUndefined();
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.platformAccountId).toBe(SELLER);
+    expect(row?.sellerIdFetch).toBeUndefined();
+    expect(await listingWalks(t)).toHaveLength(1);
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+    await settle(t);
+  });
+
+  test("the login returns no id: still exactly one login, stored true, listing on, the read armed for 30 s", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
+    stubFetch(fetchFn);
+    const before = Date.now();
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    const after = Date.now();
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBeNull();
+    const row = await ownBscRow(t);
+    expect(row?.testListingOff).toBeUndefined();
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.sellerIdFetch).toBeDefined();
+    const ticks = await pendingFetchTicks(t);
+    expect(ticks).toHaveLength(1);
+    expect(ticks[0].scheduledTime).toBeGreaterThanOrEqual(before + 30_000);
+    expect(ticks[0].scheduledTime).toBeLessThanOrEqual(after + 30_000);
+    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+    await settle(t);
+  });
+
+  test.each([
+    ["a saved session still good", SIGNED_IN],
+    ["no secret yet", 404 as const],
+  ])("%s: the same one store with listing on, one login", async (_name, metadata) => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(state.loginUrls[0]).toContain("/login/bsc");
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    await settle(t);
+  });
+
+  test("an earlier listing-off seed's marker is cleared by the listing-on seed", async () => {
+    const t = convexTest(schema, modules);
+    stubFetch(loginStub({ metadata: 404, steps: [{}] }).fetchFn);
+    await seed(t);
+    expect((await ownBscRow(t))?.testListingOff).toBe(true);
+    vi.unstubAllGlobals();
+    __resetContractCache();
+    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    const row = await ownBscRow(t);
+    expect(row?.testListingOff).toBeUndefined();
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    await settle(t);
+  });
+
+  test("the id was already saved: one login, the id kept, no background read", async () => {
+    const t = convexTest(schema, modules);
+    await preseedSellerId(t, "seller-kept");
+    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe("seller-kept");
+    expect((await ownBscRow(t))?.platformAccountId).toBe("seller-kept");
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    await settle(t);
+  });
+
+  test("the login returns the id and another owner lists from it: stored false naming the conflict, no listing run", async () => {
     const t = convexTest(schema, modules);
     await otherOwnerListsFrom(t, SELLER);
     const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
@@ -1476,13 +1359,13 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     expect(row?.dormant).toBe("sellerConflict");
     expect(row?.listingStartedAt).toBeUndefined();
     expect(await listingWalks(t)).toEqual([]);
-    await drainScheduled(t);
+    await settle(t);
   });
 
   test.each([
-    ["flag-only", SIGNED_IN, 0],
-    ["store", 404 as const, 1],
-  ])("NEO-489: id already saved (%s branch), a seller conflict: stored false naming it, no listing run", async (_name, metadata, logins) => {
+    ["saved session still good", SIGNED_IN],
+    ["no secret yet", 404 as const],
+  ])("id already saved (%s), another owner lists from it: stored false naming the conflict, no listing run", async (_name, metadata) => {
     const t = convexTest(schema, modules);
     await preseedSellerId(t, "seller-kept");
     await otherOwnerListsFrom(t, "seller-kept");
@@ -1493,192 +1376,29 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       { site: "buysportscards", stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON },
     ]);
 
-    expect(state.logins).toBe(logins);
+    expect(state.logins).toBe(1);
     expect((await ownBscRow(t))?.dormant).toBe("sellerConflict");
     expect(await listingWalks(t)).toEqual([]);
-    await drainScheduled(t);
-  });
-
-  test("the 58 s window stops new sign-ins: fewer than five logins and the stalled reason", async () => {
-    const t = convexTest(schema, modules);
-    const advance = skewClock();
-    // Each login "takes" 30 s: after login 2 the seed is at 60 s.
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}], onLogin: () => advance(30_000) });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    const result = await seed(t, true);
-
-    expect(state.logins).toBe(2);
-    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: stalled(2) }]);
-    expect(con.relogins().map((l) => l.attempt)).toEqual([1, 2]);
-    expect(con.relogins()[1].elapsedMs).toBeGreaterThanOrEqual(58_000);
-    await drainScheduled(t);
-  });
-
-  test("a sign-in that finishes inside the window still allows the next one", async () => {
-    const t = convexTest(schema, modules);
-    const advance = skewClock();
-    // 10 s each: 4 logins end at 40 s, so the fifth may start.
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}], onLogin: () => advance(10_000) });
-    stubFetch(fetchFn);
-
-    const result = await seed(t, true);
-
-    expect(state.logins).toBe(5);
-    expect(result.seeded[0].reason).toBe(stalled(5));
-    // 10 s each, so each later start waits the 2 s left of the 12 s spacing.
-    expect(sleeps).toEqual([2_000, 2_000, 2_000, 2_000]);
-    await drainScheduled(t);
-  });
-
-  test("spacing: fast id-less sign-ins start 12 s apart (0, 12, 24, 36, 48 s), each wait logged", async () => {
-    const t = convexTest(schema, modules);
-    const starts: number[] = [];
-    // Each login takes no time and never carries the id.
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}], onLogin: () => starts.push(Date.now() - t0) });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    const result = await seed(t, true);
-
-    expect(state.logins).toBe(5);
-    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: stalled(5) }]);
-    expect(starts).toEqual([0, 12_000, 24_000, 36_000, 48_000]);
-    for (let i = 1; i < starts.length; i++) {
-      expect(starts[i] - starts[i - 1]).toBeGreaterThanOrEqual(SEED_BSC_RELOGIN_SPACING_MS);
-    }
-    for (const s of starts) expect(s).toBeLessThan(58_000);
-    expect(sleeps).toEqual([12_000, 12_000, 12_000, 12_000]);
-    expect(con.relogins().map((l) => [l.attempt, l.waitedMs])).toEqual([
-      [1, 0],
-      [2, 12_000],
-      [3, 12_000],
-      [4, 12_000],
-      [5, 12_000],
-    ]);
-    await drainScheduled(t);
-  });
-
-  test("spacing: only the rest of the 12 s is waited after a 5 s sign-in", async () => {
-    const t = convexTest(schema, modules);
-    const starts: number[] = [];
-    const { state, fetchFn } = loginStub({
-      metadata: 404,
-      steps: [{}, { sellerId: SELLER }],
-      onLogin: (n) => {
-        starts.push(Date.now() - t0);
-        if (n === 0) advance(5_000);
-      },
-    });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(2);
-    expect(starts).toEqual([0, 12_000]);
-    expect(sleeps).toEqual([7_000]);
-    expect(con.relogins().map((l) => l.waitedMs)).toEqual([0, 7_000]);
-    await drainScheduled(t);
-  });
-
-  test("spacing: a sign-in that already took 12 s or more gets no extra wait", async () => {
-    const t = convexTest(schema, modules);
-    const starts: number[] = [];
-    const { state, fetchFn } = loginStub({
-      metadata: 404,
-      steps: [{}, {}, { sellerId: SELLER }],
-      onLogin: (n) => {
-        starts.push(Date.now() - t0);
-        // The first takes exactly the spacing, the second a stall's 13 s.
-        advance(n === 0 ? 12_000 : 13_000);
-      },
-    });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(3);
-    expect(starts).toEqual([0, 12_000, 25_000]);
-    expect(sleeps).toEqual([]);
-    expect(con.relogins().map((l) => l.waitedMs)).toEqual([0, 0, 0]);
-    await drainScheduled(t);
-  });
-
-  test("spacing: the window stops the loop before five sign-ins when the wait would carry a start past 58 s", async () => {
-    const t = convexTest(schema, modules);
-    const starts: number[] = [];
-    // The first sign-in stalls 25 s; the rest are fast. Starts 0, 25, 37, 49;
-    // the next would be 61 s, so the seed stops at 49 s elapsed without waiting.
-    const { state, fetchFn } = loginStub({
-      metadata: 404,
-      steps: [{}],
-      onLogin: (n) => {
-        starts.push(Date.now() - t0);
-        if (n === 0) advance(25_000);
-      },
-    });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    const result = await seed(t, true);
-
-    expect(state.logins).toBe(4);
-    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: stalled(4) }]);
-    expect(starts).toEqual([0, 25_000, 37_000, 49_000]);
-    expect(sleeps).toEqual([12_000, 12_000]);
-    // Stopped by the spacing, not by elapsed time: the last line is well inside 58 s.
-    expect(con.relogins().at(-1)?.elapsedMs).toBe(49_000);
-    expect(Date.now() - t0).toBe(49_000);
-    await drainScheduled(t);
-  });
-
-  test("spacing: a wait that overshoots to 58 s starts no further sign-in", async () => {
-    const t = convexTest(schema, modules);
-    // Login 1 takes 45 s; login 2 is fast, so the next start is planned at 57 s.
-    const { state, fetchFn } = loginStub({
-      metadata: 404,
-      steps: [{}],
-      onLogin: (n) => {
-        if (n === 0) advance(45_000);
-      },
-    });
-    stubFetch(fetchFn);
-    // A real timer can fire late: this one lands 1 s past what was asked.
-    vi.mocked(seedBscReloginClock.sleep).mockImplementation(async (ms) => {
-      sleeps.push(ms);
-      advance(ms + 1_000);
-    });
-
-    const result = await seed(t, true);
-
-    expect(state.logins).toBe(2);
-    expect(sleeps).toEqual([12_000]);
-    expect(result.seeded).toEqual([{ site: "buysportscards", stored: false, reason: stalled(2) }]);
-    await drainScheduled(t);
+    await settle(t);
   });
 
   test.each([
     ["a non-ok response", "http500" as const],
     ["a browser success:false", { fail: "BSC refused the sign-in." } as const],
     ["a thrown request", "throw" as const],
-  ])("%s on the first login stops at once: stored false, one login, no stalled reason", async (_name, step) => {
+  ])("%s on the login: stored false with a reason, one login, no id, no background read", async (_name, step) => {
     const t = convexTest(schema, modules);
     const { state, fetchFn } = loginStub({ metadata: 404, steps: [step] });
     stubFetch(fetchFn);
-    const con = captureConsole();
 
     const [entry] = (await seed(t, true)).seeded;
 
     expect(entry.stored).toBe(false);
     expect(entry.reason).toBeTruthy();
-    expect(entry.reason).not.toContain("seller id not saved");
     expect(state.logins).toBe(1);
-    expect(con.relogins()).toEqual([]); // the id was never checked
     expect(await sellerIdOf(t)).toBeNull();
-    await drainScheduled(t);
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    await settle(t);
   });
 
   test("a success:false login's own message is the reason", async () => {
@@ -1698,150 +1418,10 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     __resetContractCache();
     const [entry] = (await seed(t, true)).seeded;
     expect(entry).toEqual({ site: "buysportscards", stored: false, reason: direct.message });
-    await drainScheduled(t);
+    await settle(t);
   });
 
-  test.each([
-    ["a non-ok response", "http500" as const],
-    ["a browser success:false", { fail: "BSC refused the sign-in." } as const],
-    ["a thrown request", "throw" as const],
-  ])("%s on a later login stops at once: stored false, no further logins", async (_name, step) => {
-    const t = convexTest(schema, modules);
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}, {}, step, {}, {}] });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    const [entry] = (await seed(t, true)).seeded;
-
-    expect(entry.stored).toBe(false);
-    expect(entry.reason).toBeTruthy();
-    expect(entry.reason).not.toContain("seller id not saved");
-    expect(state.logins).toBe(3);
-    expect(con.relogins().map((l) => l.attempt)).toEqual([1, 2]);
-    expect(await sellerIdOf(t)).toBeNull();
-    await drainScheduled(t);
-  });
-
-  test("flag-only branch, id already saved: no login at all, the flag is written, the id is kept", async () => {
-    const t = convexTest(schema, modules);
-    await preseedSellerId(t, "seller-kept");
-    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{ sellerId: "seller-other" }] });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(0);
-    expect(con.relogins()).toEqual([]);
-    expect(await sellerIdOf(t)).toBe("seller-kept");
-    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
-    const [row] = await t.run(async (ctx) =>
-      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
-    );
-    expect(row.testListingOff).toBeUndefined(); // listing: true clears the marker
-    await drainScheduled(t);
-  });
-
-  test("flag-only branch, no id: a fresh sign-in happens and saves the id", async () => {
-    const t = convexTest(schema, modules);
-    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{ sellerId: SELLER }] });
-    stubFetch(fetchFn);
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(1);
-    expect(await sellerIdOf(t)).toBe(SELLER);
-    await drainScheduled(t);
-  });
-
-  test.each([
-    [58_000, 1, "stops at exactly 58000 ms elapsed"],
-    [57_999, 2, "signs in again at 57999 ms elapsed"],
-  ])("deadline boundary: after a stalled login at %i ms, %i login(s) in total (%s)", async (elapsed, logins, _name) => {
-    const t = convexTest(schema, modules);
-    // The describe's frozen clock, so elapsed is exactly what the login
-    // advances (past the 12 s spacing, so no wait is added).
-    const { state, fetchFn } = loginStub({
-      metadata: 404,
-      steps: [{}, { sellerId: SELLER }],
-      onLogin: (n) => {
-        if (n === 0) advance(elapsed);
-      },
-    });
-    stubFetch(fetchFn);
-
-    const [entry] = (await seed(t, true)).seeded;
-
-    expect(state.logins).toBe(logins);
-    if (logins === 1) {
-      expect(entry).toEqual({ site: "buysportscards", stored: false, reason: stalled(1) });
-      expect(await sellerIdOf(t)).toBeNull();
-    } else {
-      expect(entry).toEqual({ site: "buysportscards", stored: true });
-      expect(await sellerIdOf(t)).toBe(SELLER);
-    }
-    await drainScheduled(t);
-  });
-
-  test("flag-only branch, no id, a stale needsReauth: the fresh sign-in clears it and the listing marker", async () => {
-    const t = convexTest(schema, modules);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("userProfiles", {
-        userId: USER_A,
-        siteCredentials: [
-          { site: "buysportscards", hasCredentials: true, needsReauth: true, needsReauthSince: Date.now() - 1000 },
-        ],
-      });
-    });
-    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{ sellerId: SELLER }] });
-    stubFetch(fetchFn);
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(1);
-    expect(await sellerIdOf(t)).toBe(SELLER);
-    expect((await bscCredentialEntry(t))?.needsReauth).toBeFalsy(); // cleared (absent), not written as false
-    const [row] = await t.run(async (ctx) =>
-      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
-    );
-    expect(row.testListingOff).toBeUndefined();
-    await drainScheduled(t);
-  });
-
-  test("store branch, id already saved: one login, no re-check loop, the id kept", async () => {
-    const t = convexTest(schema, modules);
-    await preseedSellerId(t, "seller-kept");
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
-    stubFetch(fetchFn);
-    const con = captureConsole();
-
-    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
-
-    expect(state.logins).toBe(1);
-    expect(con.relogins()).toEqual([]);
-    expect(await sellerIdOf(t)).toBe("seller-kept");
-    await drainScheduled(t);
-  });
-
-  test.each([
-    ["success:false", { fail: "BSC refused the sign-in." } as const],
-    ["a thrown request", "throw" as const],
-  ])("store branch, id already saved, the login fails (%s): stored false with a reason, one login", async (_name, step) => {
-    const t = convexTest(schema, modules);
-    await preseedSellerId(t, "seller-kept");
-    const { state, fetchFn } = loginStub({ metadata: 404, steps: [step] });
-    stubFetch(fetchFn);
-
-    const [entry] = (await seed(t, true)).seeded;
-
-    expect(entry.stored).toBe(false);
-    expect(entry.reason).toBeTruthy();
-    expect(state.logins).toBe(1);
-    expect(await sellerIdOf(t)).toBe("seller-kept");
-    await drainScheduled(t);
-  });
-
-  test("store branch, id already saved, storeTestCredentials itself throws: stored false with the message", async () => {
+  test("storeTestCredentials itself throws: stored false with the message", async () => {
     // A throw out of the action (not a result): wrap its handler so the
     // seed's runAction rejects.
     const real = (await modules["./credentials.ts"]()) as Record<string, unknown>;
@@ -1872,33 +1452,32 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
     ["listing off (flag-only)", SIGNED_IN, false],
     ["listing off (store)", 404 as const, false],
     ["listing unset (store)", 404 as const, undefined],
-  ])("%s: no re-login loop, no seller id read, even with a login that returns no id", async (_name, metadata, listing) => {
+  ])("%s: no seller id read and no background read, even with a login that returns no id", async (_name, metadata, listing) => {
     const t = convexTest(schema, modules);
     const { state, fetchFn } = loginStub({ metadata, steps: [{}] });
     stubFetch(fetchFn);
-    const con = captureConsole();
 
     expect((await seed(t, listing)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
 
     expect(state.logins).toBe(metadata === 404 ? 1 : 0);
-    expect(con.relogins()).toEqual([]);
     expect(state.bscHosts).toEqual([]);
     expect(await sellerIdOf(t)).toBeNull();
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    await settle(t);
   });
 
-  test("SportLots with listing on: one login at most, no seller id loop", async () => {
+  test("SportLots with listing on: one login at most, no seller id read", async () => {
     const t = convexTest(schema, modules);
     const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
     stubFetch(fetchFn);
-    const con = captureConsole();
 
     expect((await seed(t, true, ["sportlots"])).seeded).toEqual([{ site: "sportlots", stored: true }]);
 
     expect(state.logins).toBe(1);
     expect(state.loginUrls[0]).toContain("/login/sportlots");
-    expect(con.relogins()).toEqual([]);
     expect(await sellerIdOf(t)).toBeNull();
-    await drainScheduled(t);
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    await settle(t);
   });
 
   test("BSC paused: skipped first, no browser-service or BSC call, no id", async () => {
@@ -1909,12 +1488,10 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       fetchCalled = true;
       throw new Error(`unexpected fetch: ${init?.method ?? "GET"} ${String(url)}`);
     });
-    const con = captureConsole();
 
     expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: false, skipped: true }]);
 
     expect(fetchCalled).toBe(false);
-    expect(con.relogins()).toEqual([]);
     expect(await sellerIdOf(t)).toBeNull();
   });
 
@@ -1930,17 +1507,16 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       stubFetch(fetchFn);
       await seed(t, true);
       expect(state.bscHosts).toEqual([]);
-      await drainScheduled(t);
+      await settle(t);
     }
   });
 
   test("no reason or console line carries the seller id, the password or a token", async () => {
     const SECRET_ID = "seller-secret-id-482";
     const cases: Array<[string, { username: string } | 404, LoginStep[]]> = [
-      ["saved on login 1", 404, [{ sellerId: SECRET_ID }]],
-      ["saved on login 3", 404, [{}, {}, { sellerId: SECRET_ID }]],
-      ["exhausted", 404, [{}]],
-      ["login fails later", 404, [{}, "http500"]],
+      ["saved on the login", 404, [{ sellerId: SECRET_ID }]],
+      ["no id on the login", 404, [{}]],
+      ["login fails", 404, ["http500"]],
       ["login throws", 404, ["throw"]],
       ["success:false", SIGNED_IN, [{ fail: "BSC refused the sign-in." }]],
     ];
@@ -1957,7 +1533,7 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
       expect(haystack).not.toContain(SECRET_ID);
       expect(haystack).not.toContain(BSC_PASSWORD);
       expect(haystack).not.toMatch(/token/i);
-      await drainScheduled(t);
+      await settle(t);
       con.restore();
     }
   });
@@ -1971,7 +1547,7 @@ describe("seedMyTestCredentials — NEO-482 seller id", () => {
 
     expect(state.loginBodies).toEqual([expect.objectContaining({ username: BSC_USERNAME, password: BSC_PASSWORD })]);
     expect(JSON.stringify(result)).not.toContain(BSC_PASSWORD);
-    await drainScheduled(t);
+    await settle(t);
   });
 
   test("fails closed when TESTING_RESET_SECRET is unset: throws, no login, nothing saved", async () => {

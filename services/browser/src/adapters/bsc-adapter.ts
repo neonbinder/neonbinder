@@ -91,6 +91,42 @@ const TOKEN_TTL_MS = 60 * 60 * 1000;
 const BSC_PROFILE_ATTEMPT_TIMEOUT_MS = 5_000;
 const BSC_PROFILE_MAX_ATTEMPTS = 2;
 
+// NEO-483: Convex treats an access token in its last 5 minutes as due for
+// renewal (`siteTokenFor`'s leeway) and calls login again. Serving the cached
+// token there handed back the same expiry, so every call inside the window
+// re-validated against BSC. A token this close to expiry with a way to renew
+// goes to the refresh grant instead. Keep in step with Convex's leeway.
+const BSC_RENEWAL_LEEWAY_MS = 5 * 60 * 1000;
+
+/**
+ * NEO-483: what one profile read amounted to.
+ *
+ *   - `profile`: BSC answered 200 with a body we could parse. The seller
+ *     fields are optional: a 200 with no `sellerProfile` is still an answer.
+ *   - `refused`: BSC answered 401 or 403, the only statuses that say the
+ *     token itself is no good.
+ *   - `unavailable`: no verdict on the token. A timeout, a throw or a 5xx
+ *     after its one retry, or a 429 or any other 4xx (not retried).
+ */
+type SellerProfileOutcome =
+  | { kind: "profile"; storeName?: string; sellerId?: string }
+  | { kind: "refused" }
+  | { kind: "unavailable" };
+
+/**
+ * NEO-483: the BSC route's login options. `tokenRefused` is BSC-only, so it
+ * lives here rather than on the shared LoginOptions.
+ */
+export interface BscLoginOptions extends LoginOptions {
+  /**
+   * True when BSC has just answered 401 to the caller's use of the stored
+   * access token. login() then skips the cached-token branch: a profile read
+   * that stalls would otherwise serve the refused token straight back. Only a
+   * strict boolean `true` counts; the route coerces with `=== true`.
+   */
+  tokenRefused?: boolean;
+}
+
 /**
  * The fields we read off the B2C token endpoint, for both the
  * authorization_code and refresh_token grants.
@@ -284,25 +320,25 @@ export class BSCAdapter extends BaseAdapter {
   }
 
   /**
-   * Fetch the authenticated BSC user's marketplace profile. Used both to
-   * validate cached tokens and to capture the user's sellerId at login.
+   * Fetch the authenticated BSC user's marketplace profile. Used to validate
+   * a cached token (the cached branch of login()) and to capture the seller
+   * fields after a password sign-in. NEO-483: the refresh and silent
+   * re-authorize paths no longer call it.
    *
    * NEO-445: never throws. A timeout, a throw or a 5xx is retried once, at
-   * once; a 4xx is the token being refused and is not. Null means no usable
-   * answer, and each caller decides what that means: on a cached token,
-   * "couldn't validate it"; on a just-issued one, success without the optional
-   * seller fields.
+   * once. NEO-483: three outcomes (see SellerProfileOutcome). Only a 401 or
+   * 403 is `refused`; a 429 or any other 4xx is `unavailable` with no retry,
+   * and so is a timeout, throw or 5xx once its retry has failed too.
    *
-   * Callers holding a just-issued token must persist it BEFORE calling this.
-   * On the refresh path the presented token is already dead, so the rotated
-   * one must be stored whatever BSC does here.
+   * Callers holding a just-issued token must persist it BEFORE calling this,
+   * so the stored token never depends on BSC answering here.
    */
-  private async fetchSellerProfile(token: string): Promise<{ storeName?: string; sellerId?: string } | null> {
+  private async fetchSellerProfile(token: string): Promise<SellerProfileOutcome> {
     for (let attempt = 1; attempt <= BSC_PROFILE_MAX_ATTEMPTS; attempt++) {
       const outcome = await this.attemptSellerProfile(token, attempt);
       if (outcome !== "retry") return outcome;
     }
-    return null;
+    return { kind: "unavailable" };
   }
 
   /**
@@ -316,7 +352,7 @@ export class BSCAdapter extends BaseAdapter {
   private async attemptSellerProfile(
     token: string,
     attempt: number,
-  ): Promise<{ storeName?: string; sellerId?: string } | null | "retry"> {
+  ): Promise<SellerProfileOutcome | "retry"> {
     const label = `[BSC Adapter] /marketplace/user/profile attempt ${attempt}/${BSC_PROFILE_MAX_ATTEMPTS}`;
     const startedAt = Date.now();
     const signal = AbortSignal.timeout(this.profileAttemptTimeoutMs);
@@ -329,7 +365,12 @@ export class BSCAdapter extends BaseAdapter {
       status = response.status;
       if (!response.ok) {
         console.warn(`${label} answered ${status} in ${Date.now() - startedAt}ms`);
-        return status >= 500 ? "retry" : null;
+        if (status >= 500) return "retry";
+        // NEO-483: only 401 and 403 are a verdict on the token. A 429 is BSC
+        // throttling us and any other 4xx says nothing about the token, so
+        // neither is retried and neither throws the token away.
+        if (status === 401 || status === 403) return { kind: "refused" };
+        return { kind: "unavailable" };
       }
       // Logged after the body is read, so a stalled body logs one timed-out
       // line rather than an "answered 200" followed by it.
@@ -338,9 +379,10 @@ export class BSCAdapter extends BaseAdapter {
       const sellerProfile = profile?.sellerProfile;
       if (!sellerProfile) {
         console.warn(`[BSC Adapter] /marketplace/user/profile returned no sellerProfile. Top-level keys:`, Object.keys(profile ?? {}));
-        return {};
+        return { kind: "profile" };
       }
       return {
+        kind: "profile",
         storeName: sellerProfile.sellerStoreName,
         sellerId: sellerProfile.sellerId,
       };
@@ -991,7 +1033,10 @@ export class BSCAdapter extends BaseAdapter {
    *
    *   0. transient credentials in the request body → fresh sign-in (bootstrap
    *      or explicit re-auth). Never consults the stored secret.
-   *   1. cached access token that still validates → free.
+   *   1. cached access token that BSC does not refuse → free. NEO-483: skipped
+   *      when the caller says BSC just refused it (`tokenRefused`), and when
+   *      it is inside the renewal leeway with a refresh token or SSO session
+   *      to renew it. A profile read with no verdict serves it unvalidated.
    *   2. live refresh token → one POST /token. NEO-141: this is what replaced
    *      keeping the user's password on disk.
    *   3. live "Keep me signed in" SSO cookie → silent GET /authorize + POST
@@ -1008,10 +1053,12 @@ export class BSCAdapter extends BaseAdapter {
    * The canary skips 1, 2 and 3 outright and lands on 4 every time — that is
    * the entire point of the probe, and both Cloud Scheduler jobs depend on it.
    */
-  async login(key: string, opts?: LoginOptions): Promise<AdapterResponse> {
+  async login(key: string, opts?: BscLoginOptions): Promise<AdapterResponse> {
     const secretsManager = new SecretsManagerService();
     const canary = opts?.canary === true;
     const transient = opts?.transientCredentials;
+    // Strict, like `canary`: only a real boolean true skips the cache.
+    const tokenRefused = opts?.tokenRefused === true;
 
     // --- Step 0: transient credentials --------------------------------------
     //
@@ -1042,25 +1089,40 @@ export class BSCAdapter extends BaseAdapter {
     // NOT exercise the B2C authorize/SelfAsserted/confirmed/token exchange,
     // which is the part that actually breaks. A canary that short-circuits
     // here would report green straight through a real outage.
-    if (
-      !canary &&
-      credentials.token &&
-      credentials.expiresAt &&
-      credentials.expiresAt > Date.now()
-    ) {
+    const now = Date.now();
+    const cachedTokenUnexpired =
+      !!credentials.token && !!credentials.expiresAt && credentials.expiresAt > now;
+    // NEO-483: inside Convex's renewal leeway, a token we can renew is renewed
+    // rather than validated and handed back with the same expiry (which only
+    // brings Convex straight back on its next call).
+    const renewInLeeway =
+      cachedTokenUnexpired &&
+      (credentials.expiresAt as number) <= now + BSC_RENEWAL_LEEWAY_MS &&
+      (this.refreshTokenIsLive(credentials) || this.ssoSessionIsLive(credentials));
+
+    if (!canary && cachedTokenUnexpired && (tokenRefused || renewInLeeway)) {
+      console.log(
+        `[BSC Adapter] Skipping the cached token for ${this.siteName} ` +
+          `(caller_reported_refusal=${tokenRefused}, renewal_leeway=${renewInLeeway}).`,
+      );
+    }
+
+    if (!canary && cachedTokenUnexpired && !tokenRefused && !renewInLeeway) {
       console.log(`[BSC Adapter] Validating cached token for ${this.siteName}...`);
-      // NEO-278: a network failure here (DNS, timeout, ECONNRESET) means the
-      // same as a non-OK answer, "couldn't validate this token", and must not
-      // skip the refresh/silent/password fallbacks below, which can satisfy
-      // the login a moment later.
+      // NEO-278: a network failure here (DNS, timeout, ECONNRESET) must never
+      // turn into a failed login.
       //
-      // NEO-445: when both attempts fail, a token that may be perfectly valid
-      // goes to the refresh below, which rotates it and writes a Secret Manager
-      // version (NEO-115). Accepted, Jason's call 2026-11-05: BSC answers this
-      // in a couple of seconds or fails, and waiting longer spends the caller's
-      // budget on an answer that is not coming.
-      const profile = await this.fetchSellerProfile(credentials.token);
-      if (profile) {
+      // NEO-483 (Jason, 2026-11-13) reverses NEO-445's call of 2026-11-05.
+      // NEO-445 sent a token that could not be validated to the refresh grant,
+      // which rotated a token that was probably fine and wrote a Secret
+      // Manager version (NEO-115) every time BSC stalled. Now only BSC's own
+      // verdict (401 or 403) discards the token. When the read gives no
+      // verdict (timeout, throw, 5xx after its retry, 429, any other 4xx) the
+      // cached token is served as is, without the optional seller fields. If
+      // BSC does refuse it later, the caller says so with `tokenRefused` and
+      // this branch is skipped.
+      const profile = await this.fetchSellerProfile(credentials.token as string);
+      if (profile.kind === "profile") {
         // Log a 4-char prefix only — sellerId is a per-user BSC identifier
         // and full values in Cloud Logging would let log-readers correlate
         // Clerk users to BSC seller accounts.
@@ -1074,18 +1136,42 @@ export class BSCAdapter extends BaseAdapter {
           expiresAt: credentials.expiresAt,
         };
       }
-      // Stale/revoked token. Fall through to a fresh login.
+      if (profile.kind === "unavailable") {
+        console.warn(
+          `[BSC Adapter] Cached token not validated (no verdict from /marketplace/user/profile); ` +
+            `serving it without storeName + sellerId.`,
+        );
+        return {
+          success: true,
+          message: `Used cached token for ${this.siteName}`,
+          expiresAt: credentials.expiresAt,
+        };
+      }
+      // Refused (401/403). Fall through to the refresh grant.
       //
       // NEO-115: we deliberately do NOT write a token-cleared version here.
       // That write burned a whole Secret Manager version (billed forever, at
       // TOKEN_TTL_MS = 1h cadence) purely to blank a field that the
       // fresh-login write-back below overwrites seconds later — it doubled
       // BSC's version rate for no durable benefit. The dead token simply
-      // stays in the secret until the fresh login replaces it; it can never
-      // cause a false success, because the cache-hit branch above only
-      // returns success when fetchSellerProfile actually validates it.
-      console.log(`[BSC Adapter] Cached token is invalid, re-authenticating...`);
+      // stays in the secret until the fresh login replaces it; it is never
+      // served again, because BSC refuses it on every later read and a caller
+      // that sees it refused sends `tokenRefused`.
+      console.log(`[BSC Adapter] Cached token refused by BSC, re-authenticating...`);
     }
+
+    // NEO-483: what to fall back on if a leeway renewal cannot reach BSC. The
+    // cached token is still unexpired and nothing has refused it, so it beats
+    // a failed login; its expiry keeps it inside Convex's leeway, so the next
+    // call tries the renewal again.
+    const leewayFallback: AdapterResponse | undefined =
+      !canary && renewInLeeway && !tokenRefused
+        ? {
+            success: true,
+            message: `Used cached token for ${this.siteName}`,
+            expiresAt: credentials.expiresAt,
+          }
+        : undefined;
 
     // --- Refresh-grant path: NEO-141's replacement for a stored password ---
     //
@@ -1125,14 +1211,14 @@ export class BSCAdapter extends BaseAdapter {
           return { success: false, error: `Authentication failed` };
         }
 
-        const profile = await this.fetchSellerProfile(refreshed.tokens.token);
-        this.logProfile("Refreshed token", profile);
+        // NEO-483: no profile read here. Convex fetches the seller account on
+        // its own schedule, so a renewal never waits on BSC's profile endpoint
+        // and the response carries no storeName or sellerId.
+        console.log(`[BSC Adapter] Refreshed token for ${this.siteName}; no profile read.`);
         return {
           success: true,
           message: `Refreshed token for ${this.siteName}`,
           expiresAt: refreshed.tokens.expiresAt,
-          storeName: profile?.storeName,
-          sellerId: profile?.sellerId,
         };
       }
 
@@ -1143,6 +1229,13 @@ export class BSCAdapter extends BaseAdapter {
       // REFUSED grant (4xx) is the case NEO-278 exists for: fall through to
       // the SSO re-authorize below, then to a password if one is stored.
       if (!credentials.password && !refreshed.reauthRequired) {
+        if (leewayFallback) {
+          console.warn(
+            `[BSC Adapter] Leeway renewal failed (token endpoint unavailable); ` +
+              `serving the unexpired cached token.`,
+          );
+          return leewayFallback;
+        }
         return {
           success: false,
           error: refreshed.error,
@@ -1186,14 +1279,12 @@ export class BSCAdapter extends BaseAdapter {
           return { success: false, error: `Authentication failed` };
         }
 
-        const profile = await this.fetchSellerProfile(silent.tokens.token);
-        this.logProfile("Silent re-authorize", profile);
+        // NEO-483: no profile read here either; see the refresh path.
+        console.log(`[BSC Adapter] Silently re-authenticated ${this.siteName}; no profile read.`);
         return {
           success: true,
           message: `Silently re-authenticated with ${this.siteName}`,
           expiresAt: silent.tokens.expiresAt,
-          storeName: profile?.storeName,
-          sellerId: profile?.sellerId,
         };
       }
       // silentReauthorize already logged why. Fall through: a password if one
@@ -1207,6 +1298,15 @@ export class BSCAdapter extends BaseAdapter {
       // for a user secret whose session has fully lapsed, not a corrupt one.
       // Say so precisely so Convex can prompt a re-login instead of guessing
       // from a status code.
+      if (leewayFallback) {
+        // NEO-483: the renewal failed, but the cached token is unexpired and
+        // nothing refused it. Serve it; once it expires, the next call lands
+        // here without a fallback and reports reauthRequired.
+        console.warn(
+          `[BSC Adapter] Leeway renewal failed; serving the unexpired cached token.`,
+        );
+        return leewayFallback;
+      }
       console.log(
         `[BSC Adapter] no cached token, no live refresh token, no SSO session, no password — re-auth required`,
       );
@@ -1308,7 +1408,9 @@ export class BSCAdapter extends BaseAdapter {
 
       // Capture sellerId/storeName in the same response shape as the cached
       // path. Profile failure here is non-fatal — we already have a valid
-      // token; the caller just won't get a sellerId this round.
+      // token; the caller just won't get a sellerId this round. NEO-483: this
+      // (Connect) is the one renewal-free path that still reads the profile;
+      // when it does not answer, Convex fetches the seller account later.
       const profile = await this.fetchSellerProfile(tokens.token);
       this.logProfile("Fresh login", profile);
 
@@ -1316,8 +1418,8 @@ export class BSCAdapter extends BaseAdapter {
         success: true,
         message: `Successfully logged into ${this.siteName}`,
         expiresAt: tokens.expiresAt,
-        storeName: profile?.storeName,
-        sellerId: profile?.sellerId,
+        storeName: profile.kind === "profile" ? profile.storeName : undefined,
+        sellerId: profile.kind === "profile" ? profile.sellerId : undefined,
       };
     } catch (error) {
       // Network error or unexpected throw during the B2C exchange. The error
@@ -1342,13 +1444,11 @@ export class BSCAdapter extends BaseAdapter {
    * and full values in Cloud Logging would let a log reader correlate Clerk
    * users to BSC seller accounts.
    */
-  private logProfile(
-    context: string,
-    profile: { storeName?: string; sellerId?: string } | null,
-  ): void {
-    if (!profile) {
+  private logProfile(context: string, profile: SellerProfileOutcome): void {
+    if (profile.kind !== "profile") {
       console.warn(
-        `[BSC Adapter] ${context}: no usable /marketplace/user/profile answer; storeName + sellerId omitted.`,
+        `[BSC Adapter] ${context}: no usable /marketplace/user/profile answer ` +
+          `(${profile.kind}); storeName + sellerId omitted.`,
       );
       return;
     }

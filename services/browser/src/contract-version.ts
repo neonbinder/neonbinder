@@ -49,4 +49,33 @@
  *
  * See services/browser/README.md ("Release contract") for the full rule.
  */
-export const CONTRACT_VERSION = 1;
+export const CONTRACT_VERSION = 2;
+
+/*
+ * HISTORY
+ *
+ *   1 (NEO-143): the version check itself; transient login credentials.
+ *   2 (NEO-483): `/login/bsc` accepts `tokenRefused` (strict boolean) and
+ *      skips the cached-token branch when it is true. BSC's refresh and
+ *      silent re-authorize paths stop reading the seller profile, so their
+ *      responses omit the optional `storeName` and `sellerId`, and a cached
+ *      token whose profile read gives no verdict is served without them.
+ *      Convex's REQUIRED_CONTRACT_VERSION stays 1 until the next release.
+ *
+ *      Mixed versions during a release, stated plainly:
+ *        - Old service, new Convex: safe. The old service ignores
+ *          `tokenRefused` and keeps its old cached-branch behaviour (a
+ *          stalled profile read discards the token and renews).
+ *        - New service, old Convex (release.yml promotes this service
+ *          first, so this is the window every release passes through, a few
+ *          minutes): NOT fully safe. Old Convex never sends `tokenRefused`.
+ *          If BSC answers 401 to the stored token while its profile endpoint
+ *          is stalling, the new cached branch gets no verdict from the
+ *          profile read and serves the refused token again, so the renewal
+ *          old Convex asked for does not happen. BSC calls in that window
+ *          keep failing with 401, and a collector can be told to sign in
+ *          again until new Convex is live (its next renewal sends
+ *          `tokenRefused`) or the stall ends. Nothing is lost: the stored
+ *          session is untouched and signing in again, or waiting, clears it.
+ *          Old Convex also handles a login with no seller fields already.
+ */

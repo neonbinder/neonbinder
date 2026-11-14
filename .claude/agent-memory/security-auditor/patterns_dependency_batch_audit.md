@@ -5,7 +5,7 @@ metadata:
   type: reference
 ---
 
-Recurring task in monorepo neonbinder/neonbinder: periodic dependency batches (e.g. NEO-86 "deps-batch-2026-07") bundle npm bumps + GitHub Actions SHA re-pins on one branch, audited before opening a PR. Scope = supply-chain/provenance ONLY, not product code review.
+Recurring task in monorepo neonbinder/neonbinder-app: periodic dependency batches (e.g. NEO-86 "deps-batch-2026-07") bundle npm bumps + GitHub Actions SHA re-pins on one branch, audited before opening a PR. Scope = supply-chain/provenance ONLY, not product code review.
 
 **How to apply — run these against `git diff origin/main..HEAD`:**
 

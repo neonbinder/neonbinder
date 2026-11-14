@@ -62,11 +62,18 @@ interface ErrorResponse {
 // present they drive one fresh sign-in and are never persisted; when absent
 // the adapter falls back to the stored secret, which is exactly what the
 // canary jobs (`{key, canary:true}`) do. See parseTransientCredentials.
+//
+// NEO-483 (contract version 2): `tokenRefused` is BSC-only. Convex sets it
+// after BSC answered 401 to the stored access token, so the adapter skips its
+// cached-token branch instead of serving the refused token back. Only a strict
+// boolean `true` counts; anything else (the string "true" included) is false.
+// An older service ignores the field and behaves as before.
 type LoginRequestBody = {
   key: string;
   canary?: boolean;
   username?: string;
   password?: string;
+  tokenRefused?: boolean;
 };
 
 interface SitesResponse {
@@ -290,6 +297,10 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
   // Manager, silently defeating the cache bypass the canary depends on and
   // resuming the version churn it exists to avoid.
   const canary = req.body.canary === true;
+  // NEO-483: coerced the same way, so a stray truthy value can never skip the
+  // cached-token branch. Not logged on browser_login_call (its field set is
+  // the log-metric contract); the adapter logs when it skips the cache.
+  const tokenRefused = req.body.tokenRefused === true;
   if (!key) {
     logBrowserOp({
       msg: "browser_login_call",
@@ -342,6 +353,7 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
     const result = await adapter.login(key, {
       canary,
       transientCredentials: transient.credentials,
+      tokenRefused,
     });
     if (result.success) {
       logBrowserOp({

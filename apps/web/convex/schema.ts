@@ -5343,6 +5343,29 @@ export default defineSchema({
     dormant: v.optional(v.union(v.literal("noCredentials"), v.literal("sellerConflict"))),
     /** The platform seller account this owner lists from (BSC seller id). */
     platformAccountId: v.optional(v.string()),
+    /**
+     * NEO-483 (BSC only): the owner's background seller-account read
+     * (`bscSellerId.ts`). `token` names the chain (a tick whose token no
+     * longer matches stands down); `startedAt` is when the chain began.
+     * RUNNING while `endedAt` is unset: older than
+     * `BSC_SELLER_ID_FETCH_STALE_MS` it reads as stale and a new chain
+     * replaces it. ENDED once `endedAt` is set, with `endReason`: "gaveUp"
+     * (every read failed), "noSellerProfile" (BSC answered with no seller
+     * profile) or "stopped" (a tick found the owner no longer listing, BSC
+     * paused, the owner signed out, or no token). An ended chain is kept so
+     * renewals and drain claims wait `BSC_SELLER_ID_FETCH_COOLDOWN_MS` (only
+     * the 60 s floor after "stopped") and even a user action waits
+     * `BSC_SELLER_ID_FETCH_USER_RETRY_MS`. Cleared only when the account is
+     * known (it lands, or a tick finds it stored). Holds no marketplace value.
+     */
+    sellerIdFetch: v.optional(
+      v.object({
+        token: v.string(),
+        startedAt: v.number(),
+        endedAt: v.optional(v.number()),
+        endReason: v.optional(v.union(v.literal("gaveUp"), v.literal("noSellerProfile"), v.literal("stopped"))),
+      }),
+    ),
     /** When the poll last ran while the owner's credentials needed a fresh sign-in. */
     reauthPollAt: v.optional(v.number()),
     lastUpdated: v.number(),
