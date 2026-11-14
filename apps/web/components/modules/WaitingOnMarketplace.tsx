@@ -3,7 +3,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 
 /**
- * NEO-487 — "Waiting on BuySportsCards… 12s".
+ * NEO-487 — "Waiting on BuySportsCards… 12s" ("4m 7s" past a minute).
  *
  * A marketplace call can sit for a long while (a 30 s stall, a cooldown after
  * a 429), and a spinner that says nothing reads as NeonBinder hanging. This
@@ -26,12 +26,22 @@ import { api } from "../../convex/_generated/api";
  * an inner wrapper that renders only while waiting. Hosts render this
  * unconditionally and let it handle its own idle state.
  *
- * ## The seconds
+ * ## The time
  *
- * Counted on the CLIENT's clock from the moment this component first saw
- * that `waitingSince`, never from the server timestamp: the two clocks are
- * not the same clock, and a skewed laptop would otherwise open on "-4s" or
- * "93s". A new `waitingSince` is a new wait and starts again from 0.
+ * "12s" under a minute, "4m 7s" from one minute (`waitedText`).
+ *
+ * NEO-483: counted from the server's `waitingSince`, so a refresh, a new tab
+ * or a remount mid-wait reads the true length of the wait instead of starting
+ * again at 0s (the seller-account wait on Sync status runs for minutes). The
+ * two clocks are not the same clock, so the count is never less than what
+ * this client has itself watched: a laptop clock behind the server's never
+ * shows "-4s" or a frozen 0s. A laptop AHEAD of the server reads that many
+ * seconds long; that is the price of surviving a refresh.
+ *
+ * The 1.5 s gate stays on the CLIENT's clock (from the moment this component
+ * first saw that `waitingSince`), so no clock skew can make a quick call
+ * flash, and the line always appears into a region that was already mounted
+ * empty. A new `waitingSince` is a new wait and clears the gate again.
  *
  * ## Screen readers
  *
@@ -49,12 +59,20 @@ export function waitingText(marketplace: string): string {
 /** A wait shorter than this is never shown or announced. */
 export const ANNOUNCE_AFTER_MS = 1500;
 
+/** "12s" under a minute, "4m 7s" from one minute. Whole seconds in, never negative. */
+export function waitedText(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 /**
- * Whole seconds since this client first saw `since`, ticking once a second;
- * `null` while there is no wait, or while it is younger than
- * `ANNOUNCE_AFTER_MS`. Every state write is in a timer callback.
+ * Whole seconds the wait has lasted, ticking once a second: from the server's
+ * `since`, floored at what this client has watched itself. `null` while there
+ * is no wait, or until this client has watched it for `ANNOUNCE_AFTER_MS`.
+ * Every state write is in a timer callback.
  */
-function useClientSeconds(since: number | undefined): number | null {
+function useWaitSeconds(since: number | undefined): number | null {
   const [clock, setClock] = useState<{ since: number; at: number; now: number } | null>(null);
   useEffect(() => {
     if (since === undefined) return;
@@ -68,9 +86,9 @@ function useClientSeconds(since: number | undefined): number | null {
     };
   }, [since]);
   if (since === undefined || !clock || clock.since !== since) return null;
-  const elapsed = clock.now - clock.at;
-  if (elapsed < ANNOUNCE_AFTER_MS) return null;
-  return Math.floor(elapsed / 1000);
+  const watched = clock.now - clock.at;
+  if (watched < ANNOUNCE_AFTER_MS) return null;
+  return Math.floor(Math.max(watched, clock.now - since) / 1000);
 }
 
 export function WaitingOnMarketplace({
@@ -85,7 +103,7 @@ export function WaitingOnMarketplace({
   /** Layout for the shown line (margins, indent); never applied while idle. */
   className?: string;
 }) {
-  const seconds = useClientSeconds(waitingSince);
+  const seconds = useWaitSeconds(waitingSince);
   return (
     <p role="status" data-marketplace-wait="">
       {seconds !== null && (
@@ -96,7 +114,7 @@ export function WaitingOnMarketplace({
           />
           <span>{waitingText(marketplace)}</span>
           <span aria-hidden="true" className="tabular-nums text-ink-3">
-            {seconds}s
+            {waitedText(seconds)}
           </span>
         </span>
       )}

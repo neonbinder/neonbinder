@@ -22,6 +22,12 @@ const server = http.createServer((req, res) => {
         ...req.headers,
         host: upstream.hostname,
         "x-vercel-protection-bypass": bypass,
+        // NEO-548: keep Vercel's preview toolbar (a viewport-fixed round button on the
+        // right edge) out of the page. On the phone project it sat over the drawer's
+        // Sell button and intercepted the click. Vercel's "Disable toolbar for
+        // automation" docs: the header's presence on the request to the preview URL is
+        // enough. It rides only through this proxy, never to Convex or Clerk.
+        "x-vercel-skip-toolbar": "1",
       },
     },
     (upstreamRes) => {

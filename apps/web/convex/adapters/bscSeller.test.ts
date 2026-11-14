@@ -355,6 +355,74 @@ describe("NEO-475: the seller profile read (5 s per attempt, one immediate retry
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  // NEO-483: the background read (`bscSellerId.ts`) owns its own schedule.
+  describe("the options argument (the background read's single, longer attempt)", () => {
+    test("attempts: 1 stops after one request, however retryable the failure", async () => {
+      const { asked } = scriptProfile(["timeout", "ok"]);
+      expect(await fetchBscSellerId(ctx, session(), { attempts: 1 })).toEqual({
+        ok: false,
+        failure: { kind: "timeout", message: BSC_SELLER_COPY.timeout },
+      });
+      expect(asked).toHaveLength(1);
+    });
+
+    test.each<[string, Answer]>([
+      ["a network error", "network"],
+      ["an unreadable body", "garbled"],
+      ["a 503", 503],
+    ])("attempts: 1 does not retry %s", async (_label, first) => {
+      const { asked } = scriptProfile([first, "ok"]);
+      expect(await fetchBscSellerId(ctx, session(), { attempts: 1 })).toMatchObject({ ok: false });
+      expect(asked).toHaveLength(1);
+    });
+
+    test("attempts: 1 with an answer first time reads the id in one request", async () => {
+      const { asked } = scriptProfile(["ok"]);
+      expect(await fetchBscSellerId(ctx, session(), { attempts: 1 })).toEqual({ ok: true, value: "seller-9" });
+      expect(asked).toHaveLength(1);
+    });
+
+    test("a 429 is one request and a plain http failure", async () => {
+      const { asked } = scriptProfile([429, "ok"]);
+      expect(await fetchBscSellerId(ctx, session(), { attempts: 1 })).toMatchObject({
+        ok: false,
+        failure: { kind: "http", httpStatus: 429 },
+      });
+      expect(asked).toHaveLength(1);
+    });
+
+    test("timeoutMs replaces the 5 s limit on the request", async () => {
+      const { timeouts } = scriptProfile(["ok"]);
+      await fetchBscSellerId(ctx, session(), { attempts: 1, timeoutMs: 20_000 });
+      expect(timeouts).toEqual([20_000]);
+    });
+
+    test("attempts: 3 allows a third request after two retryable failures", async () => {
+      const { asked } = scriptProfile(["timeout", 503, "ok"]);
+      expect(await fetchBscSellerId(ctx, session(), { attempts: 3 })).toEqual({ ok: true, value: "seller-9" });
+      expect(asked).toHaveLength(3);
+    });
+
+    test.each([0, -4])("attempts: %i still makes the one request (never none)", async (attempts) => {
+      const { asked } = scriptProfile(["ok"]);
+      expect(await fetchBscSellerId(ctx, session(), { attempts })).toEqual({ ok: true, value: "seller-9" });
+      expect(asked).toHaveLength(1);
+    });
+
+    test("omitted options keep today's bounds: two attempts, 5 s each", async () => {
+      const { asked, timeouts } = scriptProfile(["timeout", "timeout", "ok"]);
+      await fetchBscSellerId(ctx, session(), {});
+      expect(asked).toHaveLength(2);
+      expect(timeouts).toEqual([5_000, 5_000]);
+    });
+
+    test("a custom timeoutMs applies to the retry too", async () => {
+      const { timeouts } = scriptProfile(["timeout", "ok"]);
+      await fetchBscSellerId(ctx, session(), { timeoutMs: 1_234 });
+      expect(timeouts).toEqual([1_234, 1_234]);
+    });
+  });
+
   test("a sellerProfile with no usable id is an answer, not a failure: not retried", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ sellerProfile: { sellerId: "has spaces" } })) as unknown as typeof fetch);
     expect(await fetchBscSellerId(ctx, session())).toEqual({ ok: true, value: null });

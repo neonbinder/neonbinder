@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import SyncStatusView, { countsLine, foldedLines, heldBackHref, platformState, runLines, setKind, setLine, stepKind } from "./SyncStatusView";
 import SyncStatusTab from "./SyncStatusTab";
+import { ANNOUNCE_AFTER_MS, waitingText } from "@/components/modules/WaitingOnMarketplace";
 import { stubListing } from "./stubListing";
 import {
   PAUSED_LINE,
@@ -13,7 +14,9 @@ import {
   REAUTH_LINE,
   REAUTH_LINE_READ_ONLY,
   SELLER_CONFLICT_LINE,
+  awaitingSellerLine,
   problemSentence,
+  sellerAccountStalledLine,
   stepLabels,
   stepName,
   whenSynced,
@@ -128,6 +131,160 @@ describe("the Sync status screen", () => {
     expect(within(section("Running now")).getByText(/^Nothing syncing right now\./).textContent).toBe(
       `Nothing syncing right now. Last sync finished ${whenSynced(T)}. Next round around ${whenSynced(T + 15 * 60_000)}.`,
     );
+  });
+
+  it("awaiting the seller account: the waiting line replaces the idle line (collector copy)", async () => {
+    const { view, rerender } = draw({ platforms: [bsc({ awaitingSellerSince: T })] });
+    const part = section("Running now");
+    expect(within(part).getByText(awaitingSellerLine("bsc"))).toBeTruthy();
+    expect(within(part).queryByText(/Nothing syncing right now/)).toBeNull();
+    // The wait counter is quiet for a beat, then names the marketplace.
+    expect(within(part).queryByText(waitingText("BuySportsCards"))).toBeNull();
+    await expectAccessibleInBothModes(view.container, { label: "Sync status, awaiting seller account", rerender });
+  });
+
+  it("awaiting the seller account: after the announce delay the wait names BuySportsCards", () => {
+    vi.useFakeTimers();
+    try {
+      draw({ platforms: [bsc({ awaitingSellerSince: T })] });
+      act(() => {
+        vi.advanceTimersByTime(ANNOUNCE_AFTER_MS + 10);
+      });
+      expect(within(section("Running now")).getByText(waitingText("BuySportsCards"))).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("awaiting the seller account: the admin's read-only copy speaks about the collector", async () => {
+    const { view, rerender } = draw({ platforms: [bsc({ awaitingSellerSince: T })] }, { readOnly: true });
+    const part = section("Running now");
+    expect(within(part).getByText(awaitingSellerLine("bsc", true))).toBeTruthy();
+    expect(awaitingSellerLine("bsc", true)).not.toBe(awaitingSellerLine("bsc"));
+    expect(within(part).queryByText(awaitingSellerLine("bsc"))).toBeNull();
+    await expectAccessibleInBothModes(view.container, { label: "Sync status, awaiting seller account (read-only)", rerender });
+  });
+
+  it("awaiting the seller account: a run going now wins, with no waiting line", () => {
+    draw({
+      platforms: [
+        bsc({ awaitingSellerSince: T, running: { startedAt: T, setLabel: "1989 Upper Deck Base", variantId: "v1" } }),
+      ],
+    });
+    const part = section("Running now");
+    expect(within(part).queryByText(awaitingSellerLine("bsc"))).toBeNull();
+    expect(part.textContent).toContain("Syncing 1989 Upper Deck Base with BuySportsCards");
+  });
+
+  it("no awaitingSellerSince: the idle line stays and no waiting line shows", () => {
+    draw({ platforms: [bsc({ lastDrainAt: T })] });
+    expect(screen.queryByText(awaitingSellerLine("bsc"))).toBeNull();
+    expect(screen.getByText(/^Nothing syncing right now\./)).toBeTruthy();
+  });
+
+  it("awaiting the seller account: the final copy, collector and admin", () => {
+    expect(awaitingSellerLine("bsc")).toBe(
+      "BuySportsCards is slow to confirm your seller account. Hang tight: nothing's lost, and your first sync kicks off on its own the moment it answers.",
+    );
+    expect(awaitingSellerLine("bsc", true)).toBe(
+      "BuySportsCards hasn't said which seller account this collector lists from yet. Syncing starts on its own once it answers.",
+    );
+  });
+
+  it("awaiting the seller account: a wait already minutes old reads its true length after a refresh", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T + 4 * 60_000 + 5_500);
+    try {
+      draw({ platforms: [bsc({ awaitingSellerSince: T })] });
+      act(() => {
+        vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
+      });
+      expect(section("Running now").textContent).toContain("4m 7s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe("the seller-account reads stopped (sellerAccountStalled)", () => {
+    const cases = [
+      {
+        stall: "gaveUp" as const,
+        collector:
+          "BuySportsCards still hasn't confirmed your seller account. Nothing's lost. Hit Sync on any checklist to give it another go.",
+        admin: "BuySportsCards never confirmed this collector's seller account. It tries again on their next Sync.",
+      },
+      {
+        stall: "noSellerProfile" as const,
+        collector:
+          "BuySportsCards says this account isn't set up to sell yet. Finish seller setup on BuySportsCards, then hit Sync on any checklist.",
+        admin: "BuySportsCards says this collector's account isn't set up to sell yet. It tries again on their next Sync.",
+      },
+    ];
+
+    for (const c of cases) {
+      it(`${c.stall}: the final copy, collector and admin`, () => {
+        expect(sellerAccountStalledLine("bsc", c.stall)).toBe(c.collector);
+        expect(sellerAccountStalledLine("bsc", c.stall, true)).toBe(c.admin);
+      });
+
+      it(`${c.stall}: the collector's line replaces the idle line, with no live count`, async () => {
+        vi.useFakeTimers();
+        let drawn: ReturnType<typeof draw> | undefined;
+        try {
+          drawn = draw({ platforms: [bsc({ lastDrainAt: T, sellerAccountStalled: c.stall })] });
+          const part = section("Running now");
+          expect(within(part).getByText(c.collector)).toBeTruthy();
+          expect(within(part).queryByText(/Nothing syncing right now/)).toBeNull();
+          expect(within(part).queryByText(awaitingSellerLine("bsc"))).toBeNull();
+          act(() => {
+            vi.advanceTimersByTime(ANNOUNCE_AFTER_MS + 5000);
+          });
+          // Nothing is outstanding, so nothing counts and nothing is announced.
+          expect(within(part).queryByText(waitingText("BuySportsCards"))).toBeNull();
+          expect((part.querySelector("[data-marketplace-wait]") as HTMLElement).textContent).toBe("");
+          // No second Sync control: Sync lives on the checklist.
+          expect(within(part).queryByRole("button")).toBeNull();
+        } finally {
+          vi.useRealTimers();
+        }
+        await expectAccessibleInBothModes(drawn!.view.container, {
+          label: `Sync status, seller account ${c.stall}`,
+          rerender: drawn!.rerender,
+        });
+      });
+
+      it(`${c.stall}: the admin's read-only line speaks about the collector`, async () => {
+        const { view, rerender } = draw({ platforms: [bsc({ sellerAccountStalled: c.stall })] }, { readOnly: true });
+        const part = section("Running now");
+        expect(within(part).getByText(c.admin)).toBeTruthy();
+        expect(within(part).queryByText(c.collector)).toBeNull();
+        await expectAccessibleInBothModes(view.container, {
+          label: `Sync status, seller account ${c.stall} (read-only)`,
+          rerender,
+        });
+      });
+    }
+
+    it("a run going now wins over a stalled line", () => {
+      draw({
+        platforms: [
+          bsc({
+            sellerAccountStalled: "gaveUp",
+            running: { startedAt: T, setLabel: "1989 Upper Deck Base", variantId: "v1" },
+          }),
+        ],
+      });
+      const part = section("Running now");
+      expect(within(part).queryByText(sellerAccountStalledLine("bsc", "gaveUp"))).toBeNull();
+      expect(part.textContent).toContain("Syncing 1989 Upper Deck Base with BuySportsCards");
+    });
+
+    it("a wait under way wins over a stalled line (the server never sends both)", () => {
+      draw({ platforms: [bsc({ awaitingSellerSince: T, sellerAccountStalled: "gaveUp" })] });
+      const part = section("Running now");
+      expect(within(part).getByText(awaitingSellerLine("bsc"))).toBeTruthy();
+      expect(within(part).queryByText(sellerAccountStalledLine("bsc", "gaveUp"))).toBeNull();
+    });
   });
 
   it("queued: each card with its set and when, oldest first; capped says 'and more'", async () => {
