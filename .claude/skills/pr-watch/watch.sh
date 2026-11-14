@@ -62,10 +62,12 @@ MAX_MIN="${PR_WATCH_MAX_MIN:-90}"
 GRACE_MIN="${PR_WATCH_ENQUEUE_GRACE_MIN:-3}"
 GH="${PR_WATCH_GH:-gh}"
 EXPECTED_REPO="${PR_WATCH_REPO:-neonbinder/neonbinder-app}"
-# Automatic dequeue reasons. CONFIRM AT D0 (the first enqueue/dequeue dry run):
-# GitHub documents the event's `reason` only loosely, so this is a guess at the
-# strings it uses. Unknown reasons deliberately fall to REMOVED (stop, tell a person).
-EJECT_REASONS="${PR_WATCH_EJECT_REASONS:-^(CI_FAILURE|CI_TIMEOUT|TIMEOUT|MERGE_CONFLICT|QUEUE_CONFLICT|INVALID_MERGE_COMMIT|BRANCH_PROTECTIONS|DEPLOYMENT_FAILURE)$}"
+# Automatic dequeue reasons. The GraphQL timeline's RemovedFromMergeQueueEvent
+# uses lowercase strings: `failed_checks` (actor Bot github-merge-queue) was seen
+# on the first real ejection (NEO-546 D0, 2026-11-14). The `pull_request:
+# dequeued` webhook uses CI_FAILURE-style names for the same thing. Matching is
+# case-insensitive. Unknown reasons deliberately fall to REMOVED (stop, tell a person).
+EJECT_REASONS="${PR_WATCH_EJECT_REASONS:-^(failed_checks|CI_FAILURE|CI_TIMEOUT|TIMEOUT|TIMED_OUT|MERGE_CONFLICT|QUEUE_CONFLICT|INVALID_MERGE_COMMIT|BRANCH_PROTECTIONS|DEPLOYMENT_FAILURE)$}"
 case "$PR" in ''|*[!0-9]*) echo "DONE ERROR — PR number must be digits: $PR"; exit 3;; esac
 REQUIRED_CHECK="${PR_WATCH_REQUIRED_CHECK:-CI Gate}"
 
@@ -211,7 +213,7 @@ tick_queue() {
     # pulled on purpose.
     local failed_runs
     failed_runs=$(echo "$runs" | jq -r '[.[]|select((.conclusion//"")|test("failure|timed_out|startup_failure";"i"))|.url]|.[:5]|join("; ")')
-    if ! echo "$rem_reason" | grep -Eq -- "$EJECT_REASONS" || [ "$rem_bot" != "yes" ]; then
+    if ! echo "$rem_reason" | grep -Eiq -- "$EJECT_REASONS" || [ "$rem_bot" != "yes" ]; then
       VERDICT="REMOVED"; DETAIL="dequeued, reason: $rem_reason, actor: ${rem_actor:-none} — not a known automatic ejection; stop and tell the operator, do not re-enqueue"
     else
       VERDICT="EJECTED"

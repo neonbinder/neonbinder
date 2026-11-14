@@ -104,7 +104,7 @@ Terminal lines (one, then the Monitor ends):
 | Line | Meaning | Exit |
 |---|---|---|
 | `DONE MERGED` | GitHub reports the PR merged (the only source of MERGED), with the merge commit | 0 |
-| `DONE EJECTED` | Dequeued by GitHub itself: an allowlisted automatic reason (CI_FAILURE, CI_TIMEOUT, MERGE_CONFLICT and similar; **allowlist to confirm at D0**) with a null or bot actor. Carries the dequeue reason (from the PR timeline's `RemovedFromMergeQueueEvent`) and the failing job URLs, else the failing run URLs, else says no failing job was found (timeout/conflict) | 1 |
+| `DONE EJECTED` | Dequeued by GitHub itself: an allowlisted automatic reason (`failed_checks` as the timeline records a failed queue run, plus CI_FAILURE, CI_TIMEOUT, MERGE_CONFLICT and similar; matched case-insensitively) with a null or bot actor. Carries the dequeue reason (from the PR timeline's `RemovedFromMergeQueueEvent`) and the failing job URLs, else the failing run URLs, else says no failing job was found (timeout/conflict) | 1 |
 | `DONE REMOVED` | Everything else: a person removed it, the reason is not on the allowlist, or the PR was closed unmerged. Stop and tell Jason; **never re-enqueue** | 4 |
 | `DONE NOT_QUEUED` | Still not in the queue after the grace window (3 min); the enqueue did not happen | 5 |
 | `DONE TIMEOUT` | Watch window elapsed (default 150 min; the queue's own timeout is 120) | 2 |

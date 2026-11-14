@@ -39,6 +39,8 @@ run "unknown reason is REMOVED, not EJECTED" 4 'DONE REMOVED.*SOMETHING_NEW'
 
 fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"User","login":"someone"}')]" > "$FIX/graphql.json"
 run "known reason with a human actor is REMOVED" 4 'DONE REMOVED.*CI_FAILURE.*someone'
+fresh; pr OPEN null "[$ADD,$(rem failed_checks '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
+run "real D0 shape: failed_checks by github-merge-queue is EJECTED" 1 'DONE EJECTED.*failed_checks'
 
 fresh; pr OPEN null "[]" > "$FIX/graphql.json"
 PR_WATCH_REPO=other/repo run "wrong repo refused" 3 'DONE ERROR.*only watches other/repo'
