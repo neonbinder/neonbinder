@@ -155,7 +155,7 @@ failing_jobs() {
 tick_queue() {
   local pr state last_add last_rem rem_reason rem_actor rem_bot runs group
   local mq_state mq_pos nruns nrun_active jtotal jdone shards_t shards_d gate
-  pr=$($GH api graphql -f query="$QUERY" -F owner="$OWNER" -F name="$NAME" -F pr="$PR" 2>/dev/null \
+  pr=$($GH api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F pr="$PR" 2>/dev/null \
         | jq -c '.data.repository.pullRequest // empty') || pr=""
   if [ -z "$pr" ]; then
     echo "[t+$(elapsed_min)m] poll error (gh read failed) — will retry next tick"; VERDICT="RUNNING"; return 0; fi

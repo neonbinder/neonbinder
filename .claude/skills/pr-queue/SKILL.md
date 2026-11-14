@@ -47,9 +47,14 @@ enqueue.
    **Remove the `run-e2e` label before enqueueing** (`gh pr edit <PR> --remove-label run-e2e`):
    the queue interlock treats the label as "this PR already ran full".
 2. **Enqueue.** First confirm the ruleset still has the queue:
-   `gh api repos/neonbinder/neonbinder-app/rules/branches/main --jq '[.[].type]'`
-   must contain `merge_queue` (otherwise `gh pr merge` would merge on cheap checks
-   alone: stop, and use the Claude-run flow or ask Jason). Then
+   `GITHUB_REPOSITORY=neonbinder/neonbinder-app bash .github/scripts/ci-mode.sh --check-ruleset`
+   prints `queue=live` and exits 0 only when the ruleset has a `merge_queue` rule
+   and `CI Gate` is required from the Actions app; otherwise `queue=off`, exit 1
+   (any error included). Run it from the worktree root. The script exists only
+   once the merge-queue PR has merged; before that queue mode cannot be on, so a
+   missing script means off. If it does not print `queue=live`,
+   `gh pr merge` would merge on cheap checks alone: stop, and use the Claude-run
+   flow or ask Jason. Then
    `gh pr merge <PR> --squash` (it enqueues, it does not merge
    at once). Tab `cc-state queue`. Do not push to the branch while it is queued
    unless you mean to leave: a push dequeues it.
@@ -65,6 +70,9 @@ enqueue.
      session scratchpad;
    - look for an existing ci-fail ticket before filing one (bump Occurrences);
    - run the failure through the planner, not a guess;
+   - **every re-enqueue repeats the pre-enqueue checklist first**: step 0
+     (fork/author check), the `run-e2e` label removal in step 1, and step 2's
+     ruleset predicate, then `gh pr merge`;
    - an outside-service flake (the flake rule below) is re-enqueued unchanged
      with `gh pr merge <PR> --squash`, once per ticket (a merge-group run
      cannot be rerun); no new audit is needed because the code is unchanged;
@@ -88,7 +96,7 @@ enqueue.
    cheap-mode run has never run E2E, so after the ruleset is restored and before
    anything merges: **re-run PR Pipeline on every open PR, or push to it**, so
    each head SHA gets a full run. Then the Claude-run flow's merge check below
-   (a `Playwright E2E` check run on the head SHA) decides, not `CI Gate` alone.
+   (the `E2E / e2e` gate check on the head SHA) decides, not `CI Gate` alone.
 9. **Discord is a backup only**, for when no session is alive. A live session
    always knows first through its own `pr-watch --queue`.
 
@@ -328,10 +336,14 @@ still be open when it starts.
    7. **Green: merge with `pr-close`.** Your turn is the merge authorisation
       (Jason, 2026-11-12); pr-close does not ask again. Before merging,
       check the turn again (`"$Q" position NEO-123` prints position 0) and
-      confirm the PR's head SHA ran full CI: a `Playwright E2E` check run
-      with conclusion `success` on it
-      (`gh api repos/neonbinder/neonbinder-app/commits/<sha>/check-runs --jq '.check_runs[]|select(.name=="Playwright E2E")|.conclusion'`),
-      or the pipeline's `deps_only` path. A green `CI Gate` alone is not
+      confirm the PR's head SHA ran full CI: the E2E **gate** job's check run
+      (`E2E / e2e`; `Playwright E2E` is only the report and passes on a partial
+      run) is `success` from the Actions app, latest run:
+      ```bash
+      gh api "repos/neonbinder/neonbinder-app/commits/<sha>/check-runs?check_name=E2E%20%2F%20e2e&filter=latest&per_page=100" \
+    --jq '[.check_runs[]|select(.app.id==15368 and .conclusion!=null)]|sort_by(.completed_at)|last|.conclusion'
+      ```
+      It must print `success`, with no exceptions. A green `CI Gate` alone is not
       enough, because a cheap-mode run (left over from `MERGE_QUEUE=true`)
       also turns it green. Also confirm the PR's pushed head holds current main:
       `git fetch origin && git merge-base --is-ancestor origin/main "$(gh pr view <pr> --json headRefOid -q .headRefOid)"`
@@ -358,7 +370,7 @@ still be open when it starts.
   and never run a turn for one (Claude-run flow). Check `isCrossRepository`,
   `headRepositoryOwner` and the author before `gh pr merge`.
 - **Never treat a green `CI Gate` as proof of E2E** in the Claude-run flow:
-  require the `Playwright E2E` check run on the head SHA (or `deps_only`).
+  require the `E2E / e2e` gate check run on the head SHA (see the turn steps).
 
 - **No push outside your turn.** A push starts a CI run, and a run that
   cannot merge is wasted money. One turn is one main merge, one push, one run

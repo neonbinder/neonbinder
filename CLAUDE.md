@@ -171,9 +171,11 @@ run off-queue.
    ask again. `gh pr merge --disable-auto` leaves the queue; a push to a queued
    PR dequeues it.
    Never enqueue a fork PR or a Dependabot-authored PR; remove the `run-e2e`
-   label first; the live ruleset must still contain `merge_queue` (else use the
-   Claude-run flow). In the Claude-run flow a green `CI Gate` is not E2E proof:
-   require the `Playwright E2E` check run on the head SHA.
+   label first; `GITHUB_REPOSITORY=neonbinder/neonbinder-app bash .github/scripts/ci-mode.sh --check-ruleset`
+   must print `queue=live` (else use the Claude-run flow). A re-enqueue repeats
+   these checks. In the Claude-run flow a green `CI Gate` is not E2E proof:
+   require the `E2E / e2e` gate check run on the head SHA (not `Playwright E2E`,
+   which is only the report), no exceptions.
 5. **Keep watching in the same session** with `pr-watch --queue <PR>`, which
    ends in `MERGED`, `EJECTED` (GitHub removed it by itself; reason and failing
    run/job included) or `REMOVED` (anything else: stop and tell Jason, never

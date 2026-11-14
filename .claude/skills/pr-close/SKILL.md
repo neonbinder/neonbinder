@@ -45,11 +45,16 @@ gate run if an earlier one failed.
   ticket's turn (a `PR-QUEUE YOUR TURN` message). Not called yet → join the
   queue instead of merging.
 - Claude-run flow only: a green `CI Gate` is not proof of E2E (a cheap-mode run
-  from `MERGE_QUEUE=true` also turns it green). Require a `Playwright E2E` check
-  run with conclusion `success` on the head SHA
-  (`gh api repos/neonbinder/neonbinder-app/commits/<head-sha>/check-runs --jq '.check_runs[]|select(.name=="Playwright E2E")|.conclusion'`),
-  or the pipeline's `deps_only` path. Neither → stop; tell the user to re-run PR
-  Pipeline on it or push.
+  from `MERGE_QUEUE=true` also turns it green). Require the E2E **gate** job's check run
+  (named `E2E / e2e`; `Playwright E2E` is only the informational report and goes
+  green on a partial run) to be `success` on the head SHA, from the Actions app,
+  latest run:
+  ```bash
+  gh api "repos/neonbinder/neonbinder-app/commits/<head-sha>/check-runs?check_name=E2E%20%2F%20e2e&filter=latest&per_page=100" \
+    --jq '[.check_runs[]|select(.app.id==15368 and .conclusion!=null)]|sort_by(.completed_at)|last|.conclusion'
+  ```
+  It must print `success`. Anything else (empty, `failure`, `skipped`) → stop;
+  tell the user to re-run PR Pipeline on it or push. No exceptions.
 - Any check not green → stop. Tell the user to fix it or run `/pr-watch <PR>` first;
   do not merge a red PR.
 - `mergeable != MERGEABLE` → stop, report the conflict.
@@ -71,10 +76,14 @@ else, this step and the rest of the skill apply exactly as written.
   skill on its own for a PR that is not at that bar still confirms first, as
   below. If the PR is already queued, skip the enqueue.
 - **Before `gh pr merge --squash`, in this order:**
-  1. `gh api repos/neonbinder/neonbinder-app/rules/branches/main --jq '[.[].type]'`
-     must contain `merge_queue`. If it does not (the ruleset was rolled back
-     while the variable still says true), `gh pr merge` would merge on cheap
-     checks: **fall back to the Claude-run flow** (this skill's other branch).
+  1. `GITHUB_REPOSITORY=neonbinder/neonbinder-app bash .github/scripts/ci-mode.sh --check-ruleset`
+     prints `queue=live` and exits 0 only when the ruleset has a `merge_queue` rule
+     and `CI Gate` is required from the Actions app; otherwise `queue=off`, exit 1
+     (any error included). Run it from the worktree root. The script exists only
+     once the merge-queue PR has merged; before that queue mode cannot be on, so a
+     missing script means off. If it does not print `queue=live` (the ruleset was
+     rolled back while the variable still says true), `gh pr merge` would merge
+     on cheap checks: **fall back to the Claude-run flow** (this skill's other branch).
   2. `gh pr view <PR> --json isCrossRepository,headRepositoryOwner,author`:
      `isCrossRepository` false, `headRepositoryOwner.login` `neonbinder`, author
      not a Dependabot account. Otherwise stop and tell Jason.
@@ -90,7 +99,9 @@ else, this step and the rest of the skill apply exactly as written.
   - `DONE EJECTED` (GitHub removed it itself): the PR did not merge. Do not continue the gates. Treat it
     as a red per the `pr-queue` skill's GitHub-queue flow (artifacts, ci-fail
     ticket, planner, fix, re-enqueue, Mac notification) and re-run this skill
-    when the next verdict is MERGED. Re-enqueueing after a code fix needs the
+    when the next verdict is MERGED. A re-enqueue repeats the pre-enqueue
+    checks above (items 1-3: ruleset predicate, fork/author check, `run-e2e`
+    label removal) before `gh pr merge`. Re-enqueueing after a code fix needs the
     delta audit and local gates first (the `pr-queue` bar), and the PR's
     `Preview Cleanup` run must have finished.
   - `DONE REMOVED` / `NOT_QUEUED`: stop and tell Jason; never re-enqueue.
@@ -279,7 +290,7 @@ deliberately left alone and why.
 ## Hard rules
 - **Never enqueue a fork PR or a Dependabot-authored PR.** Check
   `isCrossRepository`, `headRepositoryOwner` and the author before `gh pr merge`.
-- **Before enqueueing, the live ruleset must contain `merge_queue`**; if not, the
+- **Before enqueueing, `ci-mode.sh --check-ruleset` must print `queue=live`**; if not, the
   variable is stale and the Claude-run flow applies.
 - **`MERGE_QUEUE=true`: enqueueing is the approval, and the verdict comes from
   `pr-watch --queue`, never from the cheap PR checks.** Do not say merged or

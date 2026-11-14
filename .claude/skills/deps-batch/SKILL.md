@@ -451,8 +451,8 @@ that went `READY`, which Dependabot PRs/branches were closed or deleted, what wa
   cross-repo, owner `neonbinder`, author not Dependabot). The Dependabot PRs
   themselves are never enqueued.
 - **A green `CI Gate` is not E2E proof in the Claude-run flow**: the turn's
-  `pr-close` requires the `Playwright E2E` check run on the batch's head SHA.
-  In queue mode, `pr-close` also requires the live ruleset to contain `merge_queue`.
+  `pr-close` requires the `E2E / e2e` gate check run on the batch's head SHA.
+  In queue mode, `pr-close` also requires `ci-mode.sh --check-ruleset` to print `queue=live`.
 - **Never join the queue (or, with `MERGE_QUEUE=true`, enqueue) without the user's
   explicit approval for this batch.** The merge follows on green, so that
   approval is the merge approval.
