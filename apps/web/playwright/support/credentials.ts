@@ -8,6 +8,7 @@
  */
 import { expect, type Page } from "@playwright/test";
 import type { FlowEnv } from "./env";
+import { test } from "./fixtures";
 
 /** A cold marketplace login is a real ~22 s Puppeteer/SSO round trip (the flows' 30 s). */
 export const LIVE_LOGIN = 30_000;
@@ -22,13 +23,51 @@ async function openCredentials(page: Page, gate = 10_000): Promise<void> {
   });
 }
 
-async function testStoredSession(page: Page, success: RegExp): Promise<void> {
+async function pressTest(page: Page): Promise<void> {
   // While another credential op holds the lock the button reads
   // "Testing..."; wait for the real label (the flows' 30 s).
   const test = page.getByRole("button", { name: "Test Credentials" });
   await expect(test).toBeVisible({ timeout: LIVE_LOGIN });
   await test.click();
+}
+
+async function testStoredSession(page: Page, success: RegExp): Promise<void> {
+  await pressTest(page);
   await expect(page.getByText(success)).toBeVisible({ timeout: LIVE_LOGIN });
+}
+
+/**
+ * What Test Credentials says when BuySportsCards accepts the stored session. The
+ * store name is read from BSC's seller profile, which can stall (NEO-483), so the
+ * line is one of:
+ *  - "BSC account authenticated successfully": the store name was confirmed and a
+ *    "Store: <name>" line sits under it;
+ *  - with no store name to show: "Signed in to BuySportsCards. Couldn't confirm your
+ *    store name right now; ..." (a live sign-in) or "Your saved BuySportsCards
+ *    sign-in is in place ..." (the cached path).
+ * All three are a success; a failure reads "Could not sign in to ..." and matches none.
+ */
+export const BSC_TEST_SUCCESS =
+  /BSC account authenticated successfully|Signed in to BuySportsCards|Your saved BuySportsCards sign-in is in place/i;
+
+/**
+ * Waits for BSC's Test Credentials success (either branch above) and says which one
+ * the press hit: it goes into the report as a `store-name` annotation
+ * (`confirmed` / `unconfirmed`), and the "Store: <name>" line is asserted only on
+ * the confirmed branch (an unconfirmed one has no store to show, and says so).
+ *
+ * Contract: ENTRY the Test press was taken. EXIT a success message is on screen.
+ */
+export async function expectBscTestSuccess(page: Page, timeout = LIVE_LOGIN): Promise<"confirmed" | "unconfirmed"> {
+  await expect(page.getByText(BSC_TEST_SUCCESS).first()).toBeVisible({ timeout });
+  const outcome = (await page.getByText(/BSC account authenticated successfully/i).first().isVisible()) ? "confirmed" : "unconfirmed";
+  try {
+    test.info().annotations.push({ type: "store-name", description: outcome });
+  } catch {
+    // Not inside a test: nothing to annotate.
+  }
+  if (outcome === "confirmed") await expect(page.getByText(/Store: \S/)).toBeVisible();
+  return outcome;
 }
 
 /** Open the BSC credentials page and check the worker is connected (no Test press). */
@@ -41,7 +80,8 @@ export async function openBscCredentials(page: Page): Promise<void> {
 /** util-login-to-bsc.yaml */
 export async function loginToBsc(page: Page): Promise<void> {
   await openBscCredentials(page);
-  await testStoredSession(page, /BSC account authenticated successfully/i);
+  await pressTest(page);
+  await expectBscTestSuccess(page);
 }
 
 /** util-login-to-sportlots.yaml — two branches on the operator's pause switch. */

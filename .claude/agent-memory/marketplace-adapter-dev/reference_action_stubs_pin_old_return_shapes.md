@@ -1,6 +1,6 @@
 ---
 name: action-stubs-pin-old-return-shapes
-description: Convex tests vi.mock internal adapter actions with their OWN args/returns validators, so changing an action's return shape leaves every stub returning the old shape; grep the action name across convex/*.test.ts and update each stub
+description: Convex tests vi.mock internal actions with their OWN args/returns validators; a new return shape leaves stubs on the old one, and a new ARG makes a stub declaring args {} reject every call; grep the action name across convex/*.test.ts and update each stub
 metadata:
   type: reference
 ---
@@ -27,3 +27,11 @@ conflicted) bring stubs of the other shape, and so do auto-merged tests that
 call the mutation the action feeds (`resolveCandidateTeams` args). Only the
 conflicted files get your attention by default; the rest show up as red
 `Validator error: Unexpected field` or `.map is not a function` in the unit run.
+
+**Args go stale the same way.** Ten files stub `credentials.authenticateBsc`
+with `args: {}` while keeping the real `refreshSiteTokenAfterRejection`. A
+new optional arg the real caller sends (NEO-483's `tokenRefused`) fails the
+stub's validator; `refreshSiteToken` swallows the throw (console is mocked
+in those files), so the symptom is a silent `{ refreshed: false }`, not a
+validator error. Adding an arg to an internal action means the same grep, and
+naming the stub files in the report when tests are someone else's to fix.

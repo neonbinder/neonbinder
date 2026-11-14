@@ -66,7 +66,7 @@ vi.mock("./credentials", async (importOriginal) => {
       },
     }),
     authenticateBsc: internalAction({
-      args: {},
+      args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
       returns: v.any(),
       handler: async () => {
         st.authCalls.buysportscards++;

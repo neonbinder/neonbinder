@@ -14,10 +14,14 @@ import { bscConditionFor, bscConditionsForEra, bscEraForYear, type BscEra } from
 import { planBscSheet } from "./lib/bscSheetPlan";
 import { DEFAULT_CONDITION } from "./collection";
 import {
+  BSC_CLEANUP_SELLER_ID_PAUSES_MS,
   BSC_CLEANUP_SHEET_RETRY_PAUSES_MS,
   MAX_CHAIN_SIBLINGS,
   SELLER_SPEC_SETS,
+  patientSellerId,
+  sellerIdClock,
 } from "./testingSellerCleanup";
+import type { BscSellerFailure, BscSellerResult } from "./adapters/bscSeller";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -81,6 +85,13 @@ let sheetAnswer: Response | null;
 let sheetScript: Array<number | "network" | "timeout" | null>;
 /** Each retry pause: its length, and how many sheet reads had reached BSC when it started. */
 let retryPauses: Array<[number, number]>;
+/** NEO-483: the seller id the BSC sign-in's answer carries (undefined: the profile read stalled inside it). */
+let loginSellerId: string | undefined;
+/** NEO-483: one entry per `marketplace/user/profile` read, used up in order; the last repeats. */
+let profileScript: Array<"ok" | "empty" | 503 | 429 | "network" | "timeout">;
+let profileReads: number;
+/** NEO-483: each wait `sellerIdClock.pause` was asked for (it resolves at once). */
+let sellerIdPauses: number[];
 let browserCalls: Array<{ method: string; path: string }>;
 let ebayCalls: number;
 let bscCalls: number;
@@ -119,6 +130,13 @@ beforeEach(() => {
     retryPauses.push([ms, sheetReads.length]);
     return realSetTimeout(handler, 0, ...rest);
   }) as typeof setTimeout);
+  loginSellerId = "seller-1";
+  profileScript = ["ok"];
+  profileReads = 0;
+  sellerIdPauses = [];
+  vi.spyOn(sellerIdClock, "pause").mockImplementation(async (ms: number) => {
+    sellerIdPauses.push(ms);
+  });
   browserCalls = [];
   ebayCalls = 0;
   bscCalls = 0;
@@ -148,7 +166,9 @@ beforeEach(() => {
       if (u.pathname === "/oauth/ebay/connect") {
         return Response.json({ username: "sandbox-seller", ebayUserId: "SBX-1", environment: "sandbox", expiresAt: 1 });
       }
-      if (u.pathname === "/login/bsc") return Response.json({ success: true, sellerId: "seller-1" });
+      if (u.pathname === "/login/bsc") {
+        return Response.json({ success: true, ...(loginSellerId !== undefined ? { sellerId: loginSellerId } : {}) });
+      }
       if (u.pathname.endsWith("/token")) return Response.json({ token: "live-access-token" });
       if (method === "DELETE") return new Response(null, { status: 200 });
       throw new Error(`unexpected browser path ${u.pathname}`);
@@ -219,7 +239,15 @@ beforeEach(() => {
         }
         return Response.json({ ok: true });
       }
-      if (u.pathname === "/marketplace/user/profile") return Response.json({ sellerProfile: { sellerId: "seller-1" } });
+      if (u.pathname === "/marketplace/user/profile") {
+        const answer = profileScript[Math.min(profileReads, profileScript.length - 1)];
+        profileReads += 1;
+        if (answer === "network") throw new TypeError("fetch failed");
+        if (answer === "timeout") throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        if (typeof answer === "number") return new Response("busy", { status: answer });
+        if (answer === "empty") return Response.json({ sellerProfile: {} });
+        return Response.json({ sellerProfile: { sellerId: "seller-1" } });
+      }
       throw new Error(`unexpected BSC path ${u.pathname}`);
     }
     throw new Error(`unexpected host ${u.hostname}`);
@@ -1174,6 +1202,209 @@ describe("NEO-475: one BSC call summary per cleanup", () => {
     expect(summaries[0]).toMatchObject({ op: "clearSellerAccounts", calls: bscCalls, ok: bscCalls });
     const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(1);
+    await drainScheduled(t);
+  });
+});
+
+// NEO-483 — the cleanup's PUTs name the seller account its sign-in stored, else
+// one read patiently; a BSC that never names it is reported, not failed.
+describe("NEO-483: the seller account a cleanup PUT names", () => {
+  const bscSellerIdLines = () => logged.filter((l) => l.startsWith('{"msg":"seller_cleanup_seller_id"')).map((l) => JSON.parse(l) as Record<string, unknown>);
+
+  test("the schedule: reads at 0, 30, 90 and 210 s", () => {
+    expect([...BSC_CLEANUP_SELLER_ID_PAUSES_MS]).toEqual([0, 30_000, 60_000, 120_000]);
+    expect(BSC_CLEANUP_SELLER_ID_PAUSES_MS.reduce<number[]>((at, ms) => [...at, (at.at(-1) ?? 0) + ms], [])).toEqual([
+      0, 30_000, 90_000, 210_000,
+    ]);
+  });
+
+  describe("patientSellerId", () => {
+    const ok = (value: string | null): BscSellerResult<string | null> => ({ ok: true, value });
+    const fail = (kind: BscSellerFailure["kind"], httpStatus?: number): BscSellerResult<string | null> => ({
+      ok: false,
+      failure: { kind, message: `failed: ${kind}`, ...(httpStatus ? { httpStatus } : {}) } as BscSellerFailure,
+    });
+    /** `read` answers from `script` in order; every pause is recorded and skipped. */
+    function run(stored: string | null, script: Array<BscSellerResult<string | null>>, pausesMs?: readonly number[]) {
+      const pauses: number[] = [];
+      let reads = 0;
+      const out = patientSellerId(
+        async () => stored,
+        async () => script[Math.min(reads++, script.length - 1)],
+        pausesMs,
+        async (ms) => void pauses.push(ms),
+      );
+      return { out, pauses, reads: () => reads };
+    }
+
+    test("an account the sign-in stored: no read, no pause", async () => {
+      const r = run("seller-9", [ok("seller-other")]);
+      expect(await r.out).toBe("seller-9");
+      expect(r.reads()).toBe(0);
+      expect(r.pauses).toEqual([]);
+    });
+
+    test("none stored: the first read is at once, with no pause before it", async () => {
+      const r = run(null, [ok("seller-9")]);
+      expect(await r.out).toBe("seller-9");
+      expect(r.reads()).toBe(1);
+      expect(r.pauses).toEqual([]);
+    });
+
+    test("a read that fails, then answers: one pause of 30 s, then the id", async () => {
+      const r = run(null, [fail("timeout"), ok("seller-9")]);
+      expect(await r.out).toBe("seller-9");
+      expect(r.pauses).toEqual([30_000]);
+      expect(r.reads()).toBe(2);
+    });
+
+    test("never named: four reads with the three waits, then null", async () => {
+      const r = run(null, [fail("timeout")]);
+      expect(await r.out).toBeNull();
+      expect(r.reads()).toBe(4);
+      expect(r.pauses).toEqual([30_000, 60_000, 120_000]);
+    });
+
+    test.each<[string, BscSellerResult<string | null>]>([
+      ["an answer with no id", ok(null)],
+      ["a 503", fail("http", 503)],
+      ["a 429", fail("http", 429)],
+      ["a network error", fail("network")],
+      ["an id outside the stored shape", ok("has spaces")],
+    ])("%s is not an id: it waits and reads again", async (_name, bad) => {
+      const r = run(null, [bad, ok("seller-9")]);
+      expect(await r.out).toBe("seller-9");
+      expect(r.reads()).toBe(2);
+    });
+
+    test.each<[BscSellerFailure["kind"]]>([["signed_out"], ["paused"], ["no_token"]])(
+      "%s ends the session: it throws at once, no more reads",
+      async (kind) => {
+        const r = run(null, [fail(kind), ok("seller-9")]);
+        await expect(r.out).rejects.toThrow(`could not read the seller id: failed: ${kind}`);
+        expect(r.reads()).toBe(1);
+        expect(r.pauses).toEqual([]);
+      },
+    );
+
+    test("pauses are injected: a custom schedule is followed, a zero is never waited", async () => {
+      const r = run(null, [ok(null)], [0, 0, 5]);
+      expect(await r.out).toBeNull();
+      expect(r.reads()).toBe(3);
+      expect(r.pauses).toEqual([5]);
+    });
+
+    test("each read logs its number and whether it found one, never the id", async () => {
+      const r = run(null, [fail("http", 503), ok("seller-LEAKCANARY")]);
+      await r.out;
+      const lines = bscSellerIdLines();
+      expect(lines).toEqual([
+        expect.objectContaining({ attempt: 1, found: false, failure: "http" }),
+        expect.objectContaining({ attempt: 2, found: true }),
+      ]);
+      expect(logged.join("\n")).not.toContain("LEAKCANARY");
+    });
+  });
+
+  test("a sign-in that stored the account: no profile read at all", async () => {
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    const r = await clear(t);
+    expect(profileReads).toBe(0);
+    expect(sellerIdPauses).toEqual([]);
+    expect(puts[0].sellerId).toBe("seller-1");
+    expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1 });
+    await drainScheduled(t);
+  });
+
+  test("no account stored and the read answers: the PUT names what it read", async () => {
+    const t = await ready();
+    loginSellerId = undefined;
+    profileScript = ["ok"];
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    const r = await clear(t);
+    expect(profileReads).toBe(1);
+    expect(sellerIdPauses).toEqual([]);
+    expect(puts[0].sellerId).toBe("seller-1");
+    expect(r.bsc).toMatchObject({ outcome: "clean", listed: 1, zeroed: 1 });
+    await drainScheduled(t);
+  });
+
+  test("the first reads stall, a later one answers: it waits 30 s and lists under that id", async () => {
+    const t = await ready();
+    loginSellerId = undefined;
+    // The first read's own immediate retry stalls too (two attempts per read).
+    profileScript = ["timeout", "timeout", "ok"];
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    const r = await clear(t);
+    expect(sellerIdPauses).toEqual([30_000]);
+    expect(puts).toHaveLength(1);
+    expect(r.bsc).toMatchObject({ outcome: "clean", zeroed: 1 });
+    await drainScheduled(t);
+  });
+
+  test("BSC never names the account: sellerIdStalled, rows left as they are, nothing PUT, the job does not fail", async () => {
+    const t = await ready();
+    loginSellerId = undefined;
+    profileScript = ["timeout"];
+    sheet = [row("p1", "bsc-1", COND, 2)];
+
+    const r = await clear(t);
+
+    // Four reads, each with the adapter's one immediate retry of a timeout.
+    expect(profileReads).toBe(8);
+    expect(sellerIdPauses).toEqual([30_000, 60_000, 120_000]);
+    expect(puts).toEqual([]);
+    expect(sheet[0].availableQuantity).toBe(2);
+    expect(r.bsc).toMatchObject({ outcome: "sellerIdStalled", listed: 1, zeroed: 0 });
+    // The report validates as a normal result: the job did not throw.
+    expect(r.bsc.skippedSets).toBeTypeOf("number");
+    await drainScheduled(t);
+  });
+
+  test.each<["empty" | 503 | 429 | "network"]>([["empty"], [503], [429], ["network"]])(
+    "a profile that answers %s every time is a stall too, not a failure",
+    async (answer) => {
+      const t = await ready();
+      loginSellerId = undefined;
+      profileScript = [answer];
+      sheet = [row("p1", "bsc-1", COND, 1)];
+      const r = await clear(t);
+      expect(r.bsc.outcome).toBe("sellerIdStalled");
+      expect(puts).toEqual([]);
+      await drainScheduled(t);
+    },
+  );
+
+  test("a stall does not wait when nothing is listed: no seller lookup is made", async () => {
+    const t = await ready();
+    loginSellerId = undefined;
+    profileScript = ["timeout"];
+    sheet = [row("p1", "bsc-1", COND, 0)];
+    const r = await clear(t);
+    expect(profileReads).toBe(0);
+    expect(r.bsc).toMatchObject({ outcome: "clean" });
+    await drainScheduled(t);
+  });
+
+  test("a stalled report still removes the cleanup owner's session and rows", async () => {
+    const t = await ready();
+    loginSellerId = undefined;
+    profileScript = ["timeout"];
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    await clear(t);
+    expect(await ownerRows(t)).toEqual({ profiles: 0, states: 0, settings: 0 });
+    await drainScheduled(t);
+  });
+
+  test("the cleanup log names the stalled outcome and never carries an id", async () => {
+    const t = await ready();
+    loginSellerId = undefined;
+    profileScript = ["timeout"];
+    sheet = [row("p1", "bsc-1", COND, 1)];
+    await clear(t);
+    expect(logged.some((l) => l.includes("sellerIdStalled"))).toBe(true);
+    expect(bscSellerIdLines()).toHaveLength(4);
     await drainScheduled(t);
   });
 });

@@ -46,7 +46,7 @@ export const EXCLUDED_REGIONS: ReadonlyArray<{ selector: string; reason: string 
   {
     selector: "vercel-live-feedback",
     reason:
-      "Vercel's preview toolbar. Vercel injects it into preview deployments only (the CI target); production users never see it and NB cannot change it.",
+      "Vercel's preview toolbar. Vercel injects it into preview deployments only (the CI target); production users never see it and NB cannot change it. The bypass proxy now asks Vercel to skip it (NEO-548), so this is a safety net for runs that reach a preview another way.",
   },
   {
     selector: ".cl-formFieldInputCopyToClipboardButton",

@@ -62,7 +62,8 @@ Reference specs that show the patterns below:
    - the post-sign-in launch gate (`LAUNCH_GATE`, 45 s);
    - the one live Wikidata proof (`player-live-wikidata-enrichment`);
    - a ceiling Jason has signed off, with the date, the measurement and what
-     would void it recorded in the spec's own comment.
+     would void it recorded in the spec's own comment (`SELLER_ACCOUNT_CAP_MS`,
+     240 s, is one: see "The seller account" under Worker-state seeding).
    Never invent a number, never raise one because a run was slow.
 4. **No sleeps, no settle waits (R10).** No `waitForTimeout`, no
    `waitForLoadState("networkidle")`, no polling loops around `isVisible`.
@@ -259,7 +260,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/cards.ts`: hand-made card helpers for a worker's own subtree
   (`addCustomCard`, `addCardViaForm`, `openVariant`, `ensureAndSelect`,
   edit/delete button locators).
-- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`. The 15-minute sales poll runs the same drain as a press, so a stocked box can be listed before the spec presses Sync (NEO-433), and neither the set's row nor the "Nothing syncing right now." line proves THIS press ran: the poll leaves a row that looks like a press's own, and the page is idle between two runs. A seller spec therefore presses, then walks the set to rest with `followRunToRest(platform, run, queueSettled(platform, setLabel))` (one step per wait; `slow` gives a named step a signed-off longer ceiling), and only then reads the row and picks its branch. `queueSettled` is the evidence: the press queues the set's cards before its toast, and a run's finish clears them in the write that records its result, only if the run claimed them, so "no card of this set queued" plus idle means a run that started after the press has finished. A press that never claims leaves them queued and fails the walk. A run that sent nothing ends on "Gathering data, done" then "Nothing new to send" (`expectNothingSent`); a sending branch asserts `run.nothingNew()` absent.
+- `support/collection.ts`: the collector's `/collection` and Inventory helpers (`drillToCollectorBase`, boxes, quantity fields), and `syncRun` / `followRunToEnd` for Sync status's per-step ledger (NEO-415): a live marketplace round trip is waited on one step at a time ("Read Excellent, done"), each within the standard 7 s, gated by `underWay` so the last run's finished ledger never stands in for the new one. A finished BuySportsCards row folds (reads become "Gathering data", double-checks drop), so a BSC read or confirm is waited on with `readLanded` / `confirmLanded`, never a bare `step`. The 15-minute sales poll runs the same drain as a press, so a stocked box can be listed before the spec presses Sync (NEO-433), and neither the set's row nor the "Nothing syncing right now." line proves THIS press ran: the poll leaves a row that looks like a press's own, and the page is idle between two runs. A seller spec therefore presses, then walks the set to rest with `followRunToRest(platform, run, queueSettled(platform, setLabel))` (one step per wait; `slow` gives a named step a signed-off longer ceiling), and only then reads the row and picks its branch. `queueSettled` is the evidence: the press queues the set's cards before its toast, and a run's finish clears them in the write that records its result, only if the run claimed them, so "no card of this set queued" plus idle means a run that started after the press has finished. A press that never claims leaves them queued and fails the walk. NEO-483: the seller account is not always known when the first press lands (next-but-two section), so the FIRST press of a seller spec calls `expectRunOrSellerWait(platform, run, settled, { marketplace, label })` before the walk (it settles on the run or on the seller-account sentence, runs the axe check on it, and throws by name on "Seller account in use" or either gave-up sentence), and every press that could be the worker's first run passes the marketplace name to `followRunToRest`, whose claim wait is then `expectAfterMarketplace` capped at `SELLER_ACCOUNT_CAP_MS`. A run that sent nothing ends on "Gathering data, done" then "Nothing new to send" (`expectNothingSent`); a sending branch asserts `run.nothingNew()` absent.
 - `support/cross-list.ts`: cross-release import (`openCrossListForm`,
   `pickCrossListSource`, `crossListCards`).
 - `support/photo-viewer.ts`: the card photo viewer (NEO-481): `photoViewer`
@@ -305,8 +306,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   file, never typed. Captured with `tools/capture-bsc-checklist-teams.mjs`
   (SET-REGISTRY.md, "Published-checklist fixtures").
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
-  deployment-protection header; started by the config's `webServer` when
-  `PREVIEW_URL` is set. Never logs the secret.
+  deployment-protection header and `x-vercel-skip-toolbar` (NEO-548: Vercel's
+  preview toolbar otherwise covers controls on the phone viewport); started by
+  the config's `webServer` when `PREVIEW_URL` is set. Never logs the secret.
 
 A helper used by several specs gets ONE implementation in `support/`; read
 the existing ones before adding another.
@@ -647,6 +649,15 @@ spec does with five.
 The bootstrap's optional BSC warm-up (a live sign-in through the browser service)
 runs on worker 0 only, so shards do not all sign in to BSC at the same moment.
 
+**A listing-on BSC seed is one store (NEO-483).** `/testing/seed-credentials?sites=buysportscards&listing=on`
+(`saveBscSignIn(page, { listing: true })`) saves the sign-in once. It no longer
+loops through re-logins until BSC's slow profile read returns the seller id, and it
+no longer fails because that read stalled (the old "seller id not saved" failure,
+NEO-482): the seed ends with the sign-in saved and the account not yet known, which
+is a real state a collector can be in. NeonBinder asks BSC for the seller account in
+the background and a run waits for it (next section). `saveBscSignIn` needed no
+change; a spec never waits for the account at the seed.
+
 **BSC's 429 cooldown (NEO-487, NEO-489), as a spec meets it.** A `card-listing` 429
 opens a deployment-wide cooldown as long as the longer of our backoff (15 s the
 first time, doubling on each further 429 to a 120 s cap) and BSC's `Retry-After`,
@@ -661,6 +672,48 @@ so a fetch that meets one finishes at once with no such line. A spec whose live
 card meets a cooldown accepts either outcome (`bscLookupOutcome`, "Checklist
 first" below) and never waits the window out; a wait on the screen's own wait
 line is the measured time plus 7 s, never a flat bump.
+
+**The seller account (NEO-483), as a seller spec meets it.** BSC answers its seller
+profile slowly, sometimes for minutes. NeonBinder therefore never fails on it: when
+a drain finds no seller account it holds the run (the cards stay queued), the
+platform on Sync status says "BuySportsCards is slow to confirm your seller account…" (the live "Waiting on BuySportsCards…" line with running seconds sits under it, but that line also shows during any ordinary step's wait, so it is never the signal), and a
+background read asks BSC again after 30 s, 60 s and 120 s (then every 300 s, ten
+tries). The run starts by itself the moment an answer lands. So the first press of a
+seller spec ends in one of two orders, and **the spec passes in both with the same
+unconditional asserts after the walk (R2)**:
+- the run starts at once (the account is already stored): the ledger appears under
+  Running now;
+- the run starts after the wait: no ledger and no result line yet, only the
+  seller-account sentence, then the ledger.
+How a spec handles it, all in `support/collection.ts`:
+- `expectRunOrSellerWait` waits (7 s of our own time) until Sync status shows ONE of
+  the run, the finished press (`queueSettled`), the seller-account sentence (matched
+  on /slow to confirm your seller account/, a phrase of the collector copy; a spec
+  does not import app copy), "Seller account in use", or a gave-up sentence
+  (/still hasn't confirmed your seller account/, /isn't set up to sell yet/). It
+  throws by name on the last two kinds (the walk does too, on every pass) rather than
+  waiting out the cap, and on the wait sentence runs `expectAccessible` (light and
+  dark) before the walk. Nothing parses the elapsed counter ("45s", then "1m 5s"):
+  the measured time comes from the live line being on screen, never from its text. It records which order it met as a `seller-wait`
+  annotation in the report, so a green run shows whether the waiting branch ran. The
+  spec never gates a first press on `underWay(resultLine)` (neither exists while the
+  press is held).
+- `followRunToRest(platform, run, settled, slow, marketplace)` with `marketplace` given
+  waits for the claim with `expectAfterMarketplace(..., { cap: SELLER_ACCOUNT_CAP_MS })`:
+  7 s of our own time plus every second the wait line is up, and a hard stop at 240 s.
+  Pass the marketplace on every press that could be the worker's first run; a
+  press after a run has already landed in the same spec may omit it. Without it
+  (eBay) the claim is the plain 7 s.
+- `SELLER_ACCOUNT_CAP_MS` (240 s) is derived at its definition: the third try lands
+  210 s after the chain starts (30 + 60 + 120 s), which covers the 150 s worst BSC
+  stall measured, plus 20 s for the try's read and 7 s of our own time. Dated
+  2026-11-13 and **void if the read's delays change** (`BSC_SELLER_ID_FETCH_DELAYS_MS`,
+  convex/bscSellerId.ts). Past it the spec is red whatever the status says; a stall
+  longer than 210 s is a product finding, never a number to raise.
+- The Future Stars failure hook walks its zeroing press the same way (`walkForCleanup`
+  around `followRunToRest`, marketplace passed), so a hook that meets the wait can spend
+  up to the cap on each of its three tries. A hook only runs after the body wrote a
+  box, by which time the account is normally stored.
 
 **The reset clears BSC's backoff state.** `e2e-baseline.sh reset` also empties
 the card-listing cooldown, the "Waiting on BuySportsCards" wait rows and the
