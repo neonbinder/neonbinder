@@ -302,6 +302,13 @@ also run `npm run test:e2e:typecheck` and `npx eslint playwright` locally, and
 
 ## Step 7 — Ask for approval, then join the queue
 
+**Which flow:** `gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app` (an
+error reading it counts as off). `true` = GitHub merge queue: approval still
+comes first and is still explicit for this batch, but the "queue" step is
+`gh pr merge <PR> --squash` (enqueue) after the push, with no `/pr-queue join`
+and no turn; the approval you get here is the merge approval. Anything else =
+the Claude-run queue below, unchanged.
+
 CI is handed out one ticket at a time by the `pr-queue` skill, and a turn's run
 ends in a merge on green, so **approval comes before the push**. Report the bump
 table, the toolchain each bump was validated on, the local gate counts, the
@@ -313,6 +320,15 @@ Once approved: `/pr-queue join <NEO-###>`. Do not push until the turn comes.
 ---
 
 ## Step 8 — On the turn: push, open the PR, watch, merge
+
+**`MERGE_QUEUE=true` (GitHub merge queue):** there is no turn. Once approved,
+push the branch (`git push -u origin "$BR"`) and open the PR as below (PR body
+unchanged), let the cheap PR checks pass, then `gh pr merge <PR> --squash` to
+enqueue and follow it with `pr-watch --queue <PR>` (the `pr-queue` skill's
+GitHub-queue flow: `MERGED` goes to `/pr-close`, `EJECTED` is a red to triage,
+fix and re-enqueue; further pushes are free). A bump that fails in the queue is
+dropped and parked per step 4, never debugged inside the queue. Step 9 is
+unchanged. For `MERGE_QUEUE` off, the turn flow:
 
 Follow the `pr-queue` turn steps (merge main, push and open the PR, watch CI,
 one rerun only for a flake that names an outside service, merge on green with
@@ -429,8 +445,9 @@ that went `READY`, which Dependabot PRs/branches were closed or deleted, what wa
 - **Never let one failing bump block the batch** — drop it, park it, ticket it, and say
   so. And never call a failure flaky unless its evidence names an outside service
   (the `pr-queue` flake rule).
-- **Never join the queue without the user's explicit approval for this batch.** The
-  turn merges on green, so that approval is the merge approval.
+- **Never join the queue (or, with `MERGE_QUEUE=true`, enqueue) without the user's
+  explicit approval for this batch.** The merge follows on green, so that
+  approval is the merge approval.
 - **Never close a parked bump's Dependabot PR.** It is still the tracking artifact.
 - **Never delete a remote branch without asking**, and never remove a worktree with
   uncommitted changes.

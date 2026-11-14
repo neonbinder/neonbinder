@@ -40,14 +40,51 @@ gate run if an earlier one failed.
 ### 2. Pre-flight — confirm the PR is actually ready
 `gh pr view <PR> --json state,mergeStateStatus,statusCheckRollup,title,headRefName,url,mergeable`
 - Not `OPEN` → stop, report the actual state (don't act on an already-merged/closed PR).
-- Merges to production go through the `pr-queue` skill: merge only during this
+- Claude-run queue (`MERGE_QUEUE` off): merges to production go through the
+  `pr-queue` skill: merge only during this
   ticket's turn (a `PR-QUEUE YOUR TURN` message). Not called yet → join the
   queue instead of merging.
 - Any check not green → stop. Tell the user to fix it or run `/pr-watch <PR>` first;
   do not merge a red PR.
 - `mergeable != MERGEABLE` → stop, report the conflict.
 
-### 3. Merge authorization — who asked for this run decides
+### 3. Merge authorization
+
+**First check the flow:** `gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app`
+(an error reading it counts as off). When it is `true`, follow **3q** below
+instead of the rest of this step and of step 2's turn rule; when it is anything
+else, this step and the rest of the skill apply exactly as written.
+
+#### 3q. GitHub merge queue (`MERGE_QUEUE=true`)
+- **Enqueueing is the merge approval** (Jason, 2026-11-13). A session whose
+  ticket meets the bar for joining the queue (release-ready: audits applied,
+  gates and covering specs green locally, Jason's verdict given for UI) runs
+  `gh pr merge <PR> --squash` (it enqueues; no `--delete-branch`, GitHub
+  deletes the branch when the merge lands) **without asking again**. No
+  `AskUserQuestion`, no `state.sh`, no turn. A session that decided to run this
+  skill on its own for a PR that is not at that bar still confirms first, as
+  below. If the PR is already queued, skip the enqueue.
+- Step 2's pre-flight changes: the PR checks that matter are the cheap ones
+  (lint, typecheck, unit, hygiene); E2E is not expected on the PR itself. A
+  `CONFLICTING` PR still stops here. Never use `--admin` or merge around the queue.
+- **Then follow the queue to the end with `pr-watch --queue <PR>`** (tab
+  `cc-state queue` while waiting, `cc-state ci` once its group is running).
+  The verdicts:
+  - `DONE MERGED`: continue below with the merge commit it prints (confirm with
+    `gh pr view <PR> --json mergeCommit --jq .mergeCommit.oid`).
+  - `DONE EJECTED`: the PR did not merge. Do not continue the gates. Treat it
+    as a red per the `pr-queue` skill's GitHub-queue flow (artifacts, ci-fail
+    ticket, planner, fix, re-enqueue, Mac notification) and re-run this skill
+    when the next verdict is MERGED.
+  - `DONE REMOVED` / `NOT_QUEUED`: stop and tell Jason.
+- After `MERGED`, **keep everything else in this skill**: Mac notification
+  (`notify.sh`, as below), then gate 2 (production verify), the smoke test,
+  the Linear close-out and gate 5 (worktree cleanup). Skip only the "MAIN
+  MOVED" message and the `PR-QUEUE DONE` message: there is no queue session
+  and no stale-base problem to announce (the queue rebuilds on current main).
+  On production `READY` and the smoke test, `cc-state test`.
+
+#### Claude-run queue (`MERGE_QUEUE` off) — who asked for this run decides
 **On this session's own verified `pr-queue` turn, the turn IS the authorization**
 (Jason, 2026-11-12): the ticket joined the queue only once it was ready for
 production, and the turn ends in a merge on green. It counts only when this
@@ -223,6 +260,9 @@ gate 5 reclaimed — worktree, branches, orphaned browsers — plus anything it
 deliberately left alone and why.
 
 ## Hard rules
+- **`MERGE_QUEUE=true`: enqueueing is the approval, and the verdict comes from
+  `pr-watch --queue`, never from the cheap PR checks.** Do not say merged or
+  start gate 2 before `DONE MERGED`.
 - **Never merge a PR the user did not ask you to merge.** If they invoked this skill on
   the PR, that is the authorization — merge without re-asking. If you initiated the
   close-out yourself, the step-3 confirmation is mandatory.

@@ -133,6 +133,14 @@ re-measure before quoting them for Playwright.
 3. **Run the specs covering the change on this worktree's own Convex
    deployment**, before the first push (below). Seller specs and cloud threads
    use shared dev instead.
+
+Two shipping modes, chosen by the repo variable `MERGE_QUEUE`
+(`gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app`). Every skill reads
+it; `true` means the GitHub merge queue, anything else (or an error reading it)
+means the Claude-run queue.
+
+**Claude-run queue (`MERGE_QUEUE` off):**
+
 4. **Join the queue** (`pr-queue join NEO-123`) once the ticket is ready for
    production: audits applied, gates and covering specs green, main merged, any
    UI verdict given. **Do not push before your turn** (the one exception is a
@@ -150,6 +158,26 @@ re-measure before quoting them for Playwright.
    PR's own preview stack when your deployment cannot reproduce it (below), fix
    it, and join again. Push again only on your next turn. This is the actual
    cost control: push-and-hope is what burns CI cycles.
+
+**GitHub merge queue (`MERGE_QUEUE=true`):** a PR push runs only the cheap
+checks, so pushes are free and need no turn. The full preview stack and E2E run
+once, on the queue's `merge_group` build (main plus the PR); green merges and
+`release.yml` deploys as always. Use the `run-e2e` label plus a push for a full
+run off-queue.
+
+4. **Enqueue** with `gh pr merge --squash` once the ticket meets the same bar as
+   joining the Claude-run queue (audits applied, gates and covering specs green,
+   UI verdict given). **Enqueueing is the merge approval**; `pr-close` does not
+   ask again. `gh pr merge --disable-auto` leaves the queue; a push to a queued
+   PR dequeues it.
+5. **Keep watching in the same session** with `pr-watch --queue <PR>`, which
+   ends in `MERGED`, `EJECTED` (reason and failing run/job included) or
+   `REMOVED`. A green PR run alone is never "green". Discord is a backup for
+   when no session is alive, not the signal.
+6. **`MERGED`:** `pr-close` does the production check, smoke test, Linear and
+   cleanup. **`EJECTED`:** treat it as any red (save artifacts, ci-fail ticket,
+   planner), fix, push, re-enqueue, send the Mac notification. There are no
+   turns, no `MAIN MOVED` messages and no `state.sh` in this mode.
 
 #### The fast gates, by area
 
@@ -649,6 +677,7 @@ All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-
   - **`web-preview`** (NEO-162) builds the preview with the Vercel CLI. The Vercel **git integration is disabled for every branch** (`apps/web/vercel.json`), so nothing deploys itself — same reasoning as NEO-143's production lane, applied to previews. It exists because Vercel built for every PR including ones touching no web code, while `changes` already knew better; the decision now lives on the side that has the information. It also collapsed three byte-identical copies of a "poll the GitHub Deployments API for the vercel[bot] deployment" block (both wire jobs + `e2e.yml`'s setup) into one job output, so they can no longer disagree about which preview a PR has.
   - **The preview is not just a preview.** `vercel.json`'s `buildCommand` runs `npx convex deploy`, so building it is also what creates the per-PR **Convex** preview that both wire jobs write env vars to and that E2E runs against. That is why `web-preview`'s condition is `deps_only` — matching `e2e` exactly, *not* the narrower `changes.outputs.web`. **If you ever narrow one, narrow both**, or you get a PR that runs E2E with no backend to run it against.
   - `web-preview` also records the preview as a **GitHub Deployment**. That is not bookkeeping: `preview-cleanup.yml` finds the PR's Convex preview through that record, and its "no record ⇒ nothing to clean up" guard exits 0 — so without it, every Convex preview would leak silently. **`ci-gate`** is the single **required** status check: it `always()` runs and passes iff every in-scope job succeeded (out-of-area jobs skip), so web/browser lint+unit+E2E all block merge **without wedging** out-of-area PRs. A PR touching web + browser is validated end-to-end against its **own** browser code; web-only PRs run E2E against the dev browser default. **Vercel stays "dumb"** (SPA build + `convex deploy` only — it never calls the browser service); the browser-URL wiring is a deployment concern that lives here. *(web lint/unit are inlined here; there is no separate `web-ci.yml`.)*
+- **Merge queue (`MERGE_QUEUE=true`):** the same workflows also run on `merge_group`, and the full stack runs there instead of on the PR (workflow detail lives in the workflow files). `ci-gate` stays the single required check. The `pr-queue`, `pr-watch`, `pr-close` and `deps-batch` skills branch on the variable; see the PR loop above.
 - **`release.yml`** — ⚠️ **the single driver of every push-to-`main` production deploy** (NEO-143). `changes` (path diff → `browser` / `preprocess`) → those services' deploy lanes **to 100% traffic** → **then** the web job: `vercel pull` / `vercel build` (this is where `npx convex deploy` pushes production Convex) → `vercel deploy --prebuilt --prod --skip-domain` → smoke the staged build → `vercel promote`. Servers lead their clients: Convex is a client of the browser service, the SPA is a client of Convex. Before NEO-143 all three deployed in parallel from the same commit, putting ~5.5 minutes of new-Convex-against-old-browser-service in front of real users. **Do not add a `push:` trigger to any other workflow** — that is exactly what re-creates the race. Note Convex itself *cannot* be staged (one production deployment, and it owns its database), so the Convex push is a hard mid-job cutover; read `services/browser/README.md` → **Release contract** before changing anything on the Convex ↔ browser boundary.
 - **`browser.yml`** — `services/browser` build + unit tests + the **per-PR browser preview** (builds the image, deploys a `pr-<N>` tagged, **no-traffic** Cloud Run revision on the dev service, runs a real BSC + SportLots login probe against it). **Pre-merge only.**
 - **`browser-deploy.yml`** / **`preprocess-deploy.yml`** — the prod deploy lanes, `workflow_call`-only (invoked by `release.yml`; `workflow_dispatch` is retained for dev-only validation). **Both** dev and prod use blue/green — deploy at 0% under a `sha-<short>` tag, probe/smoke the tagged URL, then one atomic `update-traffic` that promotes *and* drops the tag (NEO-114). There is deliberately **no rollback job**: nothing is promoted until the probe passes, so there is nothing to roll back (NEO-67). Gated on the `BROWSER_DEPLOY_ENABLED` / `PREPROCESS_DEPLOY_ENABLED` repo variables.

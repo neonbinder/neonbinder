@@ -1,11 +1,77 @@
 ---
 name: pr-queue
-description: The CI queue for the NeonBinder monorepo. One session runs the queue (`/pr-queue run`); it only takes requests to join and hands out turns, one at a time. Any session whose ticket is ready for production joins it (`/pr-queue join <ticket>`) and, when its turn comes, merges main, pushes and opens its PR, watches CI, merges to production on green with pr-close, sends a Mac notification, tells every other session main moved, and tells the queue it is done. A session never pushes outside its turn, because every push starts a CI run and only a run that can merge is worth paying for. Use "run the PR queue" / "be the queue" for the queue side, and "queue NEO-464" / "join the queue" / "ship this ticket" for the requester side.
+description: The CI queue for the NeonBinder monorepo. One session runs the queue (`/pr-queue run`); it only takes requests to join and hands out turns, one at a time. Any session whose ticket is ready for production joins it (`/pr-queue join <ticket>`) and, when its turn comes, merges main, pushes and opens its PR, watches CI, merges to production on green with pr-close, sends a Mac notification, tells every other session main moved, and tells the queue it is done. A session never pushes outside its turn, because every push starts a CI run and only a run that can merge is worth paying for. When the repo variable `MERGE_QUEUE` is `true` the queue is GitHub's merge queue instead: no queue session, no turns; the session enqueues with `gh pr merge --squash` and follows it with `pr-watch --queue`. Use "run the PR queue" / "be the queue" for the queue side, and "queue NEO-464" / "join the queue" / "ship this ticket" for the requester side.
 argument-hint: run | join <ticket> | status | leave <ticket>
 allowed-tools: Bash(*/.claude/skills/pr-queue/state.sh:*), Bash(*/.claude/skills/pr-queue/notify.sh:*), Bash(gh pr list:*), ToolSearch, ListAgents, SendMessage, Skill
 ---
 
 # pr-queue: one CI run at a time, and it merges
+
+## Which flow? Read this first
+
+```bash
+gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app
+```
+
+- **`true`: the GitHub merge queue.** Use "GitHub-queue flow" below. There is no
+  queue session and no turn: the `run`, `JOIN`, `YOUR TURN`, `PASS`, `DONE`,
+  `MAIN MOVED` messages and `state.sh` are not used. Pushes are free.
+- **Anything else, including an error reading the variable or the variable
+  missing: treat it as off** and follow the rest of this file exactly as written.
+
+## GitHub-queue flow (`MERGE_QUEUE=true`)
+
+GitHub's merge queue builds the PR on top of current `main` (a `merge_group`
+run on `gh-readonly-queue/main/pr-<N>-*`), runs the full preview stack and E2E
+there, and merges on green. A PR push runs only the cheap checks, so nothing here
+waits for a turn.
+
+**Bar for enqueueing is today's bar for joining**: every audit's findings applied,
+unit tests, typecheck, lint and build green, the covering E2E specs green locally on
+desktop and mobile, and, for a UI change, Jason's verdict given on the local build.
+**Enqueueing is merge approval** (Jason, 2026-11-13): a session whose ticket meets
+that bar runs `gh pr merge --squash` without asking again. Not at the bar: do not
+enqueue.
+
+1. **Push freely, no turn needed.** `git fetch origin && git merge origin/main`
+   is optional (the queue builds on current main itself). Push, open the PR with
+   the ticket in the title (`NEO-123(<pr>) Short title`), and let the cheap checks run;
+   `pr-watch <PR>` reports them as "cheap checks green", never "green".
+   Need the full E2E run off-queue (a harness change, a pinned tool bump, a
+   red you want to reproduce on a preview)? Add the `run-e2e` label and push.
+2. **Enqueue.** `gh pr merge <PR> --squash` (it enqueues, it does not merge
+   at once). Tab `cc-state queue`. Do not push to the branch while it is queued
+   unless you mean to leave: a push dequeues it.
+3. **Keep watching in this session, do not rely on Discord:**
+   `pr-watch --queue <PR>` (Monitor armed from the main loop, as pr-watch
+   describes). Tab: `cc-state queue` while waiting, `cc-state ci` once its group
+   is running (`group runs ... active` in the tick line).
+4. **`DONE MERGED`** → `pr-close` finishes it (Mac notification, production
+   check, smoke test, Linear, cleanup); `cc-state test` when production
+   checks out.
+5. **`DONE EJECTED`** → same rules as any red:
+   - save the run's artifacts first (the red-run triage steps), into the
+     session scratchpad;
+   - look for an existing ci-fail ticket before filing one (bump Occurrences);
+   - run the failure through the planner, not a guess;
+   - an outside-service flake (the flake rule below) is re-enqueued unchanged
+     with `gh pr merge <PR> --squash`, once per ticket (a merge-group run
+     cannot be rerun); anything pointing at our code is fixed locally,
+     pushed (free) and re-enqueued;
+   - send the Mac notification: `REASON='#499 ejected: one-line reason' notify.sh 'NEO-123 ejected' "$REASON"`
+     (free text single-quoted, as above);
+   - `cc-state answer` only if Jason must decide; otherwise keep working.
+6. **`DONE REMOVED`** → someone took it out by hand: `cc-state clear`, say so,
+   do not re-enqueue on your own.
+7. **Leaving the queue:** `gh pr merge <PR> --disable-auto`, then `cc-state clear`.
+8. **Discord is a backup only**, for when no session is alive. A live session
+   always knows first through its own `pr-watch --queue`.
+
+A flake is judged exactly as in the turn flow (evidence names an outside service,
+never our own code), and the one-rerun rule becomes one re-enqueue of an
+unchanged branch per ticket.
+
+The rest of this file describes the Claude-run queue (`MERGE_QUEUE` off).
 
 ## Why this exists
 
