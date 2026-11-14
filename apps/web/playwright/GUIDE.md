@@ -305,8 +305,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   file, never typed. Captured with `tools/capture-bsc-checklist-teams.mjs`
   (SET-REGISTRY.md, "Published-checklist fixtures").
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
-  deployment-protection header; started by the config's `webServer` when
-  `PREVIEW_URL` is set. Never logs the secret.
+  deployment-protection header and `x-vercel-skip-toolbar` (NEO-548: Vercel's
+  preview toolbar otherwise covers controls on the phone viewport); started by
+  the config's `webServer` when `PREVIEW_URL` is set. Never logs the secret.
 
 A helper used by several specs gets ONE implementation in `support/`; read
 the existing ones before adding another.
