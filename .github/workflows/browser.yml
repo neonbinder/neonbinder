@@ -10,6 +10,11 @@ name: Browser CI
 # are set on this repo.
 
 on:
+  # NEO-546: GitHub's merge queue fires merge_group; `paths:` cannot filter it,
+  # so the `scope` job below does. Inert until MERGE_QUEUE is on and the ruleset
+  # has a merge_queue rule.
+  merge_group:
+    types: [checks_requested]
   pull_request:
     paths:
       - "services/browser/**"
@@ -34,8 +39,9 @@ concurrency:
   # Group per-PR and cancel in-flight so rapid pushes don't stack up redundant
   # preview builds. (Pre-merge only now, so the old main/dispatch arm of this
   # expression is gone.)
-  group: browser-ci-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: browser-ci-pr-${{ github.event.pull_request.number || github.ref }}
+  # A cancelled merge-queue run ejects the PR, so a merge group is never cancelled.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
@@ -57,8 +63,58 @@ defaults:
     working-directory: services/browser
 
 jobs:
+  # NEO-546: scope and mode. A pull_request run reaches this workflow through
+  # `on.pull_request.paths`, but GitHub does not apply `paths:` to a merge_group
+  # run, so the merge queue would otherwise build every service on every PR.
+  # `changed` is therefore forced true on pull_request (today's behaviour) and
+  # computed from the diff on merge_group. `full`, `pr` and `sha` come from the
+  # shared ci-mode.sh: the preview is built on a merge group, or on a PR that is
+  # not in cheap mode, and is keyed on the PR number either way.
+  scope:
+    name: Decide scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      changed: ${{ github.event_name == 'pull_request' && 'true' || steps.filter.outputs.browser }}
+      full: ${{ steps.mode.outputs.full }}
+      pr: ${{ steps.mode.outputs.pr }}
+      sha: ${{ steps.mode.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide cheap or full
+        id: mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: bash .github/scripts/ci-mode.sh >> "$GITHUB_OUTPUT"
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'merge_group'
+        with:
+          # Mirror `on.pull_request.paths` above.
+          filters: |
+            browser:
+              - "services/browser/**"
+              - ".github/workflows/browser.yml"
+              - ".github/workflows/browser-deploy.yml"
+              - ".github/workflows/release.yml"
+
   test:
     name: Build + unit tests
+    needs: scope
+    if: needs.scope.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -84,10 +140,13 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-preview:
     name: Deploy per-PR Cloud Run preview
-    needs: test
+    needs: [scope, test]
+    # NEO-546: built on a PR that is not in cheap mode (today's flow) and on
+    # every merge group. A cheap PR run skips it; the queue builds it.
     if: |
-      github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
+      needs.scope.outputs.full == 'true'
+      && needs.scope.outputs.changed == 'true'
+      && (github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -161,8 +220,8 @@ jobs:
           # No new cleanup policy needed: `delete-stale-pr-images` (tag prefix
           # `pr-`, 30d) and `delete-old-untagged` (14d) apply to ALL packages.
           IMAGE: gcr.io/neonbinder-dev/neonbinder-browser-preview
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ needs.scope.outputs.pr }}
+          HEAD_SHA: ${{ needs.scope.outputs.sha }}
         # cwd = services/browser (job default); Dockerfile.prod + context live here.
         #
         # NEO-484: --provenance=false --sbom=false pushes ONE image manifest,
@@ -180,7 +239,7 @@ jobs:
         with:
           service: neonbinder-browser
           region: us-central1
-          image: gcr.io/neonbinder-dev/neonbinder-browser-preview:pr-${{ github.event.pull_request.number }}
+          image: gcr.io/neonbinder-dev/neonbinder-browser-preview:pr-${{ needs.scope.outputs.pr }}
           project_id: neonbinder-dev
           env_vars: |
             ENVIRONMENT=dev
@@ -190,7 +249,7 @@ jobs:
           secrets: |
             EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
           no_traffic: true
-          tag: pr-${{ github.event.pull_request.number }}
+          tag: pr-${{ needs.scope.outputs.pr }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
           # Without this the preview inherited the shared dev service's last
           # deployed --max-instances (20), unbounded by anything this
@@ -200,7 +259,7 @@ jobs:
       - id: capture
         name: Capture preview URL
         env:
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ needs.scope.outputs.pr }}
         run: |
           set -euo pipefail
           TAG="pr-$PR"
@@ -224,7 +283,9 @@ jobs:
   preview-login-probe:
     name: Preview login probe (BSC + SportLots)
     needs: deploy-preview
-    if: github.event_name == 'pull_request'
+    # Runs whenever deploy-preview succeeded (implicit success()), on a PR or a
+    # merge group.
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -288,10 +349,13 @@ jobs:
   # failure still leaves a trace on the PR.
   comment-preview:
     name: Comment preview URL
-    needs: [deploy-preview, preview-login-probe]
+    needs: [scope, deploy-preview, preview-login-probe]
+    # NEO-546: a sticky PR comment only on a PR run that built a preview; the
+    # merge group is not a PR conversation, and a cheap run built nothing.
     if: |
       always()
       && github.event_name == 'pull_request'
+      && needs.scope.outputs.full == 'true'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     # This job does not checkout (only gh-api calls), so override the workflow's
