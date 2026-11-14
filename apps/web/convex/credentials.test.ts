@@ -34,7 +34,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { MutationCtx } from "./_generated/server";
 import { __resetContractCache, actingUserId } from "./credentials";
-import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -340,7 +340,7 @@ describe("saveCredentials — the BSC seller id is saved before listing turns on
     await drainScheduled(t);
   });
 
-  test("a login that returns no id still starts listing (the drain reads the id live later)", async () => {
+  test("a login that returns no id still starts listing (the background read fetches the id later)", async () => {
     const { t, calls } = await recordingStatusWrites();
     stubFetch(async (url) =>
       String(url).includes("/login/bsc")
@@ -2243,3 +2243,264 @@ describe("NEO-370 — identity-less token entries act for the userId they are gi
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+// NEO-483 — `tokenRefused` rides to the BSC login only after a marketplace
+// rejection, and a login that comes back without a seller account arms the
+// background read.
+describe("NEO-483 — tokenRefused and the seller-account read", () => {
+  type LoginCall = { url: string; body: Record<string, unknown> };
+
+  /** Stubs both login routes, recording each request's JSON body. */
+  function stubLogins(answer: Record<string, unknown> = { success: true, message: "ok" }) {
+    const logins: LoginCall[] = [];
+    stubFetch(async (url, init) => {
+      const u = String(url);
+      if (u.includes("/login/")) {
+        logins.push({ url: u, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+        return jsonResponse(answer);
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+    return logins;
+  }
+
+  const listingRow = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).find((r) => r.ownerId === USER_A && r.platform === "bsc"),
+    );
+  const pendingTicks = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (j) => j.name.includes("fetchTick") && j.state.kind === "pending",
+      ),
+    );
+  /** A listing owner with a connected BSC credential and no seller account. */
+  async function listingOwner(t: ReturnType<typeof convexTest>, sellerId?: string) {
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [{ site: SITE, hasCredentials: true, lastUpdated: "2020-01-01T00:00:00.000Z" }],
+        ...(sellerId ? { marketplaceAccountIds: { bscSellerId: sellerId } } : {}),
+      });
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: USER_A,
+        platform: "bsc",
+        listingStartedAt: Date.now(),
+        lastUpdated: Date.now(),
+      });
+    });
+  }
+
+  describe("the request body", () => {
+    test("refreshSiteTokenForUser (BSC): tokenRefused: true", async () => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, SITE);
+      const logins = stubLogins({ success: true, message: "ok", sellerId: "seller-1" });
+
+      expect(await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A })).toEqual({ refreshed: true });
+
+      expect(logins).toHaveLength(1);
+      expect(logins[0].url).toContain("/login/bsc");
+      expect(logins[0].body.tokenRefused).toBe(true);
+    });
+
+    test("refreshSiteTokenAfterRejection (BSC): tokenRefused: true", async () => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, SITE);
+      const logins = stubLogins({ success: true, message: "ok", sellerId: "seller-1" });
+
+      const result = await t
+        .withIdentity({ subject: USER_A })
+        .action(internal.credentials.refreshSiteTokenAfterRejection, { site: SITE });
+
+      expect(result).toEqual({ refreshed: true });
+      expect(logins[0].body.tokenRefused).toBe(true);
+    });
+
+    test.each([
+      ["refreshSiteTokenForUser", "forUser"],
+      ["refreshSiteTokenAfterRejection", "afterRejection"],
+    ] as const)("%s (SportLots): the field is not sent", async (_name, which) => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, "sportlots");
+      const logins = stubLogins();
+
+      if (which === "forUser") {
+        await t.action(internal.credentials.refreshSiteTokenForUser, { site: "sportlots", userId: USER_A });
+      } else {
+        await t.withIdentity({ subject: USER_A }).action(internal.credentials.refreshSiteTokenAfterRejection, { site: "sportlots" });
+      }
+
+      expect(logins).toHaveLength(1);
+      expect(logins[0].url).toContain("/login/sportlots");
+      expect("tokenRefused" in logins[0].body).toBe(false);
+    });
+
+    test("a stale token's own renewal (getSiteToken, no rejection): the field is absent", async () => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, SITE);
+      let reads = 0;
+      const logins: LoginCall[] = [];
+      stubFetch(async (url, init) => {
+        const u = String(url);
+        if (u.includes("/token")) {
+          reads += 1;
+          return jsonResponse(reads === 1 ? { token: "old", expiresAt: Date.now() - 1000 } : { token: "new", expiresAt: Date.now() + 3_600_000 });
+        }
+        if (u.includes("/login/bsc")) {
+          logins.push({ url: u, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+          return jsonResponse({ success: true, message: "ok", sellerId: "seller-1" });
+        }
+        throw new Error(`unexpected fetch: ${u}`);
+      });
+
+      await t.withIdentity({ subject: USER_A }).action(internal.credentials.getSiteToken, { site: SITE });
+
+      expect(logins).toHaveLength(1);
+      expect("tokenRefused" in logins[0].body).toBe(false);
+    });
+
+    test("saveCredentials: the body is the key and the transient pair, never tokenRefused", async () => {
+      const t = convexTest(schema, modules);
+      const logins = stubLogins({ success: true, message: "ok", sellerId: "seller-1" });
+
+      await t.withIdentity({ subject: USER_A }).action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+
+      expect(Object.keys(logins[0].body).sort()).toEqual(["key", "password", "username"]);
+      await drainScheduled(t);
+      await cancelScheduled(t);
+    });
+  });
+
+  describe("a BSC login that returns no seller account", () => {
+    test("a listing owner: the background read is armed, first try in 30 s", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      stubLogins({ success: true, message: "ok" });
+      const before = Date.now();
+
+      await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A });
+
+      expect((await listingRow(t))?.sellerIdFetch).toBeDefined();
+      const [tick] = await pendingTicks(t);
+      expect(tick.scheduledTime).toBeGreaterThanOrEqual(before + 30_000);
+      expect(tick.scheduledTime).toBeLessThanOrEqual(Date.now() + 30_000);
+      await cancelScheduled(t);
+    });
+
+    test("a second such login while the read runs does not start another", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      stubLogins({ success: true, message: "ok" });
+
+      await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A });
+      const first = (await listingRow(t))?.sellerIdFetch;
+      __resetContractCache();
+      await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A });
+
+      expect((await listingRow(t))?.sellerIdFetch).toEqual(first);
+      expect(await pendingTicks(t)).toHaveLength(1);
+      await cancelScheduled(t);
+    });
+
+    test("an owner held off listing (the E2E test marker): nothing is armed", async () => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, SITE);
+      await t.run(async (ctx) => {
+        await ctx.db.insert("marketplaceListingStates", {
+          ownerId: USER_A,
+          platform: "bsc",
+          testListingOff: true,
+          lastUpdated: Date.now(),
+        });
+      });
+      stubLogins({ success: true, message: "ok" });
+
+      await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A });
+
+      expect((await listingRow(t))?.sellerIdFetch).toBeUndefined();
+      expect(await pendingTicks(t)).toEqual([]);
+    });
+
+    test("an owner whose account is already stored: nothing is armed", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t, "seller-kept");
+      stubLogins({ success: true, message: "ok" });
+
+      await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A });
+
+      expect((await listingRow(t))?.sellerIdFetch).toBeUndefined();
+      expect(await pendingTicks(t)).toEqual([]);
+    });
+
+    test("a login that returns the id stores it and arms nothing", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      stubLogins({ success: true, message: "ok", sellerId: "seller-9" });
+
+      await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A });
+
+      expect((await listingRow(t))?.sellerIdFetch).toBeUndefined();
+      expect((await listingRow(t))?.platformAccountId).toBe("seller-9");
+      expect(await pendingTicks(t)).toEqual([]);
+      await drainScheduled(t);
+      await cancelScheduled(t);
+    });
+
+    test("SportLots logins arm nothing", async () => {
+      const t = convexTest(schema, modules);
+      await listingOwner(t);
+      await seedHasCredentialsExtra(t);
+      stubLogins({ success: true, message: "ok" });
+
+      await t.action(internal.credentials.refreshSiteTokenForUser, { site: "sportlots", userId: USER_A });
+
+      expect((await listingRow(t))?.sellerIdFetch).toBeUndefined();
+      expect(await pendingTicks(t)).toEqual([]);
+    });
+
+    test("a failure while arming never fails the login", async () => {
+      const real = (await modules["./bscSellerId.ts"]()) as Record<string, unknown>;
+      const t = convexTest(schema, {
+        ...modules,
+        "./bscSellerId.ts": async () => ({
+          ...real,
+          ensureFetch: Object.assign(() => undefined, real.ensureFetch as object, {
+            _handler: async () => {
+              throw new Error("arming exploded");
+            },
+          }),
+        }),
+      });
+      await listingOwner(t);
+      stubLogins({ success: true, message: "ok" });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      const result = await t.action(internal.credentials.refreshSiteTokenForUser, { site: SITE, userId: USER_A });
+
+      expect(result).toEqual({ refreshed: true });
+      expect(warn.mock.calls.map((c) => String(c[0]))).toContain(
+        JSON.stringify({ msg: "bsc_seller_id_fetch", platform: "bsc", operation: "ensure", outcome: "not_armed" }),
+      );
+      expect((await getRawEntry(t, USER_A, SITE))?.needsReauth).toBeFalsy();
+      warn.mockRestore();
+    });
+  });
+});
+
+/** SportLots credential flag beside the BSC one, for the "arms nothing" case. */
+async function seedHasCredentialsExtra(t: ReturnType<typeof convexTest>) {
+  await t.run(async (ctx) => {
+    const p = await ctx.db.query("userProfiles").first();
+    await ctx.db.patch(p!._id, {
+      siteCredentials: [
+        ...(p!.siteCredentials ?? []),
+        { site: "sportlots", hasCredentials: true, lastUpdated: "2020-01-01T00:00:00.000Z" },
+      ],
+    });
+  });
+}

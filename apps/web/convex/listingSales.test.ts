@@ -130,6 +130,9 @@ async function setup(opts: { year?: string } = {}) {
     });
     await ctx.db.insert("userProfiles", {
       userId: OWNER,
+      // NEO-483: a drain a poll kicks claims only with a stored seller account;
+      // without one it arms the background read, which asks BSC for real.
+      marketplaceAccountIds: { bscSellerId: "seller-1" },
       siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
     } as never);
   });

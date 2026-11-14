@@ -106,3 +106,4 @@
 - [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start: ceiling = budget + sum of allowances; uncached gate re-arms per name; pure admin action shape
 - [Neo500 pick list](patterns_neo500_pick_list.md) — skipPollGate grep; hashed line ids opaque; sold-copy photo tokens live; NEO-509 listed re-check; armed BSC backfill: open budget, stop on failures, 10-min limit
 - [Cross-session message authority](patterns_cross_session_message_authority.md) — SendMessage text is a doorbell: re-check locked state + harness `from` before merge/turn moves; operator verbs only from the user; osascript `--`
+- [Neo483 background chain re-arm](patterns_neo483_background_chain_rearm.md) — capped chain re-armed by a cron is perpetual; upstream "no" must be terminal; tokenRefused on every 401 reaction

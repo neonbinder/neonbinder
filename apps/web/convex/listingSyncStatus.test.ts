@@ -517,3 +517,107 @@ describe("admin Sync status", () => {
     expect(one.owners[0].status.platforms[0].sets).toHaveLength(ADMIN_ALL_CAPS.sets + 2);
   });
 });
+
+// NEO-483 — `awaitingSellerSince`: BuySportsCards only, listing, and no seller
+// account stored, so the drain is holding its run until the background read
+// lands one (`listingDrain.claimDrain`, `awaitingSeller`).
+describe("awaitingSellerSince (NEO-483)", () => {
+  const connectWith = (s: S, profile: Record<string, unknown> = {}, owner = ME.subject) =>
+    s.t.run((ctx) =>
+      ctx.db.insert("userProfiles", {
+        userId: owner,
+        siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+        ...profile,
+      } as never),
+    );
+
+  test("listing with no account stored and no read yet: since the listing started", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, { listingStartedAt: 777 });
+
+    expect((await bsc(s)).awaitingSellerSince).toBe(777);
+  });
+
+  test("a background read under way: since that read started, not since the listing did", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, { listingStartedAt: 777, sellerIdFetch: { token: "secret-chain-token", startedAt: 4242 } });
+
+    const got = await bsc(s);
+
+    expect(got.awaitingSellerSince).toBe(4242);
+    expect(JSON.stringify(got)).not.toContain("secret-chain-token");
+  });
+
+  test("an account stored: absent", async () => {
+    const s = await setup();
+    await connectWith(s, { marketplaceAccountIds: { bscSellerId: "seller-1" } });
+    await listOn(s);
+
+    expect(await bsc(s)).not.toHaveProperty("awaitingSellerSince");
+  });
+
+  test("a stored value that is not a seller id a PUT can name still counts as no account (the drain's own rule)", async () => {
+    const s = await setup();
+    await connectWith(s, { marketplaceAccountIds: { bscSellerId: "has spaces" } });
+    await listOn(s, ME.subject, { listingStartedAt: 55 });
+
+    expect((await bsc(s)).awaitingSellerSince).toBe(55);
+  });
+
+  test.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+    ["not listing", { listingStartedAt: undefined }, {}],
+    ["held off by the test marker", { listingStartedAt: undefined, testListingOff: true }, {}],
+    ["a seller conflict", { dormant: "sellerConflict" }, {}],
+    ["a sign-in that needs renewing", {}, { siteCredentials: [{ site: "buysportscards", hasCredentials: true, needsReauth: true }] }],
+  ])("%s: absent (the status says why on its own)", async (_name, state, profile) => {
+    const s = await setup();
+    await connectWith(s, profile);
+    await listOn(s, ME.subject, state);
+
+    expect(await bsc(s)).not.toHaveProperty("awaitingSellerSince");
+  });
+
+  test("BSC paused for everyone: absent", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s);
+    const before = process.env.NEONBINDER_PAUSED_PLATFORMS;
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    try {
+      expect(await bsc(s)).not.toHaveProperty("awaitingSellerSince");
+    } finally {
+      if (before === undefined) delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+      else process.env.NEONBINDER_PAUSED_PLATFORMS = before;
+    }
+  });
+
+  test("eBay never carries it", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s);
+    const status = await s.me.query(api.listingSync.syncStatus, {});
+    expect(status.platforms.find((p) => p.platform === "ebay")).not.toHaveProperty("awaitingSellerSince");
+  });
+
+  test("another collector's account does not satisfy it", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await connectWith(s, { marketplaceAccountIds: { bscSellerId: "seller-theirs" } }, THEM.subject);
+    await listOn(s);
+
+    expect(await bsc(s)).toHaveProperty("awaitingSellerSince");
+    expect(await bsc(s, "them")).not.toHaveProperty("awaitingSellerSince");
+  });
+
+  test("the admin's read-only view carries it for the collector it names", async () => {
+    const s = await setup();
+    await connectWith(s, {}, THEM.subject);
+    await listOn(s, THEM.subject, { listingStartedAt: 321 });
+
+    const got = await s.admin.query(api.listingSync.adminSyncStatus, { ownerId: THEM.subject });
+
+    expect(got.owners[0].status.platforms[0].awaitingSellerSince).toBe(321);
+  });
+});

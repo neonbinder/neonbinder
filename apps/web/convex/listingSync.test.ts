@@ -98,14 +98,18 @@ async function listOn(s: S, owner = ME.subject, extra: Record<string, unknown> =
     }),
   );
 }
-async function connect(s: S, owner = ME.subject) {
+async function connect(s: S, owner = ME.subject, sellerId?: string) {
   await s.t.run((ctx) =>
     ctx.db.insert("userProfiles", {
       userId: owner,
       siteCredentials: [{ site: "buysportscards", hasCredentials: true }],
+      // NEO-483: a drain claim refuses a BSC owner with no stored seller account.
+      ...(sellerId !== undefined ? { marketplaceAccountIds: { bscSellerId: sellerId } } : {}),
     }),
   );
 }
+/** A seller id `isBscSellerId` accepts, for the tests that claim a drain. */
+const STORED_SELLER = "seller-1";
 const outbox = (s: S) => s.t.run((ctx) => ctx.db.query("listingOutbox").collect());
 const states = (s: S) => s.t.run((ctx) => ctx.db.query("marketplaceListingStates").collect());
 async function drains(s: S) {
@@ -1307,7 +1311,7 @@ describe("syncVariant", () => {
   test("a press during a run is carried through: the run goes again on release, reads in full, and the queued row survives the running run's finish", async () => {
     const s = await fresh();
     holdDrains();
-    await connect(s);
+    await connect(s, ME.subject, STORED_SELLER);
     await addTo(s, s.fx.gooden1, s.box);
     await listOn(s, ME.subject, { drainLeaseToken: "owner-lease", drainLeaseExpiresAt: Date.now() + 60_000 });
     await record(s, { status: "running", leaseToken: "lease", leaseExpiresAt: Date.now() + 60_000, lastRunAt: Date.now() - 5_000 });
@@ -1445,7 +1449,7 @@ describe("syncVariant", () => {
     /** A run under way, claimed after a press `pressedAgo` ago, with the owner's last finished drain `drainAgo` ago. */
     async function midRun(s: S, drainAgo: number) {
       holdDrains();
-      await connect(s);
+      await connect(s, ME.subject, STORED_SELLER);
       await addTo(s, s.fx.gooden1, s.box);
       await listOn(s, ME.subject, {
         drainLeaseToken: "owner-lease",
@@ -1588,7 +1592,7 @@ describe("syncVariant", () => {
     test("hammering Sync: press, the run fails and releases, every press inside the minute is throttled, then past it the press is taken", async () => {
       const s = await fresh();
       holdDrains();
-      await connect(s);
+      await connect(s, ME.subject, STORED_SELLER);
       await addTo(s, s.fx.gooden1, s.box);
       await listOn(s);
       const id = await record(s);
@@ -1780,5 +1784,118 @@ describe("listSales", () => {
     expect(second.page.map((o) => o.orderNo)).toEqual(["A-1"]);
     expect(second.isDone).toBe(true);
     expect(JSON.stringify([first, second])).not.toContain("bsc-secret-1");
+  });
+});
+
+// NEO-483 — listing set-up arms the background read of the BuySportsCards
+// seller account (30 s out) when none is stored. The drain refuses to run
+// until it lands (`listingDrain.claimDrain`, `awaitingSeller`).
+describe("setUpListing arms the seller-account read (NEO-483)", () => {
+  const ticks = (s: S) => pendingNamed(s, "fetchTick");
+  const rowOf = async (s: S) => (await states(s)).find((r) => r.platform === "bsc");
+
+  test("a first save with no account stored: the read is armed, first try 30 s out", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    const before = Date.now();
+
+    await save(s);
+
+    const row = await rowOf(s);
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.sellerIdFetch?.token).toMatch(/^[0-9a-f]{32}$/);
+    const [tick] = await ticks(s);
+    expect((tick.args as unknown as Array<Record<string, unknown>>)[0]).toEqual({
+      ownerId: ME.subject,
+      token: row?.sellerIdFetch?.token,
+      attempt: 1,
+    });
+    expect(tick.scheduledTime).toBeGreaterThanOrEqual(before + 30_000);
+    expect(tick.scheduledTime).toBeLessThanOrEqual(Date.now() + 30_000);
+  });
+
+  test("a first save with the account already stored: nothing is armed", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s, ME.subject, STORED_SELLER);
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeUndefined();
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  test("a stored value that is not a seller id counts as no account", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s, ME.subject, "has spaces");
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeDefined();
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test("a save for an owner already listing with no account (the early return) arms it too", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    await listOn(s);
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeDefined();
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test("a second save while the read runs does not start another", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+    await save(s);
+    const first = (await rowOf(s))?.sellerIdFetch;
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toEqual(first);
+    expect(await ticks(s)).toHaveLength(1);
+  });
+
+  test("a save for an owner already listing with the account stored: nothing is armed", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s, ME.subject, STORED_SELLER);
+    await listOn(s);
+
+    await save(s);
+
+    expect((await rowOf(s))?.sellerIdFetch).toBeUndefined();
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  test("the E2E test marker: nothing is armed (the owner does not list)", async () => {
+    const s = await fresh();
+    holdDrains();
+    await withTestingFlag(async () => {
+      await connect(s);
+      await save(s, ME.subject, "testOff");
+    });
+
+    expect((await rowOf(s))?.testListingOff).toBe(true);
+    expect((await rowOf(s))?.sellerIdFetch).toBeUndefined();
+    expect(await ticks(s)).toEqual([]);
+  });
+
+  test("BSC paused: nothing is armed", async () => {
+    const s = await fresh();
+    holdDrains();
+    await connect(s);
+
+    await withPaused(async () => {
+      await save(s);
+    });
+
+    expect(await ticks(s)).toEqual([]);
   });
 });

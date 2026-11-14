@@ -26,6 +26,8 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { format } from "node:util";
 
 const require = createRequire(import.meta.url);
@@ -376,46 +378,43 @@ describe("BSCAdapter.login — cache-invalid → fresh B2C login", () => {
     );
   });
 
-  it("NEO-278: a network throw during cached-token validation falls through to the refresh grant instead of failing login()", async () => {
+  it("NEO-278 / NEO-483: a network throw during cached-token validation keeps the token: no refresh, no write, login() does not fail", async () => {
     // NB: deliberately NOT statefulSecret — its credentials() always forces
     // expiresAt into the past to drive refresh-path tests, which would skip
     // the cache-hit branch entirely and defeat the point of this test.
+    //
+    // NEO-483 reverses NEO-445: a read that gave no verdict used to fall through
+    // to the refresh grant (a rotation and a Secret Manager version per stall).
     const writes = [];
     const BSCAdapter = loadBSCAdapter({
       credentials: () => ({
         username: "seller@example.com",
-        token: "stale-access-token",
-        expiresAt: Date.now() + 60 * 60 * 1000, // still "live" by our own bookkeeping
+        token: "cached-access-token",
+        expiresAt: Date.now() + 60 * 60 * 1000,
         refreshToken: "refresh-token-0",
         refreshExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
       }),
       updateCredentials: (key, creds) => writes.push(creds),
     });
     let profileCalls = 0;
-    const restore = stubFetch(async (url, opts) => {
+    const restore = stubFetch(async (url) => {
       const u = String(url);
       if (u.includes("marketplace/user/profile")) {
         profileCalls++;
-        if (profileCalls <= 2) throw new TypeError("fetch failed"); // NEO-445: both attempts
-        return makeResponse({ status: 200, json: { sellerProfile: { sellerStoreName: "Acme Cards", sellerId: "seller-1" } } });
+        throw new TypeError("fetch failed"); // both attempts
       }
-      if (u.includes("/oauth2/v2.0/token")) {
-        const body = new URLSearchParams(String(opts.body ?? ""));
-        assert.equal(body.get("grant_type"), "refresh_token", "must reach the refresh grant, not a password sign-in");
-        return makeResponse({
-          status: 200,
-          json: { access_token: "refreshed-token", expires_in: 3600, refresh_token: "refresh-token-1", refresh_token_expires_in: 86400 },
-        });
-      }
-      throw new Error(`unexpected fetch: ${u}`);
+      throw new Error(`a throw with no verdict must reach no other endpoint: ${u}`);
     });
 
     const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
     restore();
 
     assert.equal(result.success, true, "the throw must not propagate out of login()");
-    assert.match(result.message, /Refreshed token/);
-    assert.equal(writes[0].token, "refreshed-token");
+    assert.match(result.message, /Used cached token/);
+    assert.equal(profileCalls, 2, "one attempt and one retry");
+    assert.equal(result.storeName, undefined);
+    assert.equal(result.sellerId, undefined);
+    assert.deepEqual(writes, [], "the token was not rotated, so nothing is written");
   });
 });
 
@@ -1806,8 +1805,13 @@ describe("BSCAdapter.login — NEO-278 silent SSO re-authorize", () => {
 
     assert.equal(result.success, true);
     assert.match(result.message, /Silently re-authenticated/);
-    assert.equal(result.storeName, "Acme Cards");
-    assert.equal(result.sellerId, "seller-1");
+    // NEO-483: the silent path no longer reads the seller profile.
+    assert.equal(result.storeName, undefined);
+    assert.equal(result.sellerId, undefined);
+    assert.ok(
+      !router.calls.some((c) => c.url.includes("/marketplace/user/profile")),
+      "no profile read on the silent path",
+    );
     assert.ok(result.expiresAt > Date.now());
 
     // The authorize request: fresh PKCE, the stored cookie, and NO prompt.
@@ -2581,9 +2585,36 @@ describe("BSCAdapter — NEO-445 profile attempts, retry and status logging", ()
 
   const elapsedOf = (text) => Number(/elapsed (\d+)ms/.exec(text)?.[1]);
 
-  // The three callers holding a just-issued token. `start` builds a fresh
-  // secret and router; `persisted` is what must be stored whatever BSC does.
+  // NEO-483: refresh and silent re-authorize no longer read the profile (see
+  // "renewals make no profile call" below). The one path holding a just-issued
+  // token that still does is the password sign-in (Connect). `start` builds a
+  // fresh secret and router; `persisted` is what must be stored whatever BSC
+  // does.
   const ISSUANCE_PATHS = [
+    {
+      name: "password sign-in",
+      message: /Successfully logged into/,
+      persisted: { token: "fresh-access-token", refreshToken: "fresh-refresh-token" },
+      start: () => {
+        const writes = [];
+        return {
+          writes,
+          router: makeB2CRouter(),
+          loginOpts: { transientCredentials: { username: "seller@example.com", password: PASSWORD } },
+          secret: {
+            credentials: () => {
+              throw new Error("a transient sign-in must not read the secret");
+            },
+            updateCredentials: (_key, creds) => writes.push({ ...creds }),
+          },
+        };
+      },
+    },
+  ];
+
+  // NEO-483: the two renewal paths that used to read the profile after
+  // issuing a token.
+  const RENEWAL_PATHS = [
     {
       name: "refresh grant",
       message: /Refreshed token/,
@@ -2605,25 +2636,6 @@ describe("BSCAdapter — NEO-445 profile attempts, retry and status logging", ()
       start: () => {
         const secret = statefulSecret(REFRESH_DEAD_SSO_LIVE);
         return { secret, writes: secret.state.writes, router: makeSilentRouter() };
-      },
-    },
-    {
-      name: "password sign-in",
-      message: /Successfully logged into/,
-      persisted: { token: "fresh-access-token", refreshToken: "fresh-refresh-token" },
-      start: () => {
-        const writes = [];
-        return {
-          writes,
-          router: makeB2CRouter(),
-          loginOpts: { transientCredentials: { username: "seller@example.com", password: PASSWORD } },
-          secret: {
-            credentials: () => {
-              throw new Error("a transient sign-in must not read the secret");
-            },
-            updateCredentials: (_key, creds) => writes.push({ ...creds }),
-          },
-        };
       },
     },
   ];
@@ -2712,6 +2724,33 @@ describe("BSCAdapter — NEO-445 profile attempts, retry and status logging", ()
         assert.equal(fetchHandler.profileCalls.length, 1, "a 4xx is not retried");
         assert.equal(writes.length, 1);
       });
+    });
+  }
+
+  for (const path of RENEWAL_PATHS) {
+    describe(`NEO-483: ${path.name} makes no profile call`, () => {
+      for (const behaviour of [
+        { name: "a hanging profile endpoint", answer: (opts) => hangUntilAborted(opts) },
+        { name: "a healthy profile endpoint", answer: () => healthyProfile() },
+      ]) {
+        it(`${behaviour.name}: success, tokens persisted once, no profile call, no seller fields`, async () => {
+          const { secret, writes, router } = path.start();
+          const fetchHandler = withProfile(router, (_call, opts) => behaviour.answer(opts));
+
+          const { result, thrown } = await runLogin(secret, fetchHandler);
+
+          assert.equal(thrown, undefined);
+          assert.equal(result.success, true);
+          assert.match(result.message, path.message);
+          assert.equal(typeof result.expiresAt, "number");
+          assert.equal(result.storeName, undefined);
+          assert.equal(result.sellerId, undefined);
+          assert.equal(fetchHandler.profileCalls.length, 0, "the renewal never asks BSC for the profile");
+          assert.equal(writes.length, 1, "one renewal, one Secret Manager version");
+          assert.equal(writes[0].token, path.persisted.token);
+          assert.equal(writes[0].refreshToken, path.persisted.refreshToken);
+        });
+      }
     });
   }
 
@@ -2828,51 +2867,78 @@ describe("BSCAdapter — NEO-445 profile attempts, retry and status logging", ()
       assert.match(logged[1].text, /attempt 2\/2 answered 200 in \d+ms/);
     });
 
+    // NEO-483 (Jason, 2026-11-13) reverses NEO-445: a read with no verdict
+    // keeps the token. No refresh grant, no Secret Manager version.
     for (const failure of BOTH_ATTEMPTS_FAIL) {
-      it(`${failure.name} on both attempts: falls through to one refresh, with the seller fields from the new token`, async () => {
+      it(`${failure.name} on both attempts: keeps the cached token, no refresh, no write, no seller fields`, async () => {
         const secret = cachedSecret();
-        const refresh = makeRefreshRouter();
-        const fetchHandler = withProfile(refresh, (call, opts) =>
-          call <= 2 ? failure.answer(opts) : healthyProfile(),
-        );
+        const refresh = makeRefreshRouter({
+          tokenResponse: () => assert.fail("a read with no verdict must not rotate the token"),
+        });
+        const fetchHandler = withProfile(refresh, (_call, opts) => failure.answer(opts));
 
         const { result, thrown, lines } = await runLogin(secret, fetchHandler);
 
         assert.equal(thrown, undefined);
         assert.equal(result.success, true);
-        assert.match(result.message, /Refreshed token/);
-        assert.equal(result.storeName, "Acme Cards");
-        assert.equal(result.sellerId, SELLER_ID);
-        assert.deepEqual(refresh.presented, ["refresh-token-0"]);
-        assert.equal(secret.writes.length, 1, "the fall-through is one refresh, one write");
-        assert.equal(secret.writes[0].refreshToken, "refresh-token-1");
-        assert.equal(fetchHandler.profileCalls.length, 3, "two on the cached token, one on the new one");
+        assert.match(result.message, /Used cached token/);
+        assert.equal(typeof result.expiresAt, "number");
+        assert.equal(result.storeName, undefined);
+        assert.equal(result.sellerId, undefined);
+        assert.deepEqual(refresh.presented, []);
+        assert.equal(secret.writes.length, 0, "nothing is written");
+        assert.equal(fetchHandler.profileCalls.length, 2, "one attempt and one retry");
 
         const logged = profileLines(lines);
-        assert.equal(logged.length, 3, "one line per attempt");
+        assert.equal(logged.length, 2, "one line per attempt");
         assert.match(logged[0].text, failure.line);
         assert.match(logged[1].text, failure.line);
-        assert.match(logged[2].text, /attempt 1\/2 answered 200 in \d+ms/);
+      });
+    }
+
+    for (const status of [429, 404]) {
+      it(`a ${status}: exactly 1 call, the cached token is kept, no retry, no refresh`, async () => {
+        // 429 is BSC throttling us and any other 4xx says nothing about the
+        // token. Retrying a 429 would only add to the throttle.
+        const secret = cachedSecret();
+        const refresh = makeRefreshRouter({
+          tokenResponse: () => assert.fail(`a ${status} is no verdict on the token`),
+        });
+        const fetchHandler = withProfile(refresh, () =>
+          makeResponse({ status, ok: false, json: { error: BODY_MARKER } }),
+        );
+
+        const { result, lines } = await runLogin(secret, fetchHandler);
+
+        assert.equal(result.success, true);
+        assert.match(result.message, /Used cached token/);
+        assert.equal(result.sellerId, undefined);
+        assert.equal(fetchHandler.profileCalls.length, 1, "not retried");
+        assert.equal(secret.writes.length, 0);
+        const logged = profileLines(lines);
+        assert.equal(logged.length, 1);
+        assert.match(logged[0].text, new RegExp(`attempt 1/2 answered ${status} in \\d+ms`));
       });
     }
 
     for (const status of [401, 403]) {
-      it(`a ${status}: exactly 1 call on the cached token, then the refresh as today`, async () => {
+      it(`a ${status}: exactly 1 call on the cached token, then the refresh, which reads no profile`, async () => {
         const secret = cachedSecret();
         const refresh = makeRefreshRouter();
-        const fetchHandler = withProfile(refresh, (call) =>
-          call === 1 ? makeResponse({ status, ok: false, json: { error: BODY_MARKER } }) : healthyProfile(),
+        const fetchHandler = withProfile(refresh, () =>
+          makeResponse({ status, ok: false, json: { error: BODY_MARKER } }),
         );
 
         const { result, lines } = await runLogin(secret, fetchHandler);
 
         assert.match(result.message, /Refreshed token/);
-        assert.equal(result.sellerId, SELLER_ID);
+        assert.equal(result.sellerId, undefined, "NEO-483: the refresh carries no seller fields");
+        assert.deepEqual(refresh.presented, ["refresh-token-0"]);
         assert.equal(secret.writes.length, 1);
-        assert.equal(fetchHandler.profileCalls.length, 2, "one refused call on the cached token, one on the new one");
+        assert.equal(fetchHandler.profileCalls.length, 1, "only the refused call on the cached token");
         const logged = profileLines(lines);
+        assert.equal(logged.length, 1);
         assert.match(logged[0].text, new RegExp(`attempt 1/2 answered ${status} in \\d+ms`));
-        assert.match(logged[1].text, /attempt 1\/2 answered 200/, "the new token starts its own attempts");
       });
     }
 
@@ -2920,9 +2986,295 @@ describe("BSCAdapter — NEO-445 profile attempts, retry and status logging", ()
       assert.deepEqual(await limitsFor(async () => healthyProfile()), [5_000]);
     });
 
-    it("is 5s on every attempt, on a cached token and on the one that replaces it", async () => {
+    it("is 5s on both attempts of the cached-token check, and a stall there ends in the cached token", async () => {
+      // NEO-483: the refresh that used to follow reads no profile, so there
+      // are exactly two attempts.
       const limits = await limitsFor(withProfile(makeRefreshRouter(), () => serverError()));
-      assert.deepEqual(limits, [5_000, 5_000, 5_000, 5_000]);
+      assert.deepEqual(limits, [5_000, 5_000]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-483: tokenRefused, the renewal leeway and the leeway fallback
+// ---------------------------------------------------------------------------
+
+describe("BSCAdapter.login — NEO-483 tokenRefused, renewal leeway and fallback", () => {
+  const KEY = "buysportscards-credentials-seller1";
+  const MIN = 60 * 1000;
+  const PROFILE = "api-prod.buysportscards.com/marketplace/user/profile";
+
+  /**
+   * A fixed (never-forced-expired) secret. `expiresInMs` positions the cached
+   * token against the 5-minute leeway; extra fields come from `extra`.
+   */
+  function fixedSecret({ expiresInMs, extra = {} }) {
+    const expiresAt = Date.now() + expiresInMs;
+    const writes = [];
+    return {
+      expiresAt,
+      writes,
+      credentials: () => ({
+        username: "seller@example.com",
+        token: "cached-access-token",
+        expiresAt,
+        ...extra,
+      }),
+      updateCredentials: (_key, creds) => writes.push({ ...creds }),
+    };
+  }
+  const LIVE_REFRESH = {
+    refreshToken: "refresh-token-0",
+    refreshExpiresAt: Date.now() + 24 * 60 * MIN,
+  };
+
+  /** Run one login against a router that also answers (and counts) profile reads. */
+  async function run(secret, router, opts, profile = () => makeResponse({
+    status: 200,
+    json: { sellerProfile: { sellerStoreName: "Acme Cards", sellerId: "seller-1" } },
+  })) {
+    const profileCalls = [];
+    const handler = async (url, o = {}) => {
+      if (String(url).includes("/marketplace/user/profile")) {
+        profileCalls.push(o);
+        return profile(profileCalls.length);
+      }
+      return router(url, o);
+    };
+    const BSCAdapter = loadBSCAdapter(secret);
+    const restore = stubFetch(handler);
+    const origLog = [console.log, console.warn, console.error];
+    console.log = console.warn = console.error = () => {};
+    try {
+      const result = await new BSCAdapter(undefined).login(KEY, opts);
+      return { result, profileCalls };
+    } finally {
+      [console.log, console.warn, console.error] = origLog;
+      restore();
+    }
+  }
+
+  describe("tokenRefused", () => {
+    it("true skips the cached token: no profile read, straight to the refresh grant", async () => {
+      const secret = fixedSecret({ expiresInMs: 60 * MIN, extra: LIVE_REFRESH });
+      const refresh = makeRefreshRouter();
+
+      const { result, profileCalls } = await run(secret, refresh, { tokenRefused: true });
+
+      assert.equal(result.success, true);
+      assert.match(result.message, /Refreshed token/);
+      assert.deepEqual(refresh.presented, ["refresh-token-0"]);
+      assert.equal(profileCalls.length, 0, "the refused token is not validated, so not served on a stall");
+      assert.equal(secret.writes.length, 1);
+    });
+
+    for (const notTrue of ["true", 1, "1", {}, undefined, false]) {
+      it(`${JSON.stringify(notTrue) ?? "undefined"} does not skip the cache`, async () => {
+        const secret = fixedSecret({ expiresInMs: 60 * MIN, extra: LIVE_REFRESH });
+        const refresh = makeRefreshRouter({
+          tokenResponse: () => assert.fail("a healthy cached token must not refresh"),
+        });
+
+        const { result, profileCalls } = await run(secret, refresh, { tokenRefused: notTrue });
+
+        assert.match(result.message, /Used cached token/);
+        assert.equal(profileCalls.length, 1);
+        assert.equal(secret.writes.length, 0);
+      });
+    }
+
+    it("true with a stalled profile endpoint never serves the refused token", async () => {
+      const secret = fixedSecret({ expiresInMs: 60 * MIN, extra: LIVE_REFRESH });
+      const refresh = makeRefreshRouter();
+
+      const { result, profileCalls } = await run(
+        secret,
+        refresh,
+        { tokenRefused: true },
+        () => {
+          throw new Error("profile must not be asked");
+        },
+      );
+
+      assert.equal(profileCalls.length, 0);
+      assert.match(result.message, /Refreshed token/);
+      assert.equal(secret.writes[0].token, "access-token-1");
+    });
+
+    it("true with nothing to renew with: reauthRequired, not the refused token", async () => {
+      const secret = fixedSecret({ expiresInMs: 60 * MIN });
+
+      const { result, profileCalls } = await run(secret, makeRefreshRouter(), { tokenRefused: true });
+
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, true);
+      assert.equal(profileCalls.length, 0);
+      assert.deepEqual(secret.writes, []);
+    });
+
+    it("true with the token endpoint down and no password: a failure, never the leeway fallback", async () => {
+      // The leeway fallback serves a token nothing has refused. Here the caller
+      // says BSC refused it, so a 503 on the refresh must not hand it back.
+      const secret = fixedSecret({ expiresInMs: 2 * MIN, extra: LIVE_REFRESH });
+      const refresh = makeRefreshRouter({
+        tokenResponse: () => makeResponse({ status: 503, ok: false, json: { error: "unavailable" } }),
+      });
+
+      const { result } = await run(secret, refresh, { tokenRefused: true });
+
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, false);
+      assert.deepEqual(secret.writes, []);
+    });
+  });
+
+  describe("renewal leeway (the cached token's last 5 minutes)", () => {
+    it("with a live refresh token: renews through the refresh grant, no profile read", async () => {
+      const secret = fixedSecret({ expiresInMs: 2 * MIN, extra: LIVE_REFRESH });
+      const refresh = makeRefreshRouter();
+
+      const { result, profileCalls } = await run(secret, refresh);
+
+      assert.match(result.message, /Refreshed token/);
+      assert.deepEqual(refresh.presented, ["refresh-token-0"]);
+      assert.equal(profileCalls.length, 0);
+      assert.ok(result.expiresAt > secret.expiresAt, "a later expiry, so Convex stops coming back");
+      assert.equal(secret.writes.length, 1);
+    });
+
+    it("with only a live SSO session: renews through the silent re-authorize", async () => {
+      const secret = fixedSecret({
+        expiresInMs: 2 * MIN,
+        extra: {
+          ssoCookies: REFRESH_DEAD_SSO_LIVE.ssoCookies,
+          ssoExpiresAt: REFRESH_DEAD_SSO_LIVE.ssoExpiresAt,
+        },
+      });
+
+      const { result, profileCalls } = await run(secret, makeSilentRouter());
+
+      assert.match(result.message, /Silently re-authenticated/);
+      assert.equal(profileCalls.length, 0);
+      assert.equal(secret.writes.length, 1);
+    });
+
+    it("with no refresh token and no SSO session: the cached token is validated and served as before", async () => {
+      const secret = fixedSecret({ expiresInMs: 2 * MIN });
+      const refresh = makeRefreshRouter({
+        tokenResponse: () => assert.fail("there is nothing to renew with"),
+      });
+
+      const { result, profileCalls } = await run(secret, refresh);
+
+      assert.match(result.message, /Used cached token/);
+      assert.equal(profileCalls.length, 1);
+      assert.equal(result.sellerId, "seller-1");
+      assert.equal(result.expiresAt, secret.expiresAt);
+      assert.deepEqual(secret.writes, []);
+    });
+
+    it("with a refresh token that has lapsed: counts as nothing to renew with", async () => {
+      const secret = fixedSecret({
+        expiresInMs: 2 * MIN,
+        extra: { refreshToken: "refresh-token-dead", refreshExpiresAt: Date.now() - MIN },
+      });
+      const refresh = makeRefreshRouter({
+        tokenResponse: () => assert.fail("a lapsed refresh token must not be presented"),
+      });
+
+      const { result, profileCalls } = await run(secret, refresh);
+
+      assert.match(result.message, /Used cached token/);
+      assert.equal(profileCalls.length, 1);
+    });
+
+    it("a token just outside the leeway is validated, not renewed", async () => {
+      const secret = fixedSecret({ expiresInMs: 6 * MIN, extra: LIVE_REFRESH });
+      const refresh = makeRefreshRouter({
+        tokenResponse: () => assert.fail("outside the leeway the cache is served"),
+      });
+
+      const { result, profileCalls } = await run(secret, refresh);
+
+      assert.match(result.message, /Used cached token/);
+      assert.equal(profileCalls.length, 1);
+    });
+  });
+
+  describe("leeway fallback", () => {
+    it("a 5xx refresh with no password serves the unexpired cached token, unrotated", async () => {
+      const secret = fixedSecret({ expiresInMs: 2 * MIN, extra: LIVE_REFRESH });
+      const refresh = makeRefreshRouter({
+        tokenResponse: () => makeResponse({ status: 503, ok: false, json: { error: "unavailable" } }),
+      });
+
+      const { result, profileCalls } = await run(secret, refresh);
+
+      assert.equal(result.success, true);
+      assert.match(result.message, /Used cached token/);
+      assert.equal(result.expiresAt, secret.expiresAt, "the old expiry, so Convex tries the renewal again");
+      assert.equal(result.sellerId, undefined);
+      assert.equal(profileCalls.length, 0);
+      assert.deepEqual(secret.writes, []);
+    });
+
+    describe("a refused refresh followed by a failed silent re-authorize", () => {
+      const extra = {
+        ...LIVE_REFRESH,
+        ssoCookies: REFRESH_DEAD_SSO_LIVE.ssoCookies,
+        ssoExpiresAt: REFRESH_DEAD_SSO_LIVE.ssoExpiresAt,
+      };
+      const router = () =>
+        makeSilentRouter({
+          refreshResponse: () => makeResponse({ status: 400, ok: false, json: { error: "invalid_grant" } }),
+          authorize: () => makeResponse({ status: 200, body: SETTINGS_HTML() }),
+        });
+
+      it("serves the cached token while it is unexpired", async () => {
+        const secret = fixedSecret({ expiresInMs: 2 * MIN, extra });
+
+        const { result } = await run(secret, router());
+
+        assert.equal(result.success, true);
+        assert.match(result.message, /Used cached token/);
+        assert.equal(result.expiresAt, secret.expiresAt);
+        assert.deepEqual(secret.writes, []);
+      });
+
+      it("reports reauthRequired once the token has expired", async () => {
+        const secret = fixedSecret({ expiresInMs: -1, extra });
+
+        const { result } = await run(secret, router());
+
+        assert.equal(result.success, false);
+        assert.equal(result.reauthRequired, true);
+        assert.deepEqual(secret.writes, []);
+      });
+    });
+  });
+
+  describe("/login/bsc route", () => {
+    // src/index.ts calls app.listen() at import time, so the route cannot be
+    // driven in-process (see canary-pause-route.test.mjs). Pin the source.
+    const src = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
+    const bscRoute = src.slice(src.indexOf('app.post("/login/bsc"'));
+    const nextRoute = bscRoute.indexOf('app.post("/login/', 10);
+    const route = nextRoute === -1 ? bscRoute : bscRoute.slice(0, nextRoute);
+
+    it("coerces the body field with a strict === true, like canary", () => {
+      assert.match(route, /const tokenRefused = req\.body\.tokenRefused === true;/);
+    });
+
+    it("hands the coerced value to adapter.login, not the raw body field", () => {
+      assert.match(route, /adapter\.login\(key, \{[^}]*\btokenRefused,/s);
+      assert.doesNotMatch(route, /tokenRefused:\s*req\.body/);
+    });
+
+    it("is BSC only: the SportLots route never reads it", () => {
+      const sl = src.slice(src.indexOf('app.post("/login/sportlots"'));
+      const slRoute = sl.slice(0, sl.indexOf('app.post("/login/', 10) === -1 ? undefined : sl.indexOf('app.post("/login/', 10));
+      assert.ok(slRoute.length > 100, "found the SportLots route");
+      assert.doesNotMatch(slRoute, /tokenRefused/);
     });
   });
 });
