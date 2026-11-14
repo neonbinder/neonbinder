@@ -36,7 +36,8 @@ import { HomeSides, MAX_CONTAINERS, MAX_SYSTEM_CONTAINERS } from "./collection";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import { ListingLabels } from "./lib/listingLabels";
 import { isPlatformPaused } from "./marketplacePause";
-import { DRAIN_LEASE_MS, MAX_STORED_PROBLEMS } from "./listingDrain";
+import { DRAIN_LEASE_MS, MAX_STORED_PROBLEMS, storedBscSellerId } from "./listingDrain";
+import { ensureBscSellerIdFetch } from "./bscSellerId";
 import {
   clearListingOutbox,
   enqueueListingCards,
@@ -217,6 +218,13 @@ export type ListingSetup =
  *     every card in the owner's listed boxes and then runs the drain
  *     (`startListingWalk`). The stamp names the walk, so a walk from an
  *     earlier save (removed and saved again within the walk) stands down.
+ *
+ * NEO-483, BuySportsCards: when listing has started now, or the early
+ * `listing` return finds the owner already listing, and no seller account is
+ * stored (`storedBscSellerId`), the spaced background read is armed to start
+ * in `BSC_SELLER_FETCH_AFTER_SETUP_MS` (`ensureBscSellerIdFetch`; a no-op
+ * while one is in flight). The drain refuses to run until it lands
+ * (`listingDrain.claimDrain`, `awaitingSeller`).
  */
 export async function setUpListing(
   ctx: MutationCtx,
@@ -227,7 +235,10 @@ export async function setUpListing(
   if (!opts.save && isPlatformPaused(LISTING_CREDENTIAL_SITE[platform])) return "paused";
   if (!opts.save && process.env.TESTING_RESET_SECRET) return "testOff";
   const state = await listingStateOf(ctx, ownerId, platform);
-  if (state && pushesCounts(state)) return "listing";
+  if (state && pushesCounts(state)) {
+    if (platform === "bsc") await awaitBscSeller(ctx, ownerId, null);
+    return "listing";
+  }
   if (state?.testListingOff === true && !opts.save) return "testOff";
   if (state?.dormant === "sellerConflict" && !opts.save) return "sellerConflict";
   const credential = await listingCredentialOf(ctx, ownerId, platform);
@@ -267,7 +278,26 @@ export async function setUpListing(
   if (state) await ctx.db.patch(state._id, on);
   else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...on });
   await ctx.scheduler.runAfter(0, internal.listingSync.startListingWalk, { ownerId, platform, startedAt: now });
+  if (platform === "bsc") await awaitBscSeller(ctx, ownerId, credential.sellerId);
   return "started";
+}
+
+/**
+ * NEO-483 — how long after a save or sign-in that found no BuySportsCards
+ * seller account the background read first tries (the plan's schedule: 30 s
+ * after a save or login, at once from a drain).
+ */
+export const BSC_SELLER_FETCH_AFTER_SETUP_MS = 30_000;
+
+/**
+ * Arms the background read of the owner's BuySportsCards seller account when
+ * none is stored. `sellerId` is the stored value when the caller already read
+ * it; null reads it here (the owner's profile, one document).
+ */
+async function awaitBscSeller(ctx: MutationCtx, ownerId: string, sellerId: string | null): Promise<void> {
+  const stored = storedBscSellerId(sellerId ?? (await listingCredentialOf(ctx, ownerId, "bsc")).sellerId);
+  if (stored !== null) return;
+  await ensureBscSellerIdFetch(ctx, ownerId, { firstDelayMs: BSC_SELLER_FETCH_AFTER_SETUP_MS });
 }
 
 /**
@@ -899,6 +929,12 @@ const platformStatusValidator = v.object({
   /** A sync is scheduled to start (kicked, not yet running). */
   scheduledAt: v.optional(v.number()),
   lastDrainAt: v.optional(v.number()),
+  /**
+   * NEO-483 — BuySportsCards only: listing, and no seller account stored yet,
+   * so no sync can run until the background read lands it. Since when the
+   * current read started (else since listing started). Absent otherwise.
+   */
+  awaitingSellerSince: v.optional(v.number()),
   /** Cards waiting for the next sync, oldest first, `STATUS_CAPS.queued` at most. */
   queued: v.object({
     cards: v.array(
@@ -1039,6 +1075,16 @@ async function platformStatus(
     });
   }
 
+  // NEO-483: listing on BSC with no seller account stored: the drain waits
+  // on the background read (`listingDrain.claimDrain`, `awaitingSeller`).
+  let awaitingSellerSince: number | undefined;
+  if (platform === "bsc" && settings.listing && !settings.paused && !settings.needsReauth && !settings.sellerConflict) {
+    const credential = await listingCredentialOf(ctx, ownerId, platform);
+    if (storedBscSellerId(credential.sellerId) === null) {
+      awaitingSellerSince = state?.sellerIdFetch?.startedAt ?? settings.listingSince;
+    }
+  }
+
   return {
     platform,
     connected: settings.connected,
@@ -1049,6 +1095,7 @@ async function platformStatus(
     running,
     ...(state?.drainScheduledAt !== undefined ? { scheduledAt: state.drainScheduledAt } : {}),
     ...(state?.lastDrainAt !== undefined ? { lastDrainAt: state.lastDrainAt } : {}),
+    ...(awaitingSellerSince !== undefined ? { awaitingSellerSince } : {}),
     queued: { cards, more: rows.length > caps.queued },
     sets,
   };

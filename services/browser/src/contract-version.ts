@@ -49,4 +49,19 @@
  *
  * See services/browser/README.md ("Release contract") for the full rule.
  */
-export const CONTRACT_VERSION = 1;
+export const CONTRACT_VERSION = 2;
+
+/*
+ * HISTORY
+ *
+ *   1 (NEO-143): the version check itself; transient login credentials.
+ *   2 (NEO-483): `/login/bsc` accepts `tokenRefused` (strict boolean) and
+ *      skips the cached-token branch when it is true. BSC's refresh and
+ *      silent re-authorize paths stop reading the seller profile, so their
+ *      responses omit the optional `storeName` and `sellerId`, and a cached
+ *      token whose profile read gives no verdict is served without them.
+ *      Both are safe in either release order: an older service ignores
+ *      `tokenRefused`, and an older Convex already handles a login with no
+ *      seller fields. Convex's REQUIRED_CONTRACT_VERSION stays 1 until the
+ *      next release.
+ */

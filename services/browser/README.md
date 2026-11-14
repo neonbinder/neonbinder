@@ -75,6 +75,43 @@ Delists a card using web automation.
 }
 ```
 
+### POST /login/bsc and POST /login/sportlots
+
+Signs in to the marketplace for one credential key. Only Convex calls these
+(Cloud Run IAM); the NEO-43 canary jobs call them with `canary: true`.
+
+**Request body:**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `key` | string | The credential key. Required. |
+| `username`, `password` | string | Optional, together or not at all. Used for this one sign-in and never stored (NEO-141). |
+| `canary` | boolean | Synthetic probe: skip the cached token and the write-back. Only `true` counts. |
+| `tokenRefused` | boolean | **BSC only, contract version 2 (NEO-483).** Convex sets it after BSC answered 401 to the stored access token. The adapter then skips its cached-token branch and goes straight to the refresh grant, the silent re-authorize, or `reauth_required`. Only a strict boolean `true` counts; the string `"true"` is ignored. An older service ignores the field. |
+
+**Response (200):** `{ success, message, expiresAt, storeName?, sellerId? }`.
+`storeName` and `sellerId` are optional and Convex must not depend on them:
+
+- A password sign-in (Connect) reads BSC's seller profile and returns them
+  when it answers.
+- The cached-token branch returns them when the profile read validates the
+  token. Since NEO-483, a read that gives no verdict (a timeout, a throw, a 5xx
+  after its one retry, a 429 or any 4xx other than 401/403) still returns
+  success with the cached token, without the seller fields. Only a 401 or 403
+  discards the token and moves on to renewal.
+- The refresh grant and the silent re-authorize never read the profile and
+  never return them (NEO-483). Convex fetches the seller account on its own
+  schedule.
+- A cached token inside the 5-minute renewal leeway (Convex's
+  `TOKEN_REFRESH_LEEWAY_MS`) with a live refresh token or SSO session is
+  renewed instead of validated. If that renewal fails, the still-unexpired
+  cached token is served rather than failing the login.
+
+Failures: 422 when the marketplace refused the credentials
+(`invalid_credentials`) or the stored session is gone (`reauth_required`), 502
+for an integration or marketplace failure, 500 when our code threw. Every failure
+body is `{ error, error_class, diagnostic? }`, with no credential material.
+
 ### EasyPost postage routes
 
 Convex never holds a seller's EasyPost API key (NEO-20's credential boundary),
@@ -423,6 +460,13 @@ Do **not** make this service reject unknown request fields. An older service
 lockstep deploy, which is the opposite of what the rule above needs.
 (Contradictory fields *are* rejected — see `parseTransientCredentials`, where
 half a credential pair is a 400 rather than a silent fallback.)
+
+### Version history
+
+| Version | Ticket | Change |
+|---|---|---|
+| 1 | NEO-143 | The version check itself; transient login credentials. |
+| 2 | NEO-483 | `/login/bsc` accepts `tokenRefused`. Refresh and silent re-authorize stop returning `storeName`/`sellerId`; a cached token whose profile read gives no verdict is served without them. Additive in both directions, so Convex's `REQUIRED_CONTRACT_VERSION` stays 1 in this release. |
 
 ### The mechanical check
 

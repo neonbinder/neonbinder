@@ -334,6 +334,19 @@ export function stepLabels(steps: ReadonlyArray<StepWords>, platform: ListingPla
   });
 }
 
+/**
+ * NEO-483 — Running now, while no sync can start because BuySportsCards hasn't
+ * named the collector's seller account yet (NB keeps asking in the
+ * background, and the first sync starts when it answers). The live line under
+ * it, "Waiting on BuySportsCards…", is `WaitingOnMarketplace`'s.
+ */
+export function awaitingSellerLine(platform: ListingPlatform, readOnly = false): string {
+  const name = PLATFORM_NAME[platform];
+  return readOnly
+    ? `${name} hasn't said which seller account this collector lists from yet. Syncing starts on its own once it answers.`
+    : `${name} hasn't told us which seller account is yours yet. Hang tight: nothing is lost, and syncing kicks off on its own the moment it answers.`;
+}
+
 /** A set row's last run folds its compare and every read into this one line (the run going now keeps each). */
 export const GATHERING_DATA = "Gathering data";
 

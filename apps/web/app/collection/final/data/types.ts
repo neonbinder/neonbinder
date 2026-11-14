@@ -1123,6 +1123,12 @@ export interface PlatformSyncStatus extends ListingPlatformSettings {
   scheduledAt?: number;
   /** When the last sync finished (ms). */
   lastDrainAt?: number;
+  /**
+   * NEO-483 — BuySportsCards hasn't said which seller account is the
+   * collector's yet, so no sync can start: since when NB has been asking
+   * (ms). Absent when nothing is waiting on it.
+   */
+  awaitingSellerSince?: number;
   /** Oldest first, capped; `more` when there are others. */
   queued: { cards: QueuedSyncCard[]; more: boolean };
   /** Most recent first, capped. */

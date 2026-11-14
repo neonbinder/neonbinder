@@ -5,6 +5,7 @@ import { binderOpenPreferenceValidator, collectionCopyConditionValidator, themeP
 import { DEFAULT_CONDITION } from "./collection";
 import { listingPlatformForSite, stopListingForSite } from "./listingOutbox";
 import { holdTestListingOff, setUpListing } from "./listingSync";
+import { landBscSellerId } from "./bscSellerId";
 
 // Mirrors schema.ts `userProfiles.marketplaceAccountIds`: a field missing here
 // fails getUserProfile's return validation for every profile that has it.
@@ -112,8 +113,15 @@ export const getThemePreference = query({
 /**
  * Internal mutation to upsert a marketplace-specific account identifier
  * (e.g. BSC sellerId) onto the user's profile. Called from the BSC login
- * action after the browser service returns the sellerId; never invoked
+ * action after the browser service returns the sellerId, and from the
+ * background seller-account read (`bscSellerId.fetchTick`); never invoked
  * directly from the client.
+ *
+ * NEO-483: the single place a landed BSC account is acted on. It always
+ * writes (an account BSC names now replaces the one stored), then
+ * `landBscSellerId` clears any background read, binds the account to the
+ * owner's listing row (or holds it back on a seller conflict) and kicks the
+ * drain a missing account was holding.
  *
  * Note: only known sites are accepted to keep the validator surface tight.
  * Adding a new marketplace means extending this switch alongside the schema.
@@ -164,6 +172,9 @@ export const setMarketplaceAccountIdInternal = internalMutation({
         userId: args.userId,
         marketplaceAccountIds: nextAccounts,
       });
+    }
+    if (args.site === "buysportscards") {
+      await landBscSellerId(ctx, args.userId, args.accountId);
     }
     return null;
   },

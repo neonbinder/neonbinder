@@ -535,23 +535,30 @@ function isRetryableProfileFailure(f: BscSellerFailure): boolean {
  * per attempt, and a retryable failure is tried again at once, up to
  * `BSC_PROFILE_MAX_ATTEMPTS`. A 401 inside an attempt still takes the
  * session's one refresh in `send`. The last attempt's failure is returned.
+ *
+ * NEO-483 — `opts` overrides both bounds for a caller with its own schedule
+ * (`bscSellerId.ts`'s spaced background read: one attempt, a longer wait,
+ * and the next try left to its next tick). Omitted, the bounds above apply.
  */
 export async function fetchBscSellerId(
   ctx: SessionCtx,
   session: BscSellerSession,
+  opts: { attempts?: number; timeoutMs?: number } = {},
 ): Promise<BscSellerResult<string | null>> {
+  const maxAttempts = Math.max(1, opts.attempts ?? BSC_PROFILE_MAX_ATTEMPTS);
+  const timeoutMs = opts.timeoutMs ?? BSC_SELLER_TIMEOUTS_MS.profile;
   const read = (attempt: number) =>
     send(ctx, session, {
       operation: "sellerProfile",
       method: "GET",
       path: "marketplace/user/profile",
       pathTemplate: "marketplace/user/profile",
-      timeoutMs: BSC_SELLER_TIMEOUTS_MS.profile,
+      timeoutMs,
       maxBytes: BSC_SELLER_MAX_BYTES.profile,
       logFields: { attempt },
     });
   let r = await read(1);
-  for (let attempt = 2; attempt <= BSC_PROFILE_MAX_ATTEMPTS && !r.ok && isRetryableProfileFailure(r.failure); attempt++) {
+  for (let attempt = 2; attempt <= maxAttempts && !r.ok && isRetryableProfileFailure(r.failure); attempt++) {
     r = await read(attempt);
   }
   if (!r.ok) return r;

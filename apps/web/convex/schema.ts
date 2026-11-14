@@ -5334,6 +5334,15 @@ export default defineSchema({
     dormant: v.optional(v.union(v.literal("noCredentials"), v.literal("sellerConflict"))),
     /** The platform seller account this owner lists from (BSC seller id). */
     platformAccountId: v.optional(v.string()),
+    /**
+     * NEO-483 (BSC only): a background read of the owner's seller account is
+     * under way (`bscSellerId.ts`). `token` names the chain (a tick whose
+     * token no longer matches stands down); `startedAt` is when the chain
+     * began, so a chain older than its whole schedule reads as stale and a
+     * new one replaces it. Cleared when the account lands, the chain gives up
+     * or stops. Holds no marketplace value.
+     */
+    sellerIdFetch: v.optional(v.object({ token: v.string(), startedAt: v.number() })),
     /** When the poll last ran while the owner's credentials needed a fresh sign-in. */
     reauthPollAt: v.optional(v.number()),
     lastUpdated: v.number(),

@@ -37,7 +37,11 @@
 // live BSC round trips on data nothing synced yet (GUIDE hard rule 3, first
 // exception); each carries the helpers' own ceiling. Sync is walked one ledger
 // step at a time within the standard 7 s (`followRunToEnd`). The one other wait
-// above 7 s is the seed hop's sign-in when the sign-in is saved again.
+// above 7 s is the seed hop's sign-in when the sign-in is saved again. The first
+// press can also meet a worker whose BuySportsCards seller account NeonBinder is
+// still waiting to hear (NEO-483): Sync status reads "Waiting on BuySportsCards..."
+// and the run starts by itself; the walk's claim wait allows that
+// (`SELLER_ACCOUNT_CAP_MS`, support/collection.ts) and the spec passes either way.
 //
 // R7/R7a. Football -> 2026 -> Bowman is a registered real set (SET-REGISTRY.md):
 // this spec is the SOLE writer of its rows (it builds them, in-flow, through the
@@ -62,6 +66,7 @@ import {
   collectorCascade,
   createBox,
   deleteOpenBox,
+  expectRunOrSellerWait,
   followRunToEnd,
   followRunToRest,
   inventoryTabs,
@@ -535,10 +540,20 @@ test(
     // platform is idle, which proves a run that started after the press has
     // finished. A BSC read keeps its signed-off ceiling; every other step gets 7 s
     // plus the seconds BSC is visibly holding it (support/marketplace-wait.ts).
+    //
+    // NEO-483: this is the worker's first press on a freshly saved sign-in, so
+    // NeonBinder may still be waiting for BuySportsCards to name the seller account.
+    // Sync status then reads "Waiting on BuySportsCards..." (no run, no result line
+    // yet) and the run starts by itself when the answer lands: the walk's claim
+    // wait covers it (SELLER_ACCOUNT_CAP_MS). `expectRunOrSellerWait` settles on
+    // whichever state the press led to and checks the wait line for accessibility.
+    // Both orders reach the same unconditional asserts below (R2): the ledger, the
+    // "2 listed" line, nothing held back. A "Seller account in use" screen throws.
     const run = syncRun(platform, SET_LABEL, BSC);
     const resultLine = row.getByText(/^\d+ listed/);
-    await expect(run.underWay(resultLine)).toBeVisible();
-    await followRunToRest(platform, run, queueSettled(platform, SET_LABEL), bscReadCeiling, BSC);
+    const settled = queueSettled(platform, SET_LABEL);
+    await expectRunOrSellerWait(platform, run, settled, { marketplace: BSC, label: "Inventory Sync status, waiting on BuySportsCards for the seller account" });
+    await followRunToRest(platform, run, settled, bscReadCeiling, BSC);
     await expect(run.last).toBeVisible();
     await expect(run.gathered()).toBeVisible();
     await expect(resultLine).toBeVisible();
