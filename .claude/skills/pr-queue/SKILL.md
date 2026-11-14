@@ -1,11 +1,110 @@
 ---
 name: pr-queue
-description: The CI queue for the NeonBinder monorepo. One session runs the queue (`/pr-queue run`); it only takes requests to join and hands out turns, one at a time. Any session whose ticket is ready for production joins it (`/pr-queue join <ticket>`) and, when its turn comes, merges main, pushes and opens its PR, watches CI, merges to production on green with pr-close, sends a Mac notification, tells every other session main moved, and tells the queue it is done. A session never pushes outside its turn, because every push starts a CI run and only a run that can merge is worth paying for. Use "run the PR queue" / "be the queue" for the queue side, and "queue NEO-464" / "join the queue" / "ship this ticket" for the requester side.
+description: The CI queue for the NeonBinder monorepo. One session runs the queue (`/pr-queue run`); it only takes requests to join and hands out turns, one at a time. Any session whose ticket is ready for production joins it (`/pr-queue join <ticket>`) and, when its turn comes, merges main, pushes and opens its PR, watches CI, merges to production on green with pr-close, sends a Mac notification, tells every other session main moved, and tells the queue it is done. A session never pushes outside its turn, because every push starts a CI run and only a run that can merge is worth paying for. When the repo variable `MERGE_QUEUE` is `true` the queue is GitHub's merge queue instead: no queue session, no turns; the session enqueues with `gh pr merge --squash` and follows it with `pr-watch --queue`. Use "run the PR queue" / "be the queue" for the queue side, and "queue NEO-464" / "join the queue" / "ship this ticket" for the requester side.
 argument-hint: run | join <ticket> | status | leave <ticket>
 allowed-tools: Bash(*/.claude/skills/pr-queue/state.sh:*), Bash(*/.claude/skills/pr-queue/notify.sh:*), Bash(gh pr list:*), ToolSearch, ListAgents, SendMessage, Skill
 ---
 
 # pr-queue: one CI run at a time, and it merges
+
+## Which flow? Read this first
+
+```bash
+gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app
+```
+
+- **`true`: the GitHub merge queue.** Use "GitHub-queue flow" below. There is no
+  queue session and no turn: the `run`, `JOIN`, `YOUR TURN`, `PASS`, `DONE`,
+  `MAIN MOVED` messages and `state.sh` are not used. Pushes are free.
+- **Anything else, including an error reading the variable or the variable
+  missing: treat it as off** and follow the rest of this file exactly as written.
+
+## GitHub-queue flow (`MERGE_QUEUE=true`)
+
+GitHub's merge queue builds the PR on top of current `main` (a `merge_group`
+run on `gh-readonly-queue/main/pr-<N>-*`), runs the full preview stack and E2E
+there, and merges on green. A PR push runs only the cheap checks, so nothing here
+waits for a turn.
+
+**Bar for enqueueing is today's bar for joining**: every audit's findings applied,
+unit tests, typecheck, lint and build green, the covering E2E specs green locally on
+desktop and mobile, and, for a UI change, Jason's verdict given on the local build.
+**Enqueueing is merge approval** (Jason, 2026-11-13): a session whose ticket meets
+that bar runs `gh pr merge --squash` without asking again. Not at the bar: do not
+enqueue.
+
+0. **Never enqueue a fork PR or a Dependabot-authored PR.** Before every
+   `gh pr merge`: `gh pr view <PR> --json isCrossRepository,headRepositoryOwner,author`
+   must show `isCrossRepository` false, `headRepositoryOwner.login` `neonbinder`,
+   and an author that is not a Dependabot account. Otherwise stop and tell Jason
+   (a Dependabot bump ships only inside a `deps-batch` PR).
+1. **Push freely, no turn needed.** `git fetch origin && git merge origin/main`
+   is optional (the queue builds on current main itself). Push, open the PR with
+   the ticket in the title (`NEO-123(<pr>) Short title`), and let the cheap checks run;
+   `pr-watch <PR>` reports them as "cheap checks green", never "green".
+   Need the full E2E run off-queue (a harness change, a pinned tool bump, a
+   red you want to reproduce on a preview)? Add the `run-e2e` label and push.
+   **Remove the `run-e2e` label before enqueueing** (`gh pr edit <PR> --remove-label run-e2e`):
+   the queue interlock treats the label as "this PR already ran full".
+2. **Enqueue.** First confirm the ruleset still has the queue:
+   `GITHUB_REPOSITORY=neonbinder/neonbinder-app bash .github/scripts/ci-mode.sh --check-ruleset`
+   prints `queue=live` and exits 0 only when the ruleset has a `merge_queue` rule
+   and `CI Gate` is required from the Actions app; otherwise `queue=off`, exit 1
+   (any error included). Run it from the worktree root. The script exists only
+   once the merge-queue PR has merged; before that queue mode cannot be on, so a
+   missing script means off. If it does not print `queue=live`,
+   `gh pr merge` would merge on cheap checks alone: stop, and use the Claude-run
+   flow or ask Jason. Then
+   `gh pr merge <PR> --squash` (it enqueues, it does not merge
+   at once). Tab `cc-state queue`. Do not push to the branch while it is queued
+   unless you mean to leave: a push dequeues it.
+3. **Keep watching in this session, do not rely on Discord:**
+   `pr-watch --queue <PR>` (Monitor armed from the main loop, as pr-watch
+   describes). Tab: `cc-state queue` while waiting, `cc-state ci` once its group
+   is running (`group runs ... active` in the tick line).
+4. **`DONE MERGED`** → `pr-close` finishes it (Mac notification, production
+   check, smoke test, Linear, cleanup); `cc-state test` when production
+   checks out.
+5. **`DONE EJECTED`** (GitHub removed it itself) → same rules as any red:
+   - save the run's artifacts first (the red-run triage steps), into the
+     session scratchpad;
+   - look for an existing ci-fail ticket before filing one (bump Occurrences);
+   - run the failure through the planner, not a guess;
+   - **every re-enqueue repeats the pre-enqueue checklist first**: step 0
+     (fork/author check), the `run-e2e` label removal in step 1, and step 2's
+     ruleset predicate, then `gh pr merge`;
+   - an outside-service flake (the flake rule below) is re-enqueued unchanged
+     with `gh pr merge <PR> --squash`, once per ticket (a merge-group run
+     cannot be rerun); no new audit is needed because the code is unchanged;
+   - anything pointing at our code is fixed locally and pushed (free), but
+     **re-enqueueing after a code fix needs the same bar as re-joining the
+     Claude-run queue today**: the delta audit of the fix and the local gates
+     (and covering specs) green first;
+   - **before any re-enqueue, wait for the PR's `Preview Cleanup` run to finish**
+     (`gh run list --workflow preview-cleanup.yml --limit 5`, find the run for
+     this PR): a dequeue tears the PR's previews down, and enqueueing while that
+     runs races the rebuild;
+   - send the Mac notification: `REASON='#499 ejected: one-line reason' notify.sh 'NEO-123 ejected' "$REASON"`
+     (free text single-quoted, as above);
+   - `cc-state answer` only if Jason must decide; otherwise keep working.
+6. **`DONE REMOVED`** (a person, an unknown dequeue reason, or a closed PR) →
+   stop: `cc-state answer`, tell Jason the reason and actor, and **never
+   re-enqueue on your own**.
+7. **Leaving the queue:** `gh pr merge <PR> --disable-auto`, then `cc-state clear`.
+8. **Rollback runbook** (the queue rule is taken off, `MERGE_QUEUE` deleted or
+   the ruleset restored to its saved copy). A PR whose last green was a
+   cheap-mode run has never run E2E, so after the ruleset is restored and before
+   anything merges: **re-run PR Pipeline on every open PR, or push to it**, so
+   each head SHA gets a full run. Then the Claude-run flow's merge check below
+   (the `E2E / e2e` gate check on the head SHA) decides, not `CI Gate` alone.
+9. **Discord is a backup only**, for when no session is alive. A live session
+   always knows first through its own `pr-watch --queue`.
+
+A flake is judged exactly as in the turn flow (evidence names an outside service,
+never our own code), and the one-rerun rule becomes one re-enqueue of an
+unchanged branch per ticket.
+
+The rest of this file describes the Claude-run queue (`MERGE_QUEUE` off).
 
 ## Why this exists
 
@@ -237,7 +336,16 @@ still be open when it starts.
    7. **Green: merge with `pr-close`.** Your turn is the merge authorisation
       (Jason, 2026-11-12); pr-close does not ask again. Before merging,
       check the turn again (`"$Q" position NEO-123` prints position 0) and
-      confirm the PR's pushed head holds current main:
+      confirm the PR's head SHA ran full CI: the E2E **gate** job's check run
+      (`E2E / e2e`; `Playwright E2E` is only the report and passes on a partial
+      run) is `success` from the Actions app, latest run:
+      ```bash
+      gh api "repos/neonbinder/neonbinder-app/commits/<sha>/check-runs?check_name=E2E%20%2F%20e2e&filter=latest&per_page=100" \
+    --jq '[.check_runs[]|select(.app.id==15368 and .conclusion!=null)]|sort_by(.completed_at)|last|.conclusion'
+      ```
+      It must print `success`, with no exceptions. A green `CI Gate` alone is not
+      enough, because a cheap-mode run (left over from `MERGE_QUEUE=true`)
+      also turns it green. Also confirm the PR's pushed head holds current main:
       `git fetch origin && git merge-base --is-ancestor origin/main "$(gh pr view <pr> --json headRefOid -q .headRefOid)"`
       succeeds. If something merged during your turn, the queue was bypassed:
       stop (step 6) and tell Jason.
@@ -257,6 +365,12 @@ still be open when it starts.
    `PR-QUEUE LEAVE <ticket>`, then `cc-state clear`.
 
 ## Hard rules
+
+- **Never enqueue a fork PR or a Dependabot-authored PR** (GitHub-queue flow),
+  and never run a turn for one (Claude-run flow). Check `isCrossRepository`,
+  `headRepositoryOwner` and the author before `gh pr merge`.
+- **Never treat a green `CI Gate` as proof of E2E** in the Claude-run flow:
+  require the `E2E / e2e` gate check run on the head SHA (see the turn steps).
 
 - **No push outside your turn.** A push starts a CI run, and a run that
   cannot merge is wasted money. One turn is one main merge, one push, one run

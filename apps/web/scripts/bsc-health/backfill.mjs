@@ -71,7 +71,7 @@ async function main(argv) {
   let out;
   let scratch;
   let days = 14;
-  let repo = "neonbinder/neonbinder";
+  let repo = "neonbinder/neonbinder-app";
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") out = argv[++i];
     else if (argv[i] === "--scratch") scratch = argv[++i];

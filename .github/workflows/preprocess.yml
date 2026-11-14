@@ -22,6 +22,11 @@ name: Preprocess CI
 # is not 'true', so the lane stays dormant by default (fail-closed).
 
 on:
+  # NEO-546: GitHub's merge queue fires merge_group; `paths:` cannot filter it,
+  # so the `scope` job below does. Inert until MERGE_QUEUE is on and the ruleset
+  # has a merge_queue rule.
+  merge_group:
+    types: [checks_requested]
   pull_request:
     paths:
       - "services/preprocess/**"
@@ -43,8 +48,9 @@ concurrency:
   # NOTE the `preprocess-` prefix: reusing browser.yml's `browser-ci-` group
   # would make a preprocess PR cancel an in-flight browser run.
   # Pre-merge only now, so this always groups per-PR and cancels.
-  group: preprocess-ci-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: preprocess-ci-pr-${{ github.event.pull_request.number || github.ref }}
+  # A cancelled merge-queue run ejects the PR, so a merge group is never cancelled.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
@@ -95,6 +101,54 @@ env:
   PREVIEW_FAST_MAX_INSTANCES: 3
 
 jobs:
+  # NEO-546: scope and mode. A pull_request run reaches this workflow through
+  # `on.pull_request.paths`, but GitHub does not apply `paths:` to a merge_group
+  # run, so the merge queue would otherwise build every service on every PR.
+  # `changed` is therefore forced true on pull_request (today's behaviour) and
+  # computed from the diff on merge_group. `full`, `pr` and `sha` come from the
+  # shared ci-mode.sh: the preview is built on a merge group, or on a PR that is
+  # not in cheap mode, and is keyed on the PR number either way.
+  scope:
+    name: Decide scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      changed: ${{ github.event_name == 'pull_request' && 'true' || steps.filter.outputs.preprocess }}
+      full: ${{ steps.mode.outputs.full }}
+      pr: ${{ steps.mode.outputs.pr }}
+      sha: ${{ steps.mode.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide cheap or full
+        id: mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: bash .github/scripts/ci-mode.sh >> "$GITHUB_OUTPUT"
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'merge_group'
+        with:
+          # Mirror `on.pull_request.paths` above.
+          filters: |
+            preprocess:
+              - "services/preprocess/**"
+              - ".github/workflows/preprocess.yml"
+              - ".github/workflows/preprocess-deploy.yml"
+              - ".github/workflows/release.yml"
+
   # Unit tests + lint. Mirrors pr-pipeline.yml's `preprocess-test` on purpose:
   # that copy is what the required `CI Gate` aggregates, this copy is what gates
   # the push-to-main deploy lane, which a PR-only workflow cannot cover.
@@ -109,6 +163,8 @@ jobs:
   # "Browser build + unit tests" there.
   test:
     name: Lint + unit tests
+    needs: scope
+    if: needs.scope.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -149,10 +205,13 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-preview:
     name: Deploy per-PR Cloud Run preview
-    needs: test
+    needs: [scope, test]
+    # NEO-546: built on a PR that is not in cheap mode (today's flow) and on
+    # every merge group. A cheap PR run skips it; the queue builds it.
     if: |
-      github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
+      needs.scope.outputs.full == 'true'
+      && needs.scope.outputs.changed == 'true'
+      && (github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository)
       && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     # 30, not browser's 15: the Dockerfile bakes ~375MB of SAM weights pulled
@@ -179,8 +238,8 @@ jobs:
 
       - name: Build and push preview image
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ needs.scope.outputs.pr }}
+          HEAD_SHA: ${{ needs.scope.outputs.sha }}
         run: |
           set -euo pipefail
           # `.` is the JOB's working-directory (services/preprocess), so the
@@ -219,7 +278,7 @@ jobs:
         with:
           service: neonbinder-preprocess
           region: us-central1
-          image: gcr.io/neonbinder-dev/neonbinder-preprocess-preview:pr-${{ github.event.pull_request.number }}
+          image: gcr.io/neonbinder-dev/neonbinder-preprocess-preview:pr-${{ needs.scope.outputs.pr }}
           project_id: neonbinder-dev
           # env_vars MERGES: the action passes --update-env-vars, so the listed
           # vars are set and every other var on the service template carries
@@ -254,9 +313,9 @@ jobs:
             ENVIRONMENT=dev
             GOOGLE_CLOUD_PROJECT=neonbinder-dev
             GCS_PLACEHOLDER_BUCKET=neonbinder-placeholder-uploads-neonbinder-dev
-            PREVIEW_SHA=${{ github.event.pull_request.head.sha }}
+            PREVIEW_SHA=${{ needs.scope.outputs.sha }}
           no_traffic: true
-          tag: pr-${{ github.event.pull_request.number }}
+          tag: pr-${{ needs.scope.outputs.pr }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
           # Without this, a tagged no-traffic revision inherits whatever
           # --max-instances the PREVIOUS deploy of this service happened to
@@ -269,7 +328,7 @@ jobs:
       - id: capture
         name: Capture preview URL
         env:
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ needs.scope.outputs.pr }}
         run: |
           set -euo pipefail
           TAG="pr-$PR"
@@ -287,8 +346,8 @@ jobs:
       # NEO-484 G5: assert what landed, since env vars merge across lanes.
       - name: Assert the preview revision's env
         env:
-          PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ needs.scope.outputs.pr }}
+          HEAD_SHA: ${{ needs.scope.outputs.sha }}
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/preprocess-revision-check.sh" env \
             --project "$DEV_PROJECT" --service "$SERVICE" --tag "pr-$PR" \
@@ -412,10 +471,9 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-preview-fast:
     name: Deploy per-PR Cloud Run preview (fast service) if it exists
-    needs: deploy-preview
+    needs: [scope, deploy-preview]
     if: |
-      github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository)
       && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
       && needs.deploy-preview.result == 'success'
     runs-on: ubuntu-latest
@@ -472,12 +530,12 @@ jobs:
           # Same already-pushed preview image deploy-preview built above — see
           # that job's comment for why previews live in DEV_PREVIEW_IMAGE
           # rather than DEV_IMAGE.
-          image: gcr.io/neonbinder-dev/neonbinder-preprocess-preview:pr-${{ github.event.pull_request.number }}
+          image: gcr.io/neonbinder-dev/neonbinder-preprocess-preview:pr-${{ needs.scope.outputs.pr }}
           project_id: neonbinder-dev
           env_vars: |
-            PREVIEW_SHA=${{ github.event.pull_request.head.sha }}
+            PREVIEW_SHA=${{ needs.scope.outputs.sha }}
           no_traffic: true
-          tag: pr-${{ github.event.pull_request.number }}
+          tag: pr-${{ needs.scope.outputs.pr }}
           # NEO-299: see deploy-preview's identical comment above.
           # NEO-484: gen2 (S0b passed on n=10), and no dev cache on a preview.
           flags: "--max-instances=${{ env.PREVIEW_FAST_MAX_INSTANCES }} --execution-environment=gen2 --remove-env-vars=PREPROCESS_DEV_CACHE_BUCKET"
@@ -486,7 +544,7 @@ jobs:
         name: Capture fast preview URL
         if: steps.guard.outputs.exists == 'true'
         env:
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ needs.scope.outputs.pr }}
         run: |
           set -euo pipefail
           TAG="pr-$PR"
@@ -506,8 +564,8 @@ jobs:
       - name: Assert the fast preview revision's env
         if: steps.guard.outputs.exists == 'true'
         env:
-          PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ needs.scope.outputs.pr }}
+          HEAD_SHA: ${{ needs.scope.outputs.sha }}
         run: |
           bash .github/scripts/preprocess-revision-check.sh env \
             --project "$DEV_PROJECT" --service "$FAST_SERVICE" --tag "pr-$PR" \
@@ -655,10 +713,12 @@ jobs:
   # a failure still leaves a trace pointing at the run.
   comment-preview:
     name: Comment preview URL
-    needs: [deploy-preview, preview-smoke, deploy-preview-fast, preview-smoke-fast]
+    needs: [scope, deploy-preview, preview-smoke, deploy-preview-fast, preview-smoke-fast]
+    # NEO-546: a sticky PR comment only on a PR run that built a preview.
     if: |
       always()
       && github.event_name == 'pull_request'
+      && needs.scope.outputs.full == 'true'
       && github.event.pull_request.head.repo.full_name == github.repository
       && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest

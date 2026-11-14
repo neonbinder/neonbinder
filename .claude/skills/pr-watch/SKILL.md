@@ -1,7 +1,7 @@
 ---
 name: pr-watch
 description: Watch a GitHub PR's CI until it is fully green or any check fails, surfacing a progress update roughly every 2 minutes and a clear terminal verdict. Read-only — it never comments, merges, pushes, or edits. Use whenever a PR has been pushed and you want hands-off monitoring (e.g. "watch PR 53", "babysit this PR", "tell me when CI finishes / goes green / fails"). Replaces the old pr-watcher agent.
-argument-hint: <pr-number> [--repo <dir>]
+argument-hint: <pr-number> [--queue] [--repo <dir>]
 allowed-tools: Bash, Monitor, ToolSearch, TaskStop
 ---
 
@@ -11,6 +11,19 @@ Watch one GitHub PR's checks from the **main agent loop** (not a subagent) so th
 watch survives and progress is surfaced live. The heavy lifting is in the
 committed engine `watch.sh` next to this file; your job is to arm it via a
 **Monitor** and relay what comes back.
+
+## Two modes: PR checks, and the GitHub merge queue
+`gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app` decides what a green
+PR means (an error reading it counts as off).
+
+- **Off:** the engine watches the PR's own checks to `CI Gate` (everything below,
+  unchanged).
+- **On (`true`):** a PR run carries only the cheap checks, so a green `CI Gate`
+  on the PR proves nothing about E2E and must never be reported as "ready" or
+  "green". The full run is the queue's `merge_group` run. After enqueueing, watch
+  with **`--queue`** (see "Queue mode" below). Plain `watch.sh <PR>` is still
+  right for the cheap checks before enqueueing; say "cheap checks green", not
+  "green".
 
 ## Why a Monitor armed from the main loop (read this)
 The old `pr-watcher` *agent* armed a Monitor too, but a subagent can't receive
@@ -22,10 +35,10 @@ reliably. Do **not** delegate this to a subagent.
 
 ## Steps
 
-1. **Parse args.** First token = PR number (required). `--repo <dir>` overrides
-   the repo directory (default: current dir if it's a git repo with a GitHub
-   remote, else `apps/web`). NeonBinder repos: `apps/web` (remote
-   `neonbinder_convex`), `services/browser`, and the separate `terraform` checkout (`neonbinder_ioc`).
+1. **Parse args.** `--queue` (optional) selects queue mode. First other token = PR number (required). `--repo <dir>` overrides
+   the repo directory (default: the current dir, which must be a checkout of
+   `neonbinder/neonbinder-app`; the `terraform` checkout is `neonbinder_ioc`, a different repo).
+   `--queue` refuses any other repo (`DONE ERROR`) and passes `-R neonbinder/neonbinder-app` to its run reads.
 
 2. **Confirm the PR exists** with a single read:
    `gh pr view <PR> --json state,title,url` from the repo dir. If it errors,
@@ -45,7 +58,7 @@ reliably. Do **not** delegate this to a subagent.
    Then **arm ONE persistent Monitor** running the engine:
    - `description`: `"PR #<PR> CI"` (it shows in every notification — keep it specific)
    - `persistent: true`
-   - `command`: `bash <abs-path-to-this-skill-dir>/watch.sh <PR> <repo-dir>`
+   - `command`: `bash <abs-path-to-this-skill-dir>/watch.sh [--queue] <PR> <repo-dir>`
      (resolve the skill dir absolutely, e.g.
      `$(git rev-parse --show-toplevel)/.claude/skills/pr-watch`).
    The script prints one status line per tick (every ~120s) and a single `DONE …`
@@ -76,9 +89,45 @@ reliably. Do **not** delegate this to a subagent.
      safety window; re-invoke to keep watching."
    This terminal report is the most important output — make it unmissable.
 
+## Queue mode (`watch.sh --queue <PR>`)
+
+Follows the PR through GitHub's merge queue and never prints GREEN. Every tick
+reads the PR (state, queue entry, queue add/remove events), the `merge_group`
+runs on `gh-readonly-queue/main/pr-<N>-*` (from the latest enqueue on, so an
+earlier ejected attempt does not colour the current one) and those runs' jobs.
+Tick lines look like `[t+12m] RUNNING — MERGEABLE pos 1 · group runs 2 active/3 ·
+jobs 20/31 done · shards 6/8 · CI Gate in_progress`; before the group starts
+they say `queued (...) — waiting for its merge group to start`.
+
+Terminal lines (one, then the Monitor ends):
+
+| Line | Meaning | Exit |
+|---|---|---|
+| `DONE MERGED` | GitHub reports the PR merged (the only source of MERGED), with the merge commit | 0 |
+| `DONE EJECTED` | Dequeued by GitHub itself: an allowlisted automatic reason (CI_FAILURE, CI_TIMEOUT, MERGE_CONFLICT and similar; **allowlist to confirm at D0**) with a null or bot actor. Carries the dequeue reason (from the PR timeline's `RemovedFromMergeQueueEvent`) and the failing job URLs, else the failing run URLs, else says no failing job was found (timeout/conflict) | 1 |
+| `DONE REMOVED` | Everything else: a person removed it, the reason is not on the allowlist, or the PR was closed unmerged. Stop and tell Jason; **never re-enqueue** | 4 |
+| `DONE NOT_QUEUED` | Still not in the queue after the grace window (3 min); the enqueue did not happen | 5 |
+| `DONE TIMEOUT` | Watch window elapsed (default 150 min; the queue's own timeout is 120) | 2 |
+
+**Acting on the verdict (the session that enqueued does this, not Discord):**
+- `MERGED` → read `gh pr view <PR> --json state,mergeCommit` once, then the
+  caller's next step (pr-close: notify, prod check, close-out).
+- `EJECTED` → this is a red run: follow the red-run rules of the `pr-queue`
+  skill (save the artifacts first, check for a ci-fail ticket, run the failure
+  through the planner), fix, push (pushes are free in queue mode), re-enqueue,
+  and re-arm `--queue`. Send the Mac notification
+  (`.claude/skills/pr-queue/notify.sh`). Set `cc-state answer` only if Jason has
+  to decide; otherwise keep working. Read the failing job logs with
+  `gh run view <run-id> --log-failed`; unlike plain PR mode, diagnosing is the job here.
+- `REMOVED` → stop and tell Jason with the reason and actor the line prints.
+  Never re-enqueue on your own: an unknown reason is treated as a person's decision.
+- Discord is only a backup for when no session is alive; never rely on it.
+
 ## Tuning (optional env on the Monitor command)
 - `PR_WATCH_INTERVAL=120` — seconds between ticks (default 120; the ~2-min cadence).
 - `PR_WATCH_MAX_MIN=90` — safety stop.
+- `PR_WATCH_QUEUE_MAX_MIN=150` / `PR_WATCH_ENQUEUE_GRACE_MIN=3` / `PR_WATCH_REPO` /
+  `PR_WATCH_EJECT_REASONS` (regex of automatic dequeue reasons) — `--queue` only.
 - `PR_WATCH_REQUIRED_CHECK="CI Gate"` — the gate check that must be green before
   a `DONE GREEN` is emitted. Change it only if the pipeline's final gate job is
   renamed.
@@ -114,7 +163,14 @@ access is involved. The `e2e` gate is the source of truth for green/red: it
 fails when any spec fails or when any planned spec produced no result, so a dead
 shard cannot pass.
 
+## Tests
+`bash .claude/skills/pr-watch/test/queue.test.sh` drives `watch.sh --queue`
+against a fake `gh` (merged, ejected with reason and failing job, timeout
+ejection, removed by hand, closed, re-enqueue then merge, never enqueued).
+Run it, and `shellcheck` on both scripts, after any change to the queue code.
+
 ## Hard rules
+- **Never call a PR green in queue mode on cheap checks.** Only `DONE MERGED` ends it.
 - **Read-only.** Only read-only `gh` reads. Never comment, review, merge, edit,
   push, or run convex/npm mutations.
 - **Never act on a terminal verdict without re-checking it.** A `DONE GREEN` is

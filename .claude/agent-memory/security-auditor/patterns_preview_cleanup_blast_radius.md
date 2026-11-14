@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-`.github/workflows/preview-cleanup.yml` (monorepo `neonbinder/neonbinder`, LIVE-PROD) added a `convex-preview-cleanup` job (NEO-preview-autogc, branch `jburich/neo-preview-autogc`) that GCs Convex preview deployments on PR close.
+`.github/workflows/preview-cleanup.yml` (monorepo `neonbinder/neonbinder-app`, LIVE-PROD) added a `convex-preview-cleanup` job (NEO-preview-autogc, branch `jburich/neo-preview-autogc`) that GCs Convex preview deployments on PR close.
 
 **Blast-radius finding (CRITICAL):** the job derives the deployment name `$name` from the PR's own Vercel preview HTML `<meta name="x-convex-url" content="%VITE_CONVEX_URL%">` (apps/web/index.html line 9), then `POST api.convex.dev/v1/deployments/$name/delete` with a **team-scoped** `CONVEX_ACCESS_TOKEN`. That token can delete ANY team deployment including prod and the shared dev deployment. A same-repo-branch PR author (write access) can hardcode the meta tag to prod's URL, close the PR, and delete prod. There is NO guard that the target is actually a preview.
 

@@ -711,3 +711,5 @@ serving. Deploying at 0% removes the failure class instead of patching it.
 
 The deploy lane is gated on the `PREPROCESS_DEPLOY_ENABLED` repo variable; unset
 means dormant.
+
+Per-PR preview images and revisions are built by `preprocess.yml`: on the PR itself, or, once the merge queue is on (NEO-546), on the queue's merge group.

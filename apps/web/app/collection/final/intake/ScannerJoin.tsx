@@ -12,7 +12,7 @@ import { RING } from "./ui";
  * The NeonBinder Scanner app, as release.yml publishes it from main (one zip
  * per Mac architecture, its scanner driver inside).
  */
-const SCANNER_RELEASE = "https://github.com/neonbinder/neonbinder/releases/download/scanner-latest";
+const SCANNER_RELEASE = "https://github.com/neonbinder/neonbinder-app/releases/download/scanner-latest";
 export const SCANNER_DOWNLOADS = {
   arm64: `${SCANNER_RELEASE}/neonbinder-scanner-mac-arm64.zip`,
   x64: `${SCANNER_RELEASE}/neonbinder-scanner-mac-x64.zip`,
